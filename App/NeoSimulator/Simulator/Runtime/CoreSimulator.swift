@@ -2,6 +2,74 @@ import ABIBridge
 import Foundation
 import ObjectiveC
 
+/// A simulator belongs to one device set; a UDID alone is not a session key.
+public struct SimulatorDeviceIdentifier: Hashable, Codable, Sendable, Comparable {
+    public let identifier: String
+    public let deviceSetPath: String?
+    public init(_ identifier: String, deviceSetPath: String? = nil) {
+        self.identifier = identifier
+        self.deviceSetPath = deviceSetPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }
+    }
+    var queryItems: [URLQueryItem] {
+        [URLQueryItem(name: "udid", value: identifier)]
+            + (deviceSetPath.map { [URLQueryItem(name: "deviceSetPath", value: $0)] } ?? [])
+    }
+    var preferenceIdentifier: String {
+        guard let path = deviceSetPath else { return identifier }
+        return "set:\(path.utf8.count):\(path):\(identifier)"
+    }
+    public static func < (lhs: Self, rhs: Self) -> Bool { lhs.preferenceIdentifier < rhs.preferenceIdentifier }
+}
+
+struct AvailableDevice: Identifiable {
+    let identifier: String
+    let deviceSetPath: String?
+    var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
+    let name: String
+    let descriptiveName: String
+    let runtimeIdentifier: String
+    let runtimeName: String
+    /// `SimDeviceType.productFamilyID`, as in `SimulatorDevice.productFamily`.
+    let productFamily: Int
+    let deviceTypeName: String
+    var state: UInt
+    var id: String { identifier }
+    var isBooted: Bool { state == 3 }
+    /// The SF Symbol of the device's product family.
+    var symbolName: String {
+        switch DeviceCapabilities.Family(rawValue: productFamily) {
+        case .iPad: "ipad"
+        case .tv: "appletv"
+        case .watch: "applewatch"
+        case .vision: "visionpro"
+        case .iPhone, nil: "iphone"
+        }
+    }
+    var canOpen: Bool { state == 1 || state == 3 }
+    var stateLabel: String {
+        switch state {
+        case 1: "Shut Down"
+        case 2: "Starting…"
+        case 3: "Running"
+        case 4: "Shutting Down…"
+        default: "Unavailable"
+        }
+    }
+
+    init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String,
+         runtimeName: String, productFamily: Int, deviceTypeName: String, state: UInt, deviceSetPath: String? = nil) {
+        self.identifier = identifier
+        self.deviceSetPath = deviceSetPath
+        self.name = name
+        self.descriptiveName = descriptiveName
+        self.runtimeIdentifier = runtimeIdentifier
+        self.runtimeName = runtimeName
+        self.productFamily = productFamily
+        self.deviceTypeName = deviceTypeName
+        self.state = state
+    }
+}
+
 /// Prepared CoreSimulator messages. NSError-out failures and Objective-C exceptions
 /// are surfaced as Swift errors.
 @MainActor
@@ -78,7 +146,7 @@ struct CoreSimulatorInterface {
     init(runtime: ABIRuntime) async throws {
         func requireClass(_ name: String) throws -> AnyClass {
             guard let type = NSClassFromString(name) else {
-                throw HostError.unavailable("Required private class \(name) is unavailable")
+                throw SimulatorError.unavailable("Required private class \(name) is unavailable")
             }
             return type
         }
@@ -376,7 +444,7 @@ final class SimulatorDevice {
 
     func logDirectory() throws -> URL {
         guard let path = try unsafe interface.logPath.unsafeInvoke(on: object) else {
-            throw HostError.operation("The device did not report its log folder.")
+            throw SimulatorError.operation("The device did not report its log folder.")
         }
         return URL(fileURLWithPath: path, isDirectory: true)
     }
@@ -384,7 +452,7 @@ final class SimulatorDevice {
     /// Guest file used by SimDevice.simulateMemoryWarning.
     func memoryWarningFile() throws -> URL {
         guard let path = try unsafe interface.memoryWarningFilePath.unsafeInvoke(on: object) else {
-            throw HostError.operation("The device did not report where to signal a memory warning.")
+            throw SimulatorError.operation("The device did not report where to signal a memory warning.")
         }
         return URL(fileURLWithPath: path)
     }
@@ -393,7 +461,7 @@ final class SimulatorDevice {
     /// Its stark flag marks the screen as a CarPlay display.
     func extendedDisplayFile() throws -> URL {
         guard let path = try unsafe interface.dataPath.unsafeInvoke(on: object) else {
-            throw HostError.operation("The device did not report its data folder.")
+            throw SimulatorError.operation("The device did not report its data folder.")
         }
         return URL(fileURLWithPath: path, isDirectory: true)
             .appendingPathComponent("Library/Application Support/Simulator/extended_display.plist")
@@ -474,7 +542,7 @@ final class SimulatorDevice {
             let port = try unsafe interface.lookup.unsafeInvoke(on: object, name, error)
             // MACH_PORT_NULL and MACH_PORT_DEAD are not rights.
             guard port != 0, port != UInt32.max else {
-                throw unsafe error.pointee ?? HostError.operation("The device did not provide \(name).")
+                throw unsafe error.pointee ?? SimulatorError.operation("The device did not provide \(name).")
             }
             return port
         }

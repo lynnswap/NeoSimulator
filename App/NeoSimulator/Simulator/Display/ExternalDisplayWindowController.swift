@@ -63,7 +63,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         showsSize = session.externalDisplayShowsItsSize(in: state)
         guard screenSize.width > 0, screenSize.height > 0 else {
             display.disconnect()
-            throw HostError.unavailable("The external display has no usable size")
+            throw SimulatorError.unavailable("The external display has no usable size")
         }
         let window = makeWindow(NSRect(origin: .zero, size: screenSize))
         keyboard = DisplayKeyboardInput(window: window, display: display,

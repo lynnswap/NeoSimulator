@@ -59,7 +59,7 @@ struct CaptureAndImportTests {
         var imported: [String] = []
         do {
             try await SimulatorFileImport.perform(urls) { url, kind in
-                if url.lastPathComponent == "Rejected.app" { throw HostError.operation("Not a simulator app") }
+                if url.lastPathComponent == "Rejected.app" { throw SimulatorError.operation("Not a simulator app") }
                 if url.lastPathComponent == "Installed.ipa" {
                     throw DeviceInspectorError.cleanupFailed(directory: URL(fileURLWithPath: "/tmp/Staging"), operationError: nil,
                                                              cleanupError: CocoaError(.fileWriteNoPermission))
@@ -373,12 +373,12 @@ struct CaptureThumbnailTests {
     }
 
     private func capture(_ kind: CapturedContent.Kind = .screenshot, named name: String = "Shot.png",
-                         in directory: URL) throws -> CapturedContent {
+                         in directory: URL, owner: UUID? = nil) throws -> CapturedContent {
         let file = directory.appendingPathComponent(UUID().uuidString)
         try Data(name.utf8).write(to: file)
         let folder = directory.appendingPathComponent("Saved", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return CapturedContent(kind, file: file, name: name, defaultFolder: folder)
+        return CapturedContent(kind, file: file, name: name, defaultFolder: folder, owner: owner)
     }
 
     /// Fits within the test machine's screen, which may be small.
@@ -418,10 +418,14 @@ struct CaptureThumbnailTests {
         #expect(try savedNames(in: directory) == ["First.png", "Second.png"])
         #expect(CaptureThumbnail.active.isEmpty)
 
-        let third = CaptureThumbnail(try capture(named: "Third.png", in: directory), image: nil, parent: window,
+        let owner = UUID()
+        let third = CaptureThumbnail(try capture(named: "Third.png", in: directory, owner: owner), image: nil, parent: window,
                                      source: source, spacing: .zero) { _ in }
         third.show()
-        CaptureThumbnail.finishAll()
+        #expect(CaptureThumbnail.finishAll(owner: UUID()).isEmpty)
+        #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(third)])
+        #expect(try savedNames(in: directory) == ["First.png", "Second.png"])
+        #expect(CaptureThumbnail.finishAll(owner: owner).isEmpty)
         #expect(try savedNames(in: directory) == ["First.png", "Second.png", "Third.png"])
         #expect(CaptureThumbnail.active.isEmpty)
     }

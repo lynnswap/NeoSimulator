@@ -100,7 +100,7 @@ struct ManagerModelTests {
         var attempts = 0
         let windowController = SettingsWindowController(model: model, restart: {}, makeSimulator: {
             attempts += 1
-            if attempts == 1 { throw HostError.operation("Catalog unavailable") }
+            if attempts == 1 { throw SimulatorError.operation("Catalog unavailable") }
             return NewSimulatorModel(catalog: SimulatorCatalog(
                 deviceTypes: [.init(identifier: "phone", name: "iPhone", productFamily: 1)],
                 runtimes: [.init(identifier: "ios", name: "iOS")],
@@ -166,7 +166,7 @@ struct ManagerModelTests {
         defer { defaults.removePersistentDomain(forName: domain) }
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
         let controller = SettingsWindowController(model: model, restart: {},
-            makeSimulator: { throw HostError.operation("Unused") },
+            makeSimulator: { throw SimulatorError.operation("Unused") },
             preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
             reportFailure: { _ in Issue.record("Unexpected failure") })
         let window = try #require(controller.window)
@@ -2729,7 +2729,7 @@ struct ManagerModelTests {
         manager.backgroundServices.setVisible(true)
         await manager.backgroundServices.finishReading()
         let settings = SettingsWindowController(model: manager, restart: {},
-            makeSimulator: { throw HostError.operation("Unused") },
+            makeSimulator: { throw SimulatorError.operation("Unused") },
             preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
             reportFailure: { _ in Issue.record("Unexpected failure") })
         defer { settings.window?.close() }

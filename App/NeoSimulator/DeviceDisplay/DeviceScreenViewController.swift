@@ -302,7 +302,7 @@ final class DeviceScreenViewController: NSViewController {
                     do { try await previous.embed(in: liveScreenContainer) }
                     catch let restorationError {
                         if let current = liveDeviceIdentifier { showDevicePreview(ifDisplaying: current) }
-                        throw HostError.operation([error.localizedDescription,
+                        throw SimulatorError.operation([error.localizedDescription,
                             "Could not restore the previous device screen: \(restorationError.localizedDescription)"].joined(separator: "\n"))
                     }
                 }

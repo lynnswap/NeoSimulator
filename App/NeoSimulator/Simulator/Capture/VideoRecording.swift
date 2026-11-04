@@ -68,7 +68,7 @@ final class VideoRecording {
                     else if (reason == .exit && status == 0) || stoppedNormally { result = .success(()) }
                     else {
                         let diagnostic = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                        result = .failure(HostError.operation(diagnostic.isEmpty ? "Video recording failed with status \(status)" : diagnostic))
+                        result = .failure(SimulatorError.operation(diagnostic.isEmpty ? "Video recording failed with status \(status)" : diagnostic))
                     }
                     timer?.cancel()
                     process.terminationHandler = nil
@@ -103,7 +103,7 @@ final class VideoRecording {
         timer = Task { [weak self] in
             do { try await Task.sleep(for: duration) } catch { return }
             guard let self, self.completion == nil, self.process.isRunning else { return }
-            self.forcedError = HostError.operation(message)
+            self.forcedError = SimulatorError.operation(message)
             self.process.terminate()
             try? await Task.sleep(for: .seconds(2))
             if self.process.isRunning { kill(self.process.processIdentifier, SIGKILL) }
@@ -140,14 +140,14 @@ final class RecordingStore {
 
     func start(to destination: Destination, process: (URL) -> Process,
                onFinished: @escaping @MainActor () -> Void) throws -> VideoRecording {
-        guard !isFinishing else { throw HostError.operation("Recordings are finishing before NeoSimulator quits") }
+        guard !isFinishing else { throw SimulatorError.operation("Recordings are finishing before NeoSimulator quits") }
         let identifier = UUID()
         let temporary: URL, destinationKey: String?
         switch destination {
         case .file(let file):
             let key = try Self.destinationKey(for: file)
             guard !entries.values.contains(where: { $0.destinationKey == key }) else {
-                throw HostError.operation("Another recording is saving to \(file.path). Choose a different filename.")
+                throw SimulatorError.operation("Another recording is saving to \(file.path). Choose a different filename.")
             }
             destinationKey = key
             temporary = file.deletingLastPathComponent()
@@ -165,7 +165,7 @@ final class RecordingStore {
         catch {
             do { try Self.removeTemporaryFile(at: temporary) }
             catch let cleanup {
-                throw HostError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
+                throw SimulatorError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
             }
             throw error
         }
@@ -178,13 +178,13 @@ final class RecordingStore {
                 let duration = try await asset.load(.duration)
                 let tracks = try await asset.loadTracks(withMediaType: .video)
                 guard duration.isNumeric, duration.seconds > 0, !tracks.isEmpty else {
-                    throw HostError.operation("The recording contains no video frames")
+                    throw SimulatorError.operation("The recording contains no video frames")
                 }
                 readyToSave = true
                 switch destination {
                 case .file(let file):
                     guard rename(temporary.path, file.path) == 0 else {
-                        throw HostError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
+                        throw SimulatorError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
                     }
                 case .capture(let handOver):
                     try handOver(temporary)
@@ -194,7 +194,7 @@ final class RecordingStore {
                 if !readyToSave {
                     do { try Self.removeTemporaryFile(at: temporary) }
                     catch let cleanup {
-                        reported = HostError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
+                        reported = SimulatorError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
                     }
                 }
                 onError(reported)

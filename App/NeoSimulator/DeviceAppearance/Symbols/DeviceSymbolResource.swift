@@ -55,7 +55,7 @@ final class DeviceSymbolResource {
         let runtime = ABIRuntime.shared
         guard let catalogClass = NSClassFromString("CUICatalog"),
               let allocated = (catalogClass as? NSObject.Type)?.perform(NSSelectorFromString("alloc"))?.takeRetainedValue()
-        else { throw HostError.unavailable("CoreUI symbol catalogs are unavailable") }
+        else { throw SimulatorError.unavailable("CoreUI symbol catalogs are unavailable") }
         let initialize = try runtime.resolveAndWait(
             .objc(.method("initWithURL:error:", as: ((NSURL) throws -> AnyObject).self)), on: catalogClass)
         // Bundle-based themes share storage between Xcodes with the same identifier.

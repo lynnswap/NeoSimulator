@@ -513,13 +513,13 @@ final class ExternalDisplayChanges {
                 // The session may or may not have changed; no request is
                 // sent for it again in this boot.
                 carPlay.timedOut(in: run.requestBoot)
-                run.fail(run.step, HostError.operation("""
+                run.fail(run.step, SimulatorError.operation("""
                     The device did not answer, so NeoSimulator leaves its CarPlay session as it is until the \
                     device restarts.
                     """))
             } else {
                 if case .carPlayService = run.step { carPlay.serviceUnanswered(in: run.requestBoot) }
-                run.fail(run.step, HostError.operation("CoreSimulator did not complete the change."))
+                run.fail(run.step, SimulatorError.operation("CoreSimulator did not complete the change."))
             }
             run.change.report(run.failures)
         }

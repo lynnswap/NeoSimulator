@@ -24,6 +24,34 @@ NeoSimulator は、iPhone、iPad、Apple Watch、Apple TV、Apple Vision Pro に
 - [CLI 版からの移行](Documentation/MigratingFromCLI.ja.md)
 - [開発ガイド（英語）](Documentation/NeoSimulator.docc/Development.md)
 
+## シミュレーターアプリを作る
+
+Swift package の `NeoSimulatorKit` product から、シミュレーターの一覧取得、
+起動・終了、AppKit での画面表示を利用できます。Swift 6.4 と、アプリと同じ
+バージョンの macOS・Xcode が必要です。
+
+```swift
+import NeoSimulatorKit
+
+let context = try await SimulatorContext.load()
+let devices = try await context.devices()
+if let device = devices.first {
+    _ = try await context.boot(device.id)
+    let screen = try await context.openScreen(device.id)
+    try screen.showWindow()
+    // 表示中は context と screen を保持します。
+}
+```
+
+AppKit のコンテナへ埋め込む場合は `SimulatorScreenViewController(screen:)` を
+使います。`screen.close()` と `context.invalidate()` は表示や入力のリソースを
+解放し、ゲストは起動したままにします。ゲストを終了する場合は
+`context.shutDown(_:)` を呼びます。終了時のエラーを扱えるよう、これらの非同期処理が
+完了してからアプリを終了してください。
+
+[MinimalSimulatorApp](Examples/MinimalSimulatorApp) は公開 API だけを使う独立した
+サンプルです。終了処理と、画面の開閉を自動で検証する実行方法も含んでいます。
+
 ## 謝辞
 
 バックグラウンドサービスの制御は、停止しても安全なサービスの一覧を含めて [simslim](https://github.com/MobAI-App/simslim) から移植しています。Interlap と [simslim のコントリビューター](https://github.com/MobAI-App/simslim/graphs/contributors)に感謝します。simslim は MIT ライセンスで公開されています。simslim の許諾表示と依存パッケージのライセンスは、**Settings → Licenses** で確認できます。

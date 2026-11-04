@@ -22,7 +22,7 @@ struct ManagerRelaunch: Codable, Sendable {
             try input.fileHandleForWriting.write(contentsOf: JSONEncoder().encode(self))
             try input.fileHandleForWriting.close()
             guard try ready.fileHandleForReading.read(upToCount: 1) == Data([1]) else {
-                throw HostError.operation("Could not prepare NeoSimulator to restart.")
+                throw SimulatorError.operation("Could not prepare NeoSimulator to restart.")
             }
             try ready.fileHandleForReading.close()
         } catch {

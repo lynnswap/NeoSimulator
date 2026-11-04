@@ -35,7 +35,7 @@ final class HostConflictMonitor {
 
     func check() throws {
         if let name = conflictingHostName {
-            throw HostError.conflict("\(name) is running or launched during startup; close it before opening NeoSimulator")
+            throw SimulatorError.conflict("\(name) is running or launched during startup; close it before opening the simulator display")
         }
     }
 

@@ -110,7 +110,9 @@ enum NeoSimulatorApp {
             let conflicts = HostConflictMonitor()
             try conflicts.check()
             let runtime = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
-            HostPreferences.migrateStandalonePreferences()
+            SimulatorPreferences.migrateStandalonePreferences()
+            HostPreferences.configure(defaults: .standard,
+                deviceSettingsDefaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator"))
             let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged,
                                                  owner: options.owner, headless: options.isHeadless)
             Self.controller = controller
@@ -143,8 +145,8 @@ enum NeoSimulatorApp {
             } catch { hostLog("Could not write startup failure: \(error.localizedDescription)") }
         }
         hostLog(error.localizedDescription)
-        if case HostError.invalidArguments = error { exit(EX_USAGE) }
-        if case HostError.conflict = error { exit(EX_TEMPFAIL) }
+        if case SimulatorError.invalidArguments = error { exit(EX_USAGE) }
+        if case SimulatorError.conflict = error { exit(EX_TEMPFAIL) }
         exit(EX_UNAVAILABLE)
     }
 }

@@ -237,7 +237,7 @@ final class DeviceScreen {
         case .remote(let controller): controller.canMovePresentation
         }
         guard canMove else {
-            throw HostError.operation("Close the device's dialog or leave full screen before moving its screen.")
+            throw SimulatorError.operation("Close the device's dialog or leave full screen before moving its screen.")
         }
     }
 

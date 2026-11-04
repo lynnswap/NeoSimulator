@@ -6,7 +6,7 @@ import ObservationBridge
 /// The device screens open in the manager, the in-process host that presents each Xcode's simulators, and the
 /// connections of remote screens.
 ///
-/// Each `HostApplication` stays authoritative for its simulator sessions; this registry indexes their controllers
+/// Each `SimulatorScreenHost` stays authoritative for its simulator sessions; this registry indexes their controllers
 /// by inventory identity. Remote screens have no other owner, so the registry also owns their lifetimes. Screens
 /// enter and leave only through `insert(_:)` and `remove(_:)`, which publish the open set to posture observation.
 @MainActor @Observable
@@ -15,12 +15,13 @@ final class DeviceScreens {
     /// The Xcode whose SimulatorKit UI toolkit the manager loaded, which also supplies device artwork.
     private(set) var displayXcodeURL: URL?
     @ObservationIgnored private let model: SimulatorManagerModel
-    @ObservationIgnored private var hosts: [URL: HostApplication] = [:]
+    @ObservationIgnored private var hosts: [URL: SimulatorScreenHost] = [:]
     /// Hosts that stopped while the app kept running, after a host conflict or a failed quit. Stopping the screens
     /// stops them again, which retries the native input they could not remove.
-    @ObservationIgnored private var stoppedHosts: [HostApplication] = []
+    @ObservationIgnored private var stoppedHosts: [SimulatorScreenHost] = []
     /// Set while the app quits, until a cancelled quit resumes.
     @ObservationIgnored private(set) var isQuitting = false
+    @ObservationIgnored private var locationObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var remoteDevicesObservation: PortableObservationTracking.Token?
     @ObservationIgnored private var lastRemoteHost: SimulatorHost?
     @ObservationIgnored private var remoteHostCleanup: Task<Void, Never>?
@@ -35,6 +36,25 @@ final class DeviceScreens {
 
     init(model: SimulatorManagerModel) {
         self.model = model
+        locationObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
+            object: nil, queue: .main
+        ) { [weak self] notification in
+            let udid = notification.object as? String
+            let path = notification.userInfo?["deviceSetPath"] as? String
+            let identifier = udid.map { SimulatorDeviceIdentifier($0, deviceSetPath: path) }
+            MainActor.assumeIsolated {
+                guard let self, let identifier else { return }
+                do {
+                    try self.simulatorControllers.first { $0.session.device.identity == identifier }?
+                        .session.refreshLocationSelection()
+                } catch { self.onError?(error) }
+            }
+        }
+    }
+
+    isolated deinit {
+        if let locationObserver { DistributedNotificationCenter.default().removeObserver(locationObserver) }
     }
 
     var identifiers: Set<DeviceInventoryID> { Set(entries.keys) }
@@ -159,14 +179,18 @@ final class DeviceScreens {
         }
     }
 
-    private func host(for sourceURL: URL, displayXcodeURL: URL) async throws -> HostApplication {
+    private func host(for sourceURL: URL, displayXcodeURL: URL) async throws -> SimulatorScreenHost {
         if let host = hosts[sourceURL] { return host }
         let runtime = try await SimulatorRuntime.load(xcodeURL: sourceURL, uiXcodeURL: displayXcodeURL)
         try Task.checkCancellation()
         // Another device may have created this Xcode's host while the shared runtime was loading.
         if let host = hosts[sourceURL] { return host }
-        let host = try HostApplication(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true,
+        let host = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true,
                                        pasteboardSync: pasteboardSync)
+        host.onOpen = { identifier in
+            HostPreferences.defaults.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
+            HostPreferences.defaults.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
+        }
         host.onError = { [weak self] error in self?.onError?(error) }
         host.onChange = { [weak self] in self?.hostsChanged() }
         host.onClose = { [weak self] device, choice, finishing in
@@ -228,7 +252,7 @@ final class DeviceScreens {
         } catch {
             do { try await finishSimulatorManagement(action, devices: prepared) }
             catch let cleanupError {
-                throw HostError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
+                throw SimulatorError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
             }
             throw error
         }
@@ -246,7 +270,7 @@ final class DeviceScreens {
             catch { failures.append("\(device.name): \(error.localizedDescription)") }
         }
         hostsChanged()
-        if !failures.isEmpty { throw HostError.operation(failures.joined(separator: "\n")) }
+        if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
     }
 
     /// The open simulator screens to reopen after relaunching, ordered so the main window's screen opens last.

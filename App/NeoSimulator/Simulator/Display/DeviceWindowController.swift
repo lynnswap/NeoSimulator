@@ -65,6 +65,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// A corner drag changes only the embedded canvas's display scale.
     private var canvasResize: CanvasResize?
     /// Injectable window-server drag operation.
+    private let captureOwner: UUID?
+    private let reportDetachedCapture: (Error) -> Void
+    private let offersLifetimeChoice: Bool
     private let performWindowDrag: (NSWindow, NSEvent) -> Void
     private let presentCompactWindow: (NSWindow) -> Void
     private var screenParametersObserver: (any NSObjectProtocol)?
@@ -98,9 +101,17 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     var onShowInMainWindow: (() -> Void)? {
         didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
     }
-    var canMovePresentation: Bool {
-        guard !closed, !isFullScreen, let window = presentationWindow else { return false }
+    private var permitsPresentationMove: Bool {
+        guard !closed, !isFullScreen else { return false }
+        guard let window = presentationWindow else { return true }
         return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
+    }
+    var canMovePresentation: Bool { presentationWindow != nil && permitsPresentationMove }
+
+    func validatePresentationMove() throws {
+        guard permitsPresentationMove else {
+            throw SimulatorError.operation("Close the device's dialog or leave full screen before moving its screen.")
+        }
     }
     private var canShowInMainWindow: Bool { canMovePresentation && onShowInMainWindow != nil }
     @objc func showInMainWindow(_ sender: Any?) {
@@ -141,6 +152,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     init(session: DeviceSession, preferences: any PreferenceStore = HostPreferences.defaults,
          touchPressure: TouchPressure, tvRemote: TVRemoteController,
+         offersLifetimeChoice: Bool = true,
+         captureOwner: UUID? = nil,
+         reportDetachedCapture: @escaping (Error) -> Void = { CaptureThumbnail.reportDetached($0) },
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
          presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
          makeKeyboardCaptureTap: @escaping @MainActor () -> any KeyboardEventTap = { SystemKeyboardEventTap() },
@@ -153,6 +167,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         self.session = session
         self.userInterfacePluginLookUp = userInterfacePluginLookUp
         self.preferences = preferences
+        self.offersLifetimeChoice = offersLifetimeChoice
+        self.captureOwner = captureOwner
+        self.reportDetachedCapture = reportDetachedCapture
         self.touchPressure = touchPressure
         self.tvRemote = tvRemote
         self.performWindowDrag = performWindowDrag
@@ -171,7 +188,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let natural = session.display.size(for: 1)
         guard natural.width > 0, natural.height > 0 else {
             session.disconnect()
-            throw HostError.unavailable("Simulator display has no usable size")
+            throw SimulatorError.unavailable("Simulator display has no usable size")
         }
         // Initial width determines toolbar style before display scaling.
         let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
@@ -573,14 +590,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
                         return
                     }
                 } catch {
-                    self.present(HostError.operation(
+                    self.present(SimulatorError.operation(
                         "The controls of \(session.device.name) are unavailable: \(error.localizedDescription)"))
                     return
                 }
                 if attempt < schedule.attempts { try? await Task.sleep(for: schedule.interval) }
             }
             guard let self, !self.closed, self.session === session, session.isConnected else { return }
-            self.present(HostError.unavailable(
+            self.present(SimulatorError.unavailable(
                 "The controls of \(session.device.name) are unavailable: SimulatorKit did not load its user interface plugin."))
         }
     }
@@ -988,7 +1005,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
         session.run({ [weak self, session] in
             let file = try await session.screenshot(mask: mask)
-            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder)
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: self?.captureOwner)
             guard let self else {
                 try capture.saveToDefaultLocation()
                 return
@@ -1017,8 +1034,8 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
                                          rotation: session.isResizingApp ? 0 : session.displayAngle,
                                          cornerRadius: (session.appResizeGeometry?.cornerRadius ?? CGFloat(session.capabilities.screenCornerRadius)) * scale,
-                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self] error in
-            if let self, !self.closed { self.present(error) } else { CaptureThumbnail.reportDetached(error) }
+                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self, reportDetachedCapture] error in
+            if let self, !self.closed { self.present(error) } else { reportDetachedCapture(error) }
         }
         thumbnail.show()
     }
@@ -1069,7 +1086,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Records immediately; stopping creates a thumbnail that saves on dismissal.
     func recordScreen() {
         guard let desktop = CaptureFile.desktop else {
-            present(HostError.operation("Could not find the Desktop folder to save the recording in."))
+            present(SimulatorError.operation("Could not find the Desktop folder to save the recording in."))
             return
         }
         let device = session.device.name
@@ -1077,7 +1094,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         run {
             try session.startRecording(to: .capture { [weak self] file in
                 let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
-                                              defaultFolder: desktop, isReserved: isReserved)
+                                              defaultFolder: desktop, owner: self?.captureOwner, isReserved: isReserved)
                 if let self { try self.showThumbnail(of: capture, image: nil) } else { try capture.saveToDefaultLocation() }
             }, mask: usesDeviceMask ? .black : .ignored)
         }
@@ -1152,7 +1169,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             guard response == .alertFirstButtonReturn, !self.closed else { return }
             let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = URL(string: text), url.scheme != nil else {
-                self.present(HostError.operation("Enter a URL with a scheme, such as https://example.com"))
+                self.present(SimulatorError.operation("Enter a URL with a scheme, such as https://example.com"))
                 return
             }
             self.session.run({ [session] in try await session.openURL(url) }, failure: { [weak self] in self?.present($0) })
@@ -1210,7 +1227,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
             } catch is CancellationError {
                 retry = Task.isCancelled
             } catch {
-                present(HostError.operation(
+                present(SimulatorError.operation(
                     "Could not show the external display of \(session.device.name): \(error.localizedDescription)"))
             }
         }
@@ -1618,6 +1635,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// File ▸ Close Window…: asks whether to shut the device down, and closes
     /// the window unless the choice is Cancel.
     func closeAsking() {
+        guard offersLifetimeChoice else { window?.close(); return }
         guard let window, window.attachedSheet == nil, !closed else { return }
         let alert = DeviceLifetimeChoice.alert(
             quitting: false, keepsRunningByDefault: HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
@@ -1631,7 +1649,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // Control-close asks which device lifetime to use.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard NSEvent.modifierFlags.contains(.control) else { return true }
+        guard offersLifetimeChoice, NSEvent.modifierFlags.contains(.control) else { return true }
         closeAsking()
         return false
     }
@@ -2291,7 +2309,7 @@ enum CaptureFile {
             let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
             if !FileManager.default.fileExists(atPath: candidate.path), !isReserved(candidate) { return candidate }
         }
-        throw HostError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
+        throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
     }
 
     /// Moves the capture without overwriting, trying suffixes #2 through #99.
@@ -2308,10 +2326,10 @@ enum CaptureFile {
             } catch CocoaError.fileWriteFileExists {
                 continue
             } catch {
-                throw HostError.operation("Could not save \(name) in \(folder.path): \(error.localizedDescription) The capture is at \(capture.path).")
+                throw SimulatorError.operation("Could not save \(name) in \(folder.path): \(error.localizedDescription) The capture is at \(capture.path).")
             }
         }
-        throw HostError.operation("Could not save \(name): \(folder.path) already has files of that name through #99. The capture is at \(capture.path).")
+        throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99. The capture is at \(capture.path).")
     }
 
     @MainActor
@@ -2332,7 +2350,7 @@ enum CaptureFile {
             if FileManager.default.fileExists(atPath: temporary.path) {
                 do { try FileManager.default.removeItem(at: temporary) }
                 catch let cleanup {
-                    throw HostError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
+                    throw SimulatorError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
                 }
             }
             throw error

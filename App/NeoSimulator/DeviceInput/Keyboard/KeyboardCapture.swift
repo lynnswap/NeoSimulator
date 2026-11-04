@@ -48,7 +48,7 @@ final class KeyboardCapture {
 
     func start() throws {
         guard !isCapturing else { return }
-        guard isEligible() else { throw HostError.operation("Focus the device screen before capturing its keyboard.") }
+        guard isEligible() else { throw SimulatorError.operation("Focus the device screen before capturing its keyboard.") }
         try tap.start { [weak self] type, event in self?.receive(type, event) ?? false }
         isCapturing = true
         // Focus may already have sent modifiers held before the tap started.
@@ -92,7 +92,7 @@ final class KeyboardCapture {
         guard isCapturing else { return false }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             stop()
-            failure(HostError.operation("Keyboard capture stopped because macOS disabled its event tap. Try Capture Keyboard again."))
+            failure(SimulatorError.operation("Keyboard capture stopped because macOS disabled its event tap. Try Capture Keyboard again."))
             return false
         }
         guard isEligible() else { stop(); return false }

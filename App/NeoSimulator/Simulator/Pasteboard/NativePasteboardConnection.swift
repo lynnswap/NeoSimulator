@@ -178,7 +178,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
             let failure: any Error
             do {
                 try await observation()
-                failure = HostError.operation("The simulator stopped reporting pasteboard changes.")
+                failure = SimulatorError.operation("The simulator stopped reporting pasteboard changes.")
             } catch is CancellationError {
                 return
             } catch {

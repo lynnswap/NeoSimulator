@@ -1,0 +1,1141 @@
+import AppKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
+
+/// Owns simulator connections and their resources independently of an application's menus or routing.
+@MainActor
+final class SimulatorScreenHost: NSObject {
+    let runtime: SimulatorRuntime
+    private let conflicts: HostConflictMonitor
+    private let deviceSet: SimulatorDeviceSet
+    private let recordings = RecordingStore()
+    private let captureOwner = UUID()
+    private let isManaged: Bool
+    let isHeadless: Bool
+    private let isInProcess: Bool
+    private let suppliedPasteboardSync: PasteboardSync?
+    private let offersLifetimeChoice: Bool
+    var onPresent: ((DeviceWindowController) -> Void)?
+    var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void)?
+    var onError: ((Error) -> Void)?
+    var onChange: (() -> Void)?
+    var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
+    var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
+    var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
+    var onOwnershipChange: ((Bool) throws -> Void)?
+    var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
+    var onNoScreens: (() -> Void)?
+    var onConflict: ((String, (any Error)?) -> Void)?
+    var isStopped: Bool { stopped }
+    var openedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> { Set(sessions.keys) }
+    private(set) var ownedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> = []
+    var registrationDeviceIdentifiers: [SimulatorDeviceIdentifier] {
+        ownedDeviceIdentifiers.union(closingShutdowns.keys).union(releasingDevices).sorted()
+    }
+    var windowControllers: [DeviceWindowController] { Array(sessions.values) }
+    var hasPresentations: Bool { !sessions.isEmpty || !connections.isEmpty }
+    private var releasingDevices: Set<SimulatorDeviceIdentifier> = []
+    private var registrationErrorReported = false
+    private(set) var isTerminating = false
+    private var recordingTerminationErrors: [Error] = []
+    private var notificationToken: UInt64?
+    private var testingSet: SimulatorDeviceSet?
+    private var testingNotificationToken: UInt64?
+    private var testingSetWatcher: DispatchSourceFileSystemObject?
+    private var sessions: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
+    private var connections: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
+    private var bootOperations: [SimulatorDeviceIdentifier: DeviceTools] = [:]
+    private var restarting: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
+    private var awaitingReconnect: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
+    private var presentationRestarts: Set<SimulatorDeviceIdentifier> = []
+    private var suppressed: Set<SimulatorDeviceIdentifier> = []
+    private var closingShutdowns: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
+    private var disconnectedSessions: [DeviceSession] = []
+    private var externalDisplayQueues: [SimulatorDeviceIdentifier: (name: String, changes: ExternalDisplayChanges)] = [:]
+    private var yieldedToAnotherHost = false
+    private var terminationShutdowns: [Task<String?, Never>] = []
+    private var connectionFailures: [SimulatorDeviceIdentifier: Error] = [:]
+    private var openingDevices: Set<SimulatorDeviceIdentifier> = []
+    private var stopped = false
+    private var stoppingTask: Task<Void, Error>?
+    private var nextWindowPosition = NSPoint.zero
+    private let touchPressure = TouchPressure()
+    private let tvRemote = TVRemoteController()
+    private lazy var pasteboardSync: PasteboardSync = suppliedPasteboardSync ?? PasteboardSync { [weak self] in
+        self?.sessions.values.map(\.session) ?? []
+    }
+    var pasteboardSynchronization: PasteboardSync { pasteboardSync }
+    private var touchIndicatorObservation: DefaultsObservation?
+    private var testingDevicesObservation: DefaultsObservation?
+
+    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
+         headless: Bool = false, inProcess: Bool = false, pasteboardSync: PasteboardSync? = nil,
+         offersLifetimeChoice: Bool = true) throws {
+        try conflicts.check()
+        self.runtime = runtime
+        self.conflicts = conflicts
+        self.isManaged = isManaged
+        isHeadless = headless
+        isInProcess = inProcess
+        suppliedPasteboardSync = pasteboardSync
+        self.offersLifetimeChoice = offersLifetimeChoice
+        deviceSet = try runtime.openDeviceSet()
+        HostPreferences.registerDefaults()
+        super.init()
+        recordings.onError = { [weak self] error in
+            guard let self else { return }
+            if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
+            else { self.report(error) }
+        }
+        conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
+    }
+
+    func controller(for identifier: SimulatorDeviceIdentifier) -> DeviceWindowController? { sessions[identifier] }
+    func hasUnfinishedCleanup(for identifier: SimulatorDeviceIdentifier) -> Bool {
+        disconnectedSessions.contains { $0.device.identity == identifier }
+            || (sessions[identifier] == nil && externalDisplayQueues[identifier] != nil)
+    }
+    func adopt(_ identifier: SimulatorDeviceIdentifier) { ownedDeviceIdentifiers.insert(identifier) }
+    func creationCatalog() throws -> SimulatorCatalog { try deviceSet.readCatalog() }
+    func refreshLocationSelection(for identifier: SimulatorDeviceIdentifier) throws {
+        try sessions[identifier]?.session.refreshLocationSelection()
+    }
+
+    func start(attachingBootedDevices: Bool = true) throws {
+        do {
+            try conflicts.check()
+            touchIndicatorObservation = DefaultsObservation(
+                HostPreferences.defaults, keys: TouchIndicator.allCases.map(\.preferenceKey)) {
+                NotificationCenter.default.post(name: TouchIndicator.didChangeNotification, object: HostPreferences.defaults)
+            }
+            testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
+                self?.applyTestingDeviceVisibility()
+            }
+            notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
+            openTestingSet()
+            if !attachingBootedDevices {
+                suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity))
+            }
+            if !isManaged && !isInProcess { try scanDevices() }
+        } catch {
+            shutdown()
+            throw error
+        }
+    }
+
+    func releaseDevice(_ identifier: SimulatorDeviceIdentifier,
+                               beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
+        guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
+                || connections[identifier] != nil || closingShutdowns[identifier] != nil
+                || disconnectedSessions.contains(where: { $0.device.identity == identifier }) else { return }
+        guard !releasingDevices.contains(identifier) else {
+            throw SimulatorError.operation("This simulator is already being handed over.")
+        }
+        releasingDevices.insert(identifier)
+        defer { releasingDevices.remove(identifier) }
+        suppressed.insert(identifier)
+        let connection = connections[identifier]
+        let restart = restarting[identifier]
+        let closing = closingShutdowns[identifier]
+        connection?.cancel()
+        restart?.cancel()
+        closing?.cancel()
+        bootOperations[identifier]?.cancel()
+        await connection?.value
+        await restart?.value
+        await closing?.value
+        if let controller = sessions[identifier] {
+            if let recording = controller.session.recording {
+                recording.stop()
+                do { try await recording.waitUntilFinished() }
+                catch { suppressed.remove(identifier); throw error }
+            }
+            beforeInvalidating?(controller)
+            controller.invalidate()
+            sessions.removeValue(forKey: identifier)
+            disconnectedSessions.append(controller.session)
+        }
+        awaitingReconnect.removeValue(forKey: identifier)
+        presentationRestarts.remove(identifier)
+        // Like an unfinished external display, input that was not removed keeps the device for another release.
+        let inputFailures = await finishDisconnectedInput(of: identifier)
+        guard inputFailures.isEmpty else { throw SimulatorError.operation(inputFailures.joined(separator: "\n")) }
+        if let changes = externalDisplayQueues[identifier]?.changes {
+            let deadline = ContinuousClock.now + .seconds(HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout))
+            guard await changes.idle(before: deadline) else {
+                throw SimulatorError.operation("The simulator's external displays did not finish disconnecting.")
+            }
+            externalDisplayQueues.removeValue(forKey: identifier)
+        }
+        ownedDeviceIdentifiers.remove(identifier)
+        releasingDevices.remove(identifier)
+        do { if isManaged { try onOwnershipChange?(false) } }
+        catch {
+            ownedDeviceIdentifiers.insert(identifier)
+            throw SimulatorError.operation("The simulator disconnected, but its ownership could not be updated: \(error.localizedDescription)")
+        }
+    }
+
+    private func updateOwnership(testingVisibilityChanged: Bool = false) {
+        guard !stopped else { return }
+        do { try onOwnershipChange?(testingVisibilityChanged) }
+        catch {
+            if !registrationErrorReported {
+                registrationErrorReported = true
+                hostLog(error.localizedDescription)
+            }
+        }
+    }
+
+    func availableSimulatorDevices() throws -> [AvailableDevice] {
+        var devices = try readDevices()
+        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+        return devices.map(Self.describe)
+    }
+
+    func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
+        sessions[identifier]?.window?.isVisible == true
+    }
+
+    /// Reads supported product families from a device set.
+    private func readDevices(in set: SimulatorDeviceSet? = nil) throws -> [SimulatorDevice] {
+        try (set ?? deviceSet).readDevices().filter { DeviceCapabilities.Family(rawValue: $0.productFamily) != nil }
+    }
+
+    /// Updates the preference and every open window, including restarting devices.
+    func toggleShowDeviceBezels() {
+        let shows = !HostPreferences.defaults.showsDeviceBezels
+        HostPreferences.defaults.set(shows, forKey: HostPreferences.showChrome)
+        for controller in sessions.values { controller.setDeviceBezelVisible(shows) }
+    }
+
+    // MARK: Parallel testing devices
+
+    var showsTestingDevices: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.showTestingDevices) }
+
+    /// Debug ▸ Show Parallel Testing Devices. Hiding closes the testing
+    /// devices' windows without shutting the devices down.
+    func toggleShowTestingDevices() {
+        HostPreferences.defaults.set(!showsTestingDevices, forKey: HostPreferences.showTestingDevices)
+    }
+
+    private func applyTestingDeviceVisibility() {
+        guard !stopped, !isTerminating else { return }
+        if showsTestingDevices {
+            // Reattach every booted testing device, including previously closed windows.
+            if let testingSet, let devices = try? readDevices(in: testingSet) {
+                suppressed.subtract(devices.map(\.identity))
+            }
+        } else {
+            let hadDeviceWindows = !sessions.isEmpty
+            if let testingSet {
+                do { ownedDeviceIdentifiers.subtract(try readDevices(in: testingSet).map(\.identity)) }
+                catch { report(error) }
+            }
+            // A restart keeps running without its window.
+            for (identifier, controller) in sessions where controller.session.tools.deviceSetPath != nil {
+                sessions.removeValue(forKey: identifier)
+                awaitingReconnect.removeValue(forKey: identifier)
+                ownedDeviceIdentifiers.remove(identifier)
+                controller.invalidate()
+            }
+            if hadDeviceWindows && sessions.isEmpty { onNoScreens?() }
+        }
+        rescan(testingVisibilityChanged: true)
+    }
+
+    /// Opens TestingDeviceSetPath or ~/Library/Developer/XCTestDevices if it exists.
+    /// Waits for Xcode to create a missing set.
+    private func openTestingSet() {
+        guard !stopped, testingSet == nil else { return }
+        let path = HostPreferences.defaults.string(forKey: HostPreferences.testingDeviceSetPath)
+            .map { NSString(string: $0).expandingTildeInPath }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer/XCTestDevices").path
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url != URL(fileURLWithPath: deviceSet.path).standardizedFileURL else {
+            hostLog("TestingDeviceSetPath names the default device set; parallel testing devices are not shown")
+            return
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            watchForTestingSet(at: url)
+            return
+        }
+        testingSetWatcher?.cancel()
+        testingSetWatcher = nil
+        do {
+            let set = try runtime.openDeviceSet(at: url.path)
+            testingNotificationToken = try set.observe { [weak self] in self?.rescan() }
+            testingSet = set
+        } catch {
+            hostLog("Could not open the parallel testing device set: \(error.localizedDescription)")
+        }
+    }
+
+    /// Watches the set's nearest existing ancestor, moving down as Xcode
+    /// creates the directories, until the set exists.
+    private func watchForTestingSet(at url: URL) {
+        func nearestAncestor() -> URL {
+            var ancestor = url.deletingLastPathComponent()
+            while !FileManager.default.fileExists(atPath: ancestor.path), ancestor.path != "/" {
+                ancestor.deleteLastPathComponent()
+            }
+            return ancestor
+        }
+        let ancestor = nearestAncestor()
+        testingSetWatcher?.cancel()
+        testingSetWatcher = nil
+        let descriptor = open(ancestor.path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            hostLog("Cannot watch \(ancestor.path) for the parallel testing device set")
+            return
+        }
+        let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write,
+                                                                queue: .main)
+        watcher.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.testingSetDirectoryChanged() }
+        }
+        watcher.setCancelHandler { close(descriptor) }
+        testingSetWatcher = watcher
+        watcher.resume()
+        // A directory created before the watcher started sends no event.
+        if FileManager.default.fileExists(atPath: url.path) || nearestAncestor() != ancestor {
+            testingSetDirectoryChanged()
+        }
+    }
+
+    private func testingSetDirectoryChanged() {
+        guard testingSet == nil else { return }
+        openTestingSet()
+        if testingSet != nil { rescan() }
+    }
+
+    private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
+        AvailableDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
+                        runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName,
+                        productFamily: device.productFamily, deviceTypeName: device.deviceTypeName,
+                        state: device.state, deviceSetPath: device.deviceSetPath)
+    }
+
+    private static func capabilities(of device: SimulatorDevice) -> DeviceCapabilities {
+        DeviceCapabilities(family: DeviceCapabilities.Family(rawValue: device.productFamily),
+                           runtimeVersion: device.runtimeVersion,
+                           supportsFeature: { [device] in device.supportsFeature($0) },
+                           controlsOrientation: device.deviceSetPath == nil,
+                           hasFramebufferMask: device.hasFramebufferMask,
+                           screenCornerRadius: device.screenCornerRadius,
+                           screenPointsPerInch: device.screenPointsPerInch,
+                           hasUserInterfacePlugin: device.hasUserInterfacePlugin,
+                           supportsEnhancedMultitasking: device.supportsEnhancedMultitasking)
+    }
+
+    func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
+        try await openSimulatorLocally(withIdentifier: identifier)
+    }
+
+    func openPresentation(for identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = false) async throws -> DeviceWindowController {
+        let preservesPresentation = sessions[identifier] != nil || openingDevices.contains(identifier)
+        return try await withScreenOpenCleanup(preservingExisting: preservesPresentation, operation: {
+            try await self.openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded, presents: false)
+            guard let controller = self.sessions[identifier] else { throw CancellationError() }
+            return controller
+        }, cleanup: { try await self.releaseDevice(identifier) })
+    }
+
+    func cancelRestart(for identifier: SimulatorDeviceIdentifier) async {
+        guard let restart = restarting[identifier] else { return }
+        restart.cancel()
+        bootOperations[identifier]?.cancel()
+        await restart.value
+    }
+
+    func cancelOpeningResources(_ identifier: SimulatorDeviceIdentifier) {
+        connections[identifier]?.cancel()
+        bootOperations[identifier]?.cancel()
+    }
+
+    func releasePresentation(for identifier: SimulatorDeviceIdentifier,
+                             beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
+        try await releaseDevice(identifier, beforeInvalidating: beforeInvalidating)
+        onChange?()
+    }
+
+    func preparePresentationForRestart(for identifier: SimulatorDeviceIdentifier) async throws {
+        guard !stopped, !isTerminating else { throw CancellationError() }
+        guard let controller = sessions[identifier] else { return }
+        guard !presentationRestarts.contains(identifier), controller.session.reserve() else {
+            throw SimulatorError.operation("This simulator already has an operation in progress.")
+        }
+        presentationRestarts.insert(identifier)
+        do {
+            if let recording = controller.session.recording {
+                recording.stop()
+                try await recording.waitUntilFinished()
+            }
+            awaitingReconnect[identifier] = controller
+            await controller.prepareForRestart()
+        } catch {
+            presentationRestarts.remove(identifier)
+            controller.session.release()
+            throw error
+        }
+    }
+
+    func finishPresentationRestart(for identifier: SimulatorDeviceIdentifier) async throws {
+        guard presentationRestarts.contains(identifier) else { return }
+        defer { presentationRestarts.remove(identifier) }
+        let deadline = ContinuousClock.now + .seconds(120)
+        while true {
+            try Task.checkCancellation()
+            guard !stopped, !isTerminating else { throw CancellationError() }
+            var devices = try readDevices()
+            if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+            let state = devices.first(where: { $0.identity == identifier })?.state
+            if state == 3 { break }
+            guard state == 2, ContinuousClock.now < deadline else {
+                presentationRestarts.remove(identifier)
+                try scanDevices()
+                throw SimulatorError.operation("The simulator is not running, so its display could not reconnect.")
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        presentationRestarts.remove(identifier)
+        try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: false, presents: false)
+    }
+
+    func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true,
+                                     presents: Bool = true) async throws {
+        guard !releasingDevices.contains(identifier) else { throw CancellationError() }
+        let preservesConnection = sessions[identifier] != nil || openingDevices.contains(identifier)
+        openingDevices.insert(identifier)
+        defer { openingDevices.remove(identifier) }
+        // A restart boots the device itself, and a closed window shuts it
+        // down; opening waits for either instead of acting on the device meanwhile.
+        while let pending = restarting[identifier] ?? closingShutdowns[identifier] { await pending.value }
+        // A quitting host opens nothing; callers do not report the cancellation.
+        guard !stopped, !isTerminating else { throw CancellationError() }
+        try conflicts.check()
+        var devices = try readDevices()
+        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+        guard let device = devices.first(where: { $0.identity == identifier }) else {
+            throw SimulatorError.operation("The selected simulator is no longer available")
+        }
+        guard bootIfNeeded || device.state == 3 else {
+            throw SimulatorError.operation("The simulator is no longer running, so its display was not attached.")
+        }
+        ownedDeviceIdentifiers.insert(identifier)
+        if isManaged { try onOwnershipChange?(false) }
+        suppressed.remove(identifier)
+        connectionFailures.removeValue(forKey: identifier)
+        onOpen?(identifier)
+        // Attach an already booting device when it finishes; avoid a second boot.
+        if bootIfNeeded, device.state != 2, device.state != 3, bootOperations[identifier] == nil {
+            let tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                        deviceSetPath: device.deviceSetPath)
+            bootOperations[identifier] = tools
+            defer { bootOperations.removeValue(forKey: identifier) }
+            try await tools.boot()
+        }
+        let deadline = ContinuousClock.now + .seconds(120)
+        if isHeadless {
+            while true {
+                try Task.checkCancellation()
+                guard !stopped, !isTerminating, !releasingDevices.contains(identifier) else { throw CancellationError() }
+                var current = try readDevices()
+                if showsTestingDevices, let testingSet { current += try readDevices(in: testingSet) }
+                guard let device = current.first(where: { $0.identity == identifier }) else {
+                    throw SimulatorError.operation("The selected simulator is no longer available")
+                }
+                if device.state == 3 { return }
+                guard device.state == 2, ContinuousClock.now < deadline else {
+                    throw SimulatorError.operation("The simulator did not finish starting.")
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        while sessions[identifier] == nil || awaitingReconnect[identifier] != nil {
+            try Task.checkCancellation()
+            guard !stopped, !isTerminating, !releasingDevices.contains(identifier),
+                  !(isManaged || isInProcess) || ownedDeviceIdentifiers.contains(identifier) else { throw CancellationError() }
+            if !bootIfNeeded {
+                guard try availableSimulatorDevices().contains(where: { $0.identity == identifier && $0.isBooted }) else {
+                    throw SimulatorError.operation("The simulator is no longer running, so its display was not attached.")
+                }
+            }
+            try scanDevices()
+            if let pending = connections[identifier] {
+                if preservesConnection { await pending.value }
+                else {
+                    await withTaskCancellationHandler { await pending.value } onCancel: { pending.cancel() }
+                }
+            }
+            if let failure = connectionFailures[identifier] { throw failure }
+            if sessions[identifier] != nil && awaitingReconnect[identifier] == nil { break }
+            guard ContinuousClock.now < deadline else { throw SimulatorError.unavailable("The simulator did not finish opening.") }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard let controller = sessions[identifier] else { throw CancellationError() }
+        // Refresh synchronization when a connected device is selected again.
+        controller.session.updatePasteboardSync()
+        if presents {
+            if isInProcess { onPresent?(controller) }
+            else { controller.showAndActivate() }
+        }
+    }
+
+    private func rescan(testingVisibilityChanged: Bool = false) {
+        do { try scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
+        catch let error as SimulatorError {
+            if case .conflict = error { handleHostConflict() }
+            else { report(error) }
+        } catch { report(error) }
+    }
+
+    private func scanDevices(testingVisibilityChanged: Bool = false) throws {
+        guard !stopped, !isTerminating else { return }
+        defer { updateOwnership(testingVisibilityChanged: testingVisibilityChanged) }
+        try conflicts.check()
+        var devices = try readDevices()
+        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+        let booted = devices.filter { $0.state == 3 && (!(isManaged || isInProcess) || ownedDeviceIdentifiers.contains($0.identity)) }
+        let identifiers = Set(booted.map(\.identity))
+        let hadDeviceWindows = !sessions.isEmpty
+        for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil
+            && !presentationRestarts.contains(identifier) {
+            sessions.removeValue(forKey: identifier)?.invalidate()
+            awaitingReconnect.removeValue(forKey: identifier)
+        }
+        for identifier in connections.keys where !identifiers.contains(identifier) {
+            connections[identifier]?.cancel()
+        }
+        // An accepted open still owns a booting guest even if display connection fails.
+        // Only the catalog's stopped/missing devices without an in-flight operation release ownership.
+        let running = Set(devices.filter { $0.state != 1 }.map(\.identity))
+        let pending = openingDevices.union(bootOperations.keys).union(restarting.keys)
+            .union(connections.keys).union(releasingDevices).union(presentationRestarts)
+        ownedDeviceIdentifiers.formIntersection(running.union(pending))
+        // A restart's boot is not a new boot, so a window closed during the
+        // restart stays closed.
+        suppressed.formIntersection(identifiers.union(restarting.keys))
+        connectionFailures = connectionFailures.filter { identifiers.contains($0.key) }
+        if isHeadless { return }
+        // A restarting device connects only after its restart ends, also when
+        // its window was hidden meanwhile.
+        for device in booted where restarting[device.identity] == nil
+            && !presentationRestarts.contains(device.identity)
+            && (sessions[device.identity] == nil || awaitingReconnect[device.identity] != nil)
+            && connections[device.identity] == nil
+            && !releasingDevices.contains(device.identity)
+            && !suppressed.contains(device.identity)
+            && connectionFailures[device.identity] == nil {
+            connect(device)
+        }
+        if hadDeviceWindows && sessions.isEmpty && !isInProcess { onNoScreens?() }
+        onChange?()
+    }
+
+    private func connect(_ device: SimulatorDevice) {
+        let identifier = device.identity
+        connections[identifier] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                // Keep cancellation tracked until this task unwinds, so a new
+                // boot cannot replace its entry before cleanup.
+                connections.removeValue(forKey: identifier)
+                rescan()
+            }
+            do {
+                try await runtime.display.screenAdapter.prepare(for: device.object)
+                // CoreSimulator reports Booted before its integrated screen is ready.
+                for _ in 0..<40 {
+                    try Task.checkCancellation()
+                    guard !stopped, !isTerminating, !suppressed.contains(identifier) else { return }
+                    try conflicts.check()
+                    if let screen = runtime.display.defaultScreen(of: device) {
+                        var capabilities = Self.capabilities(of: device)
+                        let nativeCanvas: NativeDeviceCanvas?
+                        var keyboard: NativeDeviceKeyboard?
+                        var trackpad: NativeDeviceTrackpad?
+                        var touchRoute: NativeTouchRoute?
+                        let isDuo = device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"
+                        // A crown or dial takes the pointer's scrolling, and a device UI plugin's overlay takes the
+                        // screen's input, through SimulatorKit.
+                        let takesNativeTrackpad = !capabilities.hasCrownOrDial && !capabilities.hasUserInterfacePlugin
+                        // Once native keyboard or trackpad input starts, the guest drops SimulatorKit's touches and
+                        // buttons, so they go to the native touchscreen and buttons too. The native touchscreen has
+                        // no pressure, so a screen with touch pressure keeps SimulatorKit's touches.
+                        let takesNativeTouches = capabilities.isPhoneOrPad
+                            && !capabilities.supportsFeature(DeviceCapabilities.touchPressure)
+                        if isDuo, device.deviceSetPath == nil {
+                            nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
+                        } else if device.deviceSetPath != nil {
+                            nativeCanvas = nil
+                            // Without CoreDevice, every input stream reaches the guest's own services or none does.
+                            if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
+                               takesNativeTouches, let input = try await guestInput(of: device) {
+                                keyboard = input.keyboard
+                                trackpad = input.trackpad
+                                touchRoute = input.touchRoute
+                            }
+                        } else if capabilities.isPhoneOrPad, capabilities.supportsFeature(DeviceCapabilities.touchPressure) {
+                            nativeCanvas = nil
+                            // Native keyboard or trackpad input would make the guest drop SimulatorKit's touches, which
+                            // keep their pressure, and its buttons. The screen therefore keeps SimulatorKit's keyboard,
+                            // which the guest reads with a US layout, and its digitizer, which drops trackpad scrolling
+                            // and pinches.
+                        } else {
+                            nativeCanvas = nil
+                            if capabilities.supportsFeature(DeviceCapabilities.keyboard) {
+                                keyboard = try await nativeKeyboard(of: device)
+                            }
+                            if takesNativeTrackpad {
+                                trackpad = try await nativeTrackpad(of: device)
+                            }
+                            if keyboard != nil || trackpad != nil, takesNativeTouches {
+                                touchRoute = try await nativeTouchRoute(of: device)
+                                if touchRoute == nil { keyboard = nil; trackpad = nil }
+                            }
+                        }
+                        let pasteboardTransport = try await device.deviceSetPath == nil ? nativePasteboard(of: device) : nil
+                        try Task.checkCancellation()
+                        let connection = try await SimulatorConnection(device: device, screen: screen, runtime: runtime,
+                                                                 nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad,
+                                                                 touchRoute: touchRoute)
+                        if nativeCanvas != nil { capabilities.controlsOrientation = false }
+                        let session = DeviceSession(
+                            device: Self.describe(device), capabilities: capabilities,
+                            display: connection,
+                            tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                                   deviceSetPath: device.deviceSetPath),
+                            recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
+                            externalDisplayChanges: externalDisplayChanges(of: device),
+                            appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
+                        do { try await session.applyDebugSettings() } catch {
+                            hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
+                        }
+                        try Task.checkCancellation()
+                        session.onApplicationsChange = { [weak self] in self?.onApplicationsChange?(identifier) }
+                        if let controller = awaitingReconnect.removeValue(forKey: identifier) {
+                            try conflicts.check()
+                            controller.reconnect(session, present: !isInProcess)
+                            applyKeyboardSettings(of: session)
+                            restoreLocation(of: session)
+                            connectAudioRoutes(of: session)
+                            session.startPasteboardSync()
+                            connectExternalDisplay(of: session)
+                            return
+                        }
+                        let shutDown: ((DeviceWindowController) -> Void)? = isInProcess ? { [weak self] controller in
+                            self?.onShutDown?(controller.session.device.identity)
+                        } : nil
+                        let controller = try DeviceWindowController(
+                            session: session, touchPressure: touchPressure, tvRemote: tvRemote,
+                            offersLifetimeChoice: offersLifetimeChoice, captureOwner: captureOwner,
+                            reportDetachedCapture: { [weak self] error in
+                                guard let self else { hostLog(error.localizedDescription); return }
+                                if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
+                                else { self.report(error) }
+                            }, onClose: { [weak self] in
+                                self?.deviceWindowClosed($0, choice: $1)
+                            }, onRestart: { [weak self] controller, erasing in
+                                guard let self else { return }
+                                if isInProcess { onRestart?(controller.session.device.identity, erasing) }
+                                else { restartDevice(controller, erasing: erasing) }
+                            }, onShutDown: shutDown)
+                        try conflicts.check()
+                        sessions[identifier] = controller
+                        if !isInProcess { controller.showNewWindow(cascadingFrom: &nextWindowPosition) }
+                        applyKeyboardSettings(of: session)
+                        restoreLocation(of: session)
+                        connectAudioRoutes(of: session)
+                        session.startPasteboardSync()
+                        connectExternalDisplay(of: session)
+                        return
+                    }
+                    try await Task.sleep(for: .milliseconds(250))
+                }
+                throw SimulatorError.unavailable("No integrated screen became available for \(device.name)")
+            } catch is CancellationError {
+            } catch {
+                connectionFailures[identifier] = error
+                if !openingDevices.contains(identifier) { report(error) }
+            }
+        }
+    }
+
+    /// The device's native keyboard, whose guest services carry each Mac keyboard's layout. CoreDevice lists only
+    /// the default device set. Without it, SimulatorKit's keyboard remains, which the guest reads with a US layout.
+    private func nativeKeyboard(of device: SimulatorDevice) async throws -> NativeDeviceKeyboard? {
+        do {
+            let keyboard = try await NativeDeviceKeyboard.connect(simulatorUDID: device.identifier)
+            keyboard.onFailure = { [name = device.name] error in
+                hostLog("Could not send keyboard input to \(name): \(error.localizedDescription)")
+            }
+            return keyboard
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's keyboard, which the guest reads with a US layout: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The device's CoreDevice pasteboard, which carries Get Pasteboard, Send Pasteboard, and automatic
+    /// synchronization. CoreDevice lists only the default device set. Without it, SimPasteboardPlus remains, whose sends
+    /// no longer replace an iOS 27.2 guest's pasteboard.
+    private func nativePasteboard(of device: SimulatorDevice) async throws -> (any PasteboardTransport)? {
+        do {
+            return try await CoreDevicePasteboardTransport.make(simulatorUDID: device.identifier)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimPasteboardPlus's pasteboard: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The device's native trackpad, which gives the guest the Mac trackpads' scrolling and pinches over the integrated
+    /// screen. CoreDevice lists only the default device set. Without it, SimulatorKit's digitizer drops them.
+    private func nativeTrackpad(of device: SimulatorDevice) async throws -> NativeDeviceTrackpad? {
+        do {
+            let trackpad = try await NativeDeviceTrackpad.connect(simulatorUDID: device.identifier)
+            trackpad.onFailure = { [name = device.name] error in
+                hostLog("Could not send trackpad input to \(name): \(error.localizedDescription)")
+            }
+            return trackpad
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's digitizer, which drops trackpad scrolling and pinches: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The native route of the integrated screen's touches and buttons. Without it, the screen keeps SimulatorKit's
+    /// keyboard and touches and no native trackpad, since the guest drops SimulatorKit's touches and buttons once native
+    /// input starts.
+    private func nativeTouchRoute(of device: SimulatorDevice) async throws -> NativeTouchRoute? {
+        do {
+            let interface = try await runtime.touchInterface()
+            let input = try await NativeDeviceScreenInput.connect(simulatorUDID: device.identifier)
+            input.onFailure = { [name = device.name] error in
+                hostLog("Could not send touches to \(name): \(error.localizedDescription)")
+            }
+            return NativeTouchRoute(input: input, interface: interface)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The native keyboard, trackpad, touches, and buttons of a device outside the default device set, which CoreDevice
+    /// does not list. They reach the guest's HID services through the Mach services that the device itself looks up, so
+    /// they stay with the device's own set. Connecting them sends the guest nothing, so when one cannot connect, the device
+    /// keeps SimulatorKit's input for all of them: its keyboard, which the guest reads with a US layout, and its digitizer,
+    /// which drops trackpad scrolling and pinches.
+    private func guestInput(of device: SimulatorDevice) async throws
+        -> (keyboard: NativeDeviceKeyboard, trackpad: NativeDeviceTrackpad, touchRoute: NativeTouchRoute)? {
+        do {
+            let interface = try await runtime.touchInterface()
+            let guest = try await SimulatorGuestHID(lookUp: device.lookUp)
+            let keyboard = try await NativeDeviceKeyboard.connect(guest: guest)
+            let trackpad = try await NativeDeviceTrackpad.connect(guest: guest)
+            let input = try NativeDeviceScreenInput.connect(guest: guest)
+            let name = device.name
+            keyboard.onFailure = { hostLog("Could not send keyboard input to \(name): \($0.localizedDescription)") }
+            trackpad.onFailure = { hostLog("Could not send trackpad input to \(name): \($0.localizedDescription)") }
+            input.onFailure = { hostLog("Could not send touches to \(name): \($0.localizedDescription)") }
+            return (keyboard, trackpad, NativeTouchRoute(input: input, interface: interface))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Applies keyboard settings asynchronously on each connection; logs failures.
+    private func applyKeyboardSettings(of session: DeviceSession) {
+        Task.immediate {
+            await session.applyKeyboardSettings { error in
+                hostLog("Could not apply keyboard settings to \(session.device.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Restores location asynchronously on each connection; logs failures.
+    private func restoreLocation(of session: DeviceSession) {
+        Task {
+            do { try await session.restoreLocation() } catch {
+                hostLog("Could not restore the simulated location of \(session.device.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Applies recent audio routes and observes the port; logs failures.
+    private func connectAudioRoutes(of session: DeviceSession) {
+        let name = session.device.name
+        session.connectAudioRoutes { error in
+            hostLog("Could not route the audio of \(name): \(error.localizedDescription)")
+        }
+    }
+
+    /// The changes sent to `device`'s external display, which every session of
+    /// the device shares.
+    private func externalDisplayChanges(of device: SimulatorDevice) -> ExternalDisplayChanges {
+        let changes = externalDisplayQueues[device.identity]?.changes ?? ExternalDisplayChanges()
+        externalDisplayQueues[device.identity] = (device.name, changes)
+        return changes
+    }
+
+    /// Connects the external display and restores its saved choice; logs failures.
+    private func connectExternalDisplay(of session: DeviceSession) {
+        session.connectExternalDisplay { error in hostLog(error.localizedDescription) }
+    }
+
+    // MARK: Closing and quitting
+
+    /// Closes the device unless this close or DetachOnWindowClose requests keeping it booted.
+    private func deviceWindowClosed(_ controller: DeviceWindowController, choice: DeviceLifetimeChoice?) {
+        let session = controller.session
+        let identifier = session.device.identity
+        sessions.removeValue(forKey: identifier)
+        awaitingReconnect.removeValue(forKey: identifier)
+        presentationRestarts.remove(identifier)
+        ownedDeviceIdentifiers.remove(identifier)
+        // A device left running keeps its window closed until it shuts down.
+        suppressed.insert(identifier)
+        disconnectedSessions.append(session)
+        // A failed removal is logged, and the session stays for releasing the device or quitting to retry it.
+        let removal = Task { try await finishInput(of: session) }
+        let keepsRunning = choice.map { $0 == .keepRunning }
+            ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose)
+        if !isInProcess, !keepsRunning { shutDownClosedDevice(session, after: removal) }
+        updateOwnership()
+        if isInProcess {
+            let finishing = Task {
+                await session.finishRecording()
+                try await removal.value
+            }
+            onClose?(identifier, choice, finishing)
+            onChange?()
+        }
+        else if sessions.isEmpty { onNoScreens?() }
+    }
+
+    /// Shuts down a device whose window closed once its native input's removal ends and its recording is saved,
+    /// abandoning a restart in progress.
+    private func shutDownClosedDevice(_ session: DeviceSession, after removal: Task<Void, any Error>) {
+        let identifier = session.device.identity
+        // The restart stays tracked until it unwinds, so opening waits for it.
+        let restart = restarting[identifier]
+        restart?.cancel()
+        bootOperations[identifier]?.cancel()
+        guard closingShutdowns[identifier] == nil else { return }
+        let tools: DeviceTools
+        do {
+            tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                    deviceSetPath: session.tools.deviceSetPath)
+        } catch {
+            hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
+            return
+        }
+        closingShutdowns[identifier] = Task { [weak self] in
+            _ = await removal.result
+            await restart?.value
+            await session.finishRecording()
+            guard let self, !self.yieldedToAnotherHost,
+                  !Task.isCancelled,
+                  self.isRunning(identifier.identifier, deviceSetPath: tools.deviceSetPath) else {
+                self?.closingShutdowns.removeValue(forKey: identifier)
+                self?.updateOwnership()
+                return
+            }
+            do { try await tools.shutdown() } catch is CancellationError {
+            } catch {
+                hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
+            }
+            self.closingShutdowns.removeValue(forKey: identifier)
+            self.updateOwnership()
+        }
+    }
+
+    /// Another host owns the devices now, so they keep running: no pending or
+    /// later shutdown runs.
+    func yieldToAnotherHost() {
+        yieldedToAnotherHost = true
+        for shutdown in closingShutdowns.values { shutdown.cancel() }
+        for shutdown in terminationShutdowns { shutdown.cancel() }
+    }
+
+    /// Whether shutdown is needed; stopped and already stopping devices need no action.
+    private func isRunning(_ identifier: String, deviceSetPath: String?) -> Bool {
+        guard let set = deviceSetPath == nil ? deviceSet : testingSet,
+              let device = try? set.readDevices().first(where: { $0.identifier == identifier }) else { return false }
+        return device.state != 1 && device.state != 4
+    }
+
+    /// Waits up to TerminationTimeout for every external-display queue, including closed windows.
+    /// Returns unfinished devices and logs power-off failures.
+    private func finishExternalDisplayChanges() async -> [String] {
+        let timeout = HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout)
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        var failures: [String] = []
+        for (name, changes) in externalDisplayQueues.values {
+            guard await !changes.idle(before: deadline) else { continue }
+            failures.append("The external display of \(name) did not turn off within \(Int(timeout)) seconds of quitting.")
+        }
+        return failures
+    }
+
+    /// Waits until a disconnected session has removed its native input, then lets it go. A session whose removal
+    /// failed stays for the next release or quit.
+    private func finishInput(of session: DeviceSession) async throws {
+        try await session.stop()
+        disconnectedSessions.removeAll { $0 === session }
+    }
+
+    /// Waits for the native input of the disconnected sessions, all or those of one device, retrying failed
+    /// removals. Returns each session's failure.
+    private func finishDisconnectedInput(of identifier: SimulatorDeviceIdentifier? = nil) async -> [String] {
+        var failures: [String] = []
+        for session in disconnectedSessions where identifier == nil || session.device.identity == identifier {
+            do { try await finishInput(of: session) }
+            catch { failures.append("\(session.device.name): \(error.localizedDescription)") }
+        }
+        return failures
+    }
+
+    /// Shuts down windowed devices and waits for closed-window shutdowns within TerminationTimeout.
+    private func shutDownForTermination(_ devices: [(identifier: String, deviceSetPath: String?)]) async -> [String] {
+        // Ownership is checked when the shutdowns start, after any wait.
+        guard !yieldedToAnotherHost else { return [] }
+        var failures: [String] = []
+        var shutdowns = Array(closingShutdowns.values).map { shutdown in
+            Task { () -> String? in await shutdown.value; return nil }
+        }
+        for device in devices where isRunning(device.identifier, deviceSetPath: device.deviceSetPath) {
+            do {
+                let tools = try DeviceTools(identifier: device.identifier, xcodeURL: runtime.xcodeURL,
+                                            deviceSetPath: device.deviceSetPath)
+                shutdowns.append(Task {
+                    do { try await tools.shutdown() } catch is CancellationError {
+                    } catch { return error.localizedDescription }
+                    return nil
+                })
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        let timeout = HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout)
+        let started = shutdowns
+        terminationShutdowns = started
+        let deadline = Task { () -> Bool in
+            do { try await Task.sleep(for: .seconds(timeout)) } catch { return false }
+            for shutdown in started { shutdown.cancel() }
+            for shutdown in self.closingShutdowns.values { shutdown.cancel() }
+            return true
+        }
+        for shutdown in shutdowns { if let failure = await shutdown.value { failures.append(failure) } }
+        deadline.cancel()
+        if await deadline.value {
+            failures.insert("Devices did not shut down within \(Int(timeout)) seconds of quitting.", at: 0)
+        }
+        return failures
+    }
+
+    // MARK: Restart
+
+    func restartHeadlessDevice(_ identifier: SimulatorDeviceIdentifier, erasing: Bool) async throws {
+        guard restarting[identifier] == nil else {
+            throw SimulatorError.operation("This simulator is already restarting.")
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            restarting[identifier] = Task {
+                defer { restarting.removeValue(forKey: identifier); rescan() }
+                do {
+                    let tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                                deviceSetPath: identifier.deviceSetPath)
+                    bootOperations[identifier] = tools
+                    defer { bootOperations.removeValue(forKey: identifier) }
+                    try await tools.restart(erasing: erasing)
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    /// Disconnects, shuts down, optionally erases, boots, and reconnects the existing window.
+    func restartDevice(_ controller: DeviceWindowController, erasing: Bool,
+                               completion: ((Error?) -> Void)? = nil) {
+        let identifier = controller.session.device.identity
+        guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
+              bootOperations[identifier] == nil else {
+            completion?(SimulatorError.operation("This simulator already has a device operation in progress."))
+            return
+        }
+        let tools: DeviceTools
+        do {
+            tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                    deviceSetPath: controller.session.tools.deviceSetPath)
+        } catch {
+            if let completion { completion(error) } else { controller.present(error) }
+            return
+        }
+        // Holding the operation slot disables other device commands while
+        // an active recording finishes.
+        guard controller.session.reserve() else {
+            completion?(SimulatorError.operation("This simulator already has a device operation in progress."))
+            return
+        }
+        awaitingReconnect[identifier] = controller
+        bootOperations[identifier] = tools
+        restarting[identifier] = Task { [weak self] in
+            await controller.prepareForRestart()
+            var failure: Error?
+            do {
+                try Task.checkCancellation()
+                try await tools.restart(erasing: erasing)
+            } catch { failure = error }
+            guard let self else { completion?(CancellationError()); return }
+            self.bootOperations.removeValue(forKey: identifier)
+            self.restarting.removeValue(forKey: identifier)
+            // A window whose device is still down closes; a booted device reconnects.
+            self.rescan()
+            if let completion { completion(failure); return }
+            guard let failure, !(failure is CancellationError), !self.stopped else { return }
+            if self.sessions[identifier] === controller { controller.present(failure) } else { self.report(failure) }
+        }
+    }
+
+    private func report(_ error: Error) {
+        if let onError { onError(error) } else { hostLog(error.localizedDescription) }
+    }
+
+    private func handleHostConflict() {
+        guard !stopped, let name = conflicts.conflictingHostName else { return }
+        yieldToAnotherHost()
+        guard !isTerminating else { return }
+        isTerminating = true
+        Task {
+            var failure: (any Error)?
+            do { try await stop(keepingDevicesRunning: true) }
+            catch { failure = error }
+            if let onConflict {
+                onConflict(name, failure)
+            } else {
+                let detail = failure.map { "\n\($0.localizedDescription)" } ?? ""
+                report(SimulatorError.conflict("\(name) is now displaying the simulators.\(detail)"))
+            }
+        }
+    }
+
+    /// Finishes presentation resources without terminating the owning application. Stopping again retries the
+    /// native input that an earlier stop could not remove.
+    /// The headless backend remains responsible for guest lifetime in integrated mode.
+    func stop(keepingDevicesRunning: Bool? = nil) async throws {
+        try await beginStopping(keepingDevicesRunning: keepingDevicesRunning).value
+    }
+
+    /// Freezes the shutdown targets before the shell cancels open requests and their ownership cleanup.
+    func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
+        if let stoppingTask { return stoppingTask }
+        isTerminating = true
+        recordingTerminationErrors += CaptureThumbnail.finishAll(owner: captureOwner)
+        let retryingCleanup = stopped
+        let keepsRunning = isInProcess || (keepingDevicesRunning
+            ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
+        let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
+            (identifier: $0.identifier, deviceSetPath: $0.deviceSetPath)
+        }
+        let task = Task {
+            defer { stoppingTask = nil }
+            if retryingCleanup {
+                let inputFailures = await finishDisconnectedInput()
+                let failures = inputFailures + (await finishExternalDisplayChanges())
+                if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
+            } else {
+                try await finishStopping(devices: devices)
+            }
+        }
+        stoppingTask = task
+        return task
+    }
+
+    private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
+        let pending = Array(connections.values) + Array(restarting.values)
+        pending.forEach { $0.cancel() }
+        bootOperations.values.forEach { $0.cancel() }
+        for task in pending { await task.value }
+        for controller in sessions.values { controller.invalidate() }
+        disconnectedSessions += sessions.values.map(\.session)
+        await recordings.finishAll()
+        sessions.removeAll()
+        awaitingReconnect.removeAll()
+        presentationRestarts.removeAll()
+        let inputFailures = await finishDisconnectedInput()
+        let displayFailures = await finishExternalDisplayChanges()
+        let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
+        let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll(owner: captureOwner)
+        recordingTerminationErrors.removeAll()
+        shutdown()
+        onChange?()
+        if !failures.isEmpty || !captureFailures.isEmpty {
+            throw SimulatorError.operation((failures + captureFailures.map(\.localizedDescription)).joined(separator: "\n"))
+        }
+    }
+
+    func shutdown() {
+        guard !stopped else { return }
+        stopped = true
+        conflicts.onConflict = nil
+        touchIndicatorObservation = nil
+        testingDevicesObservation = nil
+        if let notificationToken {
+            do { try deviceSet.stopObserving(notificationToken) }
+            catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
+        }
+        notificationToken = nil
+        if let testingSet, let testingNotificationToken {
+            do { try testingSet.stopObserving(testingNotificationToken) }
+            catch { hostLog("Could not unregister testing device notifications: \(error.localizedDescription)") }
+        }
+        testingNotificationToken = nil
+        testingSetWatcher?.cancel()
+        testingSetWatcher = nil
+        for task in connections.values { task.cancel() }
+        connections.removeAll()
+        for tools in bootOperations.values { tools.cancel() }
+        bootOperations.removeAll()
+        for task in restarting.values { task.cancel() }
+        restarting.removeAll()
+        awaitingReconnect.removeAll()
+        presentationRestarts.removeAll()
+        for session in sessions.values { session.invalidate() }
+        disconnectedSessions += sessions.values.map(\.session)
+        sessions.removeAll()
+    }
+}
+
+
+/// An open may return after cancellation with a newly attached screen. Its cleanup must finish uncancelled.
+@MainActor
+func withScreenOpenCleanup<Value>(preservingExisting: Bool,
+                                 operation: () async throws -> Value,
+                                 cleanup: @escaping @MainActor () async throws -> Void) async throws -> Value {
+    do {
+        let value = try await operation()
+        try Task.checkCancellation()
+        return value
+    } catch {
+        if Task.isCancelled, !preservingExisting {
+            let openingError = error
+            do { try await Task { try await cleanup() }.value }
+            catch {
+                throw SimulatorError.operation("\(openingError.localizedDescription)\nOpening cleanup failed: \(error.localizedDescription)")
+            }
+        }
+        throw error
+    }
+}
+
