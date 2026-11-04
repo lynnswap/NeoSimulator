@@ -2126,10 +2126,17 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
 
     private func layoutResizeHandles() {
+        guard isEmbedded, !scrollsDisplay else {
+            for handle in resizeHandles {
+                handle.isHidden = true
+                window?.invalidateCursorRects(for: handle)
+            }
+            return
+        }
         let frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
         let bezelRects = displayResizeRects?() ?? []
         for handle in resizeHandles {
-            handle.isHidden = !isEmbedded || scrollsDisplay
+            handle.isHidden = false
             if let area = bezelRects.first(where: { $0.corner == handle.corner }) {
                 let bezel = display.convert(area.rect, to: self)
                 let size = NSSize(width: max(44, bezel.width + 24), height: max(44, bezel.height + 24))

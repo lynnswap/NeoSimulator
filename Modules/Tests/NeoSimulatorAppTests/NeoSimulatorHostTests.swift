@@ -5944,6 +5944,11 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         #expect(window.styleMask.contains(.resizable))
         #expect(!display.showsResizeCursors)
+        display.resizeRectReadCount = 0
+        let content = controller.presentationViewController.view
+        content.needsLayout = true
+        content.layoutSubtreeIfNeeded()
+        #expect(display.resizeRectReadCount == 0)
         let naturalSize = display.naturalSize
         let initialScale = display.renderScale
         let start = window.frame
@@ -10132,7 +10137,9 @@ private final class TestDisplay: SimulatorDisplay {
                       width: view.bounds.width - (deviceInsets.left + deviceInsets.right) * renderScale,
                       height: view.bounds.height - (deviceInsets.top + deviceInsets.bottom) * renderScale)
     }
+    var resizeRectReadCount = 0
     var resizeRects: [DisplayResizeRect] {
+        resizeRectReadCount += 1
         guard !usesNativeCanvas, chromePadding != nil else { return [] }
         let frame = deviceFrame
         return [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map { corner in
