@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var newSimulatorWindows: [DeviceInventoryID?: NewSimulatorWindowController] = [:]
     private var preparingNewSimulators: Set<DeviceInventoryID?> = []
     private var quitting = false
+    private var hasStarted = false
+    private var launchURLs: [URL] = []
     private var rendererDevicesObserver: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
     private var connectionTimer: Timer?
@@ -79,7 +81,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onError = { [weak self] error in
             if !(error is CancellationError) { self?.present(error) }
         }
-        model.start()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -111,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   ["dev.lynnswap.NeoSimulator", "com.apple.dt.Xcode", "com.apple.dt.Devices"].contains(app.bundleIdentifier ?? "") else { return }
             Task { @MainActor in await self?.model.refresh() }
         }
-        showDevices(nil)
+        startManager()
         startInventoryObservation()
         connectionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -119,6 +120,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await self.model.synchronizeConnections()
             }
         }
+    }
+
+    /// Shows the manager before its first access request and queues restored screens after session setup.
+    func startManager() {
+        showDevices(nil)
+        model.start()
+        hasStarted = true
+        let urls = launchURLs
+        launchURLs.removeAll()
+        if !urls.isEmpty { application(NSApp, open: urls) }
     }
 
     private func startInventoryObservation() {
@@ -208,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        guard hasStarted else { launchURLs.append(contentsOf: urls); return }
         prepareMainWindow()
         for url in urls where url.scheme == "neosimulator" {
             switch url.host {
@@ -365,20 +377,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func present(_ error: any Error) {
         if error is HostPreferenceAccess.Failure {
             let content = HostPreferenceAccessView(
-                copyCommandAndQuit: { NSApp.stopModal(withCode: .OK) },
+                copyCommand: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(HostPreferenceAccess.Failure.recoveryCommand, forType: .string)
+                },
                 cancel: { NSApp.stopModal(withCode: .cancel) })
             let panel = NSPanel(contentViewController: NSHostingController(rootView: content))
             panel.title = "Device Hub Settings Access"
             panel.styleMask = [.titled]
             panel.center()
             NSApp.activate()
-            let response = NSApp.runModal(for: panel)
+            NSApp.runModal(for: panel)
             panel.orderOut(nil)
-            if response == .OK {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(HostPreferenceAccess.Failure.recoveryCommand, forType: .string)
-                NSApp.terminate(nil)
-            }
             return
         }
         let alert = NSAlert()

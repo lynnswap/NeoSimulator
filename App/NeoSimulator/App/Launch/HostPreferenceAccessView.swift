@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct HostPreferenceAccessView: View {
-    let copyCommandAndQuit: () -> Void
+    let copyCommand: () -> Void
     let cancel: () -> Void
 
     var body: some View {
@@ -15,12 +15,12 @@ struct HostPreferenceAccessView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-            Text("Copy the command and quit. Run it in Terminal, then reopen NeoSimulator and allow access when macOS asks.")
+            Text("Copy this command and run it in Terminal. Then reopen NeoSimulator to request access again.")
             HStack {
                 Spacer()
-                Button("Not Now", action: cancel)
+                Button("Close", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Copy Command and Quit", action: copyCommandAndQuit)
+                Button("Copy Command", action: copyCommand)
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -31,5 +31,5 @@ struct HostPreferenceAccessView: View {
 }
 
 #Preview("Device Hub Settings Access") {
-    HostPreferenceAccessView(copyCommandAndQuit: {}, cancel: {})
+    HostPreferenceAccessView(copyCommand: {}, cancel: {})
 }

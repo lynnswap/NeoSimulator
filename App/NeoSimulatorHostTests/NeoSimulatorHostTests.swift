@@ -32,6 +32,7 @@ struct InputFocusTests {
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
         main.window?.setFrameAutosaveName("")
+        app.startManager()
         var compactPresentations: [String] = []
         var controllers: [DeviceWindowController] = []
         for id in ids {
