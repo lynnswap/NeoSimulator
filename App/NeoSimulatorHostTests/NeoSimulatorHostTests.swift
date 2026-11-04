@@ -1273,7 +1273,8 @@ struct InputFocusTests {
         let simctl = directory.appendingPathComponent("simctl")
         try """
         #!/bin/sh
-        printf '%s\n' "$@" > "\(log.path)"
+        printf '%s\n' "$@" > "\(log.path).pending"
+        mv "\(log.path).pending" "\(log.path)"
         for output; do :; done
         : > "$output"
         trap 'exit 0' INT
