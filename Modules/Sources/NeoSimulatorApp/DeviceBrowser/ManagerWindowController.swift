@@ -1120,7 +1120,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.label = "Canvas Zoom"
             item.autovalidates = false
             for subitem in item.subitems { subitem.autovalidates = false }
-            item.controlRepresentation = .expanded
+            item.controlRepresentation = .automatic
             item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
             return item
         }
