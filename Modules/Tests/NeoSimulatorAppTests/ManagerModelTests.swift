@@ -54,6 +54,43 @@ struct ManagerModelTests {
         #expect(reports.count == 3)
     }
 
+    @Test func aTakeoverCancelsAcceptedSimulatorOpensAndPreservesFailuresAndLaterRequests() async throws {
+        let clean = simulator(), failing = simulator(deviceSet: "/failing-set"), later = simulator(deviceSet: "/later-set")
+        let source = ManagerModelSource(devices: [clean, failing, later])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        var reports: [String] = []
+        manager.onError = { reports.append($0.localizedDescription) }
+        var began = 0
+        let takeovers = HostTakeovers<NSObject>(didBegin: {
+            began += 1
+            manager.cancelPendingSimulatorOpens()
+        }, report: { reports.append($0.localizedDescription) })
+        manager.openDevice(clean.id)
+        #expect(await events.next() == .open(clean.id))
+        manager.openDevice(failing.id)
+        #expect(await events.next() == .open(failing.id))
+        let first = NSObject(), second = NSObject()
+        takeovers.begin(first, hostName: "Simulator") {
+            takeovers.begin(second, hostName: "Simulator", checkOthers: {})
+        }
+        #expect(began == 1)
+        #expect(source.cancelledOpenIDs == [clean.id, failing.id])
+        await source.completeOpen(for: clean.id)
+        await source.failOpen()
+        try await wait { manager.openingDeviceIDs.isEmpty && reports.count == 1 }
+        takeovers.end(first, failure: nil)
+        takeovers.end(second, failure: nil)
+        #expect(reports == ["Unavailable", "Simulator is now displaying the simulators."])
+        manager.openDevice(later.id)
+        #expect(await events.next() == .open(later.id))
+        #expect(!source.cancelledOpenIDs.contains(later.id))
+        await source.failOpen()
+        try await wait { reports.count == 3 }
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile])
     func launchAppliesThePreferenceAndQuitEndsTheSession(_ accessFailure: CocoaError.Code?) async throws {
         let source = ManagerModelSource(devices: [])

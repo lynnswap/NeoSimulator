@@ -18,9 +18,11 @@ final class DeviceScreens {
     @ObservationIgnored private var contexts: [URL: SimulatorContext] = [:]
     /// Invalidated contexts remain available until their native resources have finished closing.
     @ObservationIgnored private var retiredContexts: [SimulatorContext] = []
-    @ObservationIgnored private lazy var hostTakeovers = HostTakeovers<SimulatorContext> { [weak self] error in
+    @ObservationIgnored private lazy var hostTakeovers = HostTakeovers<SimulatorContext>(didBegin: { [weak self] in
+        self?.model.cancelPendingSimulatorOpens()
+    }, report: { [weak self] error in
         self?.onError?(error)
-    }
+    })
     /// Set while the app quits, until a cancelled quit resumes.
     @ObservationIgnored private(set) var isQuitting = false
     @ObservationIgnored private var locationObserver: (any NSObjectProtocol)?
