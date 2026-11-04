@@ -287,6 +287,7 @@ final class DeviceScreens {
             let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
             guard let context = contexts.values.first(where: { !$0.isStopped && $0.screen(for: identifier) != nil }) else { continue }
             do { try await context.finishManagedRestart(identifier) }
+            catch is CancellationError {}
             catch { failures.append("\(device.name): \(error.localizedDescription)") }
         }
         if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
