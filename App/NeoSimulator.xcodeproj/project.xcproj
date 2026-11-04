@@ -37,6 +37,339 @@
   "files": [
     {
       "kind": "group",
+      "path": "../Modules",
+      "children": [
+        {
+          "kind": "group",
+          "path": "Sources",
+          "children": [
+            {
+              "kind": "group",
+              "path": "NeoSimulatorKit",
+              "children": [
+                { "path": "SimulatorContext.swift" },
+                {
+                  "path": "SimulatorError.swift",
+                  "target-membership": [
+                    "NeoSimulator/compile-sources",
+                    "NeoSimulatorRenderer/compile-sources",
+                    "NeoSimulatorHostTests/compile-sources",
+                  ],
+                }, {
+                  "kind": "group",
+                  "path": "Simulator",
+                  "children": [
+                    {
+                      "kind": "group",
+                      "path": "Audio",
+                      "children": [
+                        {
+                          "path": "AudioRouting.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Capture",
+                      "children": [
+                        {
+                          "path": "CaptureThumbnail.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "VideoRecording.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Commands",
+                      "children": [
+                        {
+                          "path": "DeviceCommand.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Display",
+                      "children": [
+                        {
+                          "kind": "group",
+                          "path": "Layout",
+                          "children": [
+                            {
+                              "path": "DisplayFitting.swift",
+                              "target-membership": [
+                                "NeoSimulator/compile-sources",
+                                "NeoSimulatorRenderer/compile-sources",
+                                "NeoSimulatorHostTests/compile-sources",
+                              ],
+                            }, {
+                              "path": "DisplayContentView.swift",
+                              "target-membership": [
+                                "NeoSimulator/compile-sources",
+                                "NeoSimulatorRenderer/compile-sources",
+                                "NeoSimulatorHostTests/compile-sources",
+                              ],
+                            },
+                          ],
+                        }, {
+                          "path": "DeviceSymbolResource.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "DeviceWindowController.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "DeviceToolbar.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "WindowScale.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "ExternalDisplay.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "DisplayPresentationView.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "ExternalDisplayWindowController.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "DeviceCanvasControls.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Hosting",
+                      "children": [
+                        {
+                          "path": "HostConflictMonitor.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "SimulatorScreenHost.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Import",
+                      "children": [
+                        {
+                          "path": "FileImport.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Input",
+                      "children": [
+                        {
+                          "kind": "group",
+                          "path": "Keyboard",
+                          "children": [
+                            {
+                              "path": "KeyboardEventTap.swift",
+                              "target-membership": [
+                                "NeoSimulator/compile-sources",
+                                "NeoSimulatorRenderer/compile-sources",
+                                "NeoSimulatorHostTests/compile-sources",
+                              ],
+                            }, {
+                              "path": "DisplayKeyboardInput.swift",
+                              "target-membership": [
+                                "NeoSimulator/compile-sources",
+                                "NeoSimulatorRenderer/compile-sources",
+                                "NeoSimulatorHostTests/compile-sources",
+                              ],
+                            }, {
+                              "path": "KeyboardCapture.swift",
+                              "target-membership": [
+                                "NeoSimulator/compile-sources",
+                                "NeoSimulatorRenderer/compile-sources",
+                                "NeoSimulatorHostTests/compile-sources",
+                              ],
+                            },
+                          ],
+                        }, {
+                          "path": "TVRemote.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "InputSettings.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Location",
+                      "children": [
+                        {
+                          "path": "CustomLocation.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Management",
+                      "children": [
+                        {
+                          "path": "DeviceToolRunner.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Pasteboard",
+                      "children": [
+                        {
+                          "path": "NativePasteboardConnection.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "PasteboardSync.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Runtime",
+                      "children": [
+                        {
+                          "path": "SimulatorRuntime.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "CoreSimulator.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        }, {
+                          "path": "SimulatorCatalog.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    }, {
+                      "kind": "group",
+                      "path": "Session",
+                      "children": [
+                        {
+                          "path": "DeviceSession.swift",
+                          "target-membership": [
+                            "NeoSimulator/compile-sources",
+                            "NeoSimulatorRenderer/compile-sources",
+                            "NeoSimulatorHostTests/compile-sources",
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                }, {
+                  "path": "ErrorAlert.swift",
+                  "target-membership": [
+                    "NeoSimulator/compile-sources",
+                    "NeoSimulatorRenderer/compile-sources",
+                    "NeoSimulatorHostTests/compile-sources",
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }, {
+      "kind": "group",
       "path": "NeoSimulatorGuestSettings",
       "children": [
         { "path": "main.m", "target-membership": [ "NeoSimulatorGuestSettings/compile-sources" ] },
@@ -161,27 +494,8 @@
                   ],
                 },
               ],
-            }, {
-              "kind": "group",
-              "path": "Errors",
-              "children": [
-                {
-                  "path": "ErrorAlert.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "SimulatorError.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
             },
+            { "kind": "group", "path": "Errors" },
           ],
         }, {
           "kind": "group",
@@ -254,13 +568,6 @@
               "path": "Creation",
               "children": [
                 {
-                  "path": "SimulatorCatalog.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
                   "path": "NewSimulatorWindowController.swift",
                   "target-membership": [
                     "NeoSimulator/compile-sources",
@@ -592,127 +899,16 @@
           "kind": "group",
           "path": "Simulator",
           "children": [
+            { "kind": "group", "path": "Runtime" },
+            { "kind": "group", "path": "Display" },
+            { "kind": "group", "path": "Input" },
+            { "kind": "group", "path": "Capture" },
             {
-              "kind": "group",
-              "path": "Runtime",
-              "children": [
-                {
-                  "path": "CoreSimulator.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "SimulatorRuntime.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
-              "kind": "group",
-              "path": "Display",
-              "children": [
-                {
-                  "path": "DeviceToolbar.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "DeviceWindowController.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "ExternalDisplay.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "ExternalDisplayWindowController.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "WindowScale.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "DisplayPresentationView.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
-              "kind": "group",
-              "path": "Input",
-              "children": [
-                {
-                  "path": "InputSettings.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "TVRemote.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
-              "kind": "group",
-              "path": "Capture",
-              "children": [
-                {
-                  "path": "CaptureThumbnail.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "VideoRecording.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
               "kind": "group",
               "path": "Hosting",
               "children": [
                 {
                   "path": "HostApplication.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "HostConflictMonitor.swift",
                   "target-membership": [
                     "NeoSimulator/compile-sources",
                     "NeoSimulatorRenderer/compile-sources",
@@ -732,99 +928,19 @@
                     "NeoSimulatorRenderer/compile-sources",
                     "NeoSimulatorHostTests/compile-sources",
                   ],
-                }, {
-                  "path": "SimulatorScreenHost.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
                 },
               ],
-            }, {
-              "kind": "group",
-              "path": "Audio",
-              "children": [
-                {
-                  "path": "AudioRouting.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
-              "kind": "group",
-              "path": "Location",
-              "children": [
-                {
-                  "path": "CustomLocation.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
-              "kind": "group",
-              "path": "Management",
-              "children": [
-                {
-                  "path": "DeviceToolRunner.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
-              "kind": "group",
-              "path": "Import",
-              "children": [
-                {
-                  "path": "FileImport.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
-              "kind": "group",
-              "path": "Pasteboard",
-              "children": [
-                {
-                  "path": "PasteboardSync.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "NativePasteboardConnection.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
+            },
+            { "kind": "group", "path": "Audio" },
+            { "kind": "group", "path": "Location" },
+            { "kind": "group", "path": "Management" },
+            { "kind": "group", "path": "Import" },
+            { "kind": "group", "path": "Pasteboard" },
+            {
               "kind": "group",
               "path": "Commands",
               "children": [
                 {
-                  "path": "DeviceCommand.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
                   "path": "MenuController.swift",
                   "target-membership": [
                     "NeoSimulator/compile-sources",
@@ -833,108 +949,30 @@
                   ],
                 },
               ],
-            }, {
-              "kind": "group",
-              "path": "Session",
-              "children": [
-                {
-                  "path": "DeviceSession.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
             },
+            { "kind": "group", "path": "Session" },
           ],
         }, {
           "kind": "group",
           "path": "DeviceAppearance",
           "children": [
-            {
-              "kind": "group",
-              "path": "Symbols",
-              "children": [
-                {
-                  "path": "DeviceSymbolResource.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            },
+            { "kind": "group", "path": "Symbols" },
           ],
         }, {
           "kind": "group",
           "path": "DeviceInput",
           "children": [
-            {
-              "kind": "group",
-              "path": "Keyboard",
-              "children": [
-                {
-                  "path": "KeyboardEventTap.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "KeyboardCapture.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "DisplayKeyboardInput.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            },
+            { "kind": "group", "path": "Keyboard" },
           ],
         }, {
           "kind": "group",
           "path": "DeviceDisplay",
           "children": [
+            { "kind": "group", "path": "Layout" },
             {
-              "kind": "group",
-              "path": "Layout",
-              "children": [
-                {
-                  "path": "DisplayContentView.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                }, {
-                  "path": "DisplayFitting.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources",
-                    "NeoSimulatorRenderer/compile-sources",
-                    "NeoSimulatorHostTests/compile-sources",
-                  ],
-                },
-              ],
-            }, {
               "path": "DeviceCanvasAccessoryViewController.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
-                "NeoSimulatorHostTests/compile-sources",
-              ],
-            }, {
-              "path": "DeviceCanvasControls.swift",
-              "target-membership": [
-                "NeoSimulator/compile-sources",
-                "NeoSimulatorRenderer/compile-sources",
                 "NeoSimulatorHostTests/compile-sources",
               ],
             }, {

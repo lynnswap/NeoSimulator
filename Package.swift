@@ -22,23 +22,7 @@ let package = Package(
                 .product(name: "ABIBridge", package: "ABIBridge"),
                 .product(name: "ObservationBridge", package: "ObservationBridge"),
             ],
-            path: ".",
-            exclude: [
-                "App/NeoSimulator/Simulator/Commands/MenuController.swift",
-                "App/NeoSimulator/Simulator/Hosting/HostApplication.swift",
-                "App/NeoSimulator/Simulator/Hosting/RendererRequest.swift",
-                "App/NeoSimulator/Simulator/Hosting/RendererOwnerIdentity.swift",
-            ],
-            sources: [
-                "Modules/Sources/NeoSimulatorKit",
-                "App/NeoSimulator/Simulator",
-                "App/NeoSimulator/DeviceDisplay/DeviceCanvasControls.swift",
-                "App/NeoSimulator/DeviceDisplay/Layout",
-                "App/NeoSimulator/DeviceInput/Keyboard",
-                "App/NeoSimulator/DeviceAppearance/Symbols",
-                "App/NeoSimulator/DeviceBrowser/Creation/SimulatorCatalog.swift",
-                "App/NeoSimulator/App/Errors",
-            ]
+            path: "Modules/Sources/NeoSimulatorKit"
         ),
         .testTarget(name: "XcodeSimulatorHostTests", dependencies: ["XcodeSimulatorHost"]),
     ]
