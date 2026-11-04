@@ -890,9 +890,10 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
                             recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
                             externalDisplayChanges: externalDisplayChanges(of: device),
                             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
-                        do { try session.applyDebugSettings() } catch {
+                        do { try await session.applyDebugSettings() } catch {
                             hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
                         }
+                        try Task.checkCancellation()
                         session.onApplicationsChange = { [weak self] in self?.onApplicationsChange?(identifier) }
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()

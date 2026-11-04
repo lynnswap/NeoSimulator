@@ -330,8 +330,10 @@ final class SimulatorDevice {
         try unsafe interface.setInterfaceStyle.unsafeInvoke(on: object, style == 2 ? 1 : 2)
     }
 
-    func postNotification(_ name: String) throws {
-        try unsafe interface.postDarwinNotification.unsafeInvoke(on: object, name)
+    func postNotification(_ name: String) async throws {
+        try await call(interface.postDarwinNotification, on: notificationQueue) {
+            try unsafe $0.unsafeInvoke(on: $1, name)
+        }
     }
 
     func notificationState(_ name: String) throws -> UInt64 {
@@ -342,8 +344,10 @@ final class SimulatorDevice {
         return state
     }
 
-    func setNotificationState(_ name: String, to state: UInt64) throws {
-        try unsafe interface.setDarwinNotificationState.unsafeInvoke(on: object, state, name)
+    func setNotificationState(_ name: String, to state: UInt64) async throws {
+        try await call(interface.setDarwinNotificationState, on: notificationQueue) {
+            try unsafe $0.unsafeInvoke(on: $1, state, name)
+        }
     }
 
     /// CoreSimulator content-size values: 1–12, from Extra Small to Accessibility XXXL.
@@ -422,6 +426,8 @@ final class SimulatorDevice {
     private lazy var locationQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.location")
     // Keyboard-language changes can block; serialize them off the main actor to preserve order.
     private lazy var keyboardQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.keyboard")
+    // Guest notification IPC can block during boot; keep writes ordered off the main actor.
+    private lazy var notificationQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.notifications")
     private lazy var carPlayQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.carplay")
 
     /// Recorded routes in runtime order; empty if none are reported.
