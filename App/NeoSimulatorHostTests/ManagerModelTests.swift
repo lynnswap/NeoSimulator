@@ -10,22 +10,50 @@ import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile, .fileReadNoPermission])
-    func launchAppliesThePreferenceAndQuitReleasesItAfterTheRenderer(_ accessFailure: CocoaError.Code?) async throws {
+    @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile])
+    func launchAppliesThePreferenceAndQuitEndsTheSession(_ accessFailure: CocoaError.Code?) async throws {
         let source = ManagerModelSource(devices: [])
         let manager = SimulatorManagerModel(source: source)
         let directory = FileManager.default.temporaryDirectory
         var accessRequests = 0
-        let access = HostPreferenceAccess(directory: directory, readDirectory: { url in
+        let access = HostPreferenceAccess(directory: directory, verifyAccess: { url in
             #expect(url == directory)
             accessRequests += 1
             if let accessFailure { throw CocoaError(accessFailure) }
         })
-        manager.requestHostPreferenceAccess = { access.request() }
+        manager.requestHostPreferenceAccess = { try access.request() }
         manager.start()
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(accessRequests == 1)
         #expect(await source.sessionEvents == ["begin", "status", "quit", "end"])
+    }
+
+    @Test(arguments: [CocoaError.Code.fileReadNoPermission, .fileWriteNoPermission])
+    func deniedAccessStopsHostChangesAndOffersTheResetCommand(_ failureCode: CocoaError.Code) async throws {
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        let access = HostPreferenceAccess(verifyAccess: { _ in throw CocoaError(failureCode) })
+        var reported: (any Error)?
+        manager.onError = { reported = $0 }
+        manager.requestHostPreferenceAccess = { try access.request() }
+        manager.start()
+        try await manager.prepareForQuit()
+        #expect(await source.sessionEvents == ["status"])
+        let failure = try #require(reported as? HostPreferenceAccess.Failure)
+        #expect(HostPreferenceAccess.Failure.recoveryCommand == "tccutil reset SystemPolicyAppData dev.lynnswap.NeoSimulator")
+        #expect(failure.recoverySuggestion?.contains(HostPreferenceAccess.Failure.recoveryCommand) == true)
+    }
+
+    @Test func accessVerificationLeavesTheDirectoryUnchanged() throws {
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let existing = directory.appending(path: "settings.plist")
+        let content = Data("original".utf8)
+        try content.write(to: existing)
+        try HostPreferenceAccess(directory: directory).request()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["settings.plist"])
+        #expect(try Data(contentsOf: existing) == content)
     }
 
     @Test func aFailedLaunchStillExposesThePreferredHostForRetry() async throws {
@@ -1810,7 +1838,7 @@ struct ManagerModelTests {
     @Test func initialURLRestorationWaitsForTheDisplaySession() async throws {
         _ = NSApplication.shared
         let source = ManagerModelSource(devices: [simulator()])
-        let app = AppDelegate()
+        let app = AppDelegate(hostPreferenceAccess: HostPreferenceAccess(verifyAccess: { _ in }))
         app.model = SimulatorManagerModel(source: source)
         defer { app.mainWindow?.window?.close() }
         var events = source.events.makeAsyncIterator()

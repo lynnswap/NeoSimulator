@@ -1333,17 +1333,30 @@ struct HostModeControllerTests {
         #expect(try fixture.controller.selectionStatus().host == .neo)
     }
 
-    @Test func beginningAndEndingASessionKeepsThePreferenceWithoutOpeningAScreen() async throws {
+    @Test func beginningASessionAppliesThePreferenceWithoutOpeningAScreen() async throws {
         let fixture = try ControllerFixture()
         #expect(try await fixture.controller.beginSession() == .neo)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(fixture.workspace.events == ["terminate-device-hubs"])
-        #expect(try await fixture.controller.release())
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
+    }
+
+    @Test func endingASessionDoesNotRequireAccessToAnXcodeInstallation() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(filePath: "/missing/Renderer.app"))
+        try await controller.endSession()
+    }
+
+    @Test func repeatedSessionsKeepTheOriginalForExplicitRestoration() async throws {
+        let original = ManagedPreferenceState(xcodeSession: .falseValue, deviceHubAutoStartSuppression: .absent)
+        let fixture = try ControllerFixture(initialState: original)
+        _ = try await fixture.controller.beginSession()
+        _ = try await fixture.controller.beginSession()
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
+        #expect(try fixture.receiptStore.load()?.original == original)
+        _ = try await fixture.controller.restore()
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == original.xcodeSession)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == original.deviceHubAutoStartSuppression)
         #expect(try fixture.receiptStore.load() == nil)
-        #expect(try fixture.receiptStore.loadHostSelection() == .neo)
-        #expect(fixture.workspace.events == ["terminate-device-hubs"])
     }
 
     @Test func aSavedDeviceHubPreferenceOverridesAStaleNeoReceiptWithoutOpeningDeviceHub() async throws {
@@ -1354,83 +1367,6 @@ struct HostModeControllerTests {
         #expect(try await fixture.controller.beginSession() == .deviceHub)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(fixture.workspace.openedDeviceHubs.isEmpty)
-        let calls = fixture.runner.calls.count
-        fixture.runner.failPreferenceReads = true
-        #expect(!(try await fixture.controller.release()))
-        #expect(fixture.runner.calls.count == calls)
-    }
-
-    @Test func releasingASessionPreservesExternalChangesAndTheRecoveryReceipt() async throws {
-        let fixture = try ControllerFixture()
-        _ = try await fixture.controller.beginSession()
-        fixture.runner.setStoredValue(false, for: ToolConstants.xcodePreference)
-        await #expect(throws: CLIError.self) { try await fixture.controller.release() }
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
-        #expect(try fixture.receiptStore.load() != nil)
-        #expect(try fixture.receiptStore.loadHostSelection() == .neo)
-    }
-
-    @Test func theDeviceHubPreferenceIsReappliedAfterReleasingACustomOriginalRoute() async throws {
-        let fixture = try ControllerFixture(initialState: .coreSimulator)
-        try fixture.receiptStore.withExclusiveLock { try fixture.receiptStore.saveHostSelection(.deviceHub) }
-        #expect(try await fixture.controller.beginSession() == .deviceHub)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(try await fixture.controller.release())
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
-        #expect(try await fixture.controller.beginSession() == .deviceHub)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(fixture.workspace.openedDeviceHubs.isEmpty)
-    }
-
-    @Test func releasingALegacySessionKeepsItsPreference() async throws {
-        let fixture = try ControllerFixture()
-        let xcode = try InstallationInspector(runner: fixture.runner,
-            environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
-            signatureValidator: .acceptingTestFixtures).validatedTargetXcode()
-        var receipt = RestorationReceipt(capturedAt: Date(timeIntervalSince1970: 1_800_000_000), xcode: xcode, original: .deviceHub)
-        receipt.expectedCurrent = .coreSimulator
-        try fixture.receiptStore.withExclusiveLock { try fixture.receiptStore.save(receipt) }
-        fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
-        fixture.runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
-        #expect(try await fixture.controller.release())
-        #expect(try fixture.receiptStore.loadHostSelection() == .neo)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-    }
-
-    @Test(arguments: [false, true])
-    func theLastSessionRestoresSettingsEvenWhileBothProcessesAreExiting(_ firstCrashed: Bool) async throws {
-        let fixture = try ControllerFixture()
-        let first = RendererOwnerIdentity(processIdentifier: 101, launchDate: Date(timeIntervalSince1970: 100.5))
-        let second = RendererOwnerIdentity(processIdentifier: 102, launchDate: Date(timeIntervalSince1970: 101.5))
-        fixture.workspace.runningManagers = [first, second]
-        try fixture.receiptStore.withExclusiveLock { try fixture.receiptStore.saveHostSelection(.deviceHub) }
-        _ = try await fixture.controller.beginSession(owner: first)
-        _ = try await fixture.controller.beginSession(owner: second)
-        _ = try await fixture.controller.use(.neo, launchDisplay: false, owner: second)
-        #expect(try fixture.controller.selectionStatus().host == .neo)
-        if firstCrashed {
-            fixture.workspace.runningManagers = [second]
-        } else {
-            #expect(!(try await fixture.controller.release(owner: first)))
-            #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
-        }
-        #expect(try await fixture.controller.release(owner: second))
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(try fixture.receiptStore.loadHostSessions().isEmpty)
-        #expect(try fixture.receiptStore.loadHostSelection() == .neo)
-    }
-
-    @Test func aFailedReleaseKeepsItsSessionUntilTheNextAttempt() async throws {
-        let fixture = try ControllerFixture()
-        let owner = RendererOwnerIdentity(processIdentifier: 101, launchDate: Date(timeIntervalSince1970: 100.5))
-        fixture.workspace.runningManagers = [owner]
-        _ = try await fixture.controller.beginSession(owner: owner)
-        fixture.runner.failPreferenceReads = true
-        await #expect(throws: CLIError.self) { try await fixture.controller.release(owner: owner) }
-        #expect(try fixture.receiptStore.loadHostSessions() == [owner])
-        fixture.runner.failPreferenceReads = false
-        #expect(try await fixture.controller.release(owner: owner))
-        #expect(try fixture.receiptStore.loadHostSessions().isEmpty)
     }
 
     @Test func legacyReceiptsSelectNeoWithoutReadingLivePreferencesAndPendingWritesDoNotAutoAttach() throws {

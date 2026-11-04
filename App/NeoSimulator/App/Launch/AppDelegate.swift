@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
@@ -16,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     private(set) var mainWindow: ManagerWindowController?
     private let preferences = SimulatorPreferences()
-    private let hostPreferenceAccess = HostPreferenceAccess()
+    private let hostPreferenceAccess: HostPreferenceAccess
     private var settingsWindow: SettingsWindowController?
     private var newSimulatorWindows: [DeviceInventoryID?: NewSimulatorWindowController] = [:]
     private var preparingNewSimulators: Set<DeviceInventoryID?> = []
@@ -31,6 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restartsAfterQuitting = false
     private lazy var simulatorMenus = MenuController(application: nil,
         gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init), pasteboardSync: screens.pasteboardSync)
+
+    init(hostPreferenceAccess: HostPreferenceAccess = HostPreferenceAccess()) {
+        self.hostPreferenceAccess = hostPreferenceAccess
+        super.init()
+    }
 
     private func openSimulatorPresentation(_ context: SimulatorPresentationContext) async throws {
         let mainWindow = prepareMainWindow()
@@ -59,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        model.requestHostPreferenceAccess = { [hostPreferenceAccess] in hostPreferenceAccess.request() }
+        model.requestHostPreferenceAccess = { [hostPreferenceAccess] in try hostPreferenceAccess.request() }
         model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
             try await self?.screens.stopRemoteScreens(for: identifiers)
@@ -357,6 +363,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func present(_ error: any Error) {
+        if error is HostPreferenceAccess.Failure {
+            let content = HostPreferenceAccessView(
+                copyCommandAndQuit: { NSApp.stopModal(withCode: .OK) },
+                cancel: { NSApp.stopModal(withCode: .cancel) })
+            let panel = NSPanel(contentViewController: NSHostingController(rootView: content))
+            panel.title = "Device Hub Settings Access"
+            panel.styleMask = [.titled]
+            panel.center()
+            NSApp.activate()
+            let response = NSApp.runModal(for: panel)
+            panel.orderOut(nil)
+            if response == .OK {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(HostPreferenceAccess.Failure.recoveryCommand, forType: .string)
+                NSApp.terminate(nil)
+            }
+            return
+        }
         let alert = NSAlert()
         alert.messageText = error.localizedDescription
         let failure = error as? any LocalizedError

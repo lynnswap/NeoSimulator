@@ -18,8 +18,8 @@ and Apple Vision Pro.
 Download the DMG from [Releases](https://github.com/lynnswap/NeoSimulator/releases),
 open it, and drag **NeoSimulator.app** to **Applications**.
 
-By default, NeoSimulator displays simulators while the app is open. Quitting
-restores Xcode's previous display settings. To use Device Hub, choose it under
+By default, NeoSimulator displays simulators while the app is open. Your selected
+display host is kept after quitting. To use Device Hub, choose it under
 **Settings → General → Preferred Display Host**.
 
 ## Documentation

@@ -9,14 +9,17 @@ Choose **NeoSimulator** or **Device Hub** under **Preferred Display Host** in
 Existing choices are preserved. Changing hosts leaves devices running. Routing
 preferences apply across Xcode installations.
 
-Startup applies the saved preference. Quitting restores Xcode's previous display
-settings, normally Device Hub, without opening its window or changing the saved
-preference. NeoSimulator does not launch automatically. After a force quit or
-crash, open NeoSimulator and quit normally to restore the display settings.
+Startup applies the saved preference. Quitting keeps the selected display
+settings. NeoSimulator does not launch automatically. Choose Device Hub here
+to use it for future Xcode runs, or use **Restore Original Settings…** to restore
+the values saved before NeoSimulator first changed them.
 
-Startup, quitting, selecting a host, and restoring original settings check Xcode's
+Startup, selecting a host, and restoring original settings check Xcode's
 current preferences, including changes made by other tools. macOS may request
-access to other apps' data. Catalog updates and opening device screens use local
+access to other apps' data. If access is denied, the alert offers **Copy Command
+and Quit**. Run the copied command in Terminal, then reopen NeoSimulator and
+allow access when macOS asks. The command resets only NeoSimulator's app-data
+permission. Catalog updates and opening device screens use local
 state. If startup cannot apply NeoSimulator, the settings keep your preference
 and show **Use NeoSimulator** to retry after resolving the reported error.
 
