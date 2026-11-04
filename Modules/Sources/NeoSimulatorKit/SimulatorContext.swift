@@ -237,12 +237,15 @@ public final class SimulatorContext {
         let intent = ReleaseIntent()
         intent.shutsDownGuest = shutsDownGuest
         let task = Task {
-            defer { self.releases[id] = nil }
+            defer {
+                if self.releases[id]?.intent === intent { self.releases[id] = nil }
+            }
             do {
                 if let opening = self.openings[id] { opening.cancel(); _ = await opening.result }
                 if let boot = self.boots[id] { boot.cancel(); _ = await boot.result }
                 try await finishing?.value
                 try await self.engine.releasePresentation(for: id)
+                let reason: SimulatorScreenEnd
                 if intent.shutsDownGuest {
                     let state = try self.device(id).state
                     if state != 1 && state != 4 {
@@ -257,12 +260,18 @@ public final class SimulatorContext {
                         }
                         try await Task.sleep(for: .milliseconds(100))
                     }
-                    self.finishScreen(id, reason: .deviceStopped)
+                    reason = .deviceStopped
                 } else {
+                    reason = .closed
+                }
+                // Callbacks may start the next operation for this device.
+                self.releases[id] = nil
+                self.finishScreen(id, reason: reason)
+            } catch {
+                if !self.engine.openedDeviceIdentifiers.contains(id) {
+                    self.releases[id] = nil
                     self.finishScreen(id, reason: .closed)
                 }
-            } catch {
-                if !self.engine.openedDeviceIdentifiers.contains(id) { self.finishScreen(id, reason: .closed) }
                 throw error
             }
         }

@@ -84,6 +84,25 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate()
         print("Opened \(screen.device.name)")
+        if arguments.contains("--exercise-callback") {
+            guard guestToShutDown == id else {
+                throw SimulatorError.operation("The callback exercise requires a shut-down simulator.")
+            }
+            var shutdown: Task<Void, any Error>?
+            screen.onEnd = { reason in
+                if reason == .closed { shutdown = Task.immediate { try await context.shutDown(id) } }
+            }
+            try await screen.close()
+            guard let shutdown else { throw SimulatorError.operation("The close callback did not run.") }
+            try await shutdown.value
+            guard try await context.devices().contains(where: { $0.id == id && $0.state == .shutDown }) else {
+                throw SimulatorError.operation("A shutdown requested by the close callback left the guest running.")
+            }
+            guestToShutDown = nil
+            try await finish()
+            print("Callback exercise completed")
+            exit(0)
+        }
         if arguments.contains("--exercise") {
             guard try await context.openScreen(id) === screen else {
                 throw SimulatorError.operation("Reopening a screen created a second connection.")
