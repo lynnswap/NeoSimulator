@@ -36,8 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var simulatorMenus = MenuController(application: nil,
         gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init), pasteboardSync: screens.pasteboardSync)
 
-    init(hostPreferenceAccess: HostPreferenceAccess = HostPreferenceAccess()) {
+    private let splitViewAutosaveName: NSSplitView.AutosaveName?
+
+    init(hostPreferenceAccess: HostPreferenceAccess = HostPreferenceAccess(),
+         splitViewAutosaveName: NSSplitView.AutosaveName? = nil) {
         self.hostPreferenceAccess = hostPreferenceAccess
+        self.splitViewAutosaveName = splitViewAutosaveName
         super.init()
     }
 
@@ -57,7 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult func prepareMainWindow(defaults: UserDefaults = .standard) -> ManagerWindowController {
         if let mainWindow { return mainWindow }
-        let controller = ManagerWindowController(model: model, screens: screens, menus: simulatorMenus, defaults: defaults)
+        let controller = ManagerWindowController(model: model, screens: screens, menus: simulatorMenus, defaults: defaults,
+                                                 splitViewAutosaveName: splitViewAutosaveName)
         controller.onError = { [weak self] error in self?.present(error) }
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }

@@ -153,7 +153,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    init(model: SimulatorManagerModel, screens: DeviceScreens, menus: MenuController, defaults: UserDefaults = .standard) {
+    init(model: SimulatorManagerModel, screens: DeviceScreens, menus: MenuController, defaults: UserDefaults = .standard,
+         splitViewAutosaveName: NSSplitView.AutosaveName? = nil) {
         self.model = model
         self.screens = screens
         self.menus = menus
@@ -172,6 +173,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         buildSidebar()
         buildDevicePane()
         buildInspector()
+        splitController.splitView.autosaveName = splitViewAutosaveName
         splitController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
         window.contentViewController = splitController
         let toolbar = NSToolbar(identifier: "NeoSimulatorDevices")
@@ -185,14 +187,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         sidebarObservation = splitController.splitViewItems[0].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.presentationState.sidebarIsCollapsed = self.splitController.splitViewItems[0].isCollapsed
                 self.updateSidebarToolbarItems()
             }
         }
         inspectorObservation = splitController.splitViewItems[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.presentationState.inspectorIsCollapsed = self.splitController.splitViewItems[2].isCollapsed
                 self.updateInspectorSelection()
                 self.updateDeviceSettings()
             }
@@ -402,7 +402,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         sidebar.minimumThickness = 260
         sidebar.maximumThickness = 360
         sidebar.preferredThicknessFraction = 0.26
-        sidebar.isCollapsed = presentationState.sidebarIsCollapsed
         let searchAccessory = NSSplitViewItemAccessoryViewController()
         searchAccessory.automaticallyAppliesContentInsets = false
         searchAccessory.preferredScrollEdgeEffectStyle = .soft
@@ -443,7 +442,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         inspector.minimumThickness = 280
         inspector.maximumThickness = 440
         inspector.canCollapse = true
-        inspector.isCollapsed = presentationState.inspectorIsCollapsed
         inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
         inspector.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
         inspector.addTopAlignedAccessoryViewController(servicesAccessory)

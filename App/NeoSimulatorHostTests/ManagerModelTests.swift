@@ -1147,7 +1147,15 @@ struct ManagerModelTests {
     @Test func browserRestoresPanesAndSelectionWhenInventoryArrives() async throws {
         let domain = "NeoSimulator.BrowserRestoration.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
-        defer { defaults.removePersistentDomain(forName: domain) }
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            for key in UserDefaults.standard.dictionaryRepresentation().keys where key.contains(domain) {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+        func savedLayout() -> NSDictionary {
+            NSDictionary(dictionary: UserDefaults.standard.dictionaryRepresentation().filter { $0.key.contains(domain) })
+        }
         let devices = [simulator(state: "Shutdown"), simulator(deviceSet: "/tmp/OtherDeviceSet", state: "Shutdown")]
         let source = ManagerModelSource(devices: devices)
         let model = SimulatorManagerModel(source: source)
@@ -1156,8 +1164,10 @@ struct ManagerModelTests {
         await model.refresh()
         func browser() -> ManagerWindowController {
             let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
-                menus: MenuController(application: nil), defaults: defaults)
+                menus: MenuController(application: nil), defaults: defaults, splitViewAutosaveName: domain)
             controller.window?.setFrameAutosaveName("")
+            controller.showWindow(nil)
+            controller.window?.contentView?.layoutSubtreeIfNeeded()
             return controller
         }
         func split(_ controller: ManagerWindowController) throws -> NSSplitViewController {
@@ -1176,14 +1186,16 @@ struct ManagerModelTests {
         }
         outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
         #expect(first.selectedIdentifiers == Set(devices.map(\.id)))
+        let initialLayout = savedLayout()
         let firstTabs = try tabs(first)
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
         firstTabs.selectedSegment = 3
         NSApp.sendAction(firstTabs.action!, to: firstTabs.target, from: firstTabs)
         firstSplit.splitViewItems[0].isCollapsed = true
-        NSAnimationContext.endGrouping()
+        firstSplit.view.layoutSubtreeIfNeeded()
+        try await wait { !savedLayout().isEqual(initialLayout) }
+        let inspectorWidth = firstSplit.splitViewItems[2].viewController.view.frame.width
         first.window?.close()
+        firstSplit.splitView.autosaveName = nil
 
         await source.setDevices([])
         await model.refresh()
@@ -1192,6 +1204,7 @@ struct ManagerModelTests {
         let secondSplit = try split(second)
         #expect(secondSplit.splitViewItems[0].isCollapsed)
         #expect(!secondSplit.splitViewItems[2].isCollapsed)
+        #expect(abs(secondSplit.splitViewItems[2].viewController.view.frame.width - inspectorWidth) < 1)
         #expect(try tabs(second).selectedSegment == 3)
         #expect(second.selectedIdentifiers.isEmpty)
         await source.setDevices(devices)
@@ -1201,13 +1214,12 @@ struct ManagerModelTests {
         let restoredOutline = try #require(inspectorViews(secondSplit.splitViewItems[0].viewController.view)
             .compactMap { $0 as? NSOutlineView }.first)
         #expect(restoredOutline.selectedRowIndexes.count == 2)
-        let secondTabs = try tabs(second)
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-        secondTabs.selectedSegment = 3
-        NSApp.sendAction(secondTabs.action!, to: secondTabs.target, from: secondTabs)
-        NSAnimationContext.endGrouping()
+        let previousLayout = savedLayout()
+        secondSplit.splitViewItems[2].isCollapsed = true
+        secondSplit.view.layoutSubtreeIfNeeded()
+        try await wait { !savedLayout().isEqual(previousLayout) }
         second.window?.close()
+        secondSplit.splitView.autosaveName = nil
         let third = browser()
         defer { third.window?.close() }
         #expect(try split(third).splitViewItems[2].isCollapsed)
