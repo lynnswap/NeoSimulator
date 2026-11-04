@@ -7,6 +7,8 @@ import Security
 @MainActor
 public enum CoreDeviceRuntime {
     private static var manager: NativeSwiftValue?
+    private static var managerInitialization: (task: Task<Void, any Error>, startedAt: ContinuousClock.Instant)?
+    private static var managerInitialized = false
     private static var uiXcodeOverride: URL?
     private static var uiXcodePreparation: Task<URL, any Error>?
 
@@ -37,16 +39,56 @@ public enum CoreDeviceRuntime {
         try await PreparationWaiter<Value>().value(of: preparation)
     }
 
+    /// Shares CoreDevice initialization without making a consumer's cancellation stop the native initializer.
+    /// Optional screen features can bound their wait; inventory observation waits until readiness or cancellation.
+    static func initializeDeviceManager(timeout: Duration? = nil) async throws {
+        try Task.checkCancellation()
+        if managerInitialized { return }
+        let preparation: (task: Task<Void, any Error>, startedAt: ContinuousClock.Instant)
+        if let existing = managerInitialization {
+            preparation = existing
+        } else {
+            let manager = try deviceManagerIncludingSimulators()
+            let startedAt = ContinuousClock.now
+            let task = Task {
+                let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.DeviceManager")))
+                let initialize = try await type.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
+                try await unsafe initialize.unsafeInvoke(on: manager)
+                managerInitialized = true
+            }
+            preparation = (task, startedAt)
+            managerInitialization = preparation
+        }
+        try await preparedValue(of: preparation.task, deadline: timeout.map { preparation.startedAt + $0 })
+    }
+
+    static func preparedValue<Value: Sendable>(of preparation: Task<Value, any Error>,
+                                               deadline: ContinuousClock.Instant?) async throws -> Value {
+        try await PreparationWaiter<Value>().value(of: preparation, deadline: deadline)
+    }
+
     @MainActor
     private final class PreparationWaiter<Value: Sendable> {
         private var continuation: CheckedContinuation<Value, any Error>?
 
-        func value(of preparation: Task<Value, any Error>) async throws -> Value {
-            try await withTaskCancellationHandler {
+        func value(of preparation: Task<Value, any Error>, deadline: ContinuousClock.Instant? = nil) async throws -> Value {
+            var timeout: Task<Void, any Error>?
+            defer { timeout?.cancel() }
+            return try await withTaskCancellationHandler {
                 try Task.checkCancellation()
                 return try await withCheckedThrowingContinuation { continuation in
                     self.continuation = continuation
-                    Task { self.finish(await preparation.result) }
+                    Task { [weak self] in
+                        let result = await preparation.result
+                        self?.finish(result)
+                    }
+                    if let deadline {
+                        timeout = Task { [weak self] in
+                            try await Task.sleep(until: deadline, clock: .continuous)
+                            self?.finish(.failure(CLIError.unavailable("coredevice-initialization-timeout",
+                                "CoreDevice did not finish initializing. Try opening the device again.")))
+                        }
+                    }
                 }
             } onCancel: {
                 Task { @MainActor in self.finish(.failure(CancellationError())) }
@@ -105,8 +147,7 @@ final class CoreDeviceRemoteScreenDevice {
         let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
         let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
-        try await unsafe initialize.unsafeInvoke(on: manager)
+        try await CoreDeviceRuntime.initializeDeviceManager()
         try Task.checkCancellation()
         guard let uuid = UUID(uuidString: identifier) else {
             throw CLIError.configuration("coredevice-identifier", "The selected CoreDevice identifier is not a UUID.")
@@ -131,8 +172,7 @@ final class CoreDeviceRemoteScreenDevice {
         let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
         let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
-        let initialize = try await managerType.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
-        try await unsafe initialize.unsafeInvoke(on: manager)
+        try await CoreDeviceRuntime.initializeDeviceManager(timeout: .seconds(10))
         try Task.checkCancellation()
         let devices = try await managerType.resolve(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
         let remote = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))

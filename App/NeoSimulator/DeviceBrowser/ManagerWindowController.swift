@@ -970,12 +970,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func canViewScreen(_ device: InventoryDevice) -> Bool {
         if model.openingDeviceIDs.contains(device.id) { return true }
-        guard !model.isBusy, !model.managingDeviceIDs.contains(device.id) else { return false }
+        guard !model.managingDeviceIDs.contains(device.id) else { return false }
         switch device {
         case .simulator(let simulator):
             return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
         case .remote(let remote):
-            return remote.isAvailable && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
+            return !model.isBusy && remote.isAvailable && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
         }
     }
 
@@ -1193,12 +1193,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
-        let idle = !model.isBusy && identifiers.isDisjoint(with: model.managingDeviceIDs)
         if includesViewScreen, devices.count == 1, canViewScreen(devices[0]) {
-            let item = NSMenuItem(title: "View Screen", action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
+            let title = model.openingDeviceIDs.contains(devices[0].id) ? "Cancel Opening" : "View Screen"
+            let item = NSMenuItem(title: title, action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
-            item.isEnabled = idle
+            item.isEnabled = true
             menu.addItem(item)
         }
         if devices.count == 1, case .remote = devices[0], devices[0].id == deviceScreenViewController.liveDeviceIdentifier,
@@ -1329,7 +1329,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? DeviceInventoryID,
               let device = model.inventory.first(where: { $0.id == id }), canViewScreen(device) else { return }
-        model.openScreen(for: device)
+        if model.openingDeviceIDs.contains(id) { model.cancelOpening(id) }
+        else { model.openScreen(for: device) }
     }
 
     @objc private func lockDeviceFromMenu(_ sender: NSMenuItem) {

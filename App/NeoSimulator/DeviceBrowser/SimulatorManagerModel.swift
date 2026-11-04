@@ -176,18 +176,22 @@ final class SimulatorManagerModel {
         let refreshCatalog: Bool
         let openDevice: SimulatorScreenOpenRequest?
         /// Whether the open only attaches the screen, without booting, if the device is running when the queue admits it.
-        /// Later operations that do not wait for an attach run while it connects.
+        /// Other opens and settings that do not depend on the connection can run alongside it.
         var attachesRunningDevice = false
         var waitsForAttach = true
         /// Receives whether the admitted open only attaches.
         let run: @MainActor (_ attaches: Bool) async throws -> Void
     }
     private(set) var openingDeviceIDs: Set<DeviceInventoryID> = []
-    @ObservationIgnored private var activeOpen: (request: SimulatorScreenOpenRequest, task: Task<Void, any Error>)?
+    private struct ActiveOpen {
+        let request: SimulatorScreenOpenRequest
+        var task: Task<Void, any Error>?
+        let activity: String
+        let attaches: Bool
+    }
+    @ObservationIgnored private var activeOpens: [DeviceInventoryID: ActiveOpen] = [:]
     @ObservationIgnored private var pendingOperations: [PendingOperation] = []
     @ObservationIgnored private var runningOperation: PendingOperation?
-    /// Set from the start of an attach until it retires, including its catalog refresh.
-    @ObservationIgnored private var attachingScreen = false
     @ObservationIgnored private var operationsChanged: CheckedContinuation<Void, Never>?
 
     func cancelOpening(_ identifier: DeviceInventoryID) {
@@ -196,9 +200,9 @@ final class SimulatorManagerModel {
             operation.openDevice?.cancel()
             return true
         }
-        if activeOpen?.request.deviceID == identifier {
-            activeOpen?.request.cancel()
-            activeOpen?.task.cancel()
+        if let active = activeOpens[identifier], let task = active.task {
+            active.request.cancel()
+            task.cancel()
         } else { openingDeviceIDs.remove(identifier) }
         // A withdrawn open can uncover an operation that may run beside the attaching screen.
         resumeOperations()
@@ -752,7 +756,7 @@ final class SimulatorManagerModel {
 
     func prepareForQuit() async throws {
         stopping = true
-        let opening = activeOpen?.task
+        let openings = activeOpens.values.compactMap(\.task)
         cancelPendingOpens()
         settings.stopReading()
         backgroundServices.stopReading()
@@ -763,8 +767,10 @@ final class SimulatorManagerModel {
         await statusRefreshTask?.value
         await settings.finishReading()
         await backgroundServices.finishReading()
-        if let opening, case .failure(let error) = await opening.result, !(error is CancellationError) {
-            throw error
+        for opening in openings {
+            if case .failure(let error) = await opening.result, !(error is CancellationError) {
+                throw error
+            }
         }
     }
 
@@ -797,9 +803,8 @@ final class SimulatorManagerModel {
                                  waitsForAttach: waitsForAttach) { _ in try await operation() })
     }
 
-    /// Runs operations in the order they were accepted. An open admitted while its device is running only attaches the
-    /// screen; later operations that do not wait for an attach run while it connects, and the next one that waits
-    /// holds every operation after it.
+    /// Admits independent screen opens together. Other operations retain their accepted order and wait for
+    /// connecting screens when they change the host or settings needed by a connection.
     private func enqueue(_ operation: PendingOperation) {
         guard !stopping else { return }
         pendingOperations.append(operation)
@@ -820,8 +825,8 @@ final class SimulatorManagerModel {
                 self.settings.setReadingSuspended(false)
                 self.backgroundServices.setReadingSuspended(false)
             }
-            while !self.pendingOperations.isEmpty || self.attachingScreen {
-                guard let next = self.pendingOperations.first, !self.attachingScreen || !next.waitsForAttach else {
+            while !self.pendingOperations.isEmpty || !self.activeOpens.isEmpty {
+                guard let next = self.pendingOperations.first, self.canAdmit(next) else {
                     self.publishQueueState()
                     await withCheckedContinuation { self.operationsChanged = $0 }
                     continue
@@ -830,26 +835,18 @@ final class SimulatorManagerModel {
                 // Earlier operations, such as a close that shut the device down, have left the inventory that decides
                 // this open. The host rejects an attach to a device that stops later instead of booting it.
                 let attaches = self.attachesOnAdmission(next)
-                if !self.attachingScreen { self.activity = next.activity }
-                if attaches { self.attachingScreen = true } else { self.runningOperation = next }
-                defer { self.runningOperation = nil }
-                self.publishQueueState()
                 if let request = next.openDevice {
                     let task = Task {
                         try await next.run(attaches)
                         try Task.checkCancellation()
                     }
-                    self.activeOpen = (request, task)
-                    if attaches {
-                        Task {
-                            await self.finishOpen(request, task, refreshesCatalog: next.refreshCatalog)
-                            self.attachingScreen = false
-                            if let running = self.runningOperation { self.activity = running.activity }
-                            self.publishQueueState()
-                            self.resumeOperations()
-                        }
-                    } else { await self.finishOpen(request, task, refreshesCatalog: next.refreshCatalog) }
+                    self.activeOpens[request.deviceID] = ActiveOpen(request: request, task: task, activity: next.activity, attaches: attaches)
+                    self.publishQueueState()
+                    Task { await self.finishOpen(request, task, refreshesCatalog: next.refreshCatalog) }
                 } else {
+                    self.runningOperation = next
+                    self.publishQueueState()
+                    defer { self.runningOperation = nil }
                     var failure: (any Error)?
                     do { try await next.run(false) }
                     catch { failure = error }
@@ -861,6 +858,11 @@ final class SimulatorManagerModel {
     }
 
     private func finishOpen(_ request: SimulatorScreenOpenRequest, _ task: Task<Void, any Error>, refreshesCatalog: Bool) async {
+        defer {
+            activeOpens.removeValue(forKey: request.deviceID)
+            publishQueueState()
+            resumeOperations()
+        }
         var failure: (any Error)?
         var refreshesCatalog = refreshesCatalog
         do { try await task.value }
@@ -869,7 +871,7 @@ final class SimulatorManagerModel {
             if !(error is CancellationError) { failure = error }
         }
         // Presentation and owned cleanup have finished, so the refresh below is not part of the cancellable open.
-        activeOpen = nil
+        activeOpens[request.deviceID]?.task = nil
         openingDeviceIDs.remove(request.deviceID)
         if !stopping, refreshesCatalog || inventoryRefreshRequested { await refreshCatalog() }
         if let failure, !stopping { onError?(failure) }
@@ -877,8 +879,16 @@ final class SimulatorManagerModel {
 
     private func publishQueueState() {
         let running = runningOperation?.refreshCatalog == true
-        isBusy = attachingScreen || running || pendingOperations.contains { $0.refreshCatalog }
-        holdsSettingsEdits = running || pendingOperations.contains { $0.refreshCatalog && !attachesOnAdmission($0) }
+        isBusy = !activeOpens.isEmpty || running || pendingOperations.contains { $0.refreshCatalog }
+        holdsSettingsEdits = running || activeOpens.values.contains { !$0.attaches }
+            || pendingOperations.contains { $0.refreshCatalog && !attachesOnAdmission($0) }
+        activity = runningOperation?.activity ?? activeOpens.values.first?.activity ?? pendingOperations.first?.activity ?? ""
+    }
+
+    private func canAdmit(_ operation: PendingOperation) -> Bool {
+        if activeOpens.isEmpty { return true }
+        if let request = operation.openDevice { return activeOpens[request.deviceID] == nil }
+        return !operation.waitsForAttach && activeOpens.values.allSatisfy(\.attaches)
     }
 
     /// Whether admitting `operation` now would only attach the screen of its running device.
