@@ -203,7 +203,7 @@ public final class SimulatorContext {
         }
     }
 
-    package var isStopped: Bool { isInvalidating || engine.isStopped }
+    package var isStopped: Bool { isInvalidating || engine.isStopped || engine.isTerminating }
     package var openScreens: [SimulatorScreen] { Array(screens.values) }
 
     package func screen(for id: SimulatorDeviceIdentifier) -> SimulatorScreen? { screens[id] }
@@ -279,7 +279,7 @@ public final class SimulatorContext {
             try checkActive()
         }
         try Task.checkCancellation()
-        if let screen = screens[id] {
+        if let screen = screens[id], !engine.needsReconnection(for: id) {
             engine.didSelectDevice(id)
             return screen
         }
@@ -293,6 +293,7 @@ public final class SimulatorContext {
             let device = SimulatorDeviceSnapshot(try self.device(id))
             let controller = try await self.engine.openPresentation(for: id)
             try self.checkActive()
+            if let screen = self.screens[id] { return screen }
             let screen = SimulatorScreen(device: device, controller: controller, context: self)
             self.screens[id] = screen
             return screen
@@ -416,7 +417,7 @@ public final class SimulatorContext {
     }
 
     private func checkActive() throws {
-        guard !isInvalidating, !engine.isStopped else {
+        guard !isStopped else {
             throw SimulatorError.operation("The simulator context has been invalidated.")
         }
     }

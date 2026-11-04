@@ -170,10 +170,14 @@ final class DeviceScreens {
         let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
         var previousPresentation: SimulatorScreenRestoration.Presentation?
         for (url, previous) in contexts where url != sourceURL {
-            guard let screen = previous.screen(for: identifier) else { continue }
-            previousPresentation = entries[request.deviceID]?.presentation
-                ?? .init(isEmbedded: screen.controller.isEmbedded, window: screen.controller.window)
-            try await screen.close()
+            if let screen = previous.screen(for: identifier) {
+                previousPresentation = entries[request.deviceID]?.presentation
+                    ?? .init(isEmbedded: screen.controller.isEmbedded, window: screen.controller.window)
+            }
+            try await previous.releaseScreen(identifier)
+        }
+        for retired in retiredContexts {
+            try await retired.releaseScreen(identifier)
         }
         let preservesPresentation = context.screen(for: identifier) != nil
         do {
@@ -384,12 +388,17 @@ final class DeviceScreens {
             await model.stopDevicePostures()
             retiredContexts.append(contentsOf: contexts.values)
             contexts.removeAll()
+            var failures: [String] = []
             for context in retiredContexts {
-                try await context.invalidate()
-                retiredContexts.removeAll { $0 === context }
+                do {
+                    try await context.invalidate()
+                    retiredContexts.removeAll { $0 === context }
+                } catch { failures.append(error.localizedDescription) }
             }
             remove(simulatorIdentifiers)
-            try await stopRemoteScreens()
+            do { try await stopRemoteScreens() }
+            catch { failures.append(error.localizedDescription) }
+            if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
         } catch {
             publishOpenScreens()
             throw error

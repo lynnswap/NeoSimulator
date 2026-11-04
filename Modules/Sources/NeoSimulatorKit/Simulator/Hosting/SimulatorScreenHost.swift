@@ -88,6 +88,10 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     package func controller(for identifier: SimulatorDeviceIdentifier) -> DeviceWindowController? { sessions[identifier] }
+    package func needsReconnection(for identifier: SimulatorDeviceIdentifier) -> Bool {
+        awaitingReconnect[identifier] != nil && connectionFailures[identifier] != nil
+    }
+
     package func hasUnfinishedCleanup(for identifier: SimulatorDeviceIdentifier) -> Bool {
         disconnectedSessions.contains { $0.device.identity == identifier }
             || (sessions[identifier] == nil && externalDisplayQueues[identifier] != nil)
