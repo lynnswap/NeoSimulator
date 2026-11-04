@@ -274,12 +274,15 @@ struct CaptureAndImportTests {
             var buffer: CVPixelBuffer?
             CVPixelBufferCreate(nil, 64, 64, kCVPixelFormatType_32BGRA, nil, &buffer)
             let pixels = try #require(buffer)
-            CVPixelBufferLockBaseAddress(pixels, [])
-            for row in 0..<64 {
-                (CVPixelBufferGetBaseAddress(pixels)! + row * CVPixelBufferGetBytesPerRow(pixels))
-                    .assumingMemoryBound(to: UInt32.self).update(repeating: 0xFF00_0000, count: 64)
+            do {
+                CVPixelBufferLockBaseAddress(pixels, [])
+                defer { CVPixelBufferUnlockBaseAddress(pixels, []) }
+                let baseAddress = try #require(CVPixelBufferGetBaseAddress(pixels))
+                for row in 0..<64 {
+                    (baseAddress + row * CVPixelBufferGetBytesPerRow(pixels))
+                        .assumingMemoryBound(to: UInt32.self).update(repeating: 0xFF00_0000, count: 64)
+                }
             }
-            CVPixelBufferUnlockBaseAddress(pixels, [])
             while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(10)) }
             #expect(adaptor.append(try #require(buffer), withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 10)))
         }

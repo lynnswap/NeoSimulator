@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 import XcodeSimulatorHost
 
 @MainActor @Observable
@@ -65,6 +66,25 @@ final class DeviceSettingsPanelModel {
             return hasSettings ? "Some settings could not be loaded for this device." : "Settings could not be loaded for this device."
         }
         return nil
+    }
+
+    func binding<Value: Hashable>(for keyPath: ReferenceWritableKeyPath<DeviceSettingsPanelModel, Value?>) -> Binding<Value>? {
+        guard let device, let value = self[keyPath: keyPath] else { return nil }
+        @Bindable var model = self
+        return $model[setting: keyPath, on: device.id, fallback: value]
+    }
+
+    // SwiftUI can retain a control after its setting disappears. Keep its reads valid and its edits on the original device.
+    private subscript<Value>(setting keyPath: ReferenceWritableKeyPath<DeviceSettingsPanelModel, Value?>,
+                             on identifier: DeviceInventoryID, fallback value: Value) -> Value {
+        get {
+            guard device?.id == identifier else { return value }
+            return self[keyPath: keyPath] ?? value
+        }
+        set {
+            guard device?.id == identifier, content == .settings, self[keyPath: keyPath] != nil else { return }
+            self[keyPath: keyPath] = newValue
+        }
     }
 
     private func apply(_ setting: SimulatorDeviceSetting) {

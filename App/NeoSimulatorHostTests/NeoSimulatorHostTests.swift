@@ -9917,7 +9917,7 @@ private final class TestDisplay: SimulatorDisplay {
     func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
         guard !unavailableStates.contains(state) else { throw HostError.operation("No message") }
         created.append((state, ContinuousClock.now))
-        return HIDMessage(input: input, state: state, pointer: OpaquePointer(malloc(1)!))
+        return HIDMessage(input: input, state: state, pointer: OpaquePointer(try #require(malloc(1))))
     }
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         onSend()
@@ -9945,7 +9945,7 @@ private final class TestDisplay: SimulatorDisplay {
     private var touchMessages: [ObjectIdentifier: TVRemoteTouch] = [:]
     func message(for touch: TVRemoteTouch) throws -> HIDMessage {
         let message = HIDMessage(input: .tvRemoteTouch, state: touch.phase == .ended ? .up : .down,
-                                 pointer: OpaquePointer(malloc(1)!))
+                                 pointer: OpaquePointer(try #require(malloc(1))))
         touchMessages[ObjectIdentifier(message)] = touch
         return message
     }

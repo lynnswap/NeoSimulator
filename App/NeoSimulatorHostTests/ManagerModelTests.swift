@@ -2176,6 +2176,97 @@ struct ManagerModelTests {
         #expect(model.settings?.appearance == "light")
     }
 
+    @Test(arguments: [false, true])
+    func settingsBindingsSurviveSelectionChanges(_ deselect: Bool) async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let panel = DeviceSettingsPanelModel(manager: manager, screens: DeviceScreens(model: manager),
+            preferences: SimulatorPreferences(), customLocation: {})
+        manager.settings.inspect(first, selectionCount: 1)
+        #expect(await events.next() == .read(first.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: "light", boldText: false, liquidGlassOpacity: 0.5))
+        await manager.settings.finishReading()
+        let toggle = try #require(panel.binding(for: \.boldText))
+        let picker = try #require(panel.binding(for: \.appearance))
+        let slider = try #require(panel.binding(for: \.liquidGlassOpacity))
+
+        manager.settings.inspect(deselect ? nil : second, selectionCount: deselect ? 0 : 1)
+        #expect(panel.boldText == nil && panel.appearance == nil && panel.liquidGlassOpacity == nil)
+        #expect(toggle.wrappedValue == false)
+        #expect(picker.wrappedValue == "light")
+        #expect(slider.wrappedValue == 0.5)
+        toggle.wrappedValue = true
+        picker.wrappedValue = "dark"
+        slider.wrappedValue = 0.75
+        if !deselect {
+            #expect(await events.next() == .read(second.id))
+            await source.completeRead(SimulatorDeviceSettings(appearance: "dark", boldText: true, liquidGlassOpacity: 1))
+            await manager.settings.finishReading()
+            #expect(toggle.wrappedValue == false && picker.wrappedValue == "light" && slider.wrappedValue == 0.5)
+            toggle.wrappedValue = false
+            picker.wrappedValue = "light"
+            slider.wrappedValue = 0
+            #expect(panel.boldText == true && panel.appearance == "dark" && panel.liquidGlassOpacity == 1)
+        }
+        try await manager.prepareForQuit()
+        #expect(await source.writeInputs.isEmpty)
+    }
+
+    @Test func settingsBindingsTrackEditsAndSurviveUnavailableSettings() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let panel = DeviceSettingsPanelModel(manager: manager, screens: DeviceScreens(model: manager),
+            preferences: SimulatorPreferences(), customLocation: {})
+        manager.settings.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: "light", contentSize: "medium", boldText: false))
+        await manager.settings.finishReading()
+        let toggle = try #require(panel.binding(for: \.boldText))
+        let picker = try #require(panel.binding(for: \.appearance))
+        let slider = try #require(panel.binding(for: \.textSize))
+        let medium = Double(try #require(SimulatorDeviceSettings.contentSizes.firstIndex(of: "medium")))
+        let large = Double(try #require(SimulatorDeviceSettings.contentSizes.firstIndex(of: "large")))
+
+        toggle.wrappedValue = true
+        picker.wrappedValue = "dark"
+        slider.wrappedValue = large
+        #expect(toggle.wrappedValue == true && picker.wrappedValue == "dark" && slider.wrappedValue == large)
+        for _ in 0..<3 {
+            #expect(await events.next() == .write(device.id))
+            await source.completeWrite()
+        }
+        try await awaitServiceOperations(manager)
+        #expect(panel.boldText == true && panel.appearance == "dark" && panel.textSize == large)
+
+        manager.settings.inspect(simulator(state: "Shutdown"), selectionCount: 1)
+        #expect(panel.content == .unavailable)
+        toggle.wrappedValue = false
+        picker.wrappedValue = "light"
+        slider.wrappedValue = medium
+        manager.settings.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(SimulatorDeviceSettings())
+        await manager.settings.finishReading()
+        #expect(panel.content == .unavailable)
+        #expect(panel.binding(for: \.boldText) == nil)
+        #expect(panel.binding(for: \.appearance) == nil)
+        #expect(panel.binding(for: \.textSize) == nil)
+        #expect(toggle.wrappedValue == false && picker.wrappedValue == "light" && slider.wrappedValue == medium)
+        toggle.wrappedValue = true
+        picker.wrappedValue = "dark"
+        slider.wrappedValue = large
+        try await manager.prepareForQuit()
+        #expect(await source.writeInputs.count == 3)
+        #expect(manager.settings.settings?.boldText == nil)
+    }
+
     @Test func clearingSelectionDiscardsTheCancelledResult() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])

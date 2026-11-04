@@ -26,23 +26,23 @@ struct ManagerDeviceSettingsView: View {
     private var settingsForm: some View {
         Form {
             Section {
-                picker("Appearance", symbol: "circle.lefthalf.filled", value: Binding($model.appearance), choices: model.appearanceChoices)
-                slider("Liquid Glass", symbol: "drop.halffull", value: Binding($model.liquidGlassOpacity), range: 0...1)
-                picker("Color Filter", symbol: "camera.filters", value: Binding($model.colorFilter), choices: model.colorFilterChoices)
+                picker("Appearance", symbol: "circle.lefthalf.filled", value: model.binding(for: \.appearance), choices: model.appearanceChoices)
+                slider("Liquid Glass", symbol: "drop.halffull", value: model.binding(for: \.liquidGlassOpacity), range: 0...1)
+                picker("Color Filter", symbol: "camera.filters", value: model.binding(for: \.colorFilter), choices: model.colorFilterChoices)
                 if model.colorFilterIntensity != nil {
-                    slider("Intensity", symbol: "slider.horizontal.3", value: Binding($model.colorFilterIntensity), range: 0.25...1)
+                    slider("Intensity", symbol: "slider.horizontal.3", value: model.binding(for: \.colorFilterIntensity), range: 0.25...1)
                 }
-                picker("Display Zoom", symbol: "rectangle.inset.filled", value: Binding($model.displayZoom), choices: model.displayZoomChoices)
+                picker("Display Zoom", symbol: "rectangle.inset.filled", value: model.binding(for: \.displayZoom), choices: model.displayZoomChoices)
                     .help("Applying Display Zoom restarts the device's interface.")
-                slider("Text Size", symbol: "textformat.size", value: Binding($model.textSize), range: 0...11,
+                slider("Text Size", symbol: "textformat.size", value: model.binding(for: \.textSize), range: 0...11,
                        tickMarks: 12, help: model.textSizeDescription)
-                toggle("Bold Text", symbol: "bold", value: Binding($model.boldText))
-                toggle("Reduce Motion", symbol: "figure.walk.motion", value: Binding($model.reduceMotion))
+                toggle("Bold Text", symbol: "bold", value: model.binding(for: \.boldText))
+                toggle("Reduce Motion", symbol: "figure.walk.motion", value: model.binding(for: \.reduceMotion))
                 slowAnimationsRow
-                toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", value: Binding($model.increaseContrast))
-                toggle("Show Borders", symbol: "square.dashed", value: Binding($model.showBorders))
-                toggle("Reduce Transparency", symbol: "square.on.square", value: Binding($model.reduceTransparency))
-                toggle("VoiceOver", symbol: "person.wave.2", value: Binding($model.voiceOver))
+                toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", value: model.binding(for: \.increaseContrast))
+                toggle("Show Borders", symbol: "square.dashed", value: model.binding(for: \.showBorders))
+                toggle("Reduce Transparency", symbol: "square.on.square", value: model.binding(for: \.reduceTransparency))
+                toggle("VoiceOver", symbol: "person.wave.2", value: model.binding(for: \.voiceOver))
             }
             Section {
                 LabeledContent {
@@ -60,9 +60,9 @@ struct ManagerDeviceSettingsView: View {
                 }
             }
             Section {
-                slider("Sound", symbol: "speaker.wave.2", value: Binding($model.volume), range: 0...100)
-                picker("Output", symbol: "speaker", value: Binding($model.audioOutput), choices: model.audioOutputChoices)
-                picker("Input", symbol: "mic", value: Binding($model.audioInput), choices: model.audioInputChoices)
+                slider("Sound", symbol: "speaker.wave.2", value: model.binding(for: \.volume), range: 0...100)
+                picker("Output", symbol: "speaker", value: model.binding(for: \.audioOutput), choices: model.audioOutputChoices)
+                picker("Input", symbol: "mic", value: model.binding(for: \.audioInput), choices: model.audioInputChoices)
             }
             if let message = model.message {
                 Section { Text(message).font(.caption).foregroundStyle(.secondary).help(model.issue) }

@@ -1099,10 +1099,10 @@ struct RemoteDeviceScreenTests {
         let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")), in: image, loading: .loadedOnly)
         let abis = builder.abis
         let make = try digitizer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
-        let receiver = abis[digitizer]!
+        let receiver = try #require(abis[digitizer])
         let count = try digitizer.resolveAndWait(.swift(.getter("contactCount", as: (() -> UInt8).self, valueABIs: abis, receiverABI: receiver)))
         let readContact = try digitizer.resolveAndWait(.swift(.method("contact(atIndex:)", as: ((Int) -> NativeSwiftValue).self, valueABIs: abis, receiverABI: receiver)))
-        let contactReceiver = abis[contact]!
+        let contactReceiver = try #require(abis[contact])
         let x = try contact.resolveAndWait(.swift(.getter("x", as: (() -> Double).self, valueABIs: abis, receiverABI: contactReceiver)))
         let y = try contact.resolveAndWait(.swift(.getter("y", as: (() -> Double).self, valueABIs: abis, receiverABI: contactReceiver)))
         let touch = try contact.resolveAndWait(.swift(.getter("touch", as: (() -> Bool).self, valueABIs: abis, receiverABI: contactReceiver)))
