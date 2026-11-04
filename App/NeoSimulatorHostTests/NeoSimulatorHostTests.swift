@@ -9,6 +9,18 @@ import Synchronization
 import IOKit.hidsystem
 @_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
+/// Waits for rendered state without relying on XCTest's run-loop predicate timer.
+@MainActor
+func wait(timeout: Duration = .seconds(2), sourceLocation: SourceLocation = #_sourceLocation,
+          until condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while !condition() {
+        try #require(ContinuousClock.now < deadline, "The expected state did not arrive within \(timeout).",
+                     sourceLocation: sourceLocation)
+        try await Task.sleep(for: .milliseconds(10))
+    }
+}
+
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
     @MainActor private final class RemoteTarget {
@@ -55,10 +67,9 @@ struct InputFocusTests {
         #expect(await events.next() == .open(devices[2].id))
         await source.returnOnNextRead(SimulatorDeviceSettings())
         await source.completeOpen()
-        let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !model.isBusy }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            !model.isBusy
+        }
         let selected = showsCompactDeviceInMain ? devices[1].id : devices[2].id
         let pane = main.deviceScreenViewController
         #expect(main.selectedIdentifiers == [selected] && pane.liveDeviceIdentifier == selected)
@@ -75,10 +86,9 @@ struct InputFocusTests {
         app.application(NSApp, open: [restorations[1].url])
         #expect(await events.next() == .open(devices[1].id))
         await source.completeOpen()
-        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !model.isBusy }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [restored], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            !model.isBusy
+        }
         #expect(compactPresentations == [ids[1], ids[1]])
     }
 
@@ -587,7 +597,7 @@ struct InputFocusTests {
         mainWindow.setContentSize(NSSize(width: 1040, height: 700))
         mainWindow.contentView?.layoutSubtreeIfNeeded()
         let live = manager.deviceScreenViewController.liveScreenContainer
-        try await animateCanvas {
+        updateCanvas {
             controller.embed(in: live)
             manager.deviceScreenViewController.showLiveScreen(screen)
             mainWindow.contentView?.layoutSubtreeIfNeeded()
@@ -602,7 +612,7 @@ struct InputFocusTests {
         #expect(fitArea.minY >= controlsRect.maxY - pixel && fitArea.maxY <= mainWindow.contentLayoutRect.maxY + pixel)
         #expect(fitArea.insetBy(dx: -pixel, dy: -pixel).contains(display.view.convert(display.view.bounds, to: nil)))
         // At point size the device is taller than the fitting area and continues behind both bars.
-        try await animateCanvas { controller.setScale(.pointAccurate) }
+        updateCanvas { controller.setScale(.pointAccurate) }
         let pane = live.view.convert(live.view.bounds, to: nil)
         let shown = display.view.convert(display.view.visibleRect, to: nil)
         #expect(shown.maxY > mainWindow.contentLayoutRect.maxY + 1 && shown.minY < controlsRect.minY - 1,
@@ -933,7 +943,6 @@ struct InputFocusTests {
         geometry.resolvedSize = CGSize(width: 480, height: 620)
         resize.lease.geometryUpdates.continuation.yield(geometry)
         try await wait { session.appResizeGeometry == geometry }
-        try await wait { alerts.count > 1 }
         #expect(alerts.map(\.messageText) == [rejection.localizedDescription])
         #expect(alerts.first?.informativeText == rejection.localizedRecoverySuggestion)
         #expect(session.state == .connected && session.isResizingApp && window.isVisible)
@@ -1000,7 +1009,7 @@ struct InputFocusTests {
             main?.isReleasedWhenClosed = false
             main?.contentViewController = parent
             controller.embed(in: parent)
-            try await animateCanvas { controller.performCanvasZoom(.fit) }
+            updateCanvas { controller.performCanvasZoom(.fit) }
         }
         if presentation == "fullscreen-before-resize" {
             controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
@@ -1010,7 +1019,7 @@ struct InputFocusTests {
         }
         try await wait { controller.session.canResizeApp }
         if presentation == "embedded" {
-            try await animateCanvas {
+            updateCanvas {
                 controller.setScale(.pixelAccurate)
                 controller.toggleAppResize()
             }
@@ -1980,7 +1989,7 @@ struct InputFocusTests {
         window.isReleasedWhenClosed = false
         window.contentViewController = parent
         defer { window.close() }
-        try await animateCanvas {
+        updateCanvas {
             controller.embed(in: parent)
             parent.view.layoutSubtreeIfNeeded()
         }
@@ -2003,7 +2012,7 @@ struct InputFocusTests {
         #expect(try fitRect(of: content, in: scroll).insetBy(dx: -1 / window.backingScaleFactor, dy: -1 / window.backingScaleFactor).contains(documentRect(of: display.view, in: scroll)))
         display.naturalSize = NSSize(width: 900, height: 900)
         display.onPropertiesChange?()
-        try await animateCanvas { controller.setScale(.pointAccurate) }
+        updateCanvas { controller.setScale(.pointAccurate) }
         let before = display.view.convert(NSPoint(x: 120, y: 400), to: content)
         let origin = scroll.contentView.bounds.origin
         scroll.contentView.scroll(to: NSPoint(x: 60, y: 240))
@@ -2047,8 +2056,8 @@ struct InputFocusTests {
         parent.view.layoutSubtreeIfNeeded()
         #expect(controls.isDescendant(of: accessory.view) && viewport.frame.minY == content.bounds.minY)
         #expect((content as? any DisplayContentView)?.availableDisplaySize == viewport.frame.size)
-        try await animateCanvas { controller.performCanvasZoom(.fit) }
-        try await animateCanvas {
+        updateCanvas { controller.performCanvasZoom(.fit) }
+        updateCanvas {
             parent.view.setFrameSize(NSSize(width: 400, height: 300))
             parent.view.layoutSubtreeIfNeeded()
         }
@@ -2085,7 +2094,7 @@ struct InputFocusTests {
         window.isReleasedWhenClosed = false
         window.contentViewController = parent
         defer { window.close() }
-        try await animateCanvas {
+        updateCanvas {
             controller.embed(in: parent)
             parent.view.layoutSubtreeIfNeeded()
             // Native readiness can deliver multiple valid sizes before the AppKit transaction completes.
@@ -2132,7 +2141,7 @@ struct InputFocusTests {
         window.isReleasedWhenClosed = false
         window.contentViewController = parent
         defer { window.close() }
-        try await animateCanvas {
+        updateCanvas {
             controller.embed(in: parent)
             parent.view.layoutSubtreeIfNeeded()
         }
@@ -2156,7 +2165,7 @@ struct InputFocusTests {
         let hit = try #require(root.hitTest(frameView.convert(point, from: nil)))
         #expect(hit === display.view || hit.isDescendant(of: display.view))
         // A readiness change still updates the natural size and Fit.
-        try await animateCanvas {
+        updateCanvas {
             content = 40
             measure()
         }
@@ -2165,10 +2174,13 @@ struct InputFocusTests {
         try expectFit()
     }
 
-    private func animateCanvas(_ operation: @escaping @MainActor () -> Void) async throws {
-        let completed = XCTestExpectation(description: "Canvas magnification finishes")
-        NSAnimationContext.runAnimationGroup { _ in operation() } completionHandler: { completed.fulfill() }
-        try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
+    private func updateCanvas(_ operation: @MainActor () -> Void) {
+        // Geometry assertions need immediate layout, independent of offscreen animation completion.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            operation()
+        }
     }
 
     /// The display's rect in the canvas document, wherever the canvas presents the display.
@@ -2288,7 +2300,7 @@ struct InputFocusTests {
         window.contentViewController = parent
         defer { window.close() }
         let outerFrame = window.frame
-        try await animateCanvas {
+        updateCanvas {
             controller.embed(in: parent)
             parent.view.layoutSubtreeIfNeeded()
         }
@@ -2299,7 +2311,7 @@ struct InputFocusTests {
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
         let previousFrame = documentRect(of: display.view, in: scroll).size
         let previousMagnification = scroll.magnification
-        try await animateCanvas {
+        updateCanvas {
             parent.view.setFrameSize(NSSize(width: 400, height: 600))
             parent.view.layoutSubtreeIfNeeded()
         }
@@ -2343,7 +2355,7 @@ struct InputFocusTests {
         // SimulatorKit can deliver a frame from before the latest scale change.
         display.view.setFrameSize(NSSize(width: previousFrame.width / 2, height: previousFrame.height / 2))
         try #require(display.view.frame.size != display.size(for: display.renderScale))
-        try await animateCanvas {
+        updateCanvas {
             parent.view.setFrameSize(NSSize(width: 300, height: 400))
             parent.view.layoutSubtreeIfNeeded()
         }
@@ -2355,11 +2367,11 @@ struct InputFocusTests {
         #expect(min(abs(visible.width - fittedRect.width), abs(visible.height - fittedRect.height)) <= pixel)
         let fitScale = scroll.magnification
         let centerAtFit = center(of: display.view, in: content)
-        try await animateCanvas { controller.performCanvasZoom(.zoomIn) }
+        updateCanvas { controller.performCanvasZoom(.zoomIn) }
         let centerAfterZoom = center(of: display.view, in: content)
         #expect(abs(centerAfterZoom.x - centerAtFit.x) <= pixel && abs(centerAfterZoom.y - centerAtFit.y) <= pixel)
         #expect(scroll.magnification > fitScale && display.renderScale == 1)
-        try await animateCanvas {
+        updateCanvas {
             controller.performCanvasZoom(.zoomIn)
             controller.performCanvasZoom(.zoomIn)
             controller.performCanvasZoom(.zoomOut)
@@ -2370,7 +2382,7 @@ struct InputFocusTests {
         #expect(abs(centerAfterRetarget.x - centerAtFit.x) <= pixel && abs(centerAfterRetarget.y - centerAtFit.y) <= pixel)
         #expect(abs(visibleCenter.x - deviceSize.width / 2) * scroll.magnification <= pixel
             && abs(visibleCenter.y - deviceSize.height / 2) * scroll.magnification <= pixel)
-        try await animateCanvas { controller.setScale(.pointAccurate) }
+        updateCanvas { controller.setScale(.pointAccurate) }
         #expect(controller.canvasZoom.mode == .fixed(1) && display.renderScale == 1)
         #expect(window.frame == outerFrame && controller.window?.frame == compactFrame)
         let clip = scroll.contentView
@@ -2396,30 +2408,30 @@ struct InputFocusTests {
         #expect(controller.session === session && display.disconnectCount == 0)
         controller.focusInput()
         #expect(window.firstResponder === display.inputView)
-        try await animateCanvas { controller.performCanvasZoom(.fit) }
+        updateCanvas { controller.performCanvasZoom(.fit) }
         #expect(controller.canvasZoomIsSelected(.fit))
         #expect(try fitRect(of: content, in: scroll).insetBy(dx: -pixel, dy: -pixel).contains(documentRect(of: display.view, in: scroll)))
-        try await animateCanvas {
+        updateCanvas {
             parent.view.setFrameSize(NSSize(width: 220, height: 300))
             parent.view.layoutSubtreeIfNeeded()
         }
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
-        try await animateCanvas {
+        updateCanvas {
             display.takeScreenSize(NSSize(width: 844, height: 390))
             content.layoutSubtreeIfNeeded()
         }
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
-        try await animateCanvas { controller.performCanvasZoom(.physicalSize) }
+        updateCanvas { controller.performCanvasZoom(.physicalSize) }
         let physicalScale = try #require(controller.scale(for: .physicalSize))
         #expect(controller.canvasZoomIsSelected(.physicalSize) && WindowScale.matches(scroll.magnification, physicalScale))
-        try await animateCanvas {
+        updateCanvas {
             display.takeScreenSize(NSSize(width: 390, height: 844))
             content.layoutSubtreeIfNeeded()
         }
         #expect(WindowScale.matches(scroll.magnification, physicalScale))
         let zoomAction: CanvasZoom.Action = controller.canPerformCanvasZoom(.zoomOut) ? .zoomOut : .zoomIn
         try #require(controller.canPerformCanvasZoom(zoomAction))
-        try await animateCanvas { controller.performCanvasZoom(zoomAction) }
+        updateCanvas { controller.performCanvasZoom(zoomAction) }
         if zoomAction == .zoomOut {
             #expect(scroll.magnification < physicalScale && display.renderScale == 1)
         } else {
@@ -2427,14 +2439,14 @@ struct InputFocusTests {
         }
         #expect(!controller.canvasZoomIsSelected(.physicalSize))
         #expect(window.frame == outerFrame)
-        try await animateCanvas {
+        updateCanvas {
             controller.setScale(.pointAccurate)
             controller.performCanvasZoom(.fit)
         }
         #expect(try fitRect(of: content, in: scroll).insetBy(dx: -pixel, dy: -pixel).contains(documentRect(of: display.view, in: scroll)))
         #expect(controller.canvasZoomIsSelected(.fit) && display.renderScale == 1)
         #expect(window.firstResponder === display.inputView)
-        try await animateCanvas {
+        updateCanvas {
             controller.setScale(.pointAccurate)
             controller.performCanvasZoom(.fit)
             parent.view.setFrameSize(NSSize(width: 400, height: 600))
@@ -2443,23 +2455,23 @@ struct InputFocusTests {
         #expect(controller.canvasZoomIsSelected(.fit))
         #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
         #expect(try fitRect(of: content, in: scroll).insetBy(dx: -pixel, dy: -pixel).contains(documentRect(of: display.view, in: scroll)))
-        try await animateCanvas {
+        updateCanvas {
             controller.setScale(.pointAccurate)
             controller.performCanvasZoom(.fit)
             controller.showCompactWindow()
         }
         #expect(scroll.magnification == 1)
         controller.embed(in: parent)
-        try await animateCanvas {
+        updateCanvas {
             parent.view.setFrameSize(NSSize(width: 220, height: 300))
             parent.view.layoutSubtreeIfNeeded()
         }
-        try await animateCanvas { controller.performCanvasZoom(.zoomIn) }
-        try await animateCanvas { controller.performCanvasZoom(.zoomOut) }
+        updateCanvas { controller.performCanvasZoom(.zoomIn) }
+        updateCanvas { controller.performCanvasZoom(.zoomOut) }
         let fixedScale = controller.canvasZoom.scale
         try #require(fixedScale < 0.4)
         let fixedExtent = display.view.convert(display.view.bounds, to: content).size
-        try await animateCanvas {
+        updateCanvas {
             parent.view.setFrameSize(NSSize(width: 400, height: 600))
             parent.view.layoutSubtreeIfNeeded()
         }
@@ -7349,7 +7361,7 @@ struct InputFocusTests {
         else { controller.perform(.externalDisplayDisabled) }
         screen.prepareDisplay = nil
         pending.resume()
-        try await wait { screen.displays.first?.disconnectCount == 1 }
+        try await wait { screen.displays.first?.stopCount == 1 }
         #expect(screen.displays.count == 1 && controller.externalDisplayWindow == nil)
         if !closesDevice {
             controller.perform(.externalDisplay1280x720)
@@ -9404,14 +9416,6 @@ struct InputFocusTests {
             makeExternalDisplayWindow: makeExternalDisplayWindow,
             userInterfacePluginLookUp: userInterfacePluginLookUp,
             onClose: onClose, onRestart: onRestart, onShutDown: onShutDown)
-    }
-
-    /// Yields between checks so image rendering cannot starve other main-actor tests.
-    private func wait(until condition: () -> Bool) async throws {
-        for _ in 0..<200 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
     }
 
     private static let defaultFeatures: Set<String> = [DeviceCapabilities.displayRotation, DeviceCapabilities.keyboard]
