@@ -139,6 +139,24 @@ struct DeviceInventoryTests {
         #expect(orphan.lastUsedAt == Date(timeIntervalSince1970: 0.25))
     }
 
+    @Test func unusedSimulatorKeepsItsCreationDateThroughInventoryJoins() async throws {
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let createdAt = try #require(directory.resourceValues(forKeys: [.creationDateKey]).creationDate)
+        var catalog = try #require(JSONSerialization.jsonObject(with: Self.simulatorJSON) as? [String: Any])
+        var devices = try #require(catalog["devices"] as? [String: [[String: Any]]])
+        devices["runtime"]?[0]["dataPath"] = directory.appending(path: "data").path
+        catalog["devices"] = devices
+        let decoded = try SimulatorDeviceCatalog.decode(JSONSerialization.data(withJSONObject: catalog))
+        let device = try #require(decoded.first)
+        #expect(device.lastUsedAt == nil && device.createdAt == createdAt)
+        let snapshot = await DeviceInventoryReader(
+            readSimulators: { .init(devices: [.simulator(device)], issues: []) },
+            readCoreDevices: { Data(#"{"result":{"devices":[]}}"#.utf8) }).read()
+        #expect(snapshot.devices.first?.lastActivityDate == createdAt)
+    }
+
     @Test func activePairingUsesTheOppositeDeviceInTheSameSetWithoutDiscardingOtherPairs() throws {
         var catalog = try #require(JSONSerialization.jsonObject(with: Self.simulatorJSON) as? [String: Any])
         catalog["pairs"] = [

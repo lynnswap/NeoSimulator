@@ -68,6 +68,8 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     public let deviceTypeIdentifier: String?
     public let isAvailable: Bool
     public let lastUsedAt: Date?
+    /// Creation date of the simulator's device directory, when available.
+    public let createdAt: Date?
     public let capabilities: Set<String>
     public let pairIdentifiers: Set<String>
     /// The active companion in the same simulator device set, when the catalog identifies one.
@@ -75,7 +77,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
     /// CoreDevice's matching default-set record, including host connection information.
     public let coreDevice: CoreDeviceDevice?
 
-    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, catalogXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
+    public init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, catalogXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, createdAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -90,6 +92,7 @@ public struct SimulatorHostDevice: Sendable, Equatable {
         self.deviceTypeIdentifier = deviceTypeIdentifier
         self.isAvailable = isAvailable
         self.lastUsedAt = lastUsedAt
+        self.createdAt = createdAt
         self.capabilities = capabilities
         self.pairIdentifiers = pairIdentifiers
         self.activePairedDeviceID = activePairedDeviceID
@@ -1131,6 +1134,7 @@ enum SimulatorDeviceCatalog {
             let state: String
             let isAvailable: Bool
             let lastUsedAt: String?
+            let dataPath: String?
         }
         struct DeviceType: Decodable {
             let identifier: String
@@ -1192,6 +1196,10 @@ enum SimulatorDeviceCatalog {
                     deviceTypeIdentifier: device.deviceTypeIdentifier,
                     isAvailable: available,
                     lastUsedAt: lastUsedAt,
+                    createdAt: device.dataPath.flatMap { path in
+                        try? URL(filePath: path).deletingLastPathComponent()
+                            .resourceValues(forKeys: [.creationDateKey]).creationDate
+                    },
                     pairIdentifiers: Set((catalog.pairs ?? [:]).compactMap { pairID, pair in
                         pair.watch.udid == device.udid || pair.phone.udid == device.udid ? pairID : nil
                     }),

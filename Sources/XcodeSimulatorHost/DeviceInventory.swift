@@ -208,6 +208,15 @@ public enum InventoryDevice: Equatable, Sendable, Identifiable {
         }
     }
 
+    /// Latest known creation, use, or connection time for the device.
+    public var lastActivityDate: Date? {
+        switch self {
+        case .simulator(let device):
+            [device.createdAt, device.lastUsedAt, device.coreDevice?.lastConnectedAt].compactMap { $0 }.max()
+        case .remote(let device): device.lastConnectedAt
+        }
+    }
+
     /// CoreDevice connection time; custom device sets do not borrow default-set metadata.
     public var lastConnectionDate: Date? {
         switch self {
@@ -358,7 +367,7 @@ extension SimulatorHostDevice {
              runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
              catalogXcodeURL: catalogXcodeURL, deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
              isAvailable: isAvailable,
-             lastUsedAt: lastUsedAt, capabilities: capabilities ?? coreDevice?.capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
+             lastUsedAt: lastUsedAt, createdAt: createdAt, capabilities: capabilities ?? coreDevice?.capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
              activePairedDeviceID: activePairedDeviceID, coreDevice: coreDevice ?? self.coreDevice)
     }
 }

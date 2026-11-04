@@ -148,7 +148,7 @@ struct DeviceBrowserPresentation {
 
     // DeviceKit files a device being provisioned under the current date.
     private static func recentDate(_ device: InventoryDevice, now: Date) -> Date? {
-        isBeingProvisioned(device) ? now : device.lastConnectionDate
+        isBeingProvisioned(device) ? now : device.lastActivityDate
     }
 
     private static func reality(_ device: InventoryDevice) -> String {

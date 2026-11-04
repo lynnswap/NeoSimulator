@@ -420,26 +420,26 @@ struct ManagerModelTests {
         #expect(presentation.sections.map(\.id) == [expected])
     }
 
-    @Test func recentUsesJoinedConnectionTimeWithoutBorrowingCustomSetMetadata() async throws {
-        let defaultDevice = simulator(name: "Default", lastUsedAt: .distantFuture)
-        let customDevice = simulator(deviceSet: "/tmp/sidebar-custom-set", name: "Custom", lastUsedAt: .distantFuture)
+    @Test func recentUsesSimulatorActivityWithoutBorrowingCustomSetMetadata() async throws {
+        let defaultDevice = simulator(name: "Default", lastUsedAt: Date(timeIntervalSinceReferenceDate: 200))
+        let customDevice = simulator(deviceSet: "/tmp/sidebar-custom-set", name: "Custom", lastUsedAt: Date(timeIntervalSinceReferenceDate: 300))
+        let newDevice = simulator(deviceSet: "/tmp/sidebar-new-set", name: "New", createdAt: Date(timeIntervalSinceReferenceDate: 400))
         let payload = Data(#"""
         {"result":{"devices":[{"identifier":"core-record","properties":{
           "hardware":{"reality":"simulated","udid":"same-udid"},"state":{"name":"Default"},
           "connection":{"state":"unavailable","lastConnectionDate":100}}}]}}
         """#.utf8)
         let snapshot = await DeviceInventoryReader(
-            readSimulators: { DeviceInventorySnapshot(devices: [defaultDevice, customDevice], issues: []) },
+            readSimulators: { DeviceInventorySnapshot(devices: [defaultDevice, customDevice, newDevice], issues: []) },
             readCoreDevices: { payload }).read()
         #expect(snapshot.issues.isEmpty)
         #expect(snapshot.devices.first { $0.id == defaultDevice.id }?.lastConnectionDate == Date(timeIntervalSinceReferenceDate: 100))
         #expect(snapshot.devices.first { $0.id == customDevice.id }?.lastConnectionDate == nil)
         let presentation = DeviceBrowserPresentation(devices: snapshot.devices, sortOrder: .recent)
-        #expect(presentation.sections.count == 2)
-        #expect(presentation.sections.last?.id == "Other")
-        #expect(presentation.sections.last?.devices.map(\.id) == [customDevice.id])
+        #expect(presentation.sections.count == 1)
+        #expect(presentation.devices.map(\.id) == [newDevice.id, customDevice.id, defaultDevice.id])
         let availability = DeviceBrowserPresentation(devices: snapshot.devices, sortOrder: .availability)
-        #expect(availability.sections.first?.devices.map(\.id) == [customDevice.id])
+        #expect(Set(availability.sections.first?.devices.map(\.id) ?? []) == Set([customDevice.id, newDevice.id]))
         #expect(availability.sections.last?.devices.map(\.id) == [defaultDevice.id])
     }
 
@@ -2069,7 +2069,7 @@ struct ManagerModelTests {
     }
 
     @Test(.timeLimit(.minutes(1)), arguments: [false, true])
-    func retiringAnOpenPublishesInventoryEventsDeferredWhileBusy(_ cancelled: Bool) async throws {
+    func retiringAnOpenPublishesRefreshRequestsDeferredWhileBusy(_ cancelled: Bool) async throws {
         func remote(_ name: String) throws -> InventoryDevice {
             let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [["identifier": "remote",
                 "properties": ["hardware": ["reality": "physical"], "state": ["name": name]]]]]])
@@ -2086,7 +2086,7 @@ struct ManagerModelTests {
         manager.openDevice(next.id)
         #expect(await events.next() == .open(next.id))
         await source.setDevices([device, next, try remote("Updated")])
-        await manager.inventoryDidChange()
+        await manager.refresh()
         #expect(manager.isBusy && manager.inventory.last?.name == "Original")
         if cancelled {
             manager.cancelOpening(device.id)
@@ -3657,10 +3657,10 @@ struct ManagerModelTests {
     }
 
     private func simulator(deviceSet: String? = nil, name: String = "Test Phone", state: String = "Booted",
-                           lastUsedAt: Date? = nil) -> InventoryDevice {
+                           lastUsedAt: Date? = nil, createdAt: Date? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: "same-udid", name: name, descriptiveName: name,
             runtimeIdentifier: "test-runtime", runtimeName: "iOS", productFamily: "iPhone", state: state,
-            deviceSetPath: deviceSet, lastUsedAt: lastUsedAt, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
+            deviceSetPath: deviceSet, lastUsedAt: lastUsedAt, createdAt: createdAt, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
     }
 
     private func settings(appearance: String, contentSize: String? = nil) -> SimulatorDeviceSettings {
