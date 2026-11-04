@@ -566,7 +566,11 @@ final class SimulatorManagerModel {
     }
 
     func refresh() async {
-        guard !stopping, !isBusy, !refreshing else { return }
+        guard !stopping else { return }
+        if isBusy || refreshing {
+            inventoryRefreshRequested = true
+            return
+        }
         await refreshCatalog()
     }
 
