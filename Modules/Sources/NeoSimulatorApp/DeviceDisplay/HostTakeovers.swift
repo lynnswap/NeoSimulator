@@ -17,9 +17,13 @@ final class HostTakeovers<Member: AnyObject> {
 
     private var takeovers: [Takeover] = []
     private var opening: Takeover?
+    private let didBegin: () -> Void
     private let report: (any Error) -> Void
 
-    init(report: @escaping (any Error) -> Void) { self.report = report }
+    init(didBegin: @escaping () -> Void = {}, report: @escaping (any Error) -> Void) {
+        self.didBegin = didBegin
+        self.report = report
+    }
 
     func begin(_ member: Member, hostName: String, checkOthers: () -> Void) {
         if let opening {
@@ -31,6 +35,7 @@ final class HostTakeovers<Member: AnyObject> {
         opening = takeover
         defer { opening = nil }
         checkOthers()
+        didBegin()
     }
 
     func end(_ member: Member, failure: (any Error)?) {

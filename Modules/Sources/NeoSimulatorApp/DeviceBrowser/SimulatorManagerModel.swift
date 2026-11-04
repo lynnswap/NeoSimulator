@@ -213,6 +213,12 @@ final class SimulatorManagerModel {
         for identifier in openingDeviceIDs { cancelOpening(identifier) }
     }
 
+    func cancelPendingSimulatorOpens() {
+        for identifier in openingDeviceIDs {
+            if case .simulator = identifier { cancelOpening(identifier) }
+        }
+    }
+
     init(rendererApplicationURL: URL,
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil,
          serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
