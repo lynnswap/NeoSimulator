@@ -48,7 +48,20 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         let wasShutDown = devices.first { $0.id == id }?.state == .shutDown
         if wasShutDown { guestToShutDown = id }
         _ = try await context.boot(id)
-        let screen = try await context.openScreen(id)
+        let screen: SimulatorScreen
+        if arguments.contains("--exercise") {
+            let first = Task.immediate { try await context.openScreen(id) }
+            let cancelled = Task.immediate { try await context.openScreen(id) }
+            cancelled.cancel()
+            let second = Task.immediate { try await context.openScreen(id) }
+            screen = try await first.value
+            guard try await second.value === screen else {
+                throw SimulatorError.operation("Concurrent opens created different screens.")
+            }
+            do { _ = try await cancelled.value } catch is CancellationError {} catch { throw error }
+        } else {
+            screen = try await context.openScreen(id)
+        }
         self.screen = screen
         screen.onEnd = { print("Screen ended: \($0)") }
         NSApp.setActivationPolicy(.regular)
@@ -81,18 +94,30 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
             var end: SimulatorScreenEnd?
             screen.onEnd = { end = $0; print("Screen ended: \($0)") }
             try screen.press(.home) { [weak self] in self?.asynchronousFailures.append($0.localizedDescription) }
-            try await screen.close()
+            let closing = Task.immediate { try await screen.close() }
+            let secondClose = Task.immediate { try await screen.close() }
+            let reopening = Task.immediate { try await context.openScreen(id) }
+            try await closing.value
+            try await secondClose.value
             guard screen.isClosed, end == .closed,
                   try await context.devices().contains(where: { $0.id == id && $0.state == .booted }) else {
                 throw SimulatorError.operation("Closing the screen did not preserve the running guest.")
             }
-            self.screen = try await context.openScreen(id)
+            self.screen = try await reopening.value
+            guard self.screen !== screen else {
+                throw SimulatorError.operation("Reopening during close returned the closing screen.")
+            }
             try self.screen?.showWindow()
             try await Task.sleep(for: .seconds(1))
             if guestToShutDown == id {
                 end = nil
                 self.screen?.onEnd = { end = $0 }
-                try await context.shutDown(id)
+                let closing = Task.immediate { try await self.screen?.close() }
+                let stopping = Task.immediate { try await context.shutDown(id) }
+                let secondStop = Task.immediate { try await context.shutDown(id) }
+                try await closing.value
+                try await stopping.value
+                try await secondStop.value
                 guestToShutDown = nil
                 guard self.screen?.isClosed == true, end == .deviceStopped else {
                     throw SimulatorError.operation("Shutting down did not end the screen.")

@@ -90,6 +90,10 @@ final class SimulatorScreenHost: NSObject {
     }
 
     func controller(for identifier: SimulatorDeviceIdentifier) -> DeviceWindowController? { sessions[identifier] }
+    func hasUnfinishedCleanup(for identifier: SimulatorDeviceIdentifier) -> Bool {
+        disconnectedSessions.contains { $0.device.identity == identifier }
+            || (sessions[identifier] == nil && externalDisplayQueues[identifier] != nil)
+    }
     func adopt(_ identifier: SimulatorDeviceIdentifier) { ownedDeviceIdentifiers.insert(identifier) }
     func creationCatalog() throws -> SimulatorCatalog { try deviceSet.readCatalog() }
     func refreshLocationSelection(for identifier: SimulatorDeviceIdentifier) throws {
@@ -442,7 +446,12 @@ final class SimulatorScreenHost: NSObject {
         while sessions[identifier] == nil || awaitingReconnect[identifier] != nil {
             try Task.checkCancellation()
             guard !stopped, !isTerminating, !releasingDevices.contains(identifier),
-                  !isManaged || ownedDeviceIdentifiers.contains(identifier) else { throw CancellationError() }
+                  !(isManaged || isInProcess) || ownedDeviceIdentifiers.contains(identifier) else { throw CancellationError() }
+            if !bootIfNeeded {
+                guard try availableSimulatorDevices().contains(where: { $0.identity == identifier && $0.isBooted }) else {
+                    throw SimulatorError.operation("The simulator is no longer running, so its display was not attached.")
+                }
+            }
             try scanDevices()
             if let pending = connections[identifier] {
                 if preservesConnection { await pending.value }

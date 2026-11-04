@@ -80,7 +80,9 @@ public final class SimulatorContext {
     private var boots: [SimulatorDeviceIdentifier: Task<SimulatorBootOutcome, any Error>] = [:]
     private var invalidation: Task<Void, any Error>?
     private var isInvalidating = false
-    private var endingScreens: Set<SimulatorDeviceIdentifier> = []
+    private var openings: [SimulatorDeviceIdentifier: Task<SimulatorScreen, any Error>] = [:]
+    private final class ReleaseIntent { var shutsDownGuest = false }
+    private var releases: [SimulatorDeviceIdentifier: (intent: ReleaseIntent, task: Task<Void, any Error>)] = [:]
 
     /// Reports asynchronous connection failures, including a competing display host.
     public var onError: ((any Error) -> Void)?
@@ -114,10 +116,16 @@ public final class SimulatorContext {
         self.engine = engine
         engine.onChange = { [weak self] in self?.reconcileScreens() }
         engine.onClose = { [weak self] id, _, finishing in
-            self?.finishScreen(id, reason: .closed)
+            guard let self else { return }
+            if self.isInvalidating {
+                self.finishScreen(id, reason: .contextInvalidated)
+                return
+            }
+            let task = self.beginRelease(id, shutsDownGuest: false, finishing: finishing)
+            self.finishScreen(id, reason: .closed)
             Task {
-                do { try await finishing.value }
-                catch { self?.report(error) }
+                do { try await task.value }
+                catch { self.report(error) }
             }
         }
         engine.onError = { [weak self] error in self?.report(error) }
@@ -149,6 +157,11 @@ public final class SimulatorContext {
     /// Concurrent callers for the same device share the boot operation.
     public func boot(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorBootOutcome {
         try checkActive()
+        if let release = releases[id] {
+            try await CoreDeviceRuntime.preparedValue(of: release.task)
+            try checkActive()
+        }
+        try Task.checkCancellation()
         if let task = boots[id] { return try await CoreDeviceRuntime.preparedValue(of: task) }
         let task = Task {
             defer { self.boots[id] = nil }
@@ -174,34 +187,87 @@ public final class SimulatorContext {
     }
 
     /// Attaches to an already running guest. Call `boot(_:)` first when necessary.
-    /// Reopening an attached device returns the same screen.
+    /// Reopening an attached device returns the same screen. Concurrent callers share
+    /// the connection; canceling one caller only cancels that caller's wait.
     public func openScreen(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorScreen {
         try checkActive()
+        if let release = releases[id] {
+            try await CoreDeviceRuntime.preparedValue(of: release.task)
+            try checkActive()
+        }
+        try Task.checkCancellation()
         if let screen = screens[id] { return screen }
-        let device = SimulatorDeviceSnapshot(try self.device(id))
-        let controller = try await engine.openPresentation(for: id)
-        try checkActive()
-        if let screen = screens[id] { return screen }
-        let screen = SimulatorScreen(device: device, controller: controller, context: self)
-        screens[id] = screen
-        return screen
+        if let opening = openings[id] { return try await waitForScreen(opening) }
+        let task = Task {
+            defer { self.openings[id] = nil }
+            if self.engine.hasUnfinishedCleanup(for: id) { try await self.engine.releasePresentation(for: id) }
+            let device = SimulatorDeviceSnapshot(try self.device(id))
+            let controller = try await self.engine.openPresentation(for: id)
+            try self.checkActive()
+            let screen = SimulatorScreen(device: device, controller: controller, context: self)
+            self.screens[id] = screen
+            return screen
+        }
+        openings[id] = task
+        return try await waitForScreen(task)
+    }
+
+    private func waitForScreen(_ opening: Task<SimulatorScreen, any Error>) async throws -> SimulatorScreen {
+        do { return try await CoreDeviceRuntime.preparedValue(of: opening) }
+        catch is CancellationError where !Task.isCancelled {
+            try checkActive()
+            throw SimulatorError.operation("The simulator screen was closed before it finished opening.")
+        }
     }
 
     /// Finishes this device's screen resources, then shuts down its guest.
+    /// Concurrent close and shutdown calls join the same cleanup operation.
     public func shutDown(_ id: SimulatorDeviceIdentifier) async throws {
         try checkActive()
-        if let boot = boots[id] {
-            boot.cancel()
-            _ = await boot.result
+        try Task.checkCancellation()
+        try await beginRelease(id, shutsDownGuest: true).value
+    }
+
+    private func beginRelease(_ id: SimulatorDeviceIdentifier, shutsDownGuest: Bool,
+                              finishing: Task<Void, any Error>? = nil) -> Task<Void, any Error> {
+        if let release = releases[id] {
+            if shutsDownGuest { release.intent.shutsDownGuest = true }
+            return release.task
         }
-        endingScreens.insert(id)
-        defer { endingScreens.remove(id) }
-        try await engine.releasePresentation(for: id)
-        finishScreen(id, reason: .deviceStopped)
-        if try device(id).state != 1 {
-            let tools = try DeviceTools(identifier: id.identifier, xcodeURL: xcodeURL, deviceSetPath: id.deviceSetPath)
-            try await tools.shutdown()
+        let intent = ReleaseIntent()
+        intent.shutsDownGuest = shutsDownGuest
+        let task = Task {
+            defer { self.releases[id] = nil }
+            do {
+                if let opening = self.openings[id] { opening.cancel(); _ = await opening.result }
+                if let boot = self.boots[id] { boot.cancel(); _ = await boot.result }
+                try await finishing?.value
+                try await self.engine.releasePresentation(for: id)
+                if intent.shutsDownGuest {
+                    let state = try self.device(id).state
+                    if state != 1 && state != 4 {
+                        let tools = try DeviceTools(identifier: id.identifier, xcodeURL: self.xcodeURL,
+                                                    deviceSetPath: id.deviceSetPath)
+                        try await tools.shutdown()
+                    }
+                    let deadline = ContinuousClock.now + .seconds(120)
+                    while try self.device(id).state != 1 {
+                        guard ContinuousClock.now < deadline else {
+                            throw SimulatorError.operation("The simulator did not finish shutting down.")
+                        }
+                        try await Task.sleep(for: .milliseconds(100))
+                    }
+                    self.finishScreen(id, reason: .deviceStopped)
+                } else {
+                    self.finishScreen(id, reason: .closed)
+                }
+            } catch {
+                if !self.engine.openedDeviceIdentifiers.contains(id) { self.finishScreen(id, reason: .closed) }
+                throw error
+            }
         }
+        releases[id] = (intent, task)
+        return task
     }
 
     /// Releases every screen without shutting down guests.
@@ -210,11 +276,20 @@ public final class SimulatorContext {
         if let invalidation { try await invalidation.value; return }
         isInvalidating = true
         let task = Task {
-            let pending = Array(self.boots.values)
-            pending.forEach { $0.cancel() }
-            for task in pending { _ = await task.result }
+            let pendingBoots = Array(self.boots.values)
+            let pendingOpens = Array(self.openings.values)
+            pendingBoots.forEach { $0.cancel() }
+            pendingOpens.forEach { $0.cancel() }
+            for task in pendingBoots { _ = await task.result }
+            for task in pendingOpens { _ = await task.result }
+            var failures: [String] = []
+            for release in Array(self.releases.values) {
+                do { try await release.task.value } catch { failures.append(error.localizedDescription) }
+            }
             Array(self.screens.keys).forEach { self.finishScreen($0, reason: .contextInvalidated) }
-            try await self.engine.stop(keepingDevicesRunning: true)
+            do { try await self.engine.stop(keepingDevicesRunning: true) }
+            catch { failures.append(error.localizedDescription) }
+            if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
         }
         invalidation = task
         defer { invalidation = nil }
@@ -222,12 +297,14 @@ public final class SimulatorContext {
     }
 
     fileprivate func close(_ screen: SimulatorScreen) async throws {
-        guard screens[screen.device.id] === screen else { return }
+        if let invalidation { try await invalidation.value; return }
         let id = screen.device.id
-        endingScreens.insert(id)
-        defer { endingScreens.remove(id) }
-        try await engine.releasePresentation(for: id)
-        finishScreen(id, reason: .closed)
+        if let release = releases[id] { try await release.task.value; return }
+        guard screens[id] === screen else {
+            if engine.hasUnfinishedCleanup(for: id) { try await beginRelease(id, shutsDownGuest: false).value }
+            return
+        }
+        try await beginRelease(id, shutsDownGuest: false).value
     }
 
     private func device(_ id: SimulatorDeviceIdentifier) throws -> AvailableDevice {
@@ -245,7 +322,7 @@ public final class SimulatorContext {
 
     private func reconcileScreens() {
         guard !engine.isStopped else { return }
-        for id in screens.keys where !endingScreens.contains(id) && !engine.openedDeviceIdentifiers.contains(id) {
+        for id in screens.keys where releases[id] == nil && !engine.openedDeviceIdentifiers.contains(id) {
             finishScreen(id, reason: .deviceStopped)
         }
     }
@@ -261,6 +338,7 @@ public final class SimulatorContext {
     isolated deinit {
         Array(screens.values).forEach { $0.finish(.contextInvalidated) }
         boots.values.forEach { $0.cancel() }
+        openings.values.forEach { $0.cancel() }
         let engine = engine
         Task {
             do { try await engine.stop(keepingDevicesRunning: true) }
@@ -324,6 +402,8 @@ public final class SimulatorScreen {
     }
 
     /// Releases this screen's resources without shutting down the guest.
+    /// If cleanup fails after the screen closes, this throws and `isClosed` remains true.
+    /// Call again, or invalidate the context, to retry the unfinished cleanup.
     public func close() async throws {
         try await context?.close(self)
     }
