@@ -6,12 +6,6 @@ import XcodeSimulatorHost
 final class DeviceBrowserState {
     @ObservationIgnored private let defaults: UserDefaults
 
-    var sidebarIsCollapsed: Bool {
-        didSet { if sidebarIsCollapsed != oldValue { defaults.set(sidebarIsCollapsed, forKey: "SidebarIsCollapsed") } }
-    }
-    var inspectorIsCollapsed: Bool {
-        didSet { if inspectorIsCollapsed != oldValue { defaults.set(inspectorIsCollapsed, forKey: "InspectorIsCollapsed") } }
-    }
     var inspectorTab: Int {
         didSet { if inspectorTab != oldValue { defaults.set(inspectorTab, forKey: "InspectorTab") } }
     }
@@ -28,8 +22,6 @@ final class DeviceBrowserState {
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
-        sidebarIsCollapsed = defaults.bool(forKey: "SidebarIsCollapsed")
-        inspectorIsCollapsed = defaults.bool(forKey: "InspectorIsCollapsed")
         let tab = defaults.integer(forKey: "InspectorTab")
         inspectorTab = (0..<4).contains(tab) ? tab : 0
         inspectorContent = DeviceInspectorModel.Content(rawValue: defaults.integer(forKey: "InspectorContent")) ?? .info

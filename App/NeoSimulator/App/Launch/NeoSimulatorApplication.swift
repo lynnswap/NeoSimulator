@@ -23,7 +23,7 @@ enum NeoSimulatorApplication {
         // pasteboard synchronization reads its saved choice or default when created.
         SimulatorPreferences.migrateStandalonePreferences()
         HostPreferences.registerDefaults()
-        let delegate = AppDelegate()
+        let delegate = AppDelegate(splitViewAutosaveName: "NeoSimulatorDevices")
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
     }
