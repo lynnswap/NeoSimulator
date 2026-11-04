@@ -65,6 +65,50 @@ struct HostModeControllerTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func initializationTimeoutRetiresItsWaiterWithoutCancellingSharedPreparation() async throws {
+        var finish: CheckedContinuation<Int, any Error>?
+        let preparation = Task.immediate {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, any Error>) in
+                finish = continuation
+            }
+        }
+        do {
+            _ = try await CoreDeviceRuntime.preparedValue(of: preparation, deadline: ContinuousClock.now)
+            Issue.record("An unfinished initialization ignored its deadline")
+        } catch {
+            #expect((error as? CLIError)?.identifier == "coredevice-initialization-timeout")
+        }
+        #expect(!preparation.isCancelled)
+        finish?.resume(returning: 42)
+        #expect(try await CoreDeviceRuntime.preparedValue(of: preparation) == 42)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func stalledScreenOpenDoesNotHoldAnotherDevicesTransaction() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let first = controller.makeScreenOpenRequest(for: .simulator(udid: "A", deviceSetPath: nil))
+        let second = controller.makeScreenOpenRequest(for: .simulator(udid: "B", deviceSetPath: nil))
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let opening = Task {
+            try await controller.screenOpen(first) {
+                entered.continuation.yield(())
+                for await _ in release.stream { break }
+                try Task.checkCancellation()
+            }
+        }
+        var events = entered.stream.makeAsyncIterator()
+        await events.next()
+        try await controller.screenOpen(second) {
+            let value = try await controller.operation { @Sendable in 42 }
+            #expect(value == 42)
+        }
+        first.cancel()
+        release.continuation.yield(())
+        await #expect(throws: CancellationError.self) { try await opening.value }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func cancellingAQueuedIntentAlsoRetiresAnOlderAutomaticOpen() async throws {
         let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
         let device = DeviceInventoryID.simulator(udid: "A", deviceSetPath: nil)

@@ -1922,6 +1922,44 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
+    @Test func stalledScreenOpenDoesNotBlockAnotherDeviceAndCancellationStaysPerDevice() async throws {
+        let running = simulator()
+        let stopped = simulator(deviceSet: "/other-set", state: "Shutdown")
+        let source = ManagerModelSource(devices: [running, stopped])
+        defer {
+            Task {
+                await source.completeOpen(for: running.id)
+                await source.completeOpen(for: stopped.id)
+            }
+        }
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+
+        manager.openDevice(running.id)
+        #expect(await events.next() == .open(running.id))
+        let window = ManagerWindowController(model: manager, screens: DeviceScreens(model: manager),
+                                             menus: MenuController(application: nil))
+        window.window?.setFrameAutosaveName("")
+        defer { window.window?.close() }
+        window.selectDevice(stopped.id)
+        window.update()
+        let content = try #require(window.window?.contentView)
+        let start = try #require(inspectorViews(content).compactMap { $0 as? NSButton }.first { $0.title == "Start" })
+        try #require(start.isEnabled)
+        start.performClick(nil)
+        #expect(await events.next() == .open(stopped.id))
+        #expect(await source.lastOpenBootIfNeeded == true)
+        manager.cancelOpening(running.id)
+        #expect(source.cancelledOpenIDs == [running.id])
+        await source.completeOpen(for: stopped.id)
+        try await wait { !manager.openingDeviceIDs.contains(stopped.id) }
+        #expect(manager.openingDeviceIDs == [running.id])
+        await source.completeOpen(for: running.id)
+        try await wait { !manager.isBusy }
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func acceptedEditsMergeSnapshotsAndDrainBeforeQuit() async throws {
         let device = simulator()
         let queued = simulator(deviceSet: "/queued-device-set")
@@ -1939,6 +1977,7 @@ struct ManagerModelTests {
         // A device that stops before the request reaches its host must not boot beside these edits.
         #expect(await source.lastOpenBootIfNeeded == false)
         manager.openDevice(queued.id)
+        #expect(await events.next() == .open(queued.id))
         #expect(manager.openingDeviceIDs == [device.id, queued.id])
         #expect(manager.isBusy && !manager.holdsSettingsEdits)
         manager.setDeviceSetting(.appearance("dark"), for: device.id)
@@ -1951,7 +1990,8 @@ struct ManagerModelTests {
         manager.cancelOpening(device.id)
         #expect(source.cancelledOpenIDs == [device.id, queued.id])
         // The lower IPC deliberately returns success after cancellation.
-        await source.completeOpen()
+        await source.completeOpen(for: device.id)
+        await source.completeOpen(for: queued.id)
         await source.completeWrite()
         #expect(await events.next() == .write(device.id))
         let inputs = await source.writeInputs
@@ -2036,6 +2076,7 @@ struct ManagerModelTests {
         manager.openDevice(device.id)
         #expect(await events.next() == .open(device.id))
         manager.openDevice(next.id)
+        #expect(await events.next() == .open(next.id))
         await source.setDevices([device, next, try remote("Updated")])
         await manager.inventoryDidChange()
         #expect(manager.isBusy && manager.inventory.last?.name == "Original")
@@ -2043,9 +2084,8 @@ struct ManagerModelTests {
             manager.cancelOpening(device.id)
             await source.completeOpen()
         } else { await source.failOpen() }
-        // Admission of the next FIFO operation follows retirement of the first open and its refresh.
-        #expect(await events.next() == .open(next.id))
-        #expect(manager.inventory.last?.name == "Updated")
+        try await wait { manager.inventory.last?.name == "Updated" }
+        #expect(manager.openingDeviceIDs == [next.id])
         await source.completeOpen()
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
@@ -2059,15 +2099,20 @@ struct ManagerModelTests {
         manager.openDevice(device.id)
         #expect(await events.next() == .open(device.id))
         manager.openDevice(queued.id)
+        #expect(await events.next() == .open(queued.id))
         await source.holdInventoryReads()
         await source.completeOpen()
         #expect(await events.next() == .inventory)
         #expect(manager.openingDeviceIDs == [queued.id])
+        manager.openDevice(device.id)
+        manager.cancelOpening(device.id)
+        #expect(manager.openingDeviceIDs == [queued.id])
         let quitting = Task.immediate { try await manager.quitRenderer(keepingDevicesRunning: true) }
-        #expect(source.cancelledOpenIDs == [queued.id])
+        #expect(source.cancelledOpenIDs == [device.id, queued.id])
+        await source.completeOpen(for: queued.id)
         await source.completeInventoryRead()
         try await quitting.value
-        // Quit withdrew the queued open before admission and did not close the opened screen.
+        // Quit cancelled only the unfinished open and did not close the opened screen.
         #expect(await events.next() == .quit)
     }
 
@@ -3648,7 +3693,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var failsClose = false
     private var immediateRead: SimulatorDeviceSettings?
     private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
-    private var openContinuation: CheckedContinuation<Void, any Error>?
+    private var openContinuations: [(DeviceInventoryID, CheckedContinuation<Void, any Error>)] = []
     private var writeContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
     private var pendingWrite: SimulatorDeviceSettings?
     private(set) var writeInputs: [SimulatorDeviceSettings?] = []
@@ -3819,12 +3864,18 @@ actor ManagerModelSource: SimulatorManagerSource {
         lastOpenXcodeURL = xcodeURL
         lastOpenBootIfNeeded = bootIfNeeded
         try await withCheckedThrowingContinuation { waiting in
-            openContinuation = waiting
+            openContinuations.append((deviceID, waiting))
             continuation.yield(.open(deviceID))
         }
     }
-    func completeOpen() { openContinuation?.resume(); openContinuation = nil }
-    func failOpen() { openContinuation?.resume(throwing: Failure.unavailable); openContinuation = nil }
+    func completeOpen(for deviceID: DeviceInventoryID? = nil) {
+        guard let index = openContinuations.firstIndex(where: { deviceID == nil || $0.0 == deviceID }) else { return }
+        openContinuations.remove(at: index).1.resume()
+    }
+    func failOpen() {
+        guard !openContinuations.isEmpty else { return }
+        openContinuations.removeFirst().1.resume(throwing: Failure.unavailable)
+    }
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) throws {
         continuation.yield(.close(deviceID))
         if failsClose { throw Failure.native }

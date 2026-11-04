@@ -163,6 +163,8 @@ final class DeviceScreens {
         if let host = hosts[sourceURL] { return host }
         let runtime = try await SimulatorRuntime.load(xcodeURL: sourceURL, uiXcodeURL: displayXcodeURL)
         try Task.checkCancellation()
+        // Another device may have created this Xcode's host while the shared runtime was loading.
+        if let host = hosts[sourceURL] { return host }
         let host = try HostApplication(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true,
                                        pasteboardSync: pasteboardSync)
         host.onError = { [weak self] error in self?.onError?(error) }

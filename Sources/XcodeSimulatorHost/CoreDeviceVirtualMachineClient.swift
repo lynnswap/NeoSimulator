@@ -21,7 +21,6 @@ final class CoreDeviceManagementClient {
     private let runtime: ABIRuntime
     private let remoteType: NativeSwiftType
     private let manager: NativeSwiftValue
-    private let initialize: NativeSwiftMethod<() async -> Void>
     private let devices: NativeSwiftMethod<() -> [UUID: NativeSwiftValue]>
     private let supportsFeature: NativeSwiftMethod<(String) -> Bool>
 
@@ -54,7 +53,6 @@ final class CoreDeviceManagementClient {
         manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
         runtime = .shared
         let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        initialize = try managerType.resolveAndWait(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
         devices = try managerType.resolveAndWait(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
         remoteType = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
         supportsFeature = try remoteType.resolveAndWait(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
@@ -68,7 +66,7 @@ final class CoreDeviceManagementClient {
         guard let uuid = UUID(uuidString: identifier) else {
             throw CLIError.configuration("coredevice-identifier", "The selected CoreDevice identifier is not a UUID.")
         }
-        try await unsafe initialize.unsafeInvoke(on: manager)
+        try await CoreDeviceRuntime.initializeDeviceManager()
         try Task.checkCancellation()
         guard let remote = try unsafe devices.unsafeInvoke(on: manager)[uuid] else {
             throw CLIError.unavailable("coredevice-device", "The selected device is no longer available.")

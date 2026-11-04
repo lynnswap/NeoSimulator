@@ -80,14 +80,12 @@ private final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
     @MainActor
     private struct Bindings {
         let manager: NativeSwiftValue
-        let initializeManager: NativeSwiftMethod<() async -> Void>
         let changes: NativeSwiftMethod<() -> NativeSwiftValue>
 
         init() async throws {
             manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
             let runtime = ABIRuntime.shared
             let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
-            initializeManager = try await managerType.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
             let remote = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
             let dictionary = try await runtime.resolve(.swift(.type("Swift.Dictionary",
                 genericArguments: [.type(UUID.self), .type(remote)])))
@@ -103,7 +101,7 @@ private final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
     func initialize() async throws {
         let bindings = try await Bindings()
         try Task.checkCancellation()
-        try await unsafe bindings.initializeManager.unsafeInvoke(on: bindings.manager)
+        try await CoreDeviceRuntime.initializeDeviceManager()
         try Task.checkCancellation()
         self.bindings = bindings
     }
