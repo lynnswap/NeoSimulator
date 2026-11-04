@@ -204,7 +204,8 @@ struct DeviceCommand {
         DeviceCommand(id: .siri, title: "Siri", key: "h", modifiers: [.command, .option, .shift],
                       isSupported: { $0.supportsFeature(DeviceCapabilities.siri) }) { $0.send(.press(.button(.siri))) },
         DeviceCommand(id: .shake, title: "Shake", key: "z", modifiers: [.command, .control],
-                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.shake() } },
+                      isSupported: { $0.isPhoneOrPad },
+                      isEnabled: { $0.session.canPerformToolOperation }) { controller in controller.runAsync { try await controller.session.shake() } },
         DeviceCommand(id: .appSwitcher, title: "App Switcher", key: "h", modifiers: [.command, .control, .shift],
                       isSupported: { $0.isPhoneOrPad }) {
             $0.send(.pressTwice(.button(.home), interval: .milliseconds(150)))
@@ -271,13 +272,15 @@ struct DeviceCommand {
         DeviceCommand(id: .toggleAppearance, title: "Toggle Appearance", key: "a", modifiers: [.command, .shift],
                       isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.toggleAppearance() } },
         DeviceCommand(id: .toggleInCallStatusBar, title: "Toggle In-call Status Bar", key: "y",
-                      isSupported: { $0.isPhoneOrPad }) { controller in
-            controller.run { try controller.session.toggleInCallStatusBar() }
+                      isSupported: { $0.isPhoneOrPad },
+                      isEnabled: { $0.session.canPerformToolOperation }) { controller in
+            controller.runAsync { try await controller.session.toggleInCallStatusBar() }
         },
         DeviceCommand(id: .toggleStandBy, title: "Show StandBy",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.standBy) },
+                      isEnabled: { $0.session.canPerformToolOperation },
                       stateTitle: { $0.session.showsStandBy ? "Hide StandBy" : "Show StandBy" }) { controller in
-            controller.run { try controller.session.toggleStandBy() }
+            controller.runAsync { try await controller.session.toggleStandBy() }
         },
         DeviceCommand(id: .increaseTextSize, title: "Increase Preferred Text Size", key: "+", modifiers: [.command, .option],
                       isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.changeTextSize(by: 1) } },
@@ -292,9 +295,10 @@ struct DeviceCommand {
         },
         // Debug
         DeviceCommand(id: .toggleSlowAnimations, title: "Toggle Slow Animations in Frontmost App",
+                      isEnabled: { $0.session.canPerformToolOperation },
                       state: { $0.session.keepsSlowAnimations && $0.session.slowAnimations ? .on : .off },
                       stateTitle: { $0.session.keepsSlowAnimations ? "Slow Animations" : "Toggle Slow Animations in Frontmost App" }) { controller in
-            controller.run { try controller.session.toggleSlowAnimations() }
+            controller.runAsync { try await controller.session.toggleSlowAnimations() }
         },
         graphicsQuality(.graphicsQualityDefault, title: "Device Default", .deviceDefault),
         graphicsQuality(.graphicsQualityLow, title: "Low Quality", .low),
@@ -371,8 +375,9 @@ struct DeviceCommand {
     /// A Features ▸ Simulate Fall item, for a device with `SimFeatureFallDetection`.
     private static func fall(_ id: ID, title: String, _ resolution: FallResolution) -> DeviceCommand {
         DeviceCommand(id: id, title: title,
-                      isSupported: { $0.supportsFeature(DeviceCapabilities.fallDetection) }) { controller in
-            controller.run { try controller.session.simulateFall(resolution) }
+                      isSupported: { $0.supportsFeature(DeviceCapabilities.fallDetection) },
+                      isEnabled: { $0.session.canPerformToolOperation }) { controller in
+            controller.runAsync { try await controller.session.simulateFall(resolution) }
         }
     }
 
@@ -380,8 +385,9 @@ struct DeviceCommand {
     /// share one guest state.
     private static func biometricEnrollment(_ id: ID, feature: String) -> DeviceCommand {
         DeviceCommand(id: id, title: "Enrolled", isSupported: { $0.supportsFeature(feature) },
+                      isEnabled: { $0.session.canPerformToolOperation },
                       state: { $0.session.isBiometricEnrolled ? .on : .off }) { controller in
-            controller.run { try controller.session.toggleBiometricEnrollment() }
+            controller.runAsync { try await controller.session.toggleBiometricEnrollment() }
         }
     }
 
@@ -394,8 +400,9 @@ struct DeviceCommand {
                           let faceID = capabilities?.supportsFeature(DeviceCapabilities.faceID) ?? false
                           return biometric == .touchID ? !faceID : faceID
                       },
-                      isSupported: { $0.supportsFeature(biometric.feature) }) { controller in
-            controller.run { try controller.session.sendBiometric(biometric, matching: matching) }
+                      isSupported: { $0.supportsFeature(biometric.feature) },
+                      isEnabled: { $0.session.canPerformToolOperation }) { controller in
+            controller.runAsync { try await controller.session.sendBiometric(biometric, matching: matching) }
         }
     }
 
@@ -414,15 +421,14 @@ struct DeviceCommand {
     private static func graphicsQuality(_ id: ID, title: String, _ quality: GraphicsQuality) -> DeviceCommand {
         DeviceCommand(id: id, title: title,
                       isSupported: { $0.supportsFeature(DeviceCapabilities.graphicsQualityOverride) },
-                      isEnabled: { $0.session.capabilities.family == .tv ? $0.session.canPerformToolOperation
-                                                                         : $0.session.canPerformCommands },
+                      isEnabled: { $0.session.canPerformToolOperation },
                       state: { $0.session.graphicsQuality == quality ? .on : .off }) { controller in
             let session = controller.session
             guard session.capabilities.family == .tv else {
-                return controller.run { try session.setGraphicsQuality(quality) }
+                return controller.runAsync { try await session.setGraphicsQuality(quality) }
             }
             session.run({
-                try session.setGraphicsQuality(quality)
+                try await session.setGraphicsQuality(quality)
                 try await session.restartSystemUI()
             }, failure: { [weak controller] in controller?.present($0) })
         }

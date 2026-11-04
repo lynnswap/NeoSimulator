@@ -741,6 +741,11 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         do { try action() } catch { present(error) }
     }
 
+    /// Runs a guest command without blocking the main thread.
+    func runAsync(_ action: @escaping @MainActor () async throws -> Void) {
+        session.run(action, failure: { [weak self] in self?.present($0) })
+    }
+
     /// Debug ▸ Open System Log…. Opening Console is not a device operation, so
     /// it does not take the device-operation slot.
     func openSystemLog() {

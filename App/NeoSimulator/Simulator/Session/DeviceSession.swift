@@ -803,9 +803,9 @@ final class DeviceSession {
         }
     }
 
-    func shake() throws {
+    func shake() async throws {
         guard canPerformCommands else { return }
-        try display.postNotification("com.apple.UIKit.SimulatorShake")
+        try await display.postNotification("com.apple.UIKit.SimulatorShake")
     }
 
     // MARK: Apple TV Remote
@@ -914,51 +914,51 @@ final class DeviceSession {
         canPerformCommands && (try? display.notificationState(Self.biometricEnrollment)) == 1
     }
 
-    func toggleBiometricEnrollment() throws {
+    func toggleBiometricEnrollment() async throws {
         guard canPerformCommands else { return }
-        try toggleState(of: Self.biometricEnrollment)
+        try await toggleState(of: Self.biometricEnrollment)
     }
 
     /// Presents a matching or non-matching finger, face, or eye to the guest.
-    func sendBiometric(_ biometric: Biometric, matching: Bool) throws {
+    func sendBiometric(_ biometric: Biometric, matching: Bool) async throws {
         guard canPerformCommands else { return }
         let source = switch biometric {
         case .touchID: "fingerTouch"
         case .faceID: "pearl"
         case .opticID: "oyster"
         }
-        try display.postNotification("com.apple.BiometricKit_Sim.\(source).\(matching ? "match" : "nomatch")")
+        try await display.postNotification("com.apple.BiometricKit_Sim.\(source).\(matching ? "match" : "nomatch")")
     }
 
-    func toggleInCallStatusBar() throws {
+    func toggleInCallStatusBar() async throws {
         guard canPerformCommands else { return }
-        try display.postNotification("com.apple.iphonesimulator.toggleincallstatusbar")
+        try await display.postNotification("com.apple.iphonesimulator.toggleincallstatusbar")
     }
 
     /// Reports a simulated fall and its resolution to the guest.
-    func simulateFall(_ resolution: FallResolution) throws {
+    func simulateFall(_ resolution: FallResolution) async throws {
         guard canPerformCommands else { return }
-        try send(resolution.rawValue, to: "com.apple.sos.user-fell")
+        try await send(resolution.rawValue, to: "com.apple.sos.user-fell")
     }
 
     var showsStandBy: Bool { canPerformCommands && (try? display.notificationState(Self.standBy)) == 1 }
 
-    func toggleStandBy() throws {
+    func toggleStandBy() async throws {
         guard canPerformCommands else { return }
-        try toggleState(of: Self.standBy)
+        try await toggleState(of: Self.standBy)
     }
 
     /// Flips a guest notification's state between 0 and 1 and posts it.
-    private func toggleState(of name: String) throws {
-        try send(display.notificationState(name) == 1 ? 0 : 1, to: name)
+    private func toggleState(of name: String) async throws {
+        try await send(display.notificationState(name) == 1 ? 0 : 1, to: name)
     }
 
     /// Sets a guest notification's state and posts it. `didSet` runs once the
     /// state is set, also when the post then fails.
-    private func send(_ state: UInt64, to name: String, didSet: () -> Void = {}) throws {
-        try display.setNotificationState(name, to: state)
+    private func send(_ state: UInt64, to name: String, didSet: () -> Void = {}) async throws {
+        try await display.setNotificationState(name, to: state)
         didSet()
-        do { try display.postNotification(name) } catch {
+        do { try await display.postNotification(name) } catch {
             throw HostError.operation("The device's state changed, but it was not notified: \(error.localizedDescription)")
         }
     }
@@ -1041,10 +1041,10 @@ final class DeviceSession {
     var slowAnimations: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.slowMotionAnimation) }
 
     /// Toggles the preference and sends it to the guest.
-    func toggleSlowAnimations() throws {
+    func toggleSlowAnimations() async throws {
         guard canPerformCommands else { return }
         let enabled = !slowAnimations
-        try send(enabled ? 1 : 0, to: Self.slowMotionAnimation) {
+        try await send(enabled ? 1 : 0, to: Self.slowMotionAnimation) {
             HostPreferences.defaults.set(enabled, forKey: HostPreferences.slowMotionAnimation)
         }
     }
@@ -1054,9 +1054,9 @@ final class DeviceSession {
     }
 
     /// Sends the quality to the guest and saves it as `GraphicsQualityOverride`.
-    func setGraphicsQuality(_ quality: GraphicsQuality) throws {
+    func setGraphicsQuality(_ quality: GraphicsQuality) async throws {
         guard canPerformCommands else { return }
-        try send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality) {
+        try await send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality) {
             HostPreferences.defaults.set(quality.rawValue, forKey: HostPreferences.graphicsQualityOverride)
         }
     }
@@ -1065,11 +1065,11 @@ final class DeviceSession {
     func restartSystemUI() async throws { try await tools.stopSystemUI() }
 
     /// Applies slow animations and non-default graphics quality when the device connects.
-    func applyDebugSettings() throws {
-        if keepsSlowAnimations { try send(slowAnimations ? 1 : 0, to: Self.slowMotionAnimation) }
+    func applyDebugSettings() async throws {
+        if keepsSlowAnimations { try await send(slowAnimations ? 1 : 0, to: Self.slowMotionAnimation) }
         if capabilities.supportsFeature(DeviceCapabilities.graphicsQualityOverride),
            let quality = graphicsQuality, quality != .deviceDefault {
-            try send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality)
+            try await send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality)
         }
     }
 

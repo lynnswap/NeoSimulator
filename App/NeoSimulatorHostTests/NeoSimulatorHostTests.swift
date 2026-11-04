@@ -6421,17 +6421,22 @@ struct InputFocusTests {
             .map(\.title) == ["Trigger iCloud Sync"])
     }
 
-    @Test func opticIDPostsSimulatorAppsGuestNotifications() throws {
+    @Test func opticIDPostsSimulatorAppsGuestNotifications() async throws {
         let display = TestDisplay()
         let controller = try makeController(display, family: .vision, features: [DeviceCapabilities.opticID])
         defer { controller.invalidate() }
         let enrolled = NSMenuItem()
         controller.perform(.opticIDEnrolled)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .on)
         controller.perform(.opticIDMatching)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         controller.perform(.opticIDNonMatching)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         controller.perform(.faceIDMatching)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         controller.perform(.opticIDEnrolled)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(DeviceCommand.command(.opticIDEnrolled).validate(enrolled, for: controller) && enrolled.state == .off)
         #expect(display.postedNotifications == [
             "com.apple.BiometricKit.enrollmentChanged", "com.apple.BiometricKit_Sim.oyster.match",
@@ -6439,22 +6444,30 @@ struct InputFocusTests {
         ])
     }
 
-    @Test func featureCommandsChangeTheGuestState() throws {
+    @Test func featureCommandsChangeTheGuestState() async throws {
         let display = TestDisplay()
         let controller = try makeController(display, features: [DeviceCapabilities.faceID, DeviceCapabilities.standBy])
         defer { controller.invalidate() }
         let session = controller.session
         controller.perform(.faceIDEnrolled)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(session.isBiometricEnrolled)
         controller.perform(.faceIDMatching)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         controller.perform(.faceIDNonMatching)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         controller.perform(.touchIDMatching)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         controller.perform(.faceIDEnrolled)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(!session.isBiometricEnrolled)
         controller.perform(.toggleStandBy)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(DeviceCommand.command(.toggleStandBy).stateTitle?(controller) == "Hide StandBy")
         controller.perform(.toggleInCallStatusBar)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         controller.perform(.shake)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(display.postedNotifications == [
             "com.apple.BiometricKit.enrollmentChanged", "com.apple.BiometricKit_Sim.pearl.match",
             "com.apple.BiometricKit_Sim.pearl.nomatch", "com.apple.BiometricKit.enrollmentChanged",
@@ -6481,7 +6494,7 @@ struct InputFocusTests {
         #expect(display.contrastMode == 0)
     }
 
-    @Test func simulateFallSetsAndPostsTheGuestsFallState() throws {
+    @Test func simulateFallSetsAndPostsTheGuestsFallState() async throws {
         let display = TestDisplay()
         let controller = try makeController(display, family: .watch, features: [DeviceCapabilities.fallDetection])
         defer { controller.invalidate() }
@@ -6489,16 +6502,18 @@ struct InputFocusTests {
         for (command, state) in [(DeviceCommand.ID.fallUnresponsive, 3), (.fallRejected, 2), (.fallDismissed, 1),
                                  (.fallConfirmed, 0)] as [(DeviceCommand.ID, UInt64)] {
             controller.perform(command)
+            for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
             #expect(display.notificationStates[name] == state, "\(command)")
         }
         #expect(display.postedNotifications == Array(repeating: name, count: 4))
         display.notificationError = HostError.operation("refused")
-        #expect(throws: (any Error).self) { try controller.session.simulateFall(.dismissed) }
+        await #expect(throws: (any Error).self) { try await controller.session.simulateFall(.dismissed) }
         #expect(display.postedNotifications.count == 4)
         let other = TestDisplay()
         let otherController = try makeController(other, family: .watch, features: [], device: "other")
         defer { otherController.invalidate() }
         otherController.perform(.fallConfirmed)
+        for _ in 0..<300 where otherController.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(other.notificationStates.isEmpty && other.postedNotifications.isEmpty)
     }
 
@@ -6524,7 +6539,7 @@ struct InputFocusTests {
         #expect(shortcuts.map(\.keyEquivalentModifierMask) == [.command, [.command, .shift]])
     }
 
-    @Test func slowAnimationsAndGraphicsQualityFollowTheAppsSettings() throws {
+    @Test func slowAnimationsAndGraphicsQualityFollowTheAppsSettings() async throws {
         let keys = [HostPreferences.slowMotionAnimation, HostPreferences.graphicsQualityOverride]
         let saved = keys.map { UserDefaults.standard.object(forKey: $0) }
         defer { for (key, value) in zip(keys, saved) { UserDefaults.standard.set(value, forKey: key) } }
@@ -6542,23 +6557,25 @@ struct InputFocusTests {
         #expect(slow.stateTitle?(controller) == "Slow Animations" && slow.state?(controller) == .off)
         #expect(screen.supports("slowAnimations") && screen.isEnabled("slowAnimations"))
         screen.perform("slowAnimations")
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(slow.state?(controller) == .on)
         controller.perform(.graphicsQualityLow)
+        for _ in 0..<300 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(DeviceCommand.command(.graphicsQualityLow).state?(controller) == .on)
         #expect(DeviceCommand.command(.graphicsQualityDefault).state?(controller) == .off)
         #expect(display.notificationStates == [slowMotion: 1, quality: 10])
         #expect(display.postedNotifications == [slowMotion, quality])
 
         display.notificationError = HostError.operation("refused")
-        #expect(throws: (any Error).self) { try controller.session.toggleSlowAnimations() }
+        await #expect(throws: (any Error).self) { try await controller.session.toggleSlowAnimations() }
         #expect(slow.state?(controller) == .on)
 
         let connected = TestDisplay()
-        try makeSession(connected, features: features).applyDebugSettings()
+        try await makeSession(connected, features: features).applyDebugSettings()
         #expect(connected.notificationStates == [slowMotion: 1, quality: 10])
         UserDefaults.standard.set(GraphicsQuality.deviceDefault.rawValue, forKey: HostPreferences.graphicsQualityOverride)
         let older = TestDisplay()
-        try makeSession(older, features: [DeviceCapabilities.graphicsQualityOverride]).applyDebugSettings()
+        try await makeSession(older, features: [DeviceCapabilities.graphicsQualityOverride]).applyDebugSettings()
         #expect(older.postedNotifications.isEmpty)
 
         // Simulator.app toggles slow animation in the frontmost app when the guest lacks support.
@@ -6567,6 +6584,7 @@ struct InputFocusTests {
         let otherScreen = screens.attach(other, as: .simulator(udid: "other", deviceSetPath: nil))
         #expect(slow.stateTitle?(other) == "Toggle Slow Animations in Frontmost App" && slow.state?(other) == .off)
         otherScreen.perform("slowAnimations")
+        for _ in 0..<300 where other.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(older.notificationStates == [slowMotion: 0])
         #expect(!UserDefaults.standard.bool(forKey: HostPreferences.slowMotionAnimation))
     }
@@ -6592,11 +6610,11 @@ struct InputFocusTests {
             defer { controller.invalidate() }
             // Device-tool work delays only the Apple TV restart, matching Simulator.app.
             #expect(controller.session.reserve())
-            #expect(DeviceCommand.command(.graphicsQualityHigh).isEnabled(controller) == (family != .tv))
+            #expect(!DeviceCommand.command(.graphicsQualityHigh).isEnabled(controller))
             controller.perform(.graphicsQualityHigh)
-            #expect(display.notificationStates[quality] == (family == .tv ? nil : 100))
+            #expect(display.notificationStates[quality] == nil)
             controller.session.release()
-            if family == .tv { controller.perform(.graphicsQualityHigh) }
+            controller.perform(.graphicsQualityHigh)
             for _ in 0..<200 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
             #expect(display.notificationStates[quality] == 100)
         }
