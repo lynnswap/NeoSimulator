@@ -4,10 +4,9 @@ import AppKit
 import Observation
 import ObservationBridge
 
-/// The device screens open in the manager, the in-process host that presents each Xcode's simulators, and the
-/// connections of remote screens.
+/// The device screens open in the manager and their simulator contexts and remote connections.
 ///
-/// Each `SimulatorScreenHost` stays authoritative for its simulator sessions; this registry indexes their controllers
+/// Each `SimulatorContext` owns its simulator screens; this registry indexes their controllers
 /// by inventory identity. Remote screens have no other owner, so the registry also owns their lifetimes. Screens
 /// enter and leave only through `insert(_:)` and `remove(_:)`, which publish the open set to posture observation.
 @MainActor @Observable
@@ -16,10 +15,9 @@ final class DeviceScreens {
     /// The Xcode whose SimulatorKit UI toolkit the manager loaded, which also supplies device artwork.
     private(set) var displayXcodeURL: URL?
     @ObservationIgnored private let model: SimulatorManagerModel
-    @ObservationIgnored private var hosts: [URL: SimulatorScreenHost] = [:]
-    /// Hosts that stopped while the app kept running, after a host conflict or a failed quit. Stopping the screens
-    /// stops them again, which retries the native input they could not remove.
-    @ObservationIgnored private var stoppedHosts: [SimulatorScreenHost] = []
+    @ObservationIgnored private var contexts: [URL: SimulatorContext] = [:]
+    /// Invalidated contexts remain available until their native resources have finished closing.
+    @ObservationIgnored private var retiredContexts: [SimulatorContext] = []
     /// Set while the app quits, until a cancelled quit resumes.
     @ObservationIgnored private(set) var isQuitting = false
     @ObservationIgnored private var locationObserver: (any NSObjectProtocol)?
@@ -73,7 +71,21 @@ final class DeviceScreens {
 
     // MARK: Registration
 
-    /// Registers a host's simulator presentation, or returns its screen when the controller is already registered.
+    @discardableResult
+    private func attach(_ presentation: SimulatorScreen, as identifier: DeviceInventoryID) throws -> DeviceScreen {
+        guard !presentation.isClosed else { throw CancellationError() }
+        let controller = presentation.controller
+        let screen = attach(controller, as: identifier)
+        presentation.onEnd = { [weak self, weak controller] _ in
+            guard let self, let controller,
+                  case .simulator(let current) = self.entries[identifier]?.controller,
+                  current === controller else { return }
+            self.remove([identifier])
+        }
+        return screen
+    }
+
+    /// Registers a simulator presentation's controller, or returns its existing screen.
     @discardableResult
     func attach(_ controller: DeviceWindowController, as identifier: DeviceInventoryID) -> DeviceScreen {
         if let screen = entries[identifier], case .simulator(let current) = screen.controller, current === controller {
@@ -144,86 +156,91 @@ final class DeviceScreens {
 
     // MARK: Simulator screens
 
-    /// Opens the simulator's screen in the host for its source Xcode, moving it from another host first, and lets
-    /// `present` place it with the presentation it replaces. A cancelled open releases a screen it attached.
-    func openSimulatorScreen(_ context: SimulatorPresentationContext,
+    /// Opens a screen in its Xcode context, releasing any previous context's presentation first.
+    /// The backend serializes requests for the same device through cancellation cleanup.
+    func openSimulatorScreen(_ request: SimulatorPresentationContext,
                              present: (SimulatorScreenRestoration.Presentation?) async throws -> Void) async throws {
         guard !isQuitting else { throw CancellationError() }
         let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
         try Task.checkCancellation()
         if displayXcodeURL != displayURL { displayXcodeURL = displayURL }
-        let sourceURL = context.xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
-        let host = try await host(for: sourceURL, displayXcodeURL: displayURL)
-        guard case .simulator(let udid, let path) = context.deviceID else { return }
+        let sourceURL = request.xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
+        let context = try await context(for: sourceURL)
+        guard case .simulator(let udid, let path) = request.deviceID else { return }
         let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
         var previousPresentation: SimulatorScreenRestoration.Presentation?
-        for (url, previous) in hosts where url != sourceURL && previous.openedDeviceIdentifiers.contains(identifier) {
-            try await previous.releasePresentation(for: identifier) { controller in
-                previousPresentation = .init(isEmbedded: controller.isEmbedded, window: controller.window)
-            }
-            remove([context.deviceID])
+        for (url, previous) in contexts where url != sourceURL {
+            guard let screen = previous.screen(for: identifier) else { continue }
+            previousPresentation = entries[request.deviceID]?.presentation
+                ?? .init(isEmbedded: screen.controller.isEmbedded, window: screen.controller.window)
+            try await screen.close()
         }
-        let preservesPresentation = host.openedDeviceIdentifiers.contains(identifier)
-        var attached = false
+        let preservesPresentation = context.screen(for: identifier) != nil
         do {
-            let controller = try await host.openPresentation(for: identifier, bootIfNeeded: false)
-            attached = true
+            let screen = try await context.openScreen(identifier)
             try Task.checkCancellation()
-            if let current = entries[context.deviceID] { previousPresentation = current.presentation }
-            attach(controller, as: context.deviceID)
+            if let current = entries[request.deviceID] { previousPresentation = current.presentation }
+            try attach(screen, as: request.deviceID)
             try await present(previousPresentation)
         } catch {
-            if Task.isCancelled, attached, !preservesPresentation {
-                try await Task { try await host.releasePresentation(for: identifier) }.value
+            if context.isStopped { throw CancellationError() }
+            if Task.isCancelled, !preservesPresentation {
+                try await Task { try await context.releaseScreen(identifier) }.value
             }
             throw error
         }
     }
 
-    private func host(for sourceURL: URL, displayXcodeURL: URL) async throws -> SimulatorScreenHost {
-        if let host = hosts[sourceURL] { return host }
-        let runtime = try await SimulatorRuntime.load(xcodeURL: sourceURL, uiXcodeURL: displayXcodeURL)
-        try Task.checkCancellation()
-        // Another device may have created this Xcode's host while the shared runtime was loading.
-        if let host = hosts[sourceURL] { return host }
-        let host = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true,
-                                       pasteboardSync: pasteboardSync)
-        host.onOpen = { identifier in
+    private func context(for sourceURL: URL) async throws -> SimulatorContext {
+        if let current = contexts[sourceURL] {
+            if !current.isStopped { return current }
+            contexts.removeValue(forKey: sourceURL)
+            retiredContexts.append(current)
+        }
+        // A failed cleanup must finish before another context attaches input to the same devices.
+        for retired in retiredContexts where retired.xcodeURL == sourceURL {
+            try await retired.invalidate()
+            retiredContexts.removeAll { $0 === retired }
+        }
+
+        var configuration = SimulatorContextConfiguration()
+        configuration.pasteboardSync = pasteboardSync
+        configuration.offersLifetimeChoice = true
+        configuration.onOpen = { identifier in
             HostPreferences.defaults.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
             HostPreferences.defaults.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
         }
-        host.onError = { [weak self] error in self?.onError?(error) }
-        host.onChange = { [weak self] in self?.hostsChanged() }
-        host.onClose = { [weak self] device, choice, finishing in
+        configuration.onError = { [weak self] error in self?.onError?(error) }
+        configuration.onApplicationsChange = { [weak self] device in self?.onApplicationsChange?(device.inventoryID) }
+        configuration.guestLifetime = ManagedGuestLifetime(windowClosed: { [weak self] device, choice, finishing in
             guard let self else { return }
-            let identifier = device.inventoryID
-            self.remove([identifier])
-            let keepRunning = choice == .keepRunning || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
-            self.model.closeDevice(identifier, keepingDeviceRunning: keepRunning, after: finishing)
-        }
-        host.onRestart = { [weak self] device, erasing in
+            let keepRunning = choice == .keepRunning
+                || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
+            self.model.closeDevice(device.inventoryID, keepingDeviceRunning: keepRunning, after: finishing)
+        }, restart: { [weak self] device, erasing in
             guard let self, let current = self.model.inventory.first(where: { $0.id == device.inventoryID }) else { return }
             self.model.manage(erasing ? .erase : .restart, devices: [current])
-        }
-        host.onShutDown = { [weak self] device in
+        }, shutDown: { [weak self] device in
             guard let self, let current = self.model.inventory.first(where: { $0.id == device.inventoryID }) else { return }
             self.model.manage(.shutdown, devices: [current])
+        })
+        let created = try await SimulatorContext.load(xcodeURL: sourceURL, configuration: configuration)
+        if Task.isCancelled || isQuitting {
+            do { try await Task { try await created.invalidate() }.value }
+            catch { retiredContexts.append(created); throw error }
+            throw CancellationError()
         }
-        host.onApplicationsChange = { [weak self] device in self?.onApplicationsChange?(device.inventoryID) }
-        try host.start()
-        hosts[sourceURL] = host
-        return host
+        // Two devices can finish loading the same Xcode concurrently.
+        if let current = contexts[sourceURL], !current.isStopped {
+            do { try await created.invalidate() }
+            catch { retiredContexts.append(created); throw error }
+            return current
+        }
+        if let stopped = contexts.removeValue(forKey: sourceURL) { retiredContexts.append(stopped) }
+        contexts[sourceURL] = created
+        return created
     }
 
-    /// Releases the screens whose sessions their host ended, and retires the hosts that stopped.
-    private func hostsChanged() {
-        for (url, host) in hosts where host.isStopped {
-            hosts.removeValue(forKey: url)
-            stoppedHosts.append(host)
-        }
-        let opened = Set(hosts.values.flatMap(\.openedDeviceIdentifiers).map(\.inventoryID))
-        remove(simulatorIdentifiers.filter { !opened.contains($0) })
-    }
 
     /// Prepares the open screens of simulators that a management action stops or restarts. A booted simulator keeps
     /// its screen through a restart; the others release it. A failure finishes the restarts it already prepared.
@@ -234,19 +251,17 @@ final class DeviceScreens {
                 guard case .simulator(let simulator) = device, device.supports(action), entries[device.id] != nil,
                       case .simulator(let udid, let path) = device.id else { continue }
                 let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-                guard let host = hosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
+                guard let context = contexts.values.first(where: { $0.screen(for: identifier) != nil }) else { continue }
                 switch action {
                 case .restart, .erase:
                     if simulator.state == "Booted" {
-                        try await host.preparePresentationForRestart(for: identifier)
+                        try await context.prepareForManagedRestart(identifier)
                         prepared.append(device)
                     } else {
-                        try await host.releasePresentation(for: identifier)
-                        remove([device.id])
+                        try await context.screen(for: identifier)?.close()
                     }
                 case .shutdown, .forceShutdown, .remove:
-                    try await host.releasePresentation(for: identifier)
-                    remove([device.id])
+                    try await context.screen(for: identifier)?.close()
                 default: break
                 }
             }
@@ -266,18 +281,18 @@ final class DeviceScreens {
         for device in devices {
             guard case .simulator(let udid, let path) = device.id else { continue }
             let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-            guard let host = hosts.values.first(where: { $0.openedDeviceIdentifiers.contains(identifier) }) else { continue }
-            do { try await host.finishPresentationRestart(for: identifier) }
+            guard let context = contexts.values.first(where: { $0.screen(for: identifier) != nil }) else { continue }
+            do { try await context.finishManagedRestart(identifier) }
             catch { failures.append("\(device.name): \(error.localizedDescription)") }
         }
-        hostsChanged()
         if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
     }
 
     /// The open simulator screens to reopen after relaunching, ordered so the main window's screen opens last.
     func restorations() -> [SimulatorScreenRestoration] {
-        hosts.flatMap { xcode, host in
-            host.openedDeviceIdentifiers.compactMap { device -> SimulatorScreenRestoration? in
+        contexts.flatMap { xcode, context in
+            context.openScreens.compactMap { presentation -> SimulatorScreenRestoration? in
+                let device = presentation.device.id
                 guard let screen = entries[device.inventoryID] else { return nil }
                 return SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: screen.presentation)
             }
@@ -362,14 +377,17 @@ final class DeviceScreens {
         publishOpenScreens()
     }
 
-    /// Stops every screen without shutting devices down: in-process hosts leave guest lifetime to the backend, and
+    /// Stops every screen without shutting devices down: simulator contexts leave guest lifetime to the backend, and
     /// remote screens end only their connections. Screens left open by a failure resume posture observation.
     func stopAll() async throws {
         do {
             await model.stopDevicePostures()
-            for host in stoppedHosts + hosts.values { try await host.stop(keepingDevicesRunning: true) }
-            hosts.removeAll()
-            stoppedHosts.removeAll()
+            retiredContexts.append(contentsOf: contexts.values)
+            contexts.removeAll()
+            for context in retiredContexts {
+                try await context.invalidate()
+                retiredContexts.removeAll { $0 === context }
+            }
             remove(simulatorIdentifiers)
             try await stopRemoteScreens()
         } catch {

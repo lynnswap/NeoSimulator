@@ -13,7 +13,6 @@ package final class SimulatorScreenHost: NSObject {
     private let isInProcess: Bool
     private let suppliedPasteboardSync: PasteboardSync?
     private let offersLifetimeChoice: Bool
-    package var onPresent: ((DeviceWindowController) -> Void)?
     package var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void)?
     package var onError: ((Error) -> Void)?
     package var onChange: (() -> Void)?
@@ -121,8 +120,7 @@ package final class SimulatorScreenHost: NSObject {
         }
     }
 
-    package func releaseDevice(_ identifier: SimulatorDeviceIdentifier,
-                               beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
+    package func releaseDevice(_ identifier: SimulatorDeviceIdentifier) async throws {
         guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
                 || connections[identifier] != nil || closingShutdowns[identifier] != nil
                 || disconnectedSessions.contains(where: { $0.device.identity == identifier }) else { return }
@@ -148,7 +146,6 @@ package final class SimulatorScreenHost: NSObject {
                 do { try await recording.waitUntilFinished() }
                 catch { suppressed.remove(identifier); throw error }
             }
-            beforeInvalidating?(controller)
             controller.invalidate()
             sessions.removeValue(forKey: identifier)
             disconnectedSessions.append(controller.session)
@@ -326,6 +323,11 @@ package final class SimulatorScreenHost: NSObject {
                            supportsEnhancedMultitasking: device.supportsEnhancedMultitasking)
     }
 
+    package func didSelectDevice(_ identifier: SimulatorDeviceIdentifier) {
+        onOpen?(identifier)
+        sessions[identifier]?.session.updatePasteboardSync()
+    }
+
     package func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         try await openSimulatorLocally(withIdentifier: identifier)
     }
@@ -351,9 +353,8 @@ package final class SimulatorScreenHost: NSObject {
         bootOperations[identifier]?.cancel()
     }
 
-    package func releasePresentation(for identifier: SimulatorDeviceIdentifier,
-                             beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
-        try await releaseDevice(identifier, beforeInvalidating: beforeInvalidating)
+    package func releasePresentation(for identifier: SimulatorDeviceIdentifier) async throws {
+        try await releaseDevice(identifier)
         onChange?()
     }
 
@@ -474,10 +475,7 @@ package final class SimulatorScreenHost: NSObject {
         guard let controller = sessions[identifier] else { throw CancellationError() }
         // Refresh synchronization when a connected device is selected again.
         controller.session.updatePasteboardSync()
-        if presents {
-            if isInProcess { onPresent?(controller) }
-            else { controller.showAndActivate() }
-        }
+        if presents, !isInProcess { controller.showAndActivate() }
     }
 
     private func rescan(testingVisibilityChanged: Bool = false) {

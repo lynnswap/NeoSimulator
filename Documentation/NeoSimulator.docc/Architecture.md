@@ -177,11 +177,11 @@ Hub mode.
 | `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
 | `ManagerWindowController` | Present the sidebar, device screen pane, and settings inspector in `NSSplitViewController`, own the selection, the toolbar, and the latest placement choice for the selected device, and decide where each opened or restored screen goes. |
 | `DeviceScreenViewController` | Show the selected device's screen or preview in the center pane, with its canvas controls and activity footer; move screens in the order the window accepts them, stopping a move once a later choice replaces it; and return to the preview when that screen closes. |
-| `DeviceScreens` | Index the manager's open screens by device, own the in-process host for each Xcode and the remote screen connections, and stop them without shutting devices down. |
+| `DeviceScreens` | Index the manager's open screens by device, own a public `SimulatorContext` for each Xcode and the remote screen connections, and stop them without shutting devices down. |
 | `DeviceScreen` | Keep one open screen's canvas controls current from its state, and send their actions to that screen's device. |
 | `SimulatorRuntime` | Load and validate private framework interfaces through ABIBridge. |
 | `CoreSimulator` | Device-set access and simulator model data. |
-| `SimulatorContext`, `SimulatorScreen` | Expose the public Kit API for discovery, guest lifetime, and AppKit screen presentation. |
+| `SimulatorContext`, `SimulatorScreen` | Expose the public Kit API for discovery, guest lifetime, and AppKit screen presentation. The manager uses these same screen lifetimes, with package-only hooks routing guest management to its backend. |
 | `SimulatorScreenHost` | Observe one Xcode's device sets and own its simulator sessions, presentation controllers, and resource cleanup. |
 | `HostApplication` | Compose the renderer's application lifecycle, menus, manager requests, and ownership registration around a `SimulatorScreenHost`. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
