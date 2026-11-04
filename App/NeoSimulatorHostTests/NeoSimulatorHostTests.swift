@@ -6760,7 +6760,7 @@ struct InputFocusTests {
         HostPreferences.registerDefaults()
         let identifier = UUID().uuidString
         let key = "DeviceLocationPreset.\(identifier)"
-        let defaults = try #require(UserDefaults(suiteName: "dev.lynnswap.NeoSimulator"))
+        let defaults = try #require(HostPreferences.deviceSettingsDefaults)
         defer { defaults.removeObject(forKey: key); defaults.synchronize() }
         defaults.set(["mode": "custom", "latitude": 12.5, "longitude": 34.5], forKey: key)
         #expect(defaults.synchronize())
@@ -8466,7 +8466,7 @@ struct InputFocusTests {
         let keys = [HostPreferences.locationMode, HostPreferences.locationScenario,
                     HostPreferences.locationLatitude, HostPreferences.locationLongitude]
         let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")
-        let shared = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator")
+        let shared = HostPreferences.deviceSettingsDefaults
         let presetKey = "DeviceLocationPreset.test-device"
         let savedPreset = shared?.object(forKey: presetKey)
         shared?.removeObject(forKey: presetKey)
@@ -11065,12 +11065,12 @@ struct HostBehaviorTests {
         }
         defaults.setPersistentDomain([HostPreferences.showChrome: false, HostPreferences.detachOnAppQuit: true], forName: source)
         defaults.setPersistentDomain([HostPreferences.showChrome: true], forName: target)
-        HostPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: source, targetDomain: target)
+        SimulatorPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: source, targetDomain: target)
         let migrated = try #require(defaults.persistentDomain(forName: target))
         #expect(migrated[HostPreferences.showChrome] as? Bool == true)
         #expect(migrated[HostPreferences.detachOnAppQuit] as? Bool == true)
         defaults.setPersistentDomain([HostPreferences.detachOnAppQuit: false], forName: source)
-        HostPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: source, targetDomain: target)
+        SimulatorPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: source, targetDomain: target)
         #expect(defaults.persistentDomain(forName: target)?[HostPreferences.detachOnAppQuit] as? Bool == true)
     }
 }

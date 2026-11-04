@@ -110,7 +110,9 @@ enum NeoSimulatorApp {
             let conflicts = HostConflictMonitor()
             try conflicts.check()
             let runtime = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
-            HostPreferences.migrateStandalonePreferences()
+            SimulatorPreferences.migrateStandalonePreferences()
+            HostPreferences.configure(defaults: .standard,
+                deviceSettingsDefaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator"))
             let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged,
                                                  owner: options.owner, headless: options.isHeadless)
             Self.controller = controller

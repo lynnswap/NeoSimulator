@@ -22,6 +22,9 @@ enum NeoSimulatorApplication {
         // A launch URL can create the menus before launch finishes, and their
         // pasteboard synchronization reads its saved choice or default when created.
         SimulatorPreferences.migrateStandalonePreferences()
+        HostPreferences.configure(
+            defaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard,
+            deviceSettingsDefaults: .standard)
         HostPreferences.registerDefaults()
         let delegate = AppDelegate(splitViewAutosaveName: "NeoSimulatorDevices")
         app.delegate = delegate

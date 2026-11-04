@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import Synchronization
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// Capabilities used for command visibility and availability.
@@ -91,28 +92,18 @@ struct DeviceCapabilities {
 
 /// Simulator-compatible standard-defaults keys.
 enum HostPreferences {
-    // UserDefaults provides thread-safe access; the suite itself is fixed for the process.
-    nonisolated(unsafe) static let defaults: UserDefaults = {
-#if NEOSIMULATOR_MANAGER
-        UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard
-#else
-        .standard
-#endif
-    }()
-
-    /// Per-device choices are shared with the manager; its own domain uses standard defaults.
-    static var deviceSettingsDefaults: UserDefaults? {
-        Bundle.main.bundleIdentifier == "dev.lynnswap.NeoSimulator"
-            ? .standard : UserDefaults(suiteName: "dev.lynnswap.NeoSimulator")
+    // UserDefaults permits concurrent access; the mutex protects replacement of the stores.
+    private struct Configuration: @unchecked Sendable {
+        let defaults: UserDefaults
+        let deviceSettings: UserDefaults?
     }
+    private static let configuration = Mutex(Configuration(defaults: .standard, deviceSettings: .standard))
+    static var defaults: UserDefaults { configuration.withLock { $0.defaults } }
+    static var deviceSettingsDefaults: UserDefaults? { configuration.withLock { $0.deviceSettings } }
 
-    /// Moving the renderer into the app changes its defaults domain.
-    /// Existing renderer settings remain editable in the new domain after this one-time copy.
-    static func migrateStandalonePreferences(defaults: UserDefaults = .standard,
-                                             sourceDomain: String = "dev.lynnswap.NeoSimulator",
-                                             targetDomain: String = "dev.lynnswap.NeoSimulator.Renderer") {
-        SimulatorPreferences.migrateStandalonePreferences(defaults: defaults, sourceDomain: sourceDomain,
-                                                          targetDomain: targetDomain)
+    /// Selects the host's settings before creating simulator contexts or windows.
+    static func configure(defaults: UserDefaults, deviceSettingsDefaults: UserDefaults?) {
+        configuration.withLock { $0 = Configuration(defaults: defaults, deviceSettings: deviceSettingsDefaults) }
     }
 
     /// SimulatorKit reads this standard-defaults key to follow the guest's interface orientation.
