@@ -157,7 +157,7 @@ public final class SimulatorContext {
     /// Concurrent callers for the same device share the boot operation.
     public func boot(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorBootOutcome {
         try checkActive()
-        if let release = releases[id] {
+        while let release = releases[id] {
             try await CoreDeviceRuntime.preparedValue(of: release.task)
             try checkActive()
         }
@@ -191,7 +191,7 @@ public final class SimulatorContext {
     /// the connection; canceling one caller only cancels that caller's wait.
     public func openScreen(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorScreen {
         try checkActive()
-        if let release = releases[id] {
+        while let release = releases[id] {
             try await CoreDeviceRuntime.preparedValue(of: release.task)
             try checkActive()
         }
@@ -247,6 +247,7 @@ public final class SimulatorContext {
                 try await self.engine.releasePresentation(for: id)
                 let reason: SimulatorScreenEnd
                 if intent.shutsDownGuest {
+                    await self.engine.cancelRestart(for: id)
                     let state = try self.device(id).state
                     if state != 1 && state != 4 {
                         let tools = try DeviceTools(identifier: id.identifier, xcodeURL: self.xcodeURL,
@@ -310,7 +311,9 @@ public final class SimulatorContext {
         let id = screen.device.id
         if let release = releases[id] { try await release.task.value; return }
         guard screens[id] === screen else {
-            if engine.hasUnfinishedCleanup(for: id) { try await beginRelease(id, shutsDownGuest: false).value }
+            if openings[id] == nil, engine.hasUnfinishedCleanup(for: id) {
+                try await beginRelease(id, shutsDownGuest: false).value
+            }
             return
         }
         try await beginRelease(id, shutsDownGuest: false).value
@@ -330,9 +333,16 @@ public final class SimulatorContext {
     }
 
     private func reconcileScreens() {
-        guard !engine.isStopped else { return }
-        for id in screens.keys where releases[id] == nil && !engine.openedDeviceIdentifiers.contains(id) {
-            finishScreen(id, reason: .deviceStopped)
+        guard !engine.isStopped, !engine.isTerminating else { return }
+        let opened = engine.openedDeviceIdentifiers
+        let ended = screens.keys.filter { releases[$0] == nil && !opened.contains($0) }
+        guard !ended.isEmpty else { return }
+        let devices: [AvailableDevice]
+        do { devices = try engine.availableSimulatorDevices() }
+        catch { report(error); return }
+        for id in ended {
+            let state = devices.first { $0.identity == id }?.state
+            finishScreen(id, reason: state == 1 ? .deviceStopped : .closed)
         }
     }
 

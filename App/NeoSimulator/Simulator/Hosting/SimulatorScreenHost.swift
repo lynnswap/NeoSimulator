@@ -35,7 +35,7 @@ final class SimulatorScreenHost: NSObject {
     var hasPresentations: Bool { !sessions.isEmpty || !connections.isEmpty }
     private var releasingDevices: Set<SimulatorDeviceIdentifier> = []
     private var registrationErrorReported = false
-    private var isTerminating = false
+    private(set) var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
     private var testingSet: SimulatorDeviceSet?
@@ -146,7 +146,8 @@ final class SimulatorScreenHost: NSObject {
         if let controller = sessions[identifier] {
             if let recording = controller.session.recording {
                 recording.stop()
-                try await recording.waitUntilFinished()
+                do { try await recording.waitUntilFinished() }
+                catch { suppressed.remove(identifier); throw error }
             }
             beforeInvalidating?(controller)
             controller.invalidate()
@@ -337,6 +338,13 @@ final class SimulatorScreenHost: NSObject {
             guard let controller = self.sessions[identifier] else { throw CancellationError() }
             return controller
         }, cleanup: { try await self.releaseDevice(identifier) })
+    }
+
+    func cancelRestart(for identifier: SimulatorDeviceIdentifier) async {
+        guard let restart = restarting[identifier] else { return }
+        restart.cancel()
+        bootOperations[identifier]?.cancel()
+        await restart.value
     }
 
     func cancelOpeningResources(_ identifier: SimulatorDeviceIdentifier) {
