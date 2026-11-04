@@ -193,7 +193,7 @@ package struct SimulatorDisplayInterface {
     package let chromeState: NativeSwiftType
     package let setChromeState: NativeSwiftMethod<(NativeSwiftValue) -> Void>
     /// `SimDisplayChromeView.chrome`, an optional `SimDeviceChrome`.
-    package let chrome: NativeSwiftMethod<() -> NativeSwiftValue>
+    package let chrome: NativeSwiftMethod<() -> NativeSwiftValue?>
     /// `SimDeviceChrome.images`.
     package let chromeImages: NativeSwiftMethod<() -> NativeSwiftValue>
     /// `SimDeviceChrome.Images.padding`.
@@ -347,8 +347,9 @@ package struct SimulatorDisplayInterface {
         let optionalChrome = try await runtime.resolve(.swift(.type("Swift.Optional",
                                                                  genericArguments: [.type(deviceChrome)])))
         let images = try await runtime.resolve(.swift(.type("SimulatorKit.SimDeviceChrome.Images")))
+        // Prepare Optional projection once; bezel geometry is read during every layout pass.
         chrome = try await chromeViewType.resolve(.swift(.getter(
-            "chrome.getter : SimulatorKit.SimDeviceChrome?", as: (() -> NativeSwiftValue).self,
+            "chrome.getter : SimulatorKit.SimDeviceChrome?", as: (() -> NativeSwiftValue?).self,
             valueABIs: [optionalChrome: try .opaque(named: optionalChrome.name)])))
         chromeImages = try await deviceChrome.resolve(.swift(.getter(
             "images.getter : SimulatorKit.SimDeviceChrome.Images", as: (() -> NativeSwiftValue).self,
@@ -1895,8 +1896,7 @@ package final class SimulatorConnection: SimulatorDisplay {
         guard let chromeView else { return nil }
         let display = runtime.display
         return read("read the device bezel", otherwise: nil) {
-            guard let chrome = try unsafe display.chrome.unsafeInvoke(on: chromeView)
-                .copyEnumPayloadAndWait(forCase: "some") else { return nil }
+            guard let chrome = try unsafe display.chrome.unsafeInvoke(on: chromeView) else { return nil }
             return try unsafe display.chromeImagesPadding.unsafeInvoke(on: display.chromeImages.unsafeInvoke(on: chrome))
         }
     }
