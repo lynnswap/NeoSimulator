@@ -14,11 +14,12 @@ settings. NeoSimulator does not launch automatically. Choose Device Hub here
 to use it for future Xcode runs, or use **Restore Original Settings…** to restore
 the values saved before NeoSimulator first changed them.
 
-Startup, selecting a host, and restoring original settings check Xcode's
-current preferences, including changes made by other tools. macOS may request
-access to other apps' data. If access is denied, the alert offers **Copy Command
-and Quit**. Run the copied command in Terminal, then reopen NeoSimulator and
-allow access when macOS asks. The command resets only NeoSimulator's app-data
+NeoSimulator checks Xcode's current preferences after showing its main window
+at startup, and before selecting a host or restoring original settings. This
+includes changes made by other tools. macOS may request access to other apps' data. If
+access is denied, the alert offers **Copy Command** without quitting the app.
+Run the copied command in Terminal, then reopen NeoSimulator to request access
+again. The command resets only NeoSimulator's app-data
 permission. Catalog updates and opening device screens use local
 state. If startup cannot apply NeoSimulator, the settings keep your preference
 and show **Use NeoSimulator** to retry after resolving the reported error.
