@@ -246,6 +246,7 @@ struct ManagerModelTests {
         await controller.simulatorLoading?.value
         let first = try #require(controller.devices.state.form)
         #expect(!first.canProceed)
+        controller.devices.state.isVisible = true
         first.name = "My iPad"
         first.selectFamily(2)
         runtimeInstalled = true
@@ -256,6 +257,13 @@ struct ManagerModelTests {
         #expect(refreshed.family == 2 && refreshed.deviceType == "pad")
         #expect(refreshed.runtime == "ios" && refreshed.canProceed)
         #expect(makeForm().family == 2)
+
+        controller.devices.state.isVisible = false
+        controller.reloadSimulatorIfVisible()
+        await controller.simulatorLoading?.value
+        let reopened = try #require(controller.devices.state.form)
+        #expect(reopened.name.isEmpty && !reopened.addsWatch)
+        #expect(reopened.family == 2 && reopened.deviceType == "pad" && reopened.runtime == "ios")
     }
 
     @Test(arguments: DeviceBrowserPresentation.SortOrder.allCases)

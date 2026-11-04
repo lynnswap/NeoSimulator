@@ -58,13 +58,16 @@ final class NewSimulatorModel {
         self.preferences = preferences
         let saved = preferences?.newSimulatorFamily
         family = families.contains(where: { $0.id == saved }) ? saved : families.first?.id
+        let savedWatchType = preferences?.newSimulatorDeviceType(for: 4)
+        let savedWatchRuntime = preferences?.newSimulatorRuntime(for: 4)
         resetSimulatorSelection()
         watchType = watchTypes.first?.identifier
         availableWatchRuntimes = catalog.runtimes.filter { runtime in
             watchTypes.contains { watchRuntimeSupports(runtime.identifier, type: $0.identifier) }
         }
         watchRuntime = availableWatchRuntimes.first?.identifier
-        selectWatchRuntime(watchRuntime)
+        updateWatchRuntime(watchRuntime)
+        restoreWatchSelection(deviceType: savedWatchType, runtime: savedWatchRuntime)
         showsWatchPage = existingDevice != nil && !createsPhone
     }
 
@@ -156,12 +159,31 @@ final class NewSimulatorModel {
         resetSimulatorSelection()
     }
     private func resetSimulatorSelection() {
+        let selectionFamily = createsPhone ? 1 : family
+        let savedDeviceType = selectionFamily.flatMap { preferences?.newSimulatorDeviceType(for: $0) }
+        let savedRuntime = selectionFamily.flatMap { preferences?.newSimulatorRuntime(for: $0) }
         deviceType = deviceTypes.first?.identifier
         runtime = runtimes.first?.identifier
-        selectRuntime(runtime)
+        updateRuntime(runtime)
+        restoreSimulatorSelection(deviceType: savedDeviceType, runtime: savedRuntime)
         if !canAddWatch { addsWatch = false }
     }
+
+    private func restoreSimulatorSelection(deviceType savedDeviceType: String?, runtime savedRuntime: String?) {
+        if let savedDeviceType, deviceTypes.contains(where: { $0.identifier == savedDeviceType }),
+           runtimes.contains(where: { simulatorRuntimeSupports($0.identifier, type: savedDeviceType) }) {
+            updateDeviceType(savedDeviceType)
+        }
+        if let savedRuntime, let deviceType, simulatorRuntimeSupports(savedRuntime, type: deviceType) {
+            updateRuntime(savedRuntime)
+        }
+    }
     func selectDeviceType(_ value: String?) {
+        updateDeviceType(value)
+        saveSimulatorSelection()
+    }
+
+    private func updateDeviceType(_ value: String?) {
         deviceType = value
         if let value, runtime.map({ simulatorRuntimeSupports($0, type: value) }) != true {
             runtime = runtimes.first(where: { simulatorRuntimeSupports($0.identifier, type: value) })?.identifier
@@ -169,14 +191,30 @@ final class NewSimulatorModel {
         if !canAddWatch { addsWatch = false }
     }
     func selectRuntime(_ value: String?) {
+        updateRuntime(value)
+        saveSimulatorSelection()
+    }
+
+    private func updateRuntime(_ value: String?) {
         runtime = value
         if let value, deviceType.map({ simulatorRuntimeSupports(value, type: $0) }) != true {
             deviceType = deviceTypes.first(where: { simulatorRuntimeSupports(value, type: $0.identifier) })?.identifier
         }
         if !canAddWatch { addsWatch = false }
     }
+
+    private func saveSimulatorSelection() {
+        guard let family = deviceType.flatMap(catalog.deviceType)?.productFamily else { return }
+        preferences?.setNewSimulatorSelection(deviceType: deviceType, runtime: runtime, for: family)
+    }
+
     func setAddsWatch(_ value: Bool) { addsWatch = canAddWatch && value }
     func selectWatchType(_ value: String?) {
+        updateWatchType(value)
+        saveWatchSelection()
+    }
+
+    private func updateWatchType(_ value: String?) {
         watchType = value
         if let value, watchRuntime.map({ watchRuntimeSupports($0, type: value) }) != true {
             availableWatchRuntimes = catalog.runtimes.filter { watchRuntimeSupports($0.identifier, type: value) }
@@ -184,11 +222,31 @@ final class NewSimulatorModel {
         }
     }
     func selectWatchRuntime(_ value: String?) {
+        updateWatchRuntime(value)
+        saveWatchSelection()
+    }
+
+    private func updateWatchRuntime(_ value: String?) {
         watchRuntime = value
         if let value, watchType.map({ watchRuntimeSupports(value, type: $0) }) != true {
             watchType = watchTypes.first(where: { watchRuntimeSupports(value, type: $0.identifier) })?.identifier
         }
     }
+
+    private func restoreWatchSelection(deviceType savedWatchType: String?, runtime savedWatchRuntime: String?) {
+        if let savedWatchType, watchTypes.contains(where: { $0.identifier == savedWatchType }),
+           catalog.runtimes.contains(where: { watchRuntimeSupports($0.identifier, type: savedWatchType) }) {
+            updateWatchType(savedWatchType)
+        }
+        if let savedWatchRuntime, let watchType, watchRuntimeSupports(savedWatchRuntime, type: watchType) {
+            updateWatchRuntime(savedWatchRuntime)
+        }
+    }
+
+    private func saveWatchSelection() {
+        preferences?.setNewSimulatorSelection(deviceType: watchType, runtime: watchRuntime, for: 4)
+    }
+
     private func simulatorRuntimeSupports(_ runtime: String, type: String) -> Bool {
         guard catalog.runtime(runtime, supports: type) else { return false }
         guard let existingDevice, createsPhone else { return true }
@@ -207,14 +265,8 @@ final class NewSimulatorModel {
             family = previous.family
             resetSimulatorSelection()
         }
-        if deviceTypes.contains(where: { $0.identifier == previous.deviceType }) { selectDeviceType(previous.deviceType) }
-        if let value = previous.runtime, let type = deviceType, simulatorRuntimeSupports(value, type: type) {
-            selectRuntime(value)
-        }
-        if watchTypes.contains(where: { $0.identifier == previous.watchType }) { selectWatchType(previous.watchType) }
-        if let value = previous.watchRuntime, let type = watchType, watchRuntimeSupports(value, type: type) {
-            selectWatchRuntime(value)
-        }
+        restoreSimulatorSelection(deviceType: previous.deviceType, runtime: previous.runtime)
+        restoreWatchSelection(deviceType: previous.watchType, runtime: previous.watchRuntime)
         setAddsWatch(previous.addsWatch)
         showsWatchPage = previous.showsWatchPage && pairsWatch
     }
