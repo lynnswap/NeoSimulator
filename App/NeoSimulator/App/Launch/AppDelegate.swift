@@ -334,7 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let existingDevice: NewSimulatorModel.ExistingDevice?
         if let device {
             guard let type = device.deviceTypeIdentifier else {
-                throw HostError.operation("The selected simulator's device type is unavailable.")
+                throw SimulatorError.operation("The selected simulator's device type is unavailable.")
             }
             context = try await model.creationCatalog(for: device.inventoryID)
             existingDevice = .init(identifier: device.identifier, name: device.name, productFamily: device.productFamily,

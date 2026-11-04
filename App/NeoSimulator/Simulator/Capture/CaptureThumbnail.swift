@@ -36,7 +36,7 @@ final class CapturedContent {
     /// keeps the capture where it is and names that location.
     @discardableResult
     func save(into folder: URL) throws -> URL {
-        guard !isResolved else { throw HostError.operation("\(name) was already saved or deleted.") }
+        guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
         let saved = try CaptureFile.move(file, into: folder, named: name, isReserved: isReserved)
         isResolved = true
         self.saved = saved
@@ -64,7 +64,7 @@ final class CapturedContent {
     /// for, and gives up the temporary file.
     func deliver(to destination: URL) throws {
         if let saved { return try FileManager.default.copyItem(at: saved, to: destination) }
-        guard !isResolved else { throw HostError.operation("\(name) was already saved or deleted.") }
+        guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
         try FileManager.default.moveItem(at: file, to: destination)
         isResolved = true
     }
@@ -502,7 +502,7 @@ final class CaptureThumbnail: NSObject {
 
     private static func application(_ bundleIdentifier: String, toOpen name: String) throws -> URL {
         guard let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
-            throw HostError.unavailable("The app to open \(name) is not installed.")
+            throw SimulatorError.unavailable("The app to open \(name) is not installed.")
         }
         return application
     }
@@ -539,7 +539,7 @@ final class CaptureThumbnail: NSObject {
                 var failure = error
                 if !keepingMovie, !content.isResolved {
                     do { try content.saveToDefaultLocation() }
-                    catch { failure = HostError.operation("\(failure.localizedDescription) \(error.localizedDescription)") }
+                    catch { failure = SimulatorError.operation("\(failure.localizedDescription) \(error.localizedDescription)") }
                 }
                 report(failure)
             }
@@ -846,7 +846,7 @@ enum AnimatedGIF {
     static func export(_ movie: URL, to gif: URL, options: Options) async throws {
         let asset = AVURLAsset(url: movie)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-            throw HostError.operation("The recording contains no video track")
+            throw SimulatorError.operation("The recording contains no video track")
         }
         let duration = try await track.load(.timeRange).duration.seconds
         let reader = try AVAssetReader(asset: asset)
@@ -855,12 +855,12 @@ enum AnimatedGIF {
         ])
         reader.add(output)
         guard reader.startReading() else {
-            throw reader.error ?? HostError.operation("The recording could not be read")
+            throw reader.error ?? SimulatorError.operation("The recording could not be read")
         }
         guard let destination = CGImageDestinationCreateWithURL(gif as CFURL, UTType.gif.identifier as CFString, 0, [
             kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0],
         ] as CFDictionary) else {
-            throw HostError.operation("Could not create \(gif.lastPathComponent)")
+            throw SimulatorError.operation("Could not create \(gif.lastPathComponent)")
         }
         CGImageDestinationSetProperties(destination, [
             kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0],
@@ -889,9 +889,9 @@ enum AnimatedGIF {
             held = (try frame(image, options: options, context: renderer), time)
         }
         if let last = held { add(last.image, delay: max(duration - last.time.seconds, interval)) }
-        if reader.status == .failed { throw reader.error ?? HostError.operation("The recording could not be read") }
+        if reader.status == .failed { throw reader.error ?? SimulatorError.operation("The recording could not be read") }
         guard CGImageDestinationFinalize(destination) else {
-            throw HostError.operation("Could not write \(gif.lastPathComponent)")
+            throw SimulatorError.operation("Could not write \(gif.lastPathComponent)")
         }
     }
 
@@ -916,7 +916,7 @@ enum AnimatedGIF {
         }
         guard let srgb = CGColorSpace(name: CGColorSpace.sRGB),
               let cgImage = context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: srgb)
-        else { throw HostError.operation("Could not render a GIF frame") }
+        else { throw SimulatorError.operation("Could not render a GIF frame") }
         return cgImage
     }
 }

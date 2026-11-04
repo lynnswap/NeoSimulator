@@ -12,6 +12,7 @@ final class SimulatorScreenHost: NSObject {
     let isHeadless: Bool
     private let isInProcess: Bool
     private let suppliedPasteboardSync: PasteboardSync?
+    private let offersLifetimeChoice: Bool
     var onPresent: ((DeviceWindowController) -> Void)?
     var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void)?
     var onError: ((Error) -> Void)?
@@ -66,7 +67,8 @@ final class SimulatorScreenHost: NSObject {
     private var testingDevicesObservation: DefaultsObservation?
 
     init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
-         headless: Bool = false, inProcess: Bool = false, pasteboardSync: PasteboardSync? = nil) throws {
+         headless: Bool = false, inProcess: Bool = false, pasteboardSync: PasteboardSync? = nil,
+         offersLifetimeChoice: Bool = true) throws {
         try conflicts.check()
         self.runtime = runtime
         self.conflicts = conflicts
@@ -74,6 +76,7 @@ final class SimulatorScreenHost: NSObject {
         isHeadless = headless
         isInProcess = inProcess
         suppliedPasteboardSync = pasteboardSync
+        self.offersLifetimeChoice = offersLifetimeChoice
         deviceSet = try runtime.openDeviceSet()
         HostPreferences.registerDefaults()
         super.init()
@@ -122,7 +125,7 @@ final class SimulatorScreenHost: NSObject {
                 || connections[identifier] != nil || closingShutdowns[identifier] != nil
                 || disconnectedSessions.contains(where: { $0.device.identity == identifier }) else { return }
         guard !releasingDevices.contains(identifier) else {
-            throw HostError.operation("This simulator is already being handed over.")
+            throw SimulatorError.operation("This simulator is already being handed over.")
         }
         releasingDevices.insert(identifier)
         defer { releasingDevices.remove(identifier) }
@@ -150,11 +153,11 @@ final class SimulatorScreenHost: NSObject {
         awaitingReconnect.removeValue(forKey: identifier)
         // Like an unfinished external display, input that was not removed keeps the device for another release.
         let inputFailures = await finishDisconnectedInput(of: identifier)
-        guard inputFailures.isEmpty else { throw HostError.operation(inputFailures.joined(separator: "\n")) }
+        guard inputFailures.isEmpty else { throw SimulatorError.operation(inputFailures.joined(separator: "\n")) }
         if let changes = externalDisplayQueues[identifier]?.changes {
             let deadline = ContinuousClock.now + .seconds(HostPreferences.defaults.double(forKey: HostPreferences.terminationTimeout))
             guard await changes.idle(before: deadline) else {
-                throw HostError.operation("The simulator's external displays did not finish disconnecting.")
+                throw SimulatorError.operation("The simulator's external displays did not finish disconnecting.")
             }
             externalDisplayQueues.removeValue(forKey: identifier)
         }
@@ -163,7 +166,7 @@ final class SimulatorScreenHost: NSObject {
         do { if isManaged { try onOwnershipChange?(false) } }
         catch {
             ownedDeviceIdentifiers.insert(identifier)
-            throw HostError.operation("The simulator disconnected, but its ownership could not be updated: \(error.localizedDescription)")
+            throw SimulatorError.operation("The simulator disconnected, but its ownership could not be updated: \(error.localizedDescription)")
         }
     }
 
@@ -347,7 +350,7 @@ final class SimulatorScreenHost: NSObject {
         guard !stopped, !isTerminating else { throw CancellationError() }
         guard let controller = sessions[identifier] else { return }
         guard !presentationRestarts.contains(identifier), controller.session.reserve() else {
-            throw HostError.operation("This simulator already has an operation in progress.")
+            throw SimulatorError.operation("This simulator already has an operation in progress.")
         }
         presentationRestarts.insert(identifier)
         do {
@@ -378,7 +381,7 @@ final class SimulatorScreenHost: NSObject {
             guard state == 2, ContinuousClock.now < deadline else {
                 presentationRestarts.remove(identifier)
                 try scanDevices()
-                throw HostError.operation("The simulator is not running, so its display could not reconnect.")
+                throw SimulatorError.operation("The simulator is not running, so its display could not reconnect.")
             }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -401,10 +404,10 @@ final class SimulatorScreenHost: NSObject {
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
         guard let device = devices.first(where: { $0.identity == identifier }) else {
-            throw HostError.operation("The selected simulator is no longer available")
+            throw SimulatorError.operation("The selected simulator is no longer available")
         }
         guard bootIfNeeded || device.state == 3 else {
-            throw HostError.operation("The simulator is no longer running, so its display was not attached.")
+            throw SimulatorError.operation("The simulator is no longer running, so its display was not attached.")
         }
         ownedDeviceIdentifiers.insert(identifier)
         if isManaged { try onOwnershipChange?(false) }
@@ -427,11 +430,11 @@ final class SimulatorScreenHost: NSObject {
                 var current = try readDevices()
                 if showsTestingDevices, let testingSet { current += try readDevices(in: testingSet) }
                 guard let device = current.first(where: { $0.identity == identifier }) else {
-                    throw HostError.operation("The selected simulator is no longer available")
+                    throw SimulatorError.operation("The selected simulator is no longer available")
                 }
                 if device.state == 3 { return }
                 guard device.state == 2, ContinuousClock.now < deadline else {
-                    throw HostError.operation("The simulator did not finish starting.")
+                    throw SimulatorError.operation("The simulator did not finish starting.")
                 }
                 try await Task.sleep(for: .milliseconds(100))
             }
@@ -449,7 +452,7 @@ final class SimulatorScreenHost: NSObject {
             }
             if let failure = connectionFailures[identifier] { throw failure }
             if sessions[identifier] != nil && awaitingReconnect[identifier] == nil { break }
-            guard ContinuousClock.now < deadline else { throw HostError.unavailable("The simulator did not finish opening.") }
+            guard ContinuousClock.now < deadline else { throw SimulatorError.unavailable("The simulator did not finish opening.") }
             try await Task.sleep(for: .milliseconds(100))
         }
         guard let controller = sessions[identifier] else { throw CancellationError() }
@@ -463,7 +466,7 @@ final class SimulatorScreenHost: NSObject {
 
     private func rescan(testingVisibilityChanged: Bool = false) {
         do { try scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
-        catch let error as HostError {
+        catch let error as SimulatorError {
             if case .conflict = error { handleHostConflict() }
             else { report(error) }
         } catch { report(error) }
@@ -607,7 +610,8 @@ final class SimulatorScreenHost: NSObject {
                             self?.onShutDown?(controller.session.device.identity)
                         } : nil
                         let controller = try DeviceWindowController(
-                            session: session, touchPressure: touchPressure, tvRemote: tvRemote, onClose: { [weak self] in
+                            session: session, touchPressure: touchPressure, tvRemote: tvRemote,
+                            offersLifetimeChoice: offersLifetimeChoice, onClose: { [weak self] in
                                 self?.deviceWindowClosed($0, choice: $1)
                             }, onRestart: { [weak self] controller, erasing in
                                 guard let self else { return }
@@ -626,7 +630,7 @@ final class SimulatorScreenHost: NSObject {
                     }
                     try await Task.sleep(for: .milliseconds(250))
                 }
-                throw HostError.unavailable("No integrated screen became available for \(device.name)")
+                throw SimulatorError.unavailable("No integrated screen became available for \(device.name)")
             } catch is CancellationError {
             } catch {
                 connectionFailures[identifier] = error
@@ -921,7 +925,7 @@ final class SimulatorScreenHost: NSObject {
 
     func restartHeadlessDevice(_ identifier: SimulatorDeviceIdentifier, erasing: Bool) async throws {
         guard restarting[identifier] == nil else {
-            throw HostError.operation("This simulator is already restarting.")
+            throw SimulatorError.operation("This simulator is already restarting.")
         }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             restarting[identifier] = Task {
@@ -944,7 +948,7 @@ final class SimulatorScreenHost: NSObject {
         let identifier = controller.session.device.identity
         guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
               bootOperations[identifier] == nil else {
-            completion?(HostError.operation("This simulator already has a device operation in progress."))
+            completion?(SimulatorError.operation("This simulator already has a device operation in progress."))
             return
         }
         let tools: DeviceTools
@@ -958,7 +962,7 @@ final class SimulatorScreenHost: NSObject {
         // Holding the operation slot disables other device commands while
         // an active recording finishes.
         guard controller.session.reserve() else {
-            completion?(HostError.operation("This simulator already has a device operation in progress."))
+            completion?(SimulatorError.operation("This simulator already has a device operation in progress."))
             return
         }
         awaitingReconnect[identifier] = controller
@@ -998,7 +1002,7 @@ final class SimulatorScreenHost: NSObject {
                 onConflict(name, failure)
             } else {
                 let detail = failure.map { "\n\($0.localizedDescription)" } ?? ""
-                report(HostError.conflict("\(name) is now displaying the simulators.\(detail)"))
+                report(SimulatorError.conflict("\(name) is now displaying the simulators.\(detail)"))
             }
         }
     }
@@ -1009,8 +1013,9 @@ final class SimulatorScreenHost: NSObject {
     func stop(keepingDevicesRunning: Bool? = nil) async throws {
         if let stoppingTask { try await stoppingTask.value; return }
         guard !stopped else {
-            let failures = await finishDisconnectedInput()
-            if !failures.isEmpty { throw HostError.operation(failures.joined(separator: "\n")) }
+            let inputFailures = await finishDisconnectedInput()
+            let failures = inputFailures + (await finishExternalDisplayChanges())
+            if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
             return
         }
         isTerminating = true
@@ -1044,7 +1049,7 @@ final class SimulatorScreenHost: NSObject {
         shutdown()
         onChange?()
         if !failures.isEmpty || !captureFailures.isEmpty {
-            throw HostError.operation((failures + captureFailures.map(\.localizedDescription)).joined(separator: "\n"))
+            throw SimulatorError.operation((failures + captureFailures.map(\.localizedDescription)).joined(separator: "\n"))
         }
     }
 
@@ -1095,7 +1100,7 @@ func withScreenOpenCleanup<Value>(preservingExisting: Bool,
             let openingError = error
             do { try await Task { try await cleanup() }.value }
             catch {
-                throw HostError.operation("\(openingError.localizedDescription)\nOpening cleanup failed: \(error.localizedDescription)")
+                throw SimulatorError.operation("\(openingError.localizedDescription)\nOpening cleanup failed: \(error.localizedDescription)")
             }
         }
         throw error

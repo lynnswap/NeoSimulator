@@ -25,7 +25,7 @@ struct ErrorAlertTests {
     }
 
     @Test func shortErrorsAndExplicitRecoveryActionsKeepTheirPresentation() {
-        let error = HostError.conflict("The device screen is open in another app.")
+        let error = SimulatorError.conflict("The device screen is open in another app.")
         let native = NSAlert(error: error)
         let alert = NSAlert(presenting: error)
         #expect(alert.accessoryView == nil)

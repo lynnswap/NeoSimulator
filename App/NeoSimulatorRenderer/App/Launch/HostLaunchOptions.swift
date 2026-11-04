@@ -28,7 +28,7 @@ struct HostLaunchOptions {
         var ownerPID: Int32?
         var ownerLaunchDate: Date?
         var index = 0
-        func invalid() -> HostError {
+        func invalid() -> SimulatorError {
             .invalidArguments("Expected [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
         }
         while index < arguments.count {
@@ -100,12 +100,12 @@ struct HostLaunchOptions {
 
     func validateInstallation() throws {
         guard Bundle(url: xcodeURL)?.bundleIdentifier == "com.apple.dt.Xcode" else {
-            throw HostError.unavailable("\(xcodeURL.path) is not an Xcode application")
+            throw SimulatorError.unavailable("\(xcodeURL.path) is not an Xcode application")
         }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: xcodeURL.appendingPathComponent("Contents/Developer").path,
                                              isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw HostError.unavailable("\(xcodeURL.path) has no Contents/Developer directory")
+            throw SimulatorError.unavailable("\(xcodeURL.path) has no Contents/Developer directory")
         }
     }
 }

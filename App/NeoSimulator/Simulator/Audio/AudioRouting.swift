@@ -95,7 +95,7 @@ extension PreferenceStore {
     private func deviceAudioPreferences() throws -> any PreferenceStore {
         guard self is UserDefaults else { return self }
         guard let defaults = HostPreferences.deviceSettingsDefaults, defaults.synchronize() else {
-            throw HostError.operation("Could not read the saved simulator audio route.")
+            throw SimulatorError.operation("Could not read the saved simulator audio route.")
         }
         return defaults
     }
@@ -112,7 +112,7 @@ extension PreferenceStore {
         store.set(route == AudioRouting.systemDefault ? "systemDefault" : route,
                   forKey: Self.deviceAudioRouteKey(identifier, scope))
         if let defaults = store as? UserDefaults, !defaults.synchronize() {
-            throw HostError.operation("Could not save the simulator audio route for the next connection.")
+            throw SimulatorError.operation("Could not save the simulator audio route for the next connection.")
         }
     }
 

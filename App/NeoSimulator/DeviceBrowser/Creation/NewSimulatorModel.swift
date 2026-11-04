@@ -303,14 +303,14 @@ final class NewSimulatorModel {
                         if createsPhone { try await pair(existingDevice.identifier, identifier) }
                         else { try await pair(identifier, existingDevice.identifier) }
                     } catch {
-                        throw HostError.operation("Created “\(newDevice.name)” (\(identifier)), but could not pair it with “\(existingDevice.name)”: \(error.localizedDescription)")
+                        throw SimulatorError.operation("Created “\(newDevice.name)” (\(identifier)), but could not pair it with “\(existingDevice.name)”: \(error.localizedDescription)")
                     }
                 } else if let watch {
                     let watchIdentifier: String
                     do { watchIdentifier = try await create(watch.name, watch.type, watch.runtime) }
-                    catch { throw HostError.operation("Created “\(newDevice.name)”, but could not create its paired Apple Watch: \(error.localizedDescription)") }
+                    catch { throw SimulatorError.operation("Created “\(newDevice.name)”, but could not create its paired Apple Watch: \(error.localizedDescription)") }
                     do { try await pair(watchIdentifier, identifier) }
-                    catch { throw HostError.operation("Created “\(newDevice.name)” and “\(watch.name)”, but could not pair them: \(error.localizedDescription)") }
+                    catch { throw SimulatorError.operation("Created “\(newDevice.name)” and “\(watch.name)”, but could not pair them: \(error.localizedDescription)") }
                 }
                 message = watch.map { "Created “\(newDevice.name)” and “\($0.name)”." } ?? "Created “\(newDevice.name)”."
                 showsWatchPage = false

@@ -1297,7 +1297,7 @@ struct InputFocusTests {
         for id in [DeviceCommand.ID.recordScreen, .recordScreenAs] {
             #expect(!DeviceCommand.command(id).isEnabled(controller))
         }
-        #expect(throws: HostError.self) {
+        #expect(throws: SimulatorError.self) {
             try session.startRecording(to: .file(directory.appendingPathComponent("pending.mov")), mask: .ignored)
         }
         if let unexpected = session.recording { unexpected.stop(); try await unexpected.waitUntilFinished() }
@@ -1396,7 +1396,7 @@ struct InputFocusTests {
 
         let rejected = TestAppResizeTransport()
         let disconnected = TestDisplay()
-        disconnected.appDisplayError = HostError.operation("Display disconnected")
+        disconnected.appDisplayError = SimulatorError.operation("Display disconnected")
         let failed = try makeSession(disconnected, appResizeTransport: { rejected })
         defer { failed.disconnect() }
         var failures: [String] = []
@@ -1429,7 +1429,7 @@ struct InputFocusTests {
             case 0: transport.eligibilityUpdates.continuation.yield(.unavailable)
             case 1: transport.lease.invalidation.continuation.finish()
             default:
-                transport.lease.adjustmentError = HostError.operation("Geometry rejected")
+                transport.lease.adjustmentError = SimulatorError.operation("Geometry rejected")
                 session.resizeApp(to: CGSize(width: 600, height: 700))
             }
             try await wait { !session.isResizingApp }
@@ -1533,8 +1533,8 @@ struct InputFocusTests {
         try capture.start()
         #expect(try !tap.key(.tapDisabledByTimeout, code: 0))
         #expect(!capture.isCapturing && tap.stops == 2 && failures.count == 1)
-        tap.startError = HostError.operation("Permission denied")
-        #expect(throws: HostError.self) { try capture.start() }
+        tap.startError = SimulatorError.operation("Permission denied")
+        #expect(throws: SimulatorError.self) { try capture.start() }
         #expect(!capture.isCapturing)
         tap.startError = nil
         try capture.start()
@@ -1668,8 +1668,8 @@ struct InputFocusTests {
             stopped = true
         }
         #expect(display.stopCount == 1 && !stopped)
-        display.completeStop(throwing: HostError.operation("Could not remove the native keyboard services"))
-        await #expect(throws: HostError.self) { try await failing.value }
+        display.completeStop(throwing: SimulatorError.operation("Could not remove the native keyboard services"))
+        await #expect(throws: SimulatorError.self) { try await failing.value }
         // Stopping again removes what remained instead of reporting the earlier attempt.
         let retrying = Task.immediate {
             try await controller.session.stop()
@@ -3024,7 +3024,7 @@ struct InputFocusTests {
         let send = "Could not send the pasteboard to the simulator: "
         let closed = "The simulator closed its pasteboard connection."
 
-        display.pasteboardError = HostError.operation("Unable to lookup in current state: Shutdown")
+        display.pasteboardError = SimulatorError.operation("Unable to lookup in current state: Shutdown")
         transfer(.get)
         #expect(failures == [get + "Unable to lookup in current state: Shutdown"])
         #expect(display.pasteboards.isEmpty)
@@ -3035,7 +3035,7 @@ struct InputFocusTests {
         first.send(.activated)
         first.send(.activated)
         transfer(.get)
-        first.send(.failedToApply(HostError.operation("pasteboard communication failure")))
+        first.send(.failedToApply(SimulatorError.operation("pasteboard communication failure")))
         #expect(failures.last == get + "pasteboard communication failure")
         transfer(.get)
         first.send(.applied(generation: 1))
@@ -3061,7 +3061,7 @@ struct InputFocusTests {
         #expect(runtime === joined)
 
         let otherToolkit = runtime.uiXcodeURL.appendingPathComponent("DifferentXcode.app")
-        await #expect(throws: HostError.self) {
+        await #expect(throws: SimulatorError.self) {
             try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: otherToolkit)
         }
         let retried = try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: runtime.uiXcodeURL)
@@ -3225,7 +3225,7 @@ struct InputFocusTests {
         try await settle()
         #expect(pushes() == [1, 1, 3])
         // After a copy that could not be applied, it is sent again.
-        second.send(.failedToApply(HostError.operation("pasteboard communication failure")))
+        second.send(.failedToApply(SimulatorError.operation("pasteboard communication failure")))
         first.send(.applied(generation: pasteboard.changeCount - 1))
         try await settle()
         #expect(pushes() == [1, 2, 4])
@@ -3320,7 +3320,7 @@ struct InputFocusTests {
         #expect(display.pasteboards.isEmpty)
 
         // A failed send reaches Send Pasteboard, not the Get that follows it.
-        transport.sendError = HostError.operation("pasteboard communication failure")
+        transport.sendError = SimulatorError.operation("pasteboard communication failure")
         transfer(.send)
         transfer(.get)
         try await wait { transport.transfers.count == 4 }
@@ -3388,7 +3388,7 @@ struct InputFocusTests {
         // A failed observation ends both without restarting, and a change it reported no longer transfers. The
         // synchronization choice stays on.
         let deviceChange = try #require(transport.reportDeviceChange)
-        transport.endDeviceObservation(throwing: HostError.operation("The device closed the pasteboard monitor."))
+        transport.endDeviceObservation(throwing: SimulatorError.operation("The device closed the pasteboard monitor."))
         try await wait { transport.observations == 0 }
         var changes: [PasteboardTransfer] = []
         deviceChange { _ in changes.append(.get); return 1 }
@@ -3459,7 +3459,7 @@ struct InputFocusTests {
         sync.toggle()
         try await wait { [connecting, sending, receiving].allSatisfy { $0.observations == 0 } }
         var gets: [String] = []
-        receiving.readError = HostError.operation("requested get failure")
+        receiving.readError = SimulatorError.operation("requested get failure")
         sessions[2].transferPasteboard(.get) { gets.append($0.localizedDescription) }
         sync.toggle()
         try await wait { [connecting, sending, receiving].allSatisfy { $0.observations == 2 } }
@@ -3489,7 +3489,7 @@ struct InputFocusTests {
         let macChange = try #require(sending.reportMacChange)
         macChange {
             await withCheckedContinuation { resumeSend = $0 }
-            throw HostError.operation("automatic send failure")
+            throw SimulatorError.operation("automatic send failure")
         }
         deviceChange { shouldReplace in
             await withCheckedContinuation { resumeWrite = $0 }
@@ -3501,8 +3501,8 @@ struct InputFocusTests {
         // Each requested transfer reports its own failure, and no automatic transfer reports one.
         var failures: [String] = []
         connecting.holdsSends = false
-        for transport in [connecting, sending] { transport.sendError = HostError.operation("requested send failure") }
-        receiving.readError = HostError.operation("requested get failure")
+        for transport in [connecting, sending] { transport.sendError = SimulatorError.operation("requested send failure") }
+        receiving.readError = SimulatorError.operation("requested get failure")
         for (name, session, transfer) in [("connecting", sessions[0], PasteboardTransfer.send), ("sending", sessions[1], .send),
                                           ("receiving", sessions[2], .get)] {
             session.transferPasteboard(transfer) { failures.append("\(name): \($0.localizedDescription)") }
@@ -4024,7 +4024,7 @@ struct InputFocusTests {
         #expect(window.toolbar === toolbar && toolbar !== deviceToolbar)
         #expect(window.attachedSheet == nil)
 
-        for error in [nil, HostError.unavailable("plugin from another Xcode")] as [Error?] {
+        for error in [nil, SimulatorError.unavailable("plugin from another Xcode")] as [Error?] {
             let missing = TestDisplay()
             missing.pluginError = error
             let unloaded = try makeController(missing, family: .vision, features: [], userInterfacePlugin: true,
@@ -4041,7 +4041,7 @@ struct InputFocusTests {
             unloadedWindow.endSheet(sheet)
         }
         let phone = TestDisplay()
-        phone.pluginError = HostError.unavailable("looked up")
+        phone.pluginError = SimulatorError.unavailable("looked up")
         let phoneController = try makeController(phone)
         defer { phoneController.invalidate() }
         phoneController.showWindow(nil)
@@ -4542,7 +4542,7 @@ struct InputFocusTests {
 
     @Test func aRemoteButtonOrTouchReportsOneErrorEach() throws {
         let display = TestDisplay()
-        display.deliveryError = HostError.operation("delivery failed")
+        display.deliveryError = SimulatorError.operation("delivery failed")
         let controller = try makeController(display, family: .tv, features: [DeviceCapabilities.tvRemote])
         defer { controller.invalidate() }
         var failures = 0
@@ -4772,7 +4772,7 @@ struct InputFocusTests {
         #expect(try reading("landscapeLeft", "landscapeLeft") == (.landscapeLeft, 90))
         #expect(try reading("landscapeRight", "landscapeRight") == (.landscapeRight, -90))
         #expect(try reading("faceUp", "landscapeLeft") == (.faceUp, 90))
-        #expect(throws: HostError.self) { try reading("faceDown", "faceDown") }
+        #expect(throws: SimulatorError.self) { try reading("faceDown", "faceDown") }
     }
 
     @Test func orientationCommandsAreShownWithDisplayRotation() throws {
@@ -6507,7 +6507,7 @@ struct InputFocusTests {
             #expect(display.notificationStates[name] == state, "\(command)")
         }
         #expect(display.postedNotifications == Array(repeating: name, count: 4))
-        display.notificationError = HostError.operation("refused")
+        display.notificationError = SimulatorError.operation("refused")
         await #expect(throws: (any Error).self) { try await controller.session.simulateFall(.dismissed) }
         #expect(display.postedNotifications.count == 4)
         let other = TestDisplay()
@@ -6567,7 +6567,7 @@ struct InputFocusTests {
         #expect(display.notificationStates == [slowMotion: 1, quality: 10])
         #expect(display.postedNotifications == [slowMotion, quality])
 
-        display.notificationError = HostError.operation("refused")
+        display.notificationError = SimulatorError.operation("refused")
         await #expect(throws: (any Error).self) { try await controller.session.toggleSlowAnimations() }
         #expect(slow.state?(controller) == .on)
 
@@ -6870,7 +6870,7 @@ struct InputFocusTests {
         let restoreDefaults = removeLocationPreferences()
         defer { restoreDefaults() }
         let display = TestDisplay()
-        display.locationError = HostError.operation("location failed")
+        display.locationError = SimulatorError.operation("location failed")
         let controller = try makeController(display)
         defer { controller.invalidate() }
         controller.showWindow(nil)
@@ -7074,7 +7074,7 @@ struct InputFocusTests {
         let window = try #require(controller.window)
         // Unrequested device changes report errors through the session handler.
         preferences.set(["Loopback"], forKey: HostPreferences.recentAudioOutputDeviceUIDs)
-        port.routeError = HostError.operation("port failed")
+        port.routeError = SimulatorError.operation("port failed")
         var automatic: [String] = []
         controller.session.connectAudioRoutes { automatic.append($0.localizedDescription) }
         #expect(automatic == ["Could not route the audio output of Test iPhone to BlackHole 2ch: port failed"])
@@ -7084,7 +7084,7 @@ struct InputFocusTests {
         let sheet = try #require(window.attachedSheet)
         window.endSheet(sheet)
         port.routeError = nil
-        port.refusal = HostError.operation("refused")
+        port.refusal = SimulatorError.operation("refused")
         controller.selectAudioRoute("Loopback", in: .output)
         window.endSheet(try #require(window.attachedSheet))
 
@@ -7433,7 +7433,7 @@ struct InputFocusTests {
         #expect(saved.center != nil && saved.scale != nil)
         #expect(preferences.windowGeometry(forDevice: "test-device", screens: NSScreen.screens.map(\.frame)).center == nil)
         controller.perform(.externalDisplay1280x720)
-        screen.completionError = HostError.operation("power failed")
+        screen.completionError = SimulatorError.operation("power failed")
         try #require(controller.externalDisplayWindow?.window).close()
         #expect(controller.externalDisplayWindow != nil)
     }
@@ -7568,10 +7568,10 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         let (controller, _) = try makeExternalDisplayController(screen, device: "B", preferences: preferences)
         defer { controller.invalidate() }
-        screen.refusal = HostError.operation("no mode")
+        screen.refusal = SimulatorError.operation("no mode")
         choose(.size640x480, on: controller)
         screen.refusal = nil
-        screen.completionError = HostError.operation("mode failed")
+        screen.completionError = SimulatorError.operation("mode failed")
         choose(.size640x480, on: controller)
         #expect(Array(failures.dropFirst()) == [
             "Could not set the external display of Test iPhone to 640×480: no mode",
@@ -7580,13 +7580,13 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow == nil)
         screen.completionError = nil
         choose(.size640x480, on: controller)
-        screen.completionError = HostError.operation("power failed")
+        screen.completionError = SimulatorError.operation("power failed")
         choose(.disabled, on: controller)
         #expect(failures.last == "Could not turn off the external display of Test iPhone: power failed")
         #expect(controller.externalDisplayWindow != nil)
         var restored: [String] = []
         let failing = TestExternalScreen()
-        failing.completionError = HostError.operation("restore failed")
+        failing.completionError = SimulatorError.operation("restore failed")
         preferences.setExternalDisplayTag(ExternalDisplayMode.size640x480.rawValue, forDevice: "C")
         let (restoring, _) = try makeExternalDisplayController(failing, device: "C", preferences: preferences) {
             restored.append($0.localizedDescription)
@@ -7603,7 +7603,7 @@ struct InputFocusTests {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
         }
         choose(.size1024x768)
-        display.externalScreenError = HostError.operation("no proxy")
+        display.externalScreenError = SimulatorError.operation("no proxy")
         let screen = TestExternalScreen()
         display.connectExternalScreen(screen)
         display.deliverScreenReports()
@@ -7628,7 +7628,7 @@ struct InputFocusTests {
         let (controller, _) = try makeExternalDisplayController(screen)
         defer { controller.invalidate() }
         controller.showWindow(nil)
-        screen.completionError = HostError.operation("mode failed")
+        screen.completionError = SimulatorError.operation("mode failed")
         controller.perform(.externalDisplay1024x768)
         let sheet = try #require(controller.window?.attachedSheet)
         #expect(texts(in: sheet.contentView).contains("Could not set the external display of Test iPhone to 1024×768: mode failed"))
@@ -7767,7 +7767,7 @@ struct InputFocusTests {
         let (controller, _) = try makeExternalDisplayController(screen)
         controller.perform(.externalDisplay1920x1080)
         screen.deliverCompletions()
-        screen.completionError = HostError.operation("mode failed")
+        screen.completionError = SimulatorError.operation("mode failed")
         controller.perform(.externalDisplay1280x720)
         screen.deliverCompletions()
         screen.completionError = nil
@@ -8077,7 +8077,7 @@ struct InputFocusTests {
         #expect(screen.requests == restored)
         #expect(first.externalDisplayWindow?.window?.subtitle == "CarPlay")
         // Shutdown ends the guest session; the next boot must not send another end request.
-        screen.completionError = HostError.operation("Invalid argument")
+        screen.completionError = SimulatorError.operation("Invalid argument")
         first.invalidate()
         #expect(Array(screen.requests.dropFirst(4)) == ["off"])
         let rebooted = TestExternalScreen()
@@ -8109,7 +8109,7 @@ struct InputFocusTests {
         _ = requests(choosing: .carPlay)
         #expect(screen.carPlaySessions == 1)
         // Failed termination preserves the session; restore its HID service.
-        screen.carPlayErrors = ["stop carplay": HostError.operation("busy")]
+        screen.carPlayErrors = ["stop carplay": SimulatorError.operation("busy")]
         #expect(requests(choosing: .carPlay)
             == ["save carplay", "remove service", "stop carplay", "mode 800x480@2 carplay", "connect service"])
         #expect(failures == ["Could not stop CarPlay on Test iPhone: busy"])
@@ -8311,12 +8311,12 @@ struct InputFocusTests {
         func choose(_ mode: ExternalDisplayMode) {
             controller.session.chooseExternalDisplay(mode) { failures.append($0.localizedDescription) }
         }
-        screen.carPlayErrors = ["save carplay": HostError.operation("disk full")]
+        screen.carPlayErrors = ["save carplay": SimulatorError.operation("disk full")]
         choose(.carPlay)
         #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
         #expect(failures == ["Could not save the CarPlay configuration of Test iPhone: disk full"])
-        screen.carPlayErrors = ["remove service": HostError.operation("no port"),
-                                "stop carplay": HostError.operation("no bridge")]
+        screen.carPlayErrors = ["remove service": SimulatorError.operation("no port"),
+                                "stop carplay": SimulatorError.operation("no bridge")]
         choose(.size1280x720)
         #expect(screen.requests.suffix(4) == ["save off", "remove service", "stop carplay", "mode 1280x720@1"])
         #expect(failures.last == """
@@ -8326,20 +8326,20 @@ struct InputFocusTests {
         screen.carPlayErrors = [:]
         choose(.size640x480)
         #expect(screen.requests.suffix(4) == ["save off", "remove service", "stop carplay", "mode 640x480@1"])
-        screen.carPlayErrors = ["start carplay": HostError.operation("no CarPlay")]
+        screen.carPlayErrors = ["start carplay": SimulatorError.operation("no CarPlay")]
         var count = screen.requests.count
         choose(.carPlay)
         #expect(Array(screen.requests.dropFirst(count))
             == ["save carplay", "off", "mode 800x480@2 carplay", "start carplay"])
         #expect(failures.last == "Could not start CarPlay on Test iPhone: no CarPlay")
-        screen.carPlayErrors = ["connect service": HostError.operation("send failed")]
+        screen.carPlayErrors = ["connect service": SimulatorError.operation("send failed")]
         count = screen.requests.count
         choose(.carPlay)
         #expect(Array(screen.requests.dropFirst(count))
             == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
         #expect(failures.last == "Could not connect the CarPlay touch screen of Test iPhone: send failed")
         screen.carPlayErrors = [:]
-        screen.completionError = HostError.operation("mode failed")
+        screen.completionError = SimulatorError.operation("mode failed")
         count = screen.requests.count
         choose(.carPlay)
         #expect(Array(screen.requests.dropFirst(count)) == [
@@ -8348,8 +8348,8 @@ struct InputFocusTests {
         #expect(failures.last == "Could not set the external display of Test iPhone to CarPlay: mode failed")
         screen.completionError = nil
         controller.showWindow(nil)
-        screen.carPlayErrors = ["save carplay": HostError.operation("disk full"),
-                                "start carplay": HostError.operation("no CarPlay")]
+        screen.carPlayErrors = ["save carplay": SimulatorError.operation("disk full"),
+                                "start carplay": SimulatorError.operation("no CarPlay")]
         controller.perform(.externalDisplayCarPlay)
         let sheet = try #require(controller.window?.attachedSheet)
         #expect(texts(in: sheet.contentView).contains("""
@@ -8631,7 +8631,7 @@ struct InputFocusTests {
         #expect(model.runtime == "new" && model.canProceed)
         model.selectRuntime("old")
         #expect(model.deviceType == "b")
-        creation.failure = HostError.operation("creation failed")
+        creation.failure = SimulatorError.operation("creation failed")
         model.forward()
         await model.waitForCreation()
         #expect(model.error == "creation failed" && creation.requests.isEmpty && model.canProceed)
@@ -8691,7 +8691,7 @@ struct InputFocusTests {
     @Test func newSimulatorReportsFailureAfterItsWindowCloses() async throws {
         var reported: String?
         let model = NewSimulatorModel(catalog: pairingCatalog(), create: { _, _, _ in
-            throw HostError.operation("Creation failed after closing")
+            throw SimulatorError.operation("Creation failed after closing")
         }, pair: { _, _ in })
         var controller: NewSimulatorWindowController? = NewSimulatorWindowController(model: model, reportFailure: {
             reported = $0.localizedDescription
@@ -8861,13 +8861,13 @@ struct InputFocusTests {
         model.setAddsWatch(true)
         model.forward()
         model.selectWatchRuntime("new")
-        failures.pair = HostError.operation("pairing failed")
+        failures.pair = SimulatorError.operation("pairing failed")
         model.forward()
         await model.waitForCreation()
         #expect(model.error == "Created “iPhone A” and “Apple Watch One”, but could not pair them: pairing failed")
         #expect(operations == ["create iPhone A phone ios", "create Apple Watch One w1 new"])
         operations.removeAll()
-        failures.watch = HostError.operation("watch failed")
+        failures.watch = SimulatorError.operation("watch failed")
         model.forward()
         await model.waitForCreation()
         #expect(model.error == "Created “iPhone A”, but could not create its paired Apple Watch: watch failed")
@@ -8896,7 +8896,7 @@ struct InputFocusTests {
             create: { name, type, runtime in operations.append("create \(name) \(type) \(runtime)"); return createdID },
             pair: { watch, phone in
                 operations.append("pair \(watch) \(phone)")
-                if pairingFails { throw HostError.operation("pairing failed") }
+                if pairingFails { throw SimulatorError.operation("pairing failed") }
             })
         #expect(model.showsWatchPage == !createsPhone)
         if createsPhone {
@@ -8942,7 +8942,7 @@ struct InputFocusTests {
         // Watch gestures are single messages, without down/up events.
         #expect(display.gestures == [.doubleTap, .wristFlick])
         #expect(display.events.isEmpty)
-        display.deliveryError = HostError.operation("delivery failed")
+        display.deliveryError = SimulatorError.operation("delivery failed")
         var failures: [Error] = []
         controller.session.send(.watchGesture(.doubleTap)) { failures.append($0) }
         #expect(failures.count == 1)
@@ -9100,7 +9100,7 @@ struct InputFocusTests {
 
     @Test func aFailedInputReportsOneError() throws {
         let display = TestDisplay()
-        display.deliveryError = HostError.operation("delivery failed")
+        display.deliveryError = SimulatorError.operation("delivery failed")
         let controller = try makeController(display)
         defer { controller.invalidate() }
         var failures: [Error] = []
@@ -9178,7 +9178,7 @@ struct InputFocusTests {
     @Test func aFailedHardwareKeyboardChangeIsReportedAndKept() async throws {
         let preferences = MemoryPreferences()
         let display = TestDisplay()
-        display.hardwareKeyboardError = HostError.operation("keyboard failed")
+        display.hardwareKeyboardError = SimulatorError.operation("keyboard failed")
         let controller = try makeController(display, preferences: preferences)
         defer { controller.invalidate() }
         controller.showWindow(nil)
@@ -9221,8 +9221,8 @@ struct InputFocusTests {
         (display, failures) = try await apply(MemoryPreferences(), language: nil)
         #expect(display.hardwareKeyboard == [true] && display.keyboardLanguages.isEmpty && failures.count == 1)
         let failing = TestDisplay()
-        failing.hardwareKeyboardError = HostError.operation("keyboard failed")
-        failing.keyboardLanguageError = HostError.operation("language failed")
+        failing.hardwareKeyboardError = SimulatorError.operation("keyboard failed")
+        failing.keyboardLanguageError = SimulatorError.operation("language failed")
         (display, failures) = try await apply(MemoryPreferences(), failing: failing)
         #expect(display.hardwareKeyboard == [true] && display.keyboardLanguages == ["ja"])
         #expect(failures == ["keyboard failed", "language failed"])
@@ -9967,7 +9967,7 @@ private final class TestDisplay: SimulatorDisplay {
         requestedDisplayUniqueIDs.append(uniqueID)
         if holdsAppDisplayConnection { await withCheckedContinuation { appDisplayConnection = $0 } }
         if let appDisplayError { throw appDisplayError }
-        guard let appDisplay else { throw HostError.unavailable("No dedicated display") }
+        guard let appDisplay else { throw SimulatorError.unavailable("No dedicated display") }
         return appDisplay
     }
     var inputView: NSView { foundPlugin?.overlayView ?? input }
@@ -10012,7 +10012,7 @@ private final class TestDisplay: SimulatorDisplay {
         (view as? TestDisplayView)?.displaySize = { [unowned self] in size(for: renderScale) }
     }
     func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
-        guard !unavailableStates.contains(state) else { throw HostError.operation("No message") }
+        guard !unavailableStates.contains(state) else { throw SimulatorError.operation("No message") }
         created.append((state, ContinuousClock.now))
         return HIDMessage(input: input, state: state, pointer: OpaquePointer(try #require(malloc(1))))
     }
@@ -10029,7 +10029,7 @@ private final class TestDisplay: SimulatorDisplay {
             events.append((message.input, message.state))
             undelivered = undeliveredStates.contains(message.state) || undeliveredEvents.contains(events.count - 1)
         }
-        let error = undelivered ? HostError.operation("Undelivered") : deliveryError
+        let error = undelivered ? SimulatorError.operation("Undelivered") : deliveryError
         if deferCompletions {
             pendingCompletions.append { completion?(error) }
         } else {
@@ -10174,7 +10174,7 @@ private final class TestDisplay: SimulatorDisplay {
     var audioConnections = 0
     func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes {
         audioConnections += 1
-        guard let audioPort else { throw HostError.unavailable("The device has no audio route port.") }
+        guard let audioPort else { throw SimulatorError.unavailable("The device has no audio route port.") }
         audioPort.changed = changed
         return audioPort
     }
@@ -10400,7 +10400,7 @@ private final class TestExternalScreen: SimulatorExternalScreen {
             guard deviceBootDate == boot else { return completion(CarPlayRequestMoot()) }
             if let error = carPlayErrors[request] { return completion(error) }
             carPlaySessions += enabled ? 1 : -1
-            completion(carPlaySessions < 0 ? HostError.operation("invalid session count") : nil)
+            completion(carPlaySessions < 0 ? SimulatorError.operation("invalid session count") : nil)
         }
         if defersCarPlaySessions { pendingSessions.append(answer) } else { answer() }
     }
@@ -10914,7 +10914,7 @@ struct HostBehaviorTests {
             userInfo: [NSWorkspace.applicationUserInfoKey: FixtureRunningApplication()])
 
         #expect(monitor.conflictingHostName == "Device Hub")
-        #expect(throws: HostError.self) { try monitor.check() }
+        #expect(throws: SimulatorError.self) { try monitor.check() }
         #expect(!teardownCalled)
     }
 
@@ -10932,7 +10932,7 @@ struct HostBehaviorTests {
         try #require(posted.wait(timeout: .now() + 3) == .success)
 
         #expect(monitor.conflictingHostName == "Device Hub")
-        #expect(throws: HostError.self) { try monitor.check() }
+        #expect(throws: SimulatorError.self) { try monitor.check() }
     }
 
     @Test func browserAndMenusKeepSameUDIDDevicesInTheirOwnSets() async throws {
@@ -10962,7 +10962,7 @@ struct HostBehaviorTests {
         await model.open(device)?.value
         #expect(source.opened == [device.identity])
         #expect(model.devices.first?.isBooted == true)
-        source.failure = HostError.operation("Boot failed")
+        source.failure = SimulatorError.operation("Boot failed")
         await model.open(device)?.value
         #expect(model.errorMessage == "Boot failed")
         #expect(model.opening.isEmpty)
@@ -10981,7 +10981,7 @@ struct HostBehaviorTests {
         await #expect(throws: (any Error).self) {
             try await CaptureFile.write(to: destination, extension: "png") { temporary in
                 try Data("partial".utf8).write(to: temporary)
-                throw HostError.operation("Capture failed")
+                throw SimulatorError.operation("Capture failed")
             }
         }
         #expect(try Data(contentsOf: destination) == original)

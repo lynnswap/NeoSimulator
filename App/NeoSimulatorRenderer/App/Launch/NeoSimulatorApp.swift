@@ -145,8 +145,8 @@ enum NeoSimulatorApp {
             } catch { hostLog("Could not write startup failure: \(error.localizedDescription)") }
         }
         hostLog(error.localizedDescription)
-        if case HostError.invalidArguments = error { exit(EX_USAGE) }
-        if case HostError.conflict = error { exit(EX_TEMPFAIL) }
+        if case SimulatorError.invalidArguments = error { exit(EX_USAGE) }
+        if case SimulatorError.conflict = error { exit(EX_TEMPFAIL) }
         exit(EX_UNAVAILABLE)
     }
 }

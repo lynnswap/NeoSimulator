@@ -59,7 +59,7 @@ struct CaptureAndImportTests {
         var imported: [String] = []
         do {
             try await SimulatorFileImport.perform(urls) { url, kind in
-                if url.lastPathComponent == "Rejected.app" { throw HostError.operation("Not a simulator app") }
+                if url.lastPathComponent == "Rejected.app" { throw SimulatorError.operation("Not a simulator app") }
                 if url.lastPathComponent == "Installed.ipa" {
                     throw DeviceInspectorError.cleanupFailed(directory: URL(fileURLWithPath: "/tmp/Staging"), operationError: nil,
                                                              cleanupError: CocoaError(.fileWriteNoPermission))

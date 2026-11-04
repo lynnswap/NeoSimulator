@@ -34,7 +34,7 @@ final class SimulatorRuntime {
         if let preparation = preparations[source] {
             let runtime = try await CoreDeviceRuntime.preparedValue(of: preparation)
             if let requestedUI = uiXcodeURL?.resolvingSymlinksInPath(), runtime.uiXcodeURL != requestedUI {
-                throw HostError.unavailable("SimulatorKit is already loaded from \(runtime.uiXcodeURL.path)")
+                throw SimulatorError.unavailable("SimulatorKit is already loaded from \(runtime.uiXcodeURL.path)")
             }
             try Task.checkCancellation()
             return runtime
@@ -54,7 +54,7 @@ final class SimulatorRuntime {
         self.xcodeURL = xcodeURL.resolvingSymlinksInPath()
         let requestedUI = uiXcodeURL.resolvingSymlinksInPath()
         if let loaded = Self.loadedUIXcodeURL, loaded != requestedUI {
-            throw HostError.unavailable("SimulatorKit is already loaded from \(loaded.path)")
+            throw SimulatorError.unavailable("SimulatorKit is already loaded from \(loaded.path)")
         }
         self.uiXcodeURL = requestedUI
         try Self.load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
@@ -82,13 +82,13 @@ final class SimulatorRuntime {
 
     private static func load(_ url: URL) throws {
         guard let executable = Bundle(url: url)?.executableURL else {
-            throw HostError.unavailable("Missing framework at \(url.path)")
+            throw SimulatorError.unavailable("Missing framework at \(url.path)")
         }
         // Objective-C class registration outlives the handle. Loaded Apple
         // frameworks stay mapped for the lifetime of the host process.
         guard dlopen(executable.path, RTLD_NOW | RTLD_LOCAL) != nil else {
             let detail = dlerror().map { String(cString: $0) } ?? "Unknown loader error"
-            throw HostError.unavailable("Could not load \(executable.path): \(detail)")
+            throw SimulatorError.unavailable("Could not load \(executable.path): \(detail)")
         }
     }
 
@@ -99,15 +99,15 @@ final class SimulatorRuntime {
             guard let pointer = _dyld_get_image_name(index) else { continue }
             let path = URL(fileURLWithPath: String(cString: pointer)).resolvingSymlinksInPath().path
             if path.contains("/DeviceHub.app/") {
-                throw HostError.unavailable("Forbidden Device Hub component is loaded: \(path)")
+                throw SimulatorError.unavailable("Forbidden Device Hub component is loaded: \(path)")
             }
             if (path.contains("/SimulatorKit.framework/") || path.contains("/IDEPlaygroundSimulator.framework/")),
                !path.hasPrefix(prefix) {
-                throw HostError.unavailable("Private simulator code came from a different Xcode: \(path)")
+                throw SimulatorError.unavailable("Private simulator code came from a different Xcode: \(path)")
             }
             if path.contains(".simdeviceui/"), !path.hasPrefix(prefix),
                !Self.contextXcodeURLs.contains(where: { path.hasPrefix($0.path + "/") }) {
-                throw HostError.unavailable("The simulator UI plugin does not belong to an opened Xcode context: \(path)")
+                throw SimulatorError.unavailable("The simulator UI plugin does not belong to an opened Xcode context: \(path)")
             }
         }
     }
@@ -232,7 +232,7 @@ struct SimulatorDisplayInterface {
             let factoryClass = NSClassFromString("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil"),
             let displayViewClass = NSClassFromString("SimulatorKit.SimDisplayView")
         else {
-            throw HostError.unavailable("SimulatorKit display classes are unavailable")
+            throw SimulatorError.unavailable("SimulatorKit display classes are unavailable")
         }
         self.factoryClass = factoryClass
         screen = try await runtime.resolve(.objc(.method("screen", as: (() -> AnyObject?).self)), on: screenClass)
@@ -274,11 +274,11 @@ struct SimulatorDisplayInterface {
         // Screen proxies are bound on connection; their protocols must declare these messages.
         for (name, selectors) in SimulatorExternalScreenConnection.selectors + SimulatorConnection.backlightSelectors {
             guard let declared = objc_getProtocol(name) else {
-                throw HostError.unavailable("Required private protocol \(name) is unavailable")
+                throw SimulatorError.unavailable("Required private protocol \(name) is unavailable")
             }
             for selector in selectors
             where unsafe protocol_getMethodDescription(declared, NSSelectorFromString(selector), true, true).name == nil {
-                throw HostError.unavailable("\(name) does not declare \(selector)")
+                throw SimulatorError.unavailable("\(name) does not declare \(selector)")
             }
         }
         func carPlayKey(_ name: String) async throws -> String {
@@ -286,7 +286,7 @@ struct SimulatorDisplayInterface {
             guard let key = unsafe symbol.withUnsafeAddress({
                 unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
             }) else {
-                throw HostError.unavailable("\(name) has no value")
+                throw SimulatorError.unavailable("\(name) has no value")
             }
             return key
         }
@@ -359,20 +359,20 @@ struct SimulatorDisplayInterface {
         setKeyboardEnabled = try await runtime.resolve(.swift(.type("SimulatorKit.SimKeyboardInputDefaultDelegate")))
             .resolve(.swift(.setter("isEnabled", as: ((Bool) -> Void).self)))
         guard let keyboardDelegate = class_getInstanceVariable(displayViewClass, "_defaultKeyboardDelegate") else {
-            throw HostError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
+            throw SimulatorError.unavailable("\(displayViewClass) does not provide _defaultKeyboardDelegate")
         }
         self.keyboardDelegate = keyboardDelegate
         guard let userInterfacePlugin = class_getInstanceVariable(displayViewClass, "_userInterfacePlugin") else {
-            throw HostError.unavailable("\(displayViewClass) does not provide _userInterfacePlugin")
+            throw SimulatorError.unavailable("\(displayViewClass) does not provide _userInterfacePlugin")
         }
         self.userInterfacePlugin = userInterfacePlugin
         let pluginProtocol = "_TtP12SimulatorKit28SimDeviceUserInterfacePlugin_"
         guard let declared = objc_getProtocol(pluginProtocol) else {
-            throw HostError.unavailable("Required private protocol \(pluginProtocol) is unavailable")
+            throw SimulatorError.unavailable("Required private protocol \(pluginProtocol) is unavailable")
         }
         for selector in SimulatorUserInterfacePlugin.selectors
         where unsafe protocol_getMethodDescription(declared, NSSelectorFromString(selector), true, true).name == nil {
-            throw HostError.unavailable("\(pluginProtocol) does not declare \(selector)")
+            throw SimulatorError.unavailable("\(pluginProtocol) does not declare \(selector)")
         }
         let digitizer = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView")))
         setSupportsScrolling = try await digitizer.resolve(.swift(.setter("supportScrolling", as: ((Bool) -> Void).self)))
@@ -602,7 +602,7 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         screenID = screen.identifier
         let display = runtime.display
         guard let simScreen = try unsafe display.screen.unsafeInvoke(on: screen.object) else {
-            throw HostError.unavailable("The external display is not connected.")
+            throw SimulatorError.unavailable("The external display is not connected.")
         }
         // Every screen of a device is a proxy of one class.
         let proxy = ABIRuntime.shared.object(simScreen)
@@ -647,7 +647,7 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         case .current: try runtime.display.screenMessages.send("currentMode", to: try properties(), as: AnyObject?.self)
         case .advertised(let index): advertised[index]
         }
-        guard let target else { throw HostError.operation("The external display has no current mode.") }
+        guard let target else { throw SimulatorError.operation("The external display has no current mode.") }
         try unsafe setCurrentMode.unsafeInvoke(on: simScreen, target, size,
                                                carPlay ? runtime.display.carPlayProperties : nil, .main,
                                                Self.completed(completion))
@@ -694,7 +694,7 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
 
     private func connectedScreen() throws -> AnyObject {
         guard let simScreen = try unsafe runtime.display.screen.unsafeInvoke(on: screen) else {
-            throw HostError.unavailable("The external display is not connected.")
+            throw SimulatorError.unavailable("The external display is not connected.")
         }
         return simScreen
     }
@@ -759,7 +759,7 @@ struct SimulatorInputInterface {
 
     init(runtime: ABIRuntime) async throws {
         guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
-            throw HostError.unavailable("Required private class SimulatorKit.SimDeviceLegacyHIDClient is unavailable")
+            throw SimulatorError.unavailable("Required private class SimulatorKit.SimDeviceLegacyHIDClient is unavailable")
         }
         self.clientClass = clientClass
         makeClient = try await runtime.resolve(
@@ -785,7 +785,7 @@ struct SimulatorInputInterface {
     private func checkTrackpadMessage() throws {
         guard let message = try unsafe messageForTrackpadMove.unsafeInvoke(CGPoint(x: 0.5, y: 0.5),
                                                                           Self.tvRemoteTouchTarget)
-        else { throw HostError.operation("Could not allocate simulator input") }
+        else { throw SimulatorError.operation("Could not allocate simulator input") }
         let raw = UnsafeMutableRawPointer(message)
         defer { free(raw) }
         let field = TrackpadMessage.self
@@ -795,7 +795,7 @@ struct SimulatorInputInterface {
               field.eventMasks.allSatisfy({ raw.load(fromByteOffset: $0, as: UInt32.self) == field.positionMask }),
               field.touchFlags.allSatisfy({ raw.load(fromByteOffset: $0, as: UInt32.self) == 1 })
         else {
-            throw HostError.unavailable(
+            throw SimulatorError.unavailable(
                 "IndigoHIDMessageForTrackpadMoveEvent builds a message the Apple TV Remote's touch surface does not know")
         }
     }
@@ -804,14 +804,14 @@ struct SimulatorInputInterface {
     func currentKeyboardType() throws -> UInt8 {
         let type = try unsafe keyboardType.unsafeInvoke()
         guard let byte = UInt8(exactly: type) else {
-            throw HostError.operation("SimulatorKit reported keyboard type \(type), which the device cannot take.")
+            throw SimulatorError.operation("SimulatorKit reported keyboard type \(type), which the device cannot take.")
         }
         return byte
     }
 
     func connect(to device: SimulatorDevice) throws -> AnyObject {
         guard let allocated = allocate(clientClass) else {
-            throw HostError.unavailable("Could not allocate simulator input")
+            throw SimulatorError.unavailable("Could not allocate simulator input")
         }
         return try unsafe makeClient.unsafeInvoke(on: allocated, device.object)
     }
@@ -825,7 +825,7 @@ struct SimulatorInputInterface {
             try unsafe messageForButton.unsafeInvoke(button.rawValue, state == .down ? 1 : 0, Self.tvRemoteButtonTarget)
         case .tvRemoteTouch: preconditionFailure("A touch's messages come from message(for:), which takes its point")
         }
-        guard let message else { throw HostError.operation("Could not allocate simulator input") }
+        guard let message else { throw SimulatorError.operation("Could not allocate simulator input") }
         return HIDMessage(input: input, state: state, pointer: message)
     }
 
@@ -839,7 +839,7 @@ struct SimulatorInputInterface {
     /// The caller must send or free the message.
     func message(for touch: TVRemoteTouch) throws -> OpaquePointer {
         guard let message = try unsafe messageForTrackpadMove.unsafeInvoke(touch.point, Self.tvRemoteTouchTarget) else {
-            throw HostError.operation("Could not allocate simulator input")
+            throw SimulatorError.operation("Could not allocate simulator input")
         }
         let raw = UnsafeMutableRawPointer(message)
         for (offset, value) in TrackpadMessage.changes(for: touch.phase) {
@@ -851,7 +851,7 @@ struct SimulatorInputInterface {
     /// Sends a watch gesture, a single message without down and up events.
     func send(_ gesture: WatchGesture, client: AnyObject, completion: @escaping @MainActor (Error?) -> Void) throws {
         guard let message = try unsafe messageForWatchGesture.unsafeInvoke(gesture.rawValue) else {
-            throw HostError.operation("Could not allocate simulator input")
+            throw SimulatorError.operation("Could not allocate simulator input")
         }
         try send(message, client: client, completion: completion)
     }
@@ -862,7 +862,7 @@ struct SimulatorInputInterface {
                             completion: @escaping @MainActor (Error?) -> Void) throws {
         let message = try unsafe connected ? createCarPlayService.unsafeInvoke(hasTouchScreen)
                                            : removeCarPlayService.unsafeInvoke()
-        guard let message else { throw HostError.operation("Could not allocate simulator input") }
+        guard let message else { throw SimulatorError.operation("Could not allocate simulator input") }
         try send(message, client: client, completion: completion)
     }
 
@@ -996,7 +996,7 @@ struct SimulatorPasteboardInterface {
     init(runtime: ABIRuntime) async throws {
         guard let interfaceClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterface"),
               let listenerClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterfaceListener") else {
-            throw HostError.unavailable("SimPasteboardPlus pasteboard classes are unavailable")
+            throw SimulatorError.unavailable("SimPasteboardPlus pasteboard classes are unavailable")
         }
         self.interfaceClass = interfaceClass
         makeInterface = try await runtime.resolve(
@@ -1022,7 +1022,7 @@ struct SimulatorPasteboardInterface {
                  events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> SimulatorPasteboardConnection {
         let port = try device.lookUp(serviceName)
         guard let allocated = allocate(interfaceClass) else {
-            throw HostError.unavailable("Could not allocate the simulator's pasteboard connection")
+            throw SimulatorError.unavailable("Could not allocate the simulator's pasteboard connection")
         }
         // The interface calls the delegate on the main queue; the connection keeps it.
         let delegate = SimulatorPasteboardDelegate(events)
@@ -1142,7 +1142,7 @@ struct SimulatorAudioInterface {
 
     init(runtime: ABIRuntime) async throws {
         guard let device = NSClassFromString("SimDevice"), let client = NSClassFromString("SimDeviceIOClient") else {
-            throw HostError.unavailable("CoreSimulator's device I/O classes are unavailable")
+            throw SimulatorError.unavailable("CoreSimulator's device I/O classes are unavailable")
         }
         deviceIO = try await runtime.resolve(.objc(.method("io", as: (() -> AnyObject?).self)), on: device)
         ioPorts = try await runtime.resolve(.objc(.method("ioPorts", as: (() -> [AnyObject]).self)), on: client)
@@ -1151,15 +1151,15 @@ struct SimulatorAudioInterface {
                          ("SimAudioHostDevice", HostAudioDeviceMembers.selectors)]
         for (name, selectors) in protocols {
             guard let declared = objc_getProtocol(name) else {
-                throw HostError.unavailable("Required private protocol \(name) is unavailable")
+                throw SimulatorError.unavailable("Required private protocol \(name) is unavailable")
             }
             for selector in selectors
             where unsafe protocol_getMethodDescription(declared, NSSelectorFromString(selector), true, true).name == nil {
-                throw HostError.unavailable("\(name) does not declare \(selector)")
+                throw SimulatorError.unavailable("\(name) does not declare \(selector)")
             }
         }
         guard let routable = objc_getProtocol("SimAudioHostRoutable") else {
-            throw HostError.unavailable("Required private protocol SimAudioHostRoutable is unavailable")
+            throw SimulatorError.unavailable("Required private protocol SimAudioHostRoutable is unavailable")
         }
         self.routable = routable
         // Recent routes are saved with this value, so it must not change.
@@ -1168,7 +1168,7 @@ struct SimulatorAudioInterface {
             unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
         }
         guard systemDefault == AudioRouting.systemDefault else {
-            throw HostError.unavailable("SimAudioHostUseSystemDefaultDeviceUID is \(systemDefault ?? "nil")")
+            throw SimulatorError.unavailable("SimAudioHostUseSystemDefaultDeviceUID is \(systemDefault ?? "nil")")
         }
     }
 
@@ -1177,7 +1177,7 @@ struct SimulatorAudioInterface {
     func connect(to device: SimulatorDevice,
                  changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> SimulatorAudioConnection {
         guard let io = try unsafe deviceIO.unsafeInvoke(on: device.object) else {
-            throw HostError.unavailable("The device did not provide its I/O ports.")
+            throw SimulatorError.unavailable("The device did not provide its I/O ports.")
         }
         var descriptor: NativeObjCMethod<AnyObject?>?
         for port in try unsafe ioPorts.unsafeInvoke(on: io) {
@@ -1190,7 +1190,7 @@ struct SimulatorAudioInterface {
                 return try SimulatorAudioConnection(port: object, changed: changed)
             }
         }
-        throw HostError.unavailable("The device has no audio route port.")
+        throw SimulatorError.unavailable("The device has no audio route port.")
     }
 }
 
@@ -1656,7 +1656,7 @@ extension SimulatorDisplay {
     func setCanvasMagnification(_ magnification: CGFloat?) {}
     var captureDisplayID: UInt32? { nil }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
-        throw HostError.unavailable("This display cannot connect to the app resizing screen.")
+        throw SimulatorError.unavailable("This display cannot connect to the app resizing screen.")
     }
 }
 
@@ -1729,7 +1729,7 @@ final class SimulatorConnection: SimulatorDisplay {
         guard let view = try unsafe display.createDisplay.unsafeInvoke(
             on: display.factoryClass as AnyObject, device.object, screen.identifier)
         else {
-            throw HostError.unavailable("SimulatorKit returned no display")
+            throw SimulatorError.unavailable("SimulatorKit returned no display")
         }
         self.view = view
         var keyboard = keyboard, trackpad = trackpad
@@ -1793,7 +1793,7 @@ final class SimulatorConnection: SimulatorDisplay {
         // screen adapter. CoreDevice displayId and SimulatorKit screenID differ.
         for _ in 0..<120 {
             try Task.checkCancellation()
-            guard isBooted else { throw HostError.unavailable("The simulator disconnected while preparing app resizing.") }
+            guard isBooted else { throw SimulatorError.unavailable("The simulator disconnected while preparing app resizing.") }
             if let screen = try runtime.display.appScreen(uniqueID: uniqueID, of: device) {
                 let connection = try await SimulatorConnection(device: device, screen: screen, runtime: runtime,
                                                          keyboard: keyboard, ownsKeyboard: false)
@@ -1802,7 +1802,7 @@ final class SimulatorConnection: SimulatorDisplay {
             }
             try await Task.sleep(for: .milliseconds(250))
         }
-        throw HostError.unavailable("Timed out waiting for the app resizing screen.")
+        throw SimulatorError.unavailable("Timed out waiting for the app resizing screen.")
     }
 
     var isBooted: Bool { !disconnected && device.state == 3 }
@@ -1950,7 +1950,7 @@ final class SimulatorConnection: SimulatorDisplay {
                 return
             }
         }
-        guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
+        guard let hidClient else { throw SimulatorError.operation("Simulator input is disconnected") }
         try runtime.input.send(message, client: hidClient, completion: completion)
     }
 
@@ -1960,7 +1960,7 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
-        guard let hidClient else { throw HostError.operation("Simulator input is disconnected") }
+        guard let hidClient else { throw SimulatorError.operation("Simulator input is disconnected") }
         try runtime.input.send(gesture, client: hidClient, completion: completion)
     }
 
@@ -1993,7 +1993,7 @@ final class SimulatorConnection: SimulatorDisplay {
         if !connected, let keyboard {
             do { try await keyboard.removeServices() }
             catch {
-                failure = failure.map { HostError.operation([$0.localizedDescription, error.localizedDescription].joined(separator: "\n")) }
+                failure = failure.map { SimulatorError.operation([$0.localizedDescription, error.localizedDescription].joined(separator: "\n")) }
                     ?? error
             }
         }
@@ -2158,7 +2158,7 @@ final class SimulatorConnection: SimulatorDisplay {
             catch { failures.append("Could not release the native touchscreen and buttons: \(error.localizedDescription)") }
         }
         guard !failures.isEmpty else { return }
-        let failure = HostError.operation(failures.joined(separator: "\n"))
+        let failure = SimulatorError.operation(failures.joined(separator: "\n"))
         // Only a shut-down guest (SimDeviceState 1) no longer holds the input. Shutting down (4) and a state that
         // cannot be read (read as 0) keep the failure, and the services for the next call.
         guard device.state == 1 else { throw failure }
@@ -2218,9 +2218,9 @@ final class NativeDigitizerTouches {
         self.replacement = replacement
         // A screen whose digitizer did not keep the delegate would have no touches while its other input is native.
         guard try unsafe interface.delegate.unsafeInvoke(on: digitizer).map(Self.object) === Self.object(replacement) else {
-            let failure = HostError.unavailable("SimulatorKit's digitizer did not keep NeoSimulator's touch delegate.")
+            let failure = SimulatorError.unavailable("SimulatorKit's digitizer did not keep NeoSimulator's touch delegate.")
             do { try restore() } catch {
-                throw HostError.operation([failure.localizedDescription, error.localizedDescription].joined(separator: "\n"))
+                throw SimulatorError.operation([failure.localizedDescription, error.localizedDescription].joined(separator: "\n"))
             }
             throw failure
         }

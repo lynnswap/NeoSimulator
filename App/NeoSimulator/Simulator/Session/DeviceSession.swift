@@ -250,26 +250,26 @@ struct DeviceLocationPreset {
 
     static func load(for identifier: String, among scenarios: [LocationScenario]) throws -> Self? {
         let defaults = try store()
-        guard defaults.synchronize() else { throw HostError.operation("Could not read the saved simulator location.") }
+        guard defaults.synchronize() else { throw SimulatorError.operation("Could not read the saved simulator location.") }
         let key = "DeviceLocationPreset.\(identifier)"
         guard let value = defaults.object(forKey: key) else { return nil }
         guard let record = value as? [String: Any], let mode = record["mode"] as? String else {
-            throw HostError.operation("The saved simulator location is invalid.")
+            throw SimulatorError.operation("The saved simulator location is invalid.")
         }
         switch mode {
         case "none": return Self(selection: .none, coordinate: nil)
         case "custom":
             guard let latitude = record["latitude"] as? Double, let longitude = record["longitude"] as? Double,
                   (-90...90).contains(latitude), (-180...180).contains(longitude) else {
-                throw HostError.operation("The saved simulator coordinates are invalid.")
+                throw SimulatorError.operation("The saved simulator coordinates are invalid.")
             }
             return Self(selection: .custom, coordinate: (latitude, longitude))
         case "scenario":
             guard let name = record["scenario"] as? String else {
-                throw HostError.operation("The saved simulator location scenario is invalid.")
+                throw SimulatorError.operation("The saved simulator location scenario is invalid.")
             }
             return Self(selection: scenarios.contains { $0.name == name } ? .scenario(name) : .none, coordinate: nil)
-        default: throw HostError.operation("The saved simulator location is invalid.")
+        default: throw SimulatorError.operation("The saved simulator location is invalid.")
         }
     }
 
@@ -279,17 +279,17 @@ struct DeviceLocationPreset {
         switch selection {
         case .none: record = ["mode": "none"]
         case .custom:
-            guard let coordinate else { throw HostError.operation("No simulator coordinates were provided.") }
+            guard let coordinate else { throw SimulatorError.operation("No simulator coordinates were provided.") }
             record = ["mode": "custom", "latitude": coordinate.latitude, "longitude": coordinate.longitude]
         case .scenario(let name): record = ["mode": "scenario", "scenario": name]
         }
         defaults.set(record, forKey: "DeviceLocationPreset.\(identifier)")
-        guard defaults.synchronize() else { throw HostError.operation("Could not save the simulator location.") }
+        guard defaults.synchronize() else { throw SimulatorError.operation("Could not save the simulator location.") }
     }
 
     private static func store() throws -> UserDefaults {
         guard let defaults = HostPreferences.deviceSettingsDefaults else {
-            throw HostError.operation("The simulator location settings are unavailable.")
+            throw SimulatorError.operation("The simulator location settings are unavailable.")
         }
         return defaults
     }
@@ -329,7 +329,7 @@ struct OrientationReading: Equatable {
         let result = try JSONDecoder().decode(Output.self, from: data).result
         guard let upright = DeviceOrientation(rawValue: result.deviceOrientationNonFlat),
               let angle = upright.displayAngle else {
-            throw HostError.operation("Unsupported orientation: \(result.deviceOrientationNonFlat)")
+            throw SimulatorError.operation("Unsupported orientation: \(result.deviceOrientationNonFlat)")
         }
         // Before an orientation is set, devicectl reports `unknown` for the
         // physical orientation; the device is then upright.
@@ -519,7 +519,7 @@ final class DeviceSession {
                         guard let self, !self.isDisconnected, !Task.isCancelled else { return }
                         self.supportsAppResize = false
                         self.stopAppResize()
-                        self.onAppResizeError?(HostError.unavailable("App resize observation ended."))
+                        self.onAppResizeError?(SimulatorError.unavailable("App resize observation ended."))
                     } catch {
                         guard let self, !self.isDisconnected, !(error is CancellationError) else { return }
                         self.supportsAppResize = false
@@ -586,7 +586,7 @@ final class DeviceSession {
                 display?.disconnect()
                 if let lease {
                     do { try lease.invalidate() }
-                    catch let cleanup { self?.onAppResizeError?(HostError.operation("\(error.localizedDescription)\nResize cleanup failed: \(cleanup.localizedDescription)")) }
+                    catch let cleanup { self?.onAppResizeError?(SimulatorError.operation("\(error.localizedDescription)\nResize cleanup failed: \(cleanup.localizedDescription)")) }
                 }
                 guard let self, self.resizeGeneration == token else { return }
                 self.stopAppResize()
@@ -950,7 +950,7 @@ final class DeviceSession {
         try await display.setNotificationState(name, to: state)
         didSet()
         do { try await display.postNotification(name) } catch {
-            throw HostError.operation("The device's state changed, but it was not notified: \(error.localizedDescription)")
+            throw SimulatorError.operation("The device's state changed, but it was not notified: \(error.localizedDescription)")
         }
     }
 
@@ -960,7 +960,7 @@ final class DeviceSession {
         let sizes = 1...12
         let category = try display.contentSizeCategory()
         guard sizes.contains(category) else {
-            throw HostError.operation("The device did not report its preferred text size.")
+            throw SimulatorError.operation("The device did not report its preferred text size.")
         }
         guard sizes.contains(category + delta) else { return }
         try display.setContentSizeCategory(category + delta)
@@ -971,7 +971,7 @@ final class DeviceSession {
         switch try display.increaseContrastMode() {
         case 1: try display.setIncreaseContrast(true)
         case 2: try display.setIncreaseContrast(false)
-        default: throw HostError.operation("The device did not report whether Increase Contrast is on.")
+        default: throw SimulatorError.operation("The device did not report whether Increase Contrast is on.")
         }
     }
 
@@ -1006,7 +1006,7 @@ final class DeviceSession {
     func syncKeyboardLanguage() async throws {
         guard canPerformCommands, preferences.syncsKeyboardLanguage else { return }
         guard let language = hostKeyboardLanguage() else {
-            throw HostError.operation("Could not determine the language of the Mac's keyboard.")
+            throw SimulatorError.operation("Could not determine the language of the Mac's keyboard.")
         }
         try await display.setKeyboardLanguage(language)
     }
@@ -1076,7 +1076,7 @@ final class DeviceSession {
         let enabled = try !display.caDebugOption(option)
         try display.setCADebugOption(option, enabled: enabled)
         guard try display.caDebugOption(option) == enabled else {
-            throw HostError.operation("The device did not turn \(enabled ? "on" : "off") \(option.title).")
+            throw SimulatorError.operation("The device did not turn \(enabled ? "on" : "off") \(option.title).")
         }
     }
 
@@ -1084,14 +1084,14 @@ final class DeviceSession {
     func openSystemLog() async throws {
         let log = try display.logDirectory().appendingPathComponent("system.log")
         guard FileManager.default.fileExists(atPath: log.path) else {
-            throw HostError.operation("The device has no system log at \(log.path).")
+            throw SimulatorError.operation("The device has no system log at \(log.path).")
         }
         try await openLog(log)
     }
 
     static func openInConsole(_ log: URL) async throws {
         guard let console = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
-            throw HostError.unavailable("Console is not installed.")
+            throw SimulatorError.unavailable("Console is not installed.")
         }
         _ = try await NSWorkspace.shared.open([log], withApplicationAt: console,
                                               configuration: NSWorkspace.OpenConfiguration())
@@ -1185,7 +1185,7 @@ final class DeviceSession {
     func transferPasteboard(_ transfer: PasteboardTransfer, failure: @escaping @MainActor (Error) -> Void) {
         guard canTransferPasteboard else { return }
         let report = { (reason: Error) in
-            failure(HostError.operation(transfer == .get
+            failure(SimulatorError.operation(transfer == .get
                 ? "Could not get the simulator's pasteboard: \(reason.localizedDescription)"
                 : "Could not send the pasteboard to the simulator: \(reason.localizedDescription)"))
         }
@@ -1293,7 +1293,7 @@ final class DeviceSession {
             let pending = pendingPulls + pendingPushes
             closePasteboard()
             hostLog("The pasteboard connection of \(device.name) closed")
-            let error = HostError.operation("The simulator closed its pasteboard connection.")
+            let error = SimulatorError.operation("The simulator closed its pasteboard connection.")
             for report in pending { report(error) }
             // Reconnect synchronization immediately; manual transfers reconnect on demand.
             updatePasteboardSync()
@@ -1351,7 +1351,7 @@ final class DeviceSession {
         do {
             audioRoutes = try audioConnection.state()
         } catch {
-            failure(HostError.operation("Could not read the audio routes of \(device.name): \(error.localizedDescription)"))
+            failure(SimulatorError.operation("Could not read the audio routes of \(device.name): \(error.localizedDescription)"))
             return
         }
         if case .availableDevices = change {
@@ -1378,7 +1378,7 @@ final class DeviceSession {
         let name = device.name
         guard let audioConnection, let state = audioRoutes else {
             let reason = audioConnectionFailure?.localizedDescription ?? "Its audio routes are unavailable."
-            failure(HostError.operation("Could not change the audio \(scope.noun) of \(name): \(reason)"))
+            failure(SimulatorError.operation("Could not change the audio \(scope.noun) of \(name): \(reason)"))
             return
         }
         let preferred: [String]
@@ -1393,7 +1393,7 @@ final class DeviceSession {
             let title = route == AudioRouting.systemDefault
                 ? "System" : state.devices(in: scope).first { $0.uid == route }?.name ?? route
             let report = { (error: Error) in
-                failure(HostError.operation(
+                failure(SimulatorError.operation(
                     "Could not route the audio \(scope.noun) of \(name) to \(title): \(error.localizedDescription)"))
             }
             do {
@@ -1506,8 +1506,8 @@ final class DeviceSession {
         }
     }
 
-    private static func connectionFailure(_ error: any Error, deviceName name: String) -> HostError {
-        HostError.operation("Could not connect to the external display of \(name): \(error.localizedDescription)")
+    private static func connectionFailure(_ error: any Error, deviceName name: String) -> SimulatorError {
+        SimulatorError.operation("Could not connect to the external display of \(name): \(error.localizedDescription)")
     }
 
     /// Applies the last choice made while the session waited for the
@@ -1541,7 +1541,7 @@ final class DeviceSession {
 
     /// A display of the external display for its window.
     func makeExternalDisplay() async throws -> any SimulatorDisplay {
-        guard let externalScreenConnection else { throw HostError.unavailable("The external display is not connected.") }
+        guard let externalScreenConnection else { throw SimulatorError.unavailable("The external display is not connected.") }
         return try await externalScreenConnection.makeDisplay()
     }
 
@@ -1551,7 +1551,7 @@ final class DeviceSession {
             failure(Self.describe(failures, of: mode, deviceName: name))
         }
         do {
-            guard let externalScreenConnection else { throw HostError.unavailable("The device has no external display port.") }
+            guard let externalScreenConnection else { throw SimulatorError.unavailable("The device has no external display port.") }
             if let limit = externalDisplayLimit(for: mode) { throw limit }
             externalDisplayChanges.apply(mode, through: externalScreenConnection,
                                          savesCarPlayConfiguration: capabilities.supportsCarPlay, report: report)
@@ -1562,8 +1562,8 @@ final class DeviceSession {
 
     /// One error for the failures of a change to `mode`, a line for each.
     private static func describe(_ failures: [ExternalDisplayFailure], of mode: ExternalDisplayMode,
-                                 deviceName name: String) -> HostError {
-        HostError.operation(failures.map { failure in
+                                 deviceName name: String) -> SimulatorError {
+        SimulatorError.operation(failures.map { failure in
             let reason = failure.error.localizedDescription
             return switch failure.step {
             case .carPlayConfiguration: "Could not save the CarPlay configuration of \(name): \(reason)"
@@ -1736,7 +1736,7 @@ final class DeviceSession {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         guard try handle.read(upToCount: 8) == Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
-            throw HostError.operation("The screenshot tool did not produce a PNG file")
+            throw SimulatorError.operation("The screenshot tool did not produce a PNG file")
         }
     }
 
@@ -1747,7 +1747,7 @@ final class DeviceSession {
     func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
         guard !isStartingAppResize else {
-            throw HostError.operation("Wait for the app display to connect before starting a recording.")
+            throw SimulatorError.operation("Wait for the app display to connect before starting a recording.")
         }
         let displayID = try display.captureDisplayID
         recording = try recordings.start(to: destination, process: { [makeRecordingProcess] in

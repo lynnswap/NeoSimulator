@@ -1,0 +1,107 @@
+import AppKit
+import NeoSimulatorKit
+
+@main
+enum MinimalSimulatorApp {
+    @MainActor static func main() {
+        let app = NSApplication.shared
+        let delegate = ApplicationDelegate()
+        app.delegate = delegate
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
+
+@MainActor
+private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var context: SimulatorContext?
+    private var screen: SimulatorScreen?
+    private var window: NSWindow?
+    private var guestToShutDown: SimulatorDeviceIdentifier?
+    private var termination: Task<Void, Never>?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task {
+            do { try await start() }
+            catch {
+                print("Failed: \(error.localizedDescription)")
+                do { try await finish() } catch { print("Cleanup failed: \(error.localizedDescription)") }
+                exit(1)
+            }
+        }
+    }
+
+    private func start() async throws {
+        let context = try await SimulatorContext.load()
+        self.context = context
+        context.onError = { print("Simulator: \($0.localizedDescription)") }
+        let devices = try await context.devices()
+        let arguments = CommandLine.arguments
+        guard let option = arguments.firstIndex(of: "--device"), option + 1 < arguments.count else {
+            for device in devices {
+                print("\(device.id.identifier)\t\(device.name)\t\(device.runtimeName)\t\(device.state)")
+            }
+            try await context.invalidate()
+            exit(0)
+        }
+        let id = SimulatorDeviceIdentifier(arguments[option + 1])
+        let wasShutDown = devices.first { $0.id == id }?.state == .shutDown
+        if wasShutDown { guestToShutDown = id }
+        _ = try await context.boot(id)
+        let screen = try await context.openScreen(id)
+        self.screen = screen
+        screen.onEnd = { print("Screen ended: \($0)") }
+        NSApp.setActivationPolicy(.regular)
+        let menu = NSMenu()
+        let applicationItem = NSMenuItem()
+        let applicationMenu = NSMenu()
+        applicationMenu.addItem(withTitle: "Quit MinimalSimulatorApp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        applicationItem.submenu = applicationMenu
+        menu.addItem(applicationItem)
+        NSApp.mainMenu = menu
+        if arguments.contains("--embed") {
+            let content = try SimulatorScreenViewController(screen: screen)
+            let window = NSWindow(contentViewController: content)
+            window.setContentSize(NSSize(width: 500, height: 800))
+            window.title = screen.device.name
+            window.makeKeyAndOrderFront(nil)
+            self.window = window
+        } else {
+            try screen.showWindow()
+        }
+        NSApp.activate()
+        print("Opened \(screen.device.name)")
+        if arguments.contains("--exercise") {
+            try await Task.sleep(for: .seconds(2))
+            try screen.press(.home) { print("Input failed: \($0.localizedDescription)") }
+            try await screen.close()
+            self.screen = try await context.openScreen(id)
+            try self.screen?.showWindow()
+            try await Task.sleep(for: .seconds(1))
+            try await finish()
+            print("Exercise completed")
+            exit(0)
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard termination == nil else { return .terminateLater }
+        termination = Task {
+            do { try await finish() } catch { print("Cleanup failed: \(error.localizedDescription)") }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    private func finish() async throws {
+        guard let context else { return }
+        var failures: [String] = []
+        do { try await screen?.close() } catch { failures.append(error.localizedDescription) }
+        if let id = guestToShutDown {
+            do { try await context.shutDown(id) } catch { failures.append(error.localizedDescription) }
+            guestToShutDown = nil
+        }
+        do { try await context.invalidate() } catch { failures.append(error.localizedDescription) }
+        window?.close()
+        if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
+    }
+}

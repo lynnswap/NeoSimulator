@@ -63,7 +63,7 @@ final class SystemKeyboardEventTap: KeyboardEventTap {
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0) else {
             CFMachPortInvalidate(port)
             self.receive = nil
-            throw HostError.operation("Unable to Capture Keyboard. The keyboard event source could not be created.")
+            throw SimulatorError.operation("Unable to Capture Keyboard. The keyboard event source could not be created.")
         }
         self.port = port
         self.source = source

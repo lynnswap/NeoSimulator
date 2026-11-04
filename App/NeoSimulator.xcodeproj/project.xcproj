@@ -173,7 +173,7 @@
                     "NeoSimulatorHostTests/compile-sources",
                   ],
                 }, {
-                  "path": "HostError.swift",
+                  "path": "SimulatorError.swift",
                   "target-membership": [
                     "NeoSimulator/compile-sources",
                     "NeoSimulatorRenderer/compile-sources",

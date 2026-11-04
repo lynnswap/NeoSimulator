@@ -304,7 +304,7 @@ final class SimulatorManagerModel {
             do { try await self.controller.closeDevice(identifier, keepingDeviceRunning: keepingDeviceRunning) }
             catch {
                 guard case .failure(let cleanupError) = cleanup else { throw error }
-                throw HostError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
+                throw SimulatorError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
             }
             try cleanup.get()
         }

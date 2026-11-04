@@ -14,7 +14,7 @@ enum SimulatorFileImport {
            type.conforms(to: .image) || type.conforms(to: .movie) || type.conforms(to: .vCard) {
             return .media
         }
-        throw HostError.operation("Choose a simulator .app or .ipa, image, video, or vCard file")
+        throw SimulatorError.operation("Choose a simulator .app or .ipa, image, video, or vCard file")
     }
 
     @MainActor
@@ -38,7 +38,7 @@ enum SimulatorFileImport {
         }
         if !failures.isEmpty {
             let summary = completed.isEmpty ? "No files were imported." : "Imported: \(completed.joined(separator: ", "))."
-            throw HostError.operation(summary + "\n\n" + failures.joined(separator: "\n"))
+            throw SimulatorError.operation(summary + "\n\n" + failures.joined(separator: "\n"))
         }
     }
 }

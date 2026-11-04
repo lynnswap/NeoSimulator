@@ -11,7 +11,7 @@ final class DeviceToolRunner {
     func run(_ executable: URL, arguments: [String], environment: [String: String] = [:],
              timeout: Duration = .seconds(30)) async throws -> Data {
         try Task.checkCancellation()
-        guard process == nil else { throw HostError.operation("Another device operation is in progress") }
+        guard process == nil else { throw SimulatorError.operation("Another device operation is in progress") }
         let task = Process()
         task.executableURL = executable
         task.arguments = arguments
@@ -58,13 +58,13 @@ final class DeviceToolRunner {
         }
         let data = try await outputReader.value
         let errors = try await diagnosticReader.value
-        if timedOut { throw HostError.operation("Device operation timed out") }
+        if timedOut { throw SimulatorError.operation("Device operation timed out") }
         if cancellationRequested || Task.isCancelled { throw CancellationError() }
         let status = try exit.get()
         guard status == 0, task.terminationReason == .exit else {
             let text = String(decoding: errors + data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw HostError.operation(text.isEmpty ? "Device operation failed with status \(status)" : String(text.suffix(4096)))
+            throw SimulatorError.operation(text.isEmpty ? "Device operation failed with status \(status)" : String(text.suffix(4096)))
         }
         return data
     }
@@ -107,7 +107,7 @@ final class DeviceTools {
         devicectlURL = devicectl
         for tool in [simctl, devicectl] {
             guard FileManager.default.isExecutableFile(atPath: tool.path) else {
-                throw HostError.unavailable("Required device tool is unavailable: \(tool.path)")
+                throw SimulatorError.unavailable("Required device tool is unavailable: \(tool.path)")
             }
         }
         self.identifier = identifier
@@ -171,9 +171,9 @@ final class DeviceTools {
     /// Shutdown failure stops the restart; erase failure is reported but still allows boot.
     func restart(erasing: Bool) async throws {
         let operation = erasing ? "Erase All Content and Settings" : "Restart"
-        func failure(_ stage: String, completed: [String], _ error: Error) -> HostError {
+        func failure(_ stage: String, completed: [String], _ error: Error) -> SimulatorError {
             let progress = completed.isEmpty ? "" : " The device was \(completed.joined(separator: " and "))."
-            return HostError.operation("\(operation) failed while \(stage): \(error.localizedDescription)\(progress)")
+            return SimulatorError.operation("\(operation) failed while \(stage): \(error.localizedDescription)\(progress)")
         }
         do { try await shutdown() } catch {
             if error is CancellationError { throw error }
@@ -189,7 +189,7 @@ final class DeviceTools {
         do { try await boot() } catch {
             if error is CancellationError { throw error }
             if let eraseFailure {
-                throw HostError.operation("\(operation) failed while erasing: \(eraseFailure.localizedDescription) Restarting also failed while booting: \(error.localizedDescription) The device was shut down.")
+                throw SimulatorError.operation("\(operation) failed while erasing: \(eraseFailure.localizedDescription) Restarting also failed while booting: \(error.localizedDescription) The device was shut down.")
             }
             throw failure("booting", completed: erasing ? ["shut down", "erased"] : ["shut down"], error)
         }

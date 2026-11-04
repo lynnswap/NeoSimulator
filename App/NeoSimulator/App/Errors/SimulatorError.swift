@@ -1,19 +1,20 @@
 import Foundation
 
-enum HostError: LocalizedError {
+/// A failure while preparing, displaying, or controlling a simulator.
+public enum SimulatorError: LocalizedError, Sendable {
     case invalidArguments(String)
     case unavailable(String)
     case conflict(String)
     case operation(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .invalidArguments(let message), .unavailable(let message),
              .conflict(let message), .operation(let message): message
         }
     }
 
-    var recoverySuggestion: String? {
+    public var recoverySuggestion: String? {
         if case .conflict = self { "Close the other display app, then try again." }
         else { nil }
     }

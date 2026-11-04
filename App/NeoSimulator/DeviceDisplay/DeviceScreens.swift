@@ -232,7 +232,7 @@ final class DeviceScreens {
         } catch {
             do { try await finishSimulatorManagement(action, devices: prepared) }
             catch let cleanupError {
-                throw HostError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
+                throw SimulatorError.operation([error.localizedDescription, cleanupError.localizedDescription].joined(separator: "\n"))
             }
             throw error
         }
@@ -250,7 +250,7 @@ final class DeviceScreens {
             catch { failures.append("\(device.name): \(error.localizedDescription)") }
         }
         hostsChanged()
-        if !failures.isEmpty { throw HostError.operation(failures.joined(separator: "\n")) }
+        if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
     }
 
     /// The open simulator screens to reopen after relaunching, ordered so the main window's screen opens last.
