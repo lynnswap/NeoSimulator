@@ -8,7 +8,6 @@ import Foundation
 import ImageIO
 import QuartzCore
 import Testing
-import XcodeSimulatorHost
 
 @Suite @MainActor
 struct CaptureAndImportTests {

@@ -1,5 +1,4 @@
 import AppKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// Owns simulator connections and their resources independently of an application's menus or routing.
 @MainActor

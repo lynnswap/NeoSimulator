@@ -11,7 +11,6 @@ import Testing
 import XCTest
 import Synchronization
 import IOKit.hidsystem
-@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 
 /// Waits for rendered state without relying on XCTest's run-loop predicate timer.
 @MainActor

@@ -1,6 +1,5 @@
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import SwiftUI
 
 struct ManagerDeviceSettingsView: View {

@@ -1,5 +1,4 @@
 import NeoSimulatorKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 
 @MainActor

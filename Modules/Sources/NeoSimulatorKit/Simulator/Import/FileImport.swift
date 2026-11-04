@@ -1,6 +1,5 @@
 import Foundation
 import UniformTypeIdentifiers
-import XcodeSimulatorHost
 
 package enum SimulatorFileImport {
     package enum Kind { case application, media }

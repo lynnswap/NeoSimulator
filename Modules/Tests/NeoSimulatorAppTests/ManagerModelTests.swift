@@ -7,7 +7,6 @@ import Foundation
 import Observation
 import SwiftUI
 import Testing
-@_spi(NeoSimulator) @testable import XcodeSimulatorHost
 import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor

@@ -1,5 +1,4 @@
 import NeoSimulatorKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 package struct SimulatorMenuDevice<ID: Hashable> {
     package let identifier: ID
     package let name: String

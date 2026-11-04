@@ -1,10 +1,11 @@
 import NeoSimulatorKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Darwin
 import Synchronization
 
 package enum RendererRequest: Equatable {
+    package static let notificationName = Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest")
+
     case openDevice(SimulatorDeviceIdentifier)
     case quit(asks: Bool)
     case activate

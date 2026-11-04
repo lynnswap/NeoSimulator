@@ -1,5 +1,4 @@
 import AppKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// A snapshot of a simulator in its Xcode device set.
 public struct SimulatorDeviceSnapshot: Identifiable, Sendable {

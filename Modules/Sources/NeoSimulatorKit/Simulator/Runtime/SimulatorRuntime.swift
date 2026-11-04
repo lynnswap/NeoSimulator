@@ -1,6 +1,5 @@
 import ABIBridge
 import AppKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import Darwin
 import MachO
 import ObjectiveC

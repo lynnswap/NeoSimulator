@@ -1,6 +1,5 @@
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 
 /// Sort-specific sidebar sections, independent of outline row and selection objects.

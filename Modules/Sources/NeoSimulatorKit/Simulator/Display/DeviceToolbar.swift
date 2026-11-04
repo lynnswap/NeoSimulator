@@ -1,7 +1,6 @@
 import AppKit
 import Observation
 import ObservationBridge
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The device window's toolbar, built from the command catalog.
 @MainActor

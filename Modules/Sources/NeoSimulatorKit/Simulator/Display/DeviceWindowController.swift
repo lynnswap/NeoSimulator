@@ -1,6 +1,5 @@
 import AppKit
 import UniformTypeIdentifiers
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
 package final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, DisplayScaling {

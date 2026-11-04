@@ -1,16 +1,21 @@
 import NeoSimulatorKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
-import Darwin
-import Synchronization
 
-package struct RendererOwnerIdentity: Equatable {
+package struct RendererOwnerIdentity: Equatable, Sendable {
     package let processIdentifier: Int32
     package let launchDate: Date
 
     package init(processIdentifier: Int32, launchDate: Date) {
         self.processIdentifier = processIdentifier
         self.launchDate = launchDate
+    }
+
+    @MainActor package static func current() throws -> Self {
+        let application = NSRunningApplication.current
+        guard let launchDate = application.launchDate else {
+            throw CLIError.unavailable("renderer-owner", "The manager's launch identity could not be read.")
+        }
+        return Self(processIdentifier: application.processIdentifier, launchDate: launchDate)
     }
 
     @MainActor

@@ -1,0 +1,1440 @@
+import NeoSimulatorKit
+import Foundation
+import Darwin
+import OSLog
+import Synchronization
+
+package struct SimulatorXcode: Sendable, Equatable {
+    package let url: URL
+    package let version: String
+    package let name: String
+}
+
+/// The catalog and destination selected for a simulator creation session.
+package struct SimulatorCreationContext: Sendable {
+    package let xcodeURL: URL
+    package let data: Data
+    /// A custom simulator set, or `nil` for the default set. Creation and pairing retain this destination.
+    package let deviceSetPath: String?
+
+    package init(xcodeURL: URL, data: Data, deviceSetPath: String? = nil) {
+        self.xcodeURL = xcodeURL
+        self.data = data
+        self.deviceSetPath = deviceSetPath
+    }
+}
+
+/// The simulator address and backend selected before presenting its screen.
+package struct SimulatorPresentationContext: Sendable {
+    /// Distinguishes a user request, background attachment, and initial launch selection.
+    package enum Purpose: Sendable { case requested, automatic, startup }
+
+    package let deviceID: DeviceInventoryID
+    package let xcodeURL: URL
+    package let purpose: Purpose
+}
+
+package struct SimulatorHostStatus: Sendable {
+    /// The display host available in this app session.
+    package let host: SimulatorHost
+    /// The saved preference, including when applying it in this session failed.
+    package let preferredHost: SimulatorHost
+    package let restorationAvailable: Bool
+    package let rendererRunning: Bool
+
+    package init(host: SimulatorHost, preferredHost: SimulatorHost,
+                                   restorationAvailable: Bool, rendererRunning: Bool) {
+        self.host = host
+        self.preferredHost = preferredHost
+        self.restorationAvailable = restorationAvailable
+        self.rendererRunning = rendererRunning
+    }
+}
+
+package struct SimulatorHostDevice: Sendable, Equatable {
+    package let identifier: String
+    package let name: String
+    package let descriptiveName: String
+    package let runtimeIdentifier: String
+    package let runtimeName: String
+    package let productFamily: String
+    package let state: String
+    package let ownerXcodeURL: URL?
+    /// The Xcode whose catalog listed this entry as available during an inventory read, if any.
+    /// It records where the entry came from; `ownerXcodeURL` remains the renderer that owns the device.
+    package let catalogXcodeURL: URL?
+    package let deviceSetPath: String?
+    package let modelIdentifier: String?
+    /// CoreSimulator's device-type identifier, used with a runtime to validate companion creation.
+    package let deviceTypeIdentifier: String?
+    package let isAvailable: Bool
+    package let lastUsedAt: Date?
+    /// Creation date of the simulator's device directory, when available.
+    package let createdAt: Date?
+    package let capabilities: Set<String>
+    package let pairIdentifiers: Set<String>
+    /// The active companion in the same simulator device set, when the catalog identifies one.
+    package let activePairedDeviceID: DeviceInventoryID?
+    /// CoreDevice's matching default-set record, including host connection information.
+    package let coreDevice: CoreDeviceDevice?
+
+    package init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, catalogXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, createdAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
+        self.identifier = identifier
+        self.name = name
+        self.descriptiveName = descriptiveName
+        self.runtimeIdentifier = runtimeIdentifier
+        self.runtimeName = runtimeName
+        self.productFamily = productFamily
+        self.state = state
+        self.ownerXcodeURL = ownerXcodeURL
+        self.catalogXcodeURL = catalogXcodeURL
+        self.deviceSetPath = deviceSetPath
+        self.modelIdentifier = modelIdentifier
+        self.deviceTypeIdentifier = deviceTypeIdentifier
+        self.isAvailable = isAvailable
+        self.lastUsedAt = lastUsedAt
+        self.createdAt = createdAt
+        self.capabilities = capabilities
+        self.pairIdentifiers = pairIdentifiers
+        self.activePairedDeviceID = activePairedDeviceID
+        self.coreDevice = coreDevice
+    }
+}
+
+package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
+    package enum Kind: Sendable, Equatable { case preferencesChanged, unavailableXcode, launchFailed, partialSuccess, operationFailed }
+    package let kind: Kind
+    package let technicalDetails: String
+    package let failureReason: String?
+    private let underlyingRecoverySuggestion: String?
+
+    package var errorDescription: String? {
+        switch kind {
+        case .preferencesChanged: "Xcode’s simulator settings changed outside NeoSimulator."
+        case .unavailableXcode: "Xcode cannot be used with NeoSimulator."
+        case .launchFailed: "The simulator display could not be opened."
+        case .partialSuccess: "Simulator settings changed, but the display could not be opened."
+        case .operationFailed: "The simulator operation could not be completed."
+        }
+    }
+    package var recoverySuggestion: String? {
+        if let underlyingRecoverySuggestion { return underlyingRecoverySuggestion }
+        return switch kind {
+        case .preferencesChanged: "Review your Xcode settings. To use the saved values, choose Restore Original Settings…, then Restore Saved Values…."
+        case .unavailableXcode: "Open Xcode 27 or later and finish installing its developer tools, then try again."
+        case .launchFailed: "Try View Screen again, or select the display app in Settings."
+        case .partialSuccess: "Try View Screen again, or select the display app in Settings."
+        case .operationFailed: "Try again and review the diagnostic details if the problem continues."
+        }
+    }
+    package init(_ error: any Error) {
+        failureReason = (error as? any LocalizedError)?.failureReason
+        underlyingRecoverySuggestion = (error as? any LocalizedError)?.recoverySuggestion
+        let identifier = (error as? CLIError)?.identifier ?? ""
+        technicalDetails = identifier.isEmpty ? error.localizedDescription : "\(identifier): \(error.localizedDescription)"
+        if ["preference-conflict", "ambiguous-intermediate", "inconsistent-preferences"].contains(identifier) || identifier.hasSuffix("-host-invalidated") {
+            kind = .preferencesChanged
+        } else if identifier.hasSuffix("-partial-success") {
+            kind = .partialSuccess
+        } else if identifier == "unsupported-xcode" || identifier == "xcode-bundle" {
+            kind = .unavailableXcode
+        } else if identifier.contains("launch") || identifier.contains("runtime") || identifier.contains("startup") {
+            kind = .launchFailed
+        } else {
+            kind = .operationFailed
+        }
+    }
+}
+
+package struct RendererRegistration: Codable, Sendable {
+    package static var directoryURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/NeoSimulator/renderers", isDirectory: true)
+    }
+
+    package let processIdentifier: Int32
+    package let applicationPath: String
+    package let xcodePath: String
+    package let sessionIdentifier: String
+    package let deviceIdentifiers: [DeviceInventoryID]
+    package let ownerProcessIdentifier: Int32?
+    package let ownerLaunchDate: Date?
+
+    package init(processIdentifier: Int32, applicationPath: String, xcodePath: String, sessionIdentifier: String,
+         deviceIdentifiers: [DeviceInventoryID], ownerProcessIdentifier: Int32? = nil, ownerLaunchDate: Date? = nil) {
+        self.processIdentifier = processIdentifier
+        self.applicationPath = applicationPath
+        self.xcodePath = xcodePath
+        self.sessionIdentifier = sessionIdentifier
+        self.deviceIdentifiers = deviceIdentifiers
+        self.ownerProcessIdentifier = ownerProcessIdentifier
+        self.ownerLaunchDate = ownerLaunchDate
+    }
+
+    package func isOwned(by owner: RendererOwnerIdentity) -> Bool {
+        ownerProcessIdentifier == owner.processIdentifier && ownerLaunchDate == owner.launchDate
+    }
+}
+
+/// An accepted screen-open intent, including the time it spends waiting in the manager queue.
+package final class SimulatorScreenOpenRequest: Sendable {
+    package let deviceID: DeviceInventoryID
+    fileprivate let identifier = UUID()
+    fileprivate let cancellationIdentity: UUID?
+    private let cancelled = Mutex(false)
+    private let onCancel: @Sendable () -> Void
+
+    package convenience init(deviceID: DeviceInventoryID, onCancel: @escaping @Sendable () -> Void) {
+        self.init(deviceID: deviceID, cancellationIdentity: nil, onCancel: onCancel)
+    }
+
+    fileprivate init(deviceID: DeviceInventoryID, cancellationIdentity: UUID?, onCancel: @escaping @Sendable () -> Void) {
+        self.deviceID = deviceID
+        self.cancellationIdentity = cancellationIdentity
+        self.onCancel = onCancel
+    }
+
+    package func cancel() {
+        let first = cancelled.withLock { value in
+            guard !value else { return false }
+            value = true
+            return true
+        }
+        if first { onCancel() }
+    }
+
+    fileprivate var isCancelled: Bool { cancelled.withLock { $0 } }
+}
+
+private final class ScreenOpenCancellations: Sendable {
+    private struct Cancellation {
+        let identity: UUID
+        let instant: TimeInterval
+    }
+    private struct Active {
+        let request: SimulatorScreenOpenRequest
+        let task: Task<Void, any Error>
+    }
+    private struct State {
+        var latest: [DeviceInventoryID: Cancellation] = [:]
+        var pending: Set<DeviceInventoryID> = []
+        var active: [UUID: Active] = [:]
+    }
+    private let state = Mutex(State())
+
+    func request(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
+        request(for: deviceID, cancellationIdentity: state.withLock { $0.latest[deviceID]?.identity })
+    }
+
+    func request(for deviceID: DeviceInventoryID, cancellationIdentity: UUID?) -> SimulatorScreenOpenRequest {
+        SimulatorScreenOpenRequest(deviceID: deviceID, cancellationIdentity: cancellationIdentity) { self.cancel(deviceID) }
+    }
+
+    func snapshot() -> [DeviceInventoryID: UUID] {
+        state.withLock { $0.latest.mapValues(\.identity) }
+    }
+
+    func isCurrent(_ snapshot: [DeviceInventoryID: UUID], for deviceID: DeviceInventoryID) -> Bool {
+        state.withLock { $0.latest[deviceID]?.identity == snapshot[deviceID] }
+    }
+
+    private func cancel(_ deviceID: DeviceInventoryID) {
+        let tasks = state.withLock { state in
+            state.latest[deviceID] = Cancellation(identity: UUID(), instant: Date().timeIntervalSince1970)
+            state.pending.insert(deviceID)
+            return state.active.values.filter { $0.request.deviceID == deviceID }.map(\.task)
+        }
+        // A task's cancellation handlers can publish another request. Never invoke them under the lock.
+        for task in tasks { task.cancel() }
+    }
+
+    func admit(_ request: SimulatorScreenOpenRequest, task: Task<Void, any Error>, processStartedAt: TimeInterval?) -> Bool {
+        state.withLock { state in
+            let cancellation = state.latest[request.deviceID]
+            guard !request.isCancelled, cancellation?.identity == request.cancellationIdentity,
+                  processStartedAt.map({ start in cancellation.map { start > $0.instant } ?? true }) ?? true else { return false }
+            state.active[request.identifier] = Active(request: request, task: task)
+            return true
+        }
+    }
+
+    func finish(_ request: SimulatorScreenOpenRequest) {
+        _ = state.withLock { state in
+            state.active.removeValue(forKey: request.identifier)
+        }
+    }
+
+    func isCancelled(_ connection: XcodeSimulatorConnection) -> Bool {
+        state.withLock { state in
+            state.latest[connection.deviceID].map { connection.event.startTime <= $0.instant } ?? false
+        }
+    }
+
+    func takePending() -> Set<DeviceInventoryID> {
+        state.withLock { state in
+            let pending = state.pending
+            state.pending.removeAll()
+            return pending
+        }
+    }
+}
+
+package struct ScreenOpenCatalogObservation: Sendable {
+    package let catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])]
+    fileprivate let cancellationIdentities: [DeviceInventoryID: UUID]
+    package var devices: [SimulatorHostDevice] { catalogs.flatMap(\.devices) }
+}
+
+/// Serializes preference transactions while each Xcode owns a separate renderer process.
+package actor SimulatorHostController {
+    package let rendererApplicationURL: URL
+    private let presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)?
+    private let catalogLogger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Catalog")
+    private var lastTestingCatalogDiagnostic: String?
+    private let startedAt = Date().timeIntervalSince1970
+    private let connectionTracker = XcodeConnectionTracker()
+    private let bootTracker = SimulatorBootTracker()
+    private nonisolated let screenOpenCancellations = ScreenOpenCancellations()
+    private var startupHandled = false
+    private var allowsSessionHosting = false
+    private var startupDeviceIdentifier: DeviceInventoryID?
+    private var screenOpenTasks: [DeviceInventoryID: (id: UUID, task: Task<Void, any Error>)] = [:]
+    private var connectionSynchronization: Task<Bool, any Error>?
+    private var operationInProgress = false
+    private var operationWaiters: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
+    var shutdownTransactions: [SimulatorShutdownTransaction] = []
+
+    package init(rendererApplicationURL: URL,
+                presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
+        self.rendererApplicationURL = rendererApplicationURL.resolvingSymlinksInPath().standardizedFileURL
+        self.presentSimulator = presentSimulator
+    }
+
+    package func status() async throws -> SimulatorHostStatus {
+        try await operation {
+            let preferred = try await self.savedHostSelectionStatus()
+            let selection = self.effectiveSelection(preferred)
+            return SimulatorHostStatus(
+                host: selection.host,
+                preferredHost: preferred.host,
+                restorationAvailable: selection.restorationAvailable,
+                rendererRunning: try await !self.registeredRenderers().isEmpty
+            )
+        }
+    }
+
+    /// Applies the preferred display host and enables automatic hosting without opening a screen.
+    package func beginSession() async throws {
+        try await operation {
+            let xcode = try await self.resolveXcode(nil)
+            try await self.beginHostSession(xcodeURL: xcode.applicationURL)
+            self.allowsSessionHosting = true
+        }
+    }
+
+    /// Ends automatic hosting for this controller while preserving the selected display settings.
+    package func endSession() async throws {
+        await cancelConnectionSynchronization()
+        try await operation { self.allowsSessionHosting = false }
+    }
+
+    package func installedXcodes() async throws -> [SimulatorXcode] {
+        try await operation {
+            try await self.availableXcodes().map {
+                SimulatorXcode(url: $0.applicationURL, version: $0.version.description, name: $0.applicationURL.deletingPathExtension().lastPathComponent)
+            }
+        }
+    }
+
+    package func creationCatalog() async throws -> SimulatorCreationContext {
+        try await operation { try await self.readCreationCatalog() }
+    }
+
+    /// Uses the selected simulator's Xcode and device set for companion creation.
+    package func creationCatalog(for deviceID: DeviceInventoryID) async throws -> SimulatorCreationContext {
+        let address = try deviceID.simulatorAddress
+        return try await operation {
+            let xcodeURL = try await self.resolvedXcodeURL(for: deviceID)
+            return try await self.readCreationCatalog(xcodeURL: xcodeURL, deviceSetPath: address.deviceSetPath)
+        }
+    }
+
+    @concurrent
+    private func readCreationCatalog(xcodeURL: URL? = nil, deviceSetPath: String? = nil) async throws -> SimulatorCreationContext {
+        guard let bundle = Bundle(url: rendererApplicationURL), bundle.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
+              let executable = bundle.executableURL else {
+            throw CLIError.unavailable("neo-host-bundle", "The embedded simulator display could not be found.")
+        }
+        var candidates: [XcodeInstallation] = []
+        if let xcodeURL {
+            candidates = [try await resolveXcode(xcodeURL)]
+        } else {
+            if let selected = try? XcodeInstallationInspector().selectedXcode() { candidates.append(selected) }
+            candidates.append(contentsOf: try await availableXcodes())
+        }
+        var seen = Set<URL>()
+        var firstFailure: (any Error)?
+        for xcode in candidates where seen.insert(xcode.applicationURL).inserted {
+            do {
+                let output = try SystemCommandRunner().run(executable: executable, arguments: ["--creation-catalog", "--xcode", xcode.applicationURL.path])
+                guard output.terminationStatus == 0 else { throw CLIError.unavailable("creation-catalog", output.stderrText) }
+                return SimulatorCreationContext(xcodeURL: xcode.applicationURL, data: output.stdout, deviceSetPath: deviceSetPath)
+            } catch {
+                if firstFailure == nil { firstFailure = error }
+                catalogLogger.warning("Simulator creation catalog unavailable for \(xcode.applicationURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        if let firstFailure { throw firstFailure }
+        throw CLIError.unavailable("creation-catalog", "No compatible simulator creation catalog is available.")
+    }
+
+    package func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String {
+        try await operation {
+            let xcode = try await self.resolveXcode(context.xcodeURL)
+            let output = try await self.runSimctl(xcode: xcode, arguments: ["create", name, deviceType, runtime], deviceSetPath: context.deviceSetPath)
+            return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    package func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
+        try await operation {
+            let xcode = try await self.resolveXcode(context.xcodeURL)
+            _ = try await self.runSimctl(xcode: xcode, arguments: ["pair", watch, phone], deviceSetPath: context.deviceSetPath)
+        }
+    }
+
+    package func selectHost(_ host: SimulatorHost, xcodeURL: URL? = nil) async throws {
+        await cancelConnectionSynchronization()
+        try await operation { try await self.select(host, xcodeURL: xcodeURL) }
+    }
+
+    package func activate(xcodeURL: URL? = nil) async throws {
+        try await operation {
+            if try await self.hostSelectionStatus().host == .deviceHub {
+                let xcode = try await self.resolveXcode(xcodeURL)
+                let workspace = await WorkspaceClient.live
+                _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL)
+                return
+            }
+            let xcode = try await self.resolveXcode(xcodeURL)
+            if let renderer = try await self.registeredRenderers().first(where: { self.sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) {
+                self.send("activate", to: renderer)
+            } else {
+                try await self.launchHost(.neo, xcodeURL: xcode.applicationURL)
+                if let renderer = try await self.registeredRenderers().first(where: { self.sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) {
+                    self.send("show-browser", to: renderer)
+                }
+            }
+        }
+    }
+
+    package func restore(force: Bool = false) async throws {
+        await cancelConnectionSynchronization()
+        try await operation {
+            do { try await self.restoreHost(force: force) }
+            catch {
+                self.invalidateHostAfterFailedChange(error)
+                throw error
+            }
+            self.allowsSessionHosting = false
+            self.startupHandled = true
+            self.startupDeviceIdentifier = nil
+        }
+    }
+
+    package func devices(xcodeURL: URL? = nil) async throws -> [SimulatorHostDevice] {
+        try await operation {
+            let catalogs: [SimulatorHostDevice]
+            if let xcodeURL {
+                catalogs = try await self.deviceCatalog(xcode: self.resolveXcode(xcodeURL))
+            } else {
+                catalogs = try await self.availableCatalogs().flatMap(\.devices)
+            }
+            let catalog = Dictionary(grouping: catalogs, by: \.inventoryID).values.compactMap(\.first).sorted { $0.descriptiveName.localizedStandardCompare($1.descriptiveName) == .orderedAscending }
+            let renderers = try await self.registeredRenderers()
+            return catalog.map { device in
+                device.inventoryCopy(owners: renderers)
+            }
+        }
+    }
+
+    /// Opens a simulator in the default device set. Use its inventory ID for another set.
+    package func openDevice(identifier: String, xcodeURL: URL? = nil) async throws {
+        try await openDevice(.simulator(udid: identifier, deviceSetPath: nil), xcodeURL: xcodeURL)
+    }
+
+    /// Opens or brings forward the exact simulator, retaining its owning Xcode and device set.
+    package func openDevice(_ deviceID: DeviceInventoryID, xcodeURL: URL? = nil) async throws {
+        try await openDevice(makeScreenOpenRequest(for: deviceID), xcodeURL: xcodeURL)
+    }
+
+        package nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
+        screenOpenCancellations.request(for: deviceID)
+    }
+
+    /// Opens the requested simulator's screen. With `bootIfNeeded` false, the request only attaches a running
+    /// simulator: it does not start one that stopped before the request reached its host.
+        package func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL? = nil, bootIfNeeded: Bool = true) async throws {
+        _ = try request.deviceID.simulatorAddress
+        try await screenOpen(request) {
+            // An explicit request supersedes the saved startup selection.
+            await self.supersedeStartupSelection()
+            try await self.openDeviceBody(deviceID: request.deviceID, xcodeURL: xcodeURL, bootIfNeeded: bootIfNeeded,
+                                          purpose: .requested)
+        }
+    }
+
+    private func supersedeStartupSelection() {
+        startupHandled = true
+        startupDeviceIdentifier = nil
+    }
+
+    package func screenOpen(_ request: SimulatorScreenOpenRequest, processStartedAt: TimeInterval? = nil,
+                    operation: @escaping @Sendable () async throws -> Void) async throws {
+        try await withTaskCancellationHandler {
+            let previous = screenOpenTasks[request.deviceID]?.task
+            // Only requests for the same device wait for one another.
+            let task = Task {
+                _ = await previous?.result
+                try await self.performScreenOpen(operation)
+            }
+            screenOpenTasks[request.deviceID] = (request.identifier, task)
+            if !screenOpenCancellations.admit(request, task: task, processStartedAt: processStartedAt) { task.cancel() }
+            defer {
+                if screenOpenTasks[request.deviceID]?.id == request.identifier {
+                    screenOpenTasks.removeValue(forKey: request.deviceID)
+                }
+                screenOpenCancellations.finish(request)
+                retireCancelledScreenOpens()
+            }
+            try await task.value
+        } onCancel: { request.cancel() }
+    }
+
+    private func performScreenOpen(_ operation: @Sendable () async throws -> Void) async throws {
+        do {
+            try Task.checkCancellation()
+            try await operation()
+            try Task.checkCancellation()
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as SimulatorHostFailure { throw error }
+        catch { throw SimulatorHostFailure(error) }
+    }
+
+    package nonisolated func isCancelledScreenConnection(_ connection: XcodeSimulatorConnection) -> Bool {
+        screenOpenCancellations.isCancelled(connection)
+    }
+
+    private func retireCancelledScreenOpens() {
+        for deviceID in screenOpenCancellations.takePending() {
+            bootTracker.didCancelAttachment(deviceID)
+            if startupDeviceIdentifier == deviceID { startupDeviceIdentifier = nil }
+        }
+    }
+
+    private func openDeviceBody(deviceID: DeviceInventoryID, xcodeURL: URL?, bootIfNeeded: Bool = true,
+                                catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] = [],
+                                purpose: SimulatorPresentationContext.Purpose) async throws {
+        let open: @Sendable () async throws -> Void = try await operation {
+            try Task.checkCancellation()
+            let (identifier, _) = try deviceID.simulatorAddress
+            let selection = try await self.hostSelectionStatus()
+            let renderers = try await self.registeredRenderers()
+            let owner = renderers.first { $0.deviceIdentifiers.contains(deviceID) }
+            if selection.host == .neo, let owner,
+               xcodeURL.map({ self.sameURL($0, URL(fileURLWithPath: owner.xcodePath)) }) ?? true {
+                return {
+                    try await Self.openRendererDevice(deviceID, in: owner, bootIfNeeded: bootIfNeeded, launchesRenderer: false) {
+                        try await self.present(deviceID, xcodeURL: URL(fileURLWithPath: owner.xcodePath), purpose: purpose)
+                    }
+                }
+            }
+            let (xcode, device) = try await self.resolveDevice(deviceID: deviceID, preferredURL: xcodeURL, catalogs: catalogs)
+            if selection.host == .neo {
+                let open = try await self.prepareRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose)
+                return {
+                    if let owner { try await RendererDeviceRequestWaiter().release(deviceID, from: owner) }
+                    try Task.checkCancellation()
+                    try await open()
+                }
+            }
+            return {
+                try await Self.openDeviceHub(boot: {
+                    if bootIfNeeded && device.state == "Shutdown" {
+                        let output = try await SystemCommandRunner.runSimctlCancellable(xcodeURL: xcode.applicationURL,
+                            arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath)
+                        guard output.terminationStatus == 0 else { throw CLIError.io("simctl", output.stderrText) }
+                    }
+                }, launch: { try await self.launchHost(.deviceHub, xcodeURL: xcode.applicationURL) })
+            }
+        }
+        try await open()
+    }
+
+    package nonisolated static func openDeviceHub(boot: @Sendable () async throws -> Void,
+                                          launch: @Sendable () async throws -> Void) async throws {
+        try Task.checkCancellation()
+        try await boot()
+        try Task.checkCancellation()
+        try await launch()
+        try Task.checkCancellation()
+    }
+
+    private func openRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, bootIfNeeded: Bool = true,
+                                    purpose: SimulatorPresentationContext.Purpose) async throws {
+        let open = try await operation {
+            try await self.prepareRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose)
+        }
+        try await open()
+    }
+
+    /// Called inside the preference/renderer transaction; guest boot and screen connection run after it.
+    private func prepareRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, bootIfNeeded: Bool,
+                                       purpose: SimulatorPresentationContext.Purpose) async throws -> @Sendable () async throws -> Void {
+        let launchesRenderer = try await !registeredRenderers().contains(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) })
+        try Task.checkCancellation()
+        if launchesRenderer { try await launchHost(.neo, xcodeURL: xcode.applicationURL) }
+        guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
+            throw CLIError.temporary("renderer-startup", "The simulator display exited before opening the device.")
+        }
+        return {
+            try await Self.openRendererDevice(deviceID, in: target, bootIfNeeded: bootIfNeeded, launchesRenderer: launchesRenderer) {
+                try await self.present(deviceID, xcodeURL: xcode.applicationURL, purpose: purpose)
+            }
+        }
+    }
+
+    @MainActor package static func openRendererDevice(_ deviceID: DeviceInventoryID, in target: RendererRegistration, bootIfNeeded: Bool,
+                                              launchesRenderer: Bool,
+                                              makeWaiter: @escaping @MainActor () -> RendererDeviceRequestWaiter = { RendererDeviceRequestWaiter() },
+                                              present: @Sendable () async throws -> Void) async throws {
+        let preservesOwnership = target.deviceIdentifiers.contains(deviceID)
+        do {
+            if bootIfNeeded { try await makeWaiter().open(deviceID, in: target) }
+            else { try await makeWaiter().attach(deviceID, in: target) }
+            try await present()
+        } catch is CancellationError {
+            if !preservesOwnership {
+                // Cancellation can win after the renderer emitted its original open acknowledgement.
+                try await Task { try await makeWaiter().release(deviceID, from: target) }.value
+            }
+            throw CancellationError()
+        } catch {
+            throw CLIError.temporary(launchesRenderer ? "neo-host-launch-partial-success" : "renderer-device-launch", error.localizedDescription)
+        }
+    }
+
+    private func present(_ deviceID: DeviceInventoryID, xcodeURL: URL, purpose: SimulatorPresentationContext.Purpose) async throws {
+        try Task.checkCancellation()
+        guard let presentSimulator else { return }
+        try await presentSimulator(SimulatorPresentationContext(deviceID: deviceID, xcodeURL: xcodeURL, purpose: purpose))
+    }
+
+    /// Closes the presentation's backend ownership, optionally leaving the guest running.
+    package func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws {
+        _ = try deviceID.simulatorAddress
+        try await operation {
+            guard let owner = try await self.registeredRenderers().first(where: { $0.deviceIdentifiers.contains(deviceID) }) else { return }
+            try await RendererDeviceRequestWaiter().close(deviceID, in: owner, keepingDeviceRunning: keepingDeviceRunning)
+        }
+    }
+
+    /// Associates devices with the Xcode that launched their current simulator app processes.
+    /// Attaching a debugger to an already running process does not change its launch environment.
+    package func synchronizeXcodeConnections() async throws -> Bool {
+        if let connectionSynchronization { return try await connectionSynchronization.value }
+        let task = Task { try await self.synchronizeConnections() }
+        connectionSynchronization = task
+        defer { connectionSynchronization = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: { task.cancel() }
+    }
+
+    private func cancelConnectionSynchronization() async {
+        guard let task = connectionSynchronization else { return }
+        task.cancel()
+        _ = await task.result
+    }
+
+    private func synchronizeConnections() async throws -> Bool {
+        self.retireCancelledScreenOpens()
+        let (observedCatalog, selection) = try await operation {
+            let catalog = try await self.readScreenOpenCatalog { try await self.availableCatalogs() }
+            return (catalog, try await self.hostSelectionStatus())
+        }
+        var catalogs = observedCatalog.catalogs
+        let catalog = observedCatalog.devices
+        guard selection.allowsAutomaticHosting else {
+            let observation = self.bootTracker.observe(catalog, attachInitially: false, allowsAttachments: false)
+            self.startupHandled = true
+            self.startupDeviceIdentifier = nil
+            return observation.catalogChanged
+        }
+        let rendererDefaults = UserDefaults(suiteName: ToolConstants.neoHostBundleIdentifier)
+        let managerDefaults = ToolConstants.managerDefaults
+        let attachInitially = rendererDefaults?.object(forKey: "AttachBootedOnStart") as? Bool
+            ?? managerDefaults?.object(forKey: "AttachBootedOnStart") as? Bool ?? true
+        var changed = false
+        var firstFailure: (any Error)?
+        do {
+            changed = try await self.connectionTracker.synchronize(
+                observations: try await Self.readProcessConnections(),
+                runningDeviceIdentifiers: Set(catalog.filter { $0.state == "Booted" }.map(\.inventoryID)),
+                testingDeviceSetPath: SimulatorDeviceSets.testingPath(),
+                isCancelled: { self.isCancelledScreenConnection($0) }
+            ) { connection in
+                if !attachInitially && connection.event.startTime < self.startedAt { return }
+                let index = catalogs.firstIndex(where: { self.sameURL($0.xcode.applicationURL, connection.xcodeURL) })
+                let xcode: XcodeInstallation
+                if let index { xcode = catalogs[index].xcode }
+                else { xcode = try await self.resolveXcode(connection.xcodeURL) }
+                let devices = try await Self.connectionCatalog(for: connection.deviceID, cachedDevices: index.map { catalogs[$0].devices }) {
+                    try await self.deviceCatalog(xcode: xcode)
+                }
+                if let index { catalogs[index] = (xcode, devices) }
+                else { catalogs.append((xcode, devices)) }
+                guard devices.contains(where: { $0.inventoryID == connection.deviceID && $0.state == "Booted" }) else { return }
+                let request = self.makeScreenOpenRequest(for: connection.deviceID)
+                try await self.screenOpen(request, processStartedAt: connection.event.startTime) {
+                    let renderers = try await self.registeredRenderers()
+                    if let owner = renderers.first(where: { $0.deviceIdentifiers.contains(connection.deviceID) }) {
+                        if self.sameURL(URL(fileURLWithPath: owner.xcodePath), xcode.applicationURL) { return }
+                        try await RendererDeviceRequestWaiter().release(connection.deviceID, from: owner)
+                    }
+                    try await self.openRendererDevice(connection.deviceID, xcode: xcode, bootIfNeeded: false, purpose: .automatic)
+                }
+            }
+        } catch { firstFailure = error }
+        let resolvedCatalogs = catalogs
+        let bootObservation = try await self.synchronizeBootedDevices(observedCatalog, attachInitially: attachInitially,
+            ownedIdentifiers: { Set(try await self.registeredRenderers().flatMap(\.deviceIdentifiers)) }) { deviceID in
+                try await self.openDeviceBody(deviceID: deviceID, xcodeURL: nil, bootIfNeeded: false,
+                                              catalogs: resolvedCatalogs, purpose: .automatic)
+            }
+        changed = changed || bootObservation.changed
+        if firstFailure == nil { firstFailure = bootObservation.failure }
+        let ownedIdentifiers = bootObservation.ownedIdentifiers
+        if !self.startupHandled {
+            self.startupHandled = true
+            func savedBoolean(_ key: String) -> Bool {
+                rendererDefaults?.object(forKey: key) as? Bool ?? managerDefaults?.object(forKey: key) as? Bool ?? true
+            }
+            let savedDefaults = rendererDefaults?.string(forKey: "CurrentDeviceUDID") != nil ? rendererDefaults : managerDefaults
+            let current = savedDefaults?.string(forKey: "CurrentDeviceUDID").map {
+                DeviceInventoryID.simulator(udid: $0, deviceSetPath: savedDefaults?.string(forKey: "CurrentDeviceSetPath"))
+            }
+            self.startupDeviceIdentifier = SimulatorStartupSelection.device(
+                in: catalog, attachInitially: attachInitially,
+                startsSession: savedBoolean("SessionOnLaunch"), startsLastDevice: savedBoolean("StartLastDeviceOnLaunch"),
+                current: current, hasOwnedDevices: !ownedIdentifiers.isEmpty
+            )?.inventoryID
+        }
+        if let identifier = self.startupDeviceIdentifier {
+            do {
+                let request = self.makeScreenOpenRequest(for: identifier)
+                let observedCatalogs = catalogs
+                try await self.screenOpen(request, processStartedAt: self.startedAt) {
+                    try await self.openDeviceBody(deviceID: identifier, xcodeURL: nil, catalogs: observedCatalogs, purpose: .startup)
+                }
+                self.startupDeviceIdentifier = nil
+                changed = true
+            } catch is CancellationError { self.startupDeviceIdentifier = nil }
+            catch { if firstFailure == nil { firstFailure = error } }
+        }
+        if let firstFailure { throw firstFailure }
+        return changed
+    }
+
+    package func readScreenOpenCatalog(
+        _ read: @Sendable () async throws -> [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])]
+    ) async throws -> ScreenOpenCatalogObservation {
+        // The observation starts before I/O: a later cancellation must also invalidate stale Shutdown results.
+        let identities = screenOpenCancellations.snapshot()
+        return ScreenOpenCatalogObservation(catalogs: try await read(), cancellationIdentities: identities)
+    }
+
+    package func synchronizeBootedDevices(_ catalog: ScreenOpenCatalogObservation, attachInitially: Bool,
+        ownedIdentifiers: @Sendable () async throws -> Set<DeviceInventoryID>,
+        open: @escaping @Sendable (DeviceInventoryID) async throws -> Void
+    ) async throws -> (changed: Bool, ownedIdentifiers: Set<DeviceInventoryID>, failure: (any Error)?) {
+        retireCancelledScreenOpens()
+        let observation = bootTracker.observe(catalog.devices, attachInitially: attachInitially,
+            isCurrentObservation: { self.screenOpenCancellations.isCurrent(catalog.cancellationIdentities, for: $0) })
+        let requests = observation.devicesToAttach.map {
+            screenOpenCancellations.request(for: $0, cancellationIdentity: catalog.cancellationIdentities[$0])
+        }
+        let owned = try await ownedIdentifiers()
+        var changed = observation.catalogChanged
+        var firstFailure: (any Error)?
+        for request in requests {
+            let deviceID = request.deviceID
+            if connectionTracker.hasPendingConnection(forDevice: deviceID, isCancelled: { self.isCancelledScreenConnection($0) }) { continue }
+            do {
+                if !owned.contains(deviceID) { try await screenOpen(request) { try await open(deviceID) } }
+                bootTracker.didAttach(deviceID)
+                changed = true
+            } catch is CancellationError {} catch { if firstFailure == nil { firstFailure = error } }
+        }
+        return (changed, owned, firstFailure)
+    }
+
+    /// Invalidates testing-device attachments after a visibility change, including changes between catalog polls.
+    package func testingDeviceVisibilityDidChange() async throws {
+        try await operation { self.bootTracker.forgetTestingDevices() }
+    }
+
+    package func quitRenderer(keepingDevicesRunning: Bool? = nil) async throws {
+        await cancelConnectionSynchronization()
+        try await operation {
+            let workspace = await WorkspaceClient.live
+            _ = try await workspace.quitNeoHost(self.rendererApplicationURL, self.registeredRenderers(), keepingDevicesRunning)
+        }
+    }
+
+    private func select(_ host: SimulatorHost, xcodeURL: URL?) async throws {
+        let xcode = try await resolveXcode(xcodeURL)
+        let renderers = try await registeredRenderers()
+        let previousHost = try await hostSelectionStatus().host
+        if host == .deviceHub || previousHost == .deviceHub { bootTracker.reset() }
+        let existing = xcodeURL == nil ? renderers.first : renderers.first { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }
+        do {
+            try await useHost(host, xcodeURL: xcode.applicationURL, launchDisplay: host == .deviceHub || existing == nil)
+        } catch {
+            invalidateHostAfterFailedChange(error)
+            throw error
+        }
+        allowsSessionHosting = true
+        if host == .neo {
+            if let existing { send("activate", to: existing) }
+            else if let launched = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) { send("show-browser", to: launched) }
+        }
+    }
+
+    private func invalidateHostAfterFailedChange(_ error: any Error) {
+        switch SimulatorHostFailure(error).kind {
+        case .partialSuccess, .preferencesChanged: allowsSessionHosting = false
+        default: break
+        }
+    }
+
+    @concurrent
+    package func registeredRenderers() async throws -> [RendererRegistration] {
+        let workspace = await WorkspaceClient.live
+        let applications = (await workspace.runningNeoHosts()).filter {
+            $0.bundleURL.map({ sameURL($0, rendererApplicationURL) }) == true
+        }
+        guard !applications.isEmpty else { return [] }
+        let owner = try await RendererOwnerIdentity.current()
+        let directory = RendererRegistration.directoryURL
+        var registrations: [RendererRegistration] = []
+        for application in applications {
+            let url = directory.appendingPathComponent("\(application.processIdentifier).json")
+            let data: Data
+            do { data = try Data(contentsOf: url) }
+            catch CocoaError.fileReadNoSuchFile { continue }
+            let registration = try JSONDecoder().decode(RendererRegistration.self, from: data)
+            guard registration.processIdentifier == application.processIdentifier,
+                  sameURL(URL(fileURLWithPath: registration.applicationPath), rendererApplicationURL) else {
+                throw CLIError.configuration("renderer-registration", "The renderer registration does not match its running application.")
+            }
+            if registration.isOwned(by: owner) { registrations.append(registration) }
+        }
+        return registrations
+    }
+
+    private func send(_ action: String, to renderer: RendererRegistration) {
+        let info = ["action": action]
+        DistributedNotificationCenter.default().postNotificationName(
+            RendererRequest.notificationName, object: renderer.sessionIdentifier,
+            userInfo: info, deliverImmediately: true
+        )
+    }
+
+    nonisolated private func sameURL(_ lhs: URL, _ rhs: URL) -> Bool { lhs.resolvingSymlinksInPath().standardizedFileURL.path == rhs.resolvingSymlinksInPath().standardizedFileURL.path }
+    nonisolated private func makeInspector() -> InstallationInspector {
+        InstallationInspector(runner: SystemCommandRunner(), rendererApplicationURL: rendererApplicationURL)
+    }
+    @concurrent
+    private func availableXcodes() async throws -> [XcodeInstallation] {
+        try XcodeInstallationInspector().discoverXcodes()
+    }
+
+    @concurrent
+    private func resolveXcode(_ url: URL?) async throws -> XcodeInstallation {
+        if let url { return try XcodeInstallationInspector().xcode(at: url) }
+        if let selected = try? XcodeInstallationInspector().selectedXcode() { return selected }
+        return try await availableXcodes()[0]
+    }
+
+    package nonisolated(nonsending) static func connectionCatalog(for deviceID: DeviceInventoryID, cachedDevices: [SimulatorHostDevice]?,
+                                  readCatalog: () async throws -> [SimulatorHostDevice]) async throws -> [SimulatorHostDevice] {
+        if let cachedDevices, cachedDevices.contains(where: { $0.inventoryID == deviceID && $0.state == "Booted" }) {
+            return cachedDevices
+        }
+        // Xcodes are polled sequentially, so another catalog may observe a boot that this snapshot predates.
+        return try await readCatalog()
+    }
+
+    private func availableCatalogs() async throws -> [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] {
+        var catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] = []
+        var firstFailure: (any Error)?
+        for xcode in try await availableXcodes() {
+            do { catalogs.append((xcode, try await deviceCatalog(xcode: xcode))) }
+            catch { if firstFailure == nil { firstFailure = error } }
+        }
+        if catalogs.isEmpty, let firstFailure { throw firstFailure }
+        return catalogs
+    }
+
+    /// Resolves developer tools without requiring a user-visible Xcode selection.
+    package func xcodeURL(forDevice identifier: String) async throws -> URL {
+        try await xcodeURL(forDevice: .simulator(udid: identifier, deviceSetPath: nil))
+    }
+
+    package func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL {
+        _ = try deviceID.simulatorAddress
+        return try await operation { try await self.resolvedXcodeURL(for: deviceID) }
+    }
+
+    private func resolvedXcodeURL(for deviceID: DeviceInventoryID) async throws -> URL {
+        if let owner = try await registeredRenderers().first(where: { $0.deviceIdentifiers.contains(deviceID) }) {
+            return URL(fileURLWithPath: owner.xcodePath, isDirectory: true)
+        }
+        return try await resolveDevice(deviceID: deviceID, preferredURL: nil).xcode.applicationURL
+    }
+
+    // Settings reads remain available while a renderer command waits for a screen.
+    package func settingsDevice(_ deviceID: DeviceInventoryID) async throws -> (SimulatorHostDevice, URL) {
+        _ = try deviceID.simulatorAddress
+        let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(deviceID) }
+        let preferredURL = owner.map { URL(fileURLWithPath: $0.xcodePath) }
+        let (xcode, device) = try await resolveDevice(deviceID: deviceID, preferredURL: preferredURL)
+        return (device, xcode.applicationURL)
+    }
+
+    package func deviceManagementContext(for original: SimulatorHostDevice, requiresRenderer: Bool) async throws -> DeviceManagementContext {
+        let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(original.inventoryID) }
+        let candidates: [XcodeInstallation]
+        if let owner { candidates = [try await resolveXcode(URL(fileURLWithPath: owner.xcodePath))] }
+        else { candidates = try await availableXcodes() }
+        let selected = try await Self.managementDevice(for: original, xcodeURLs: candidates.map(\.applicationURL),
+            readCatalog: Self.readManagementCatalog)
+        return DeviceManagementContext(device: selected.device, xcodeURL: selected.xcodeURL, renderer: requiresRenderer ? owner : nil)
+    }
+
+    package static func managementDevice(for original: SimulatorHostDevice, xcodeURLs: [URL],
+                                 readCatalog: @Sendable (URL, String?) async throws -> [SimulatorHostDevice]) async throws
+        -> (device: SimulatorHostDevice, xcodeURL: URL) {
+        var unavailable: (device: SimulatorHostDevice, xcodeURL: URL)?
+        var firstFailure: (any Error)?
+        for xcodeURL in xcodeURLs {
+            do {
+                let current = try await readCatalog(xcodeURL, original.deviceSetPath)
+                guard let device = current.first(where: { $0.identifier == original.identifier }) else { continue }
+                if device.isAvailable { return (device, xcodeURL) }
+                if unavailable == nil { unavailable = (device, xcodeURL) }
+            } catch { if firstFailure == nil { firstFailure = error } }
+        }
+        if let unavailable { return unavailable }
+        if let firstFailure { throw firstFailure }
+        throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
+    }
+
+    @concurrent
+    private static func readManagementCatalog(xcodeURL: URL, path: String?) async throws -> [SimulatorHostDevice] {
+        let output = try SystemCommandRunner().runSimctl(xcodeURL: xcodeURL, arguments: ["list", "--json"], deviceSetPath: path)
+        guard output.terminationStatus == 0 else { throw CLIError.io("simulator-management", output.stderrText) }
+        return try SimulatorDeviceCatalog.decode(output.stdout, deviceSetPath: path, includeUnavailable: true)
+    }
+
+    private func resolveDevice(deviceID: DeviceInventoryID, preferredURL: URL?,
+                               catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] = []) async throws
+        -> (xcode: XcodeInstallation, device: SimulatorHostDevice) {
+        let candidates: [XcodeInstallation]
+        if let preferredURL { candidates = [try await resolveXcode(preferredURL)] }
+        else {
+            let source = connectionTracker.xcodeURL(forDevice: deviceID)
+            candidates = try await deviceXcodeCandidates(source: source)
+        }
+        var seen = Set<URL>()
+        var firstFailure: (any Error)?
+        var readAnyCatalog = false
+        for candidate in candidates where seen.insert(candidate.applicationURL).inserted {
+            do {
+                let devices: [SimulatorHostDevice]
+                if let known = catalogs.first(where: { sameURL($0.xcode.applicationURL, candidate.applicationURL) }) {
+                    devices = known.devices
+                } else {
+                    devices = try await deviceCatalog(xcode: candidate)
+                }
+                readAnyCatalog = true
+                if let device = devices.first(where: { $0.inventoryID == deviceID }) { return (candidate, device) }
+            } catch { if firstFailure == nil { firstFailure = error } }
+        }
+        if !readAnyCatalog, let firstFailure { throw firstFailure }
+        throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
+    }
+
+    @concurrent
+    private func deviceXcodeCandidates(source: URL?) async throws -> [XcodeInstallation] {
+        var candidates: [XcodeInstallation] = []
+        if let source, let installation = try? XcodeInstallationInspector().xcode(at: source) { candidates.append(installation) }
+        if let selected = try? XcodeInstallationInspector().selectedXcode() { candidates.append(selected) }
+        candidates.append(contentsOf: try await availableXcodes())
+        return candidates
+    }
+
+    nonisolated private func makeCore(workspace: WorkspaceClient) throws -> HostModeController {
+        HostModeController(defaultsStore: DefaultsStore(), receiptStore: try ReceiptStore(),
+                           installationInspector: makeInspector(), workspace: workspace)
+    }
+
+    @concurrent
+    private func savedHostSelectionStatus() async throws -> SimulatorHostSelectionStatus {
+        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        return try makeCore(workspace: workspace).selectionStatus()
+    }
+
+    private func hostSelectionStatus() async throws -> SimulatorHostSelectionStatus {
+        let preferred = try await savedHostSelectionStatus()
+        return effectiveSelection(preferred)
+    }
+
+    private func effectiveSelection(_ preferred: SimulatorHostSelectionStatus) -> SimulatorHostSelectionStatus {
+        let host: SimulatorHost = allowsSessionHosting && preferred.allowsAutomaticHosting ? preferred.host : .deviceHub
+        return SimulatorHostSelectionStatus(host: host, restorationAvailable: preferred.restorationAvailable,
+                                            allowsAutomaticHosting: host == .neo && preferred.allowsAutomaticHosting)
+    }
+
+    @concurrent
+    private func beginHostSession(xcodeURL: URL) async throws {
+        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        _ = try await makeCore(workspace: workspace).beginSession(xcodeURL: xcodeURL)
+    }
+
+    @concurrent
+    private func launchHost(_ host: SimulatorHost, xcodeURL: URL) async throws {
+        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        try await makeCore(workspace: workspace).launch(host, xcodeURL: xcodeURL)
+    }
+
+    @concurrent
+    private func useHost(_ host: SimulatorHost, xcodeURL: URL, launchDisplay: Bool) async throws {
+        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        _ = try await makeCore(workspace: workspace).use(host, xcodeURL: xcodeURL, launchDisplay: launchDisplay)
+    }
+
+    @concurrent
+    private func restoreHost(force: Bool) async throws {
+        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        _ = try await makeCore(workspace: workspace).restore(force: force)
+    }
+
+    @concurrent
+    private static func readProcessConnections() async throws -> [XcodeSimulatorConnection] {
+        try SimulatorProcessConnections.read()
+    }
+    package func operation<T>(_ body: () async throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        if operationInProgress {
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    operationWaiters.append((id, continuation))
+                }
+            } onCancel: {
+                Task { await self.cancelOperationWaiter(id) }
+            }
+        } else { operationInProgress = true }
+        defer {
+            if operationWaiters.isEmpty { operationInProgress = false }
+            else { operationWaiters.removeFirst().continuation.resume() }
+        }
+        do {
+            try Task.checkCancellation()
+            return try await body()
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as SimulatorHostFailure { throw error }
+        catch { throw SimulatorHostFailure(error) }
+    }
+
+    private func cancelOperationWaiter(_ id: UUID) {
+        guard let index = operationWaiters.firstIndex(where: { $0.id == id }) else { return }
+        operationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+    @concurrent
+    private func runSimctl(xcode: XcodeInstallation, arguments: [String], deviceSetPath: String? = nil) async throws -> Data {
+        let output = try SystemCommandRunner().runSimctl(xcodeURL: xcode.applicationURL, arguments: arguments, deviceSetPath: deviceSetPath)
+        guard output.terminationStatus == 0 else { throw CLIError.io("simctl", output.stderrText) }
+        return output.stdout
+    }
+
+    private struct CatalogResult: Sendable {
+        var devices: [SimulatorHostDevice]
+        var testingDiagnostic: String?
+    }
+
+    private func deviceCatalog(xcode: XcodeInstallation) async throws -> [SimulatorHostDevice] {
+        let result = try await readDeviceCatalog(xcode: xcode)
+        if let detail = result.testingDiagnostic, lastTestingCatalogDiagnostic != detail {
+            catalogLogger.error("Parallel testing devices are unavailable; normal devices remain available. \(detail, privacy: .public)")
+        }
+        lastTestingCatalogDiagnostic = result.testingDiagnostic
+        return result.devices
+    }
+
+    @concurrent
+    private func readDeviceCatalog(xcode: XcodeInstallation) async throws -> CatalogResult {
+        let output = try await runSimctl(xcode: xcode, arguments: ["list", "--json"])
+        let devices = try SimulatorDeviceCatalog.decode(output)
+        guard let path = SimulatorDeviceSets.testingPath(), FileManager.default.fileExists(atPath: path) else {
+            return CatalogResult(devices: devices)
+        }
+        var diagnostic: String?
+        let combined = SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: {
+            let output = try SystemCommandRunner().runSimctl(xcodeURL: xcode.applicationURL, arguments: ["list", "--json"], deviceSetPath: path)
+            guard output.terminationStatus == 0 else { throw CLIError.io("simctl", output.stderrText) }
+            return try SimulatorDeviceCatalog.decode(output.stdout, deviceSetPath: path)
+        }, onFailure: { error in
+            diagnostic = "\(path): \(error.localizedDescription)"
+        })
+        return CatalogResult(devices: combined, testingDiagnostic: diagnostic)
+    }
+}
+package enum SimulatorDeviceCatalog {
+    private struct Catalog: Decodable {
+        struct Runtime: Decodable {
+            let identifier: String
+            let name: String
+            let isAvailable: Bool
+        }
+        struct Device: Decodable {
+            let udid: String
+            let deviceTypeIdentifier: String
+            let name: String
+            let state: String
+            let isAvailable: Bool
+            let lastUsedAt: String?
+            let dataPath: String?
+        }
+        struct DeviceType: Decodable {
+            let identifier: String
+            let productFamily: String
+            let modelIdentifier: String?
+        }
+        let devicetypes: [DeviceType]
+        let runtimes: [Runtime]
+        let devices: [String: [Device]]
+        struct Pair: Decodable {
+            struct Member: Decodable { let udid: String }
+            let watch: Member
+            let phone: Member
+            let state: String?
+
+            var isActive: Bool { state == "(active, connected)" || state == "(active, disconnected)" }
+        }
+        let pairs: [String: Pair]?
+    }
+
+    package static func appendingTestingDevices(
+        to devices: [SimulatorHostDevice], readTesting: () throws -> [SimulatorHostDevice], onFailure: (any Error) -> Void
+    ) -> [SimulatorHostDevice] {
+        do { return devices + (try readTesting()) }
+        catch { onFailure(error); return devices }
+    }
+
+    package static func decode(_ data: Data, deviceSetPath: String? = nil, includeUnavailable: Bool = false,
+                       catalogXcodeURL: URL? = nil) throws -> [SimulatorHostDevice] {
+        let catalog = try JSONDecoder().decode(Catalog.self, from: data)
+        let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
+        let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0) })
+        // Multiple installed builds can share a runtime identifier.
+        let runtimes = Dictionary(catalog.runtimes.map { ($0.identifier, $0) }, uniquingKeysWith: { first, next in
+            !first.isAvailable && next.isAvailable ? next : first
+        })
+        return catalog.devices.flatMap { runtimeIdentifier, devices in
+            let runtime = runtimes[runtimeIdentifier]
+            return devices.compactMap { device -> SimulatorHostDevice? in
+                let available = device.isAvailable && runtime?.isAvailable == true
+                let type = supportedTypes[device.deviceTypeIdentifier]
+                guard includeUnavailable || (available && type != nil) else { return nil }
+                let runtimeName = runtime?.name ?? runtimeIdentifier
+                let lastUsedAt = device.lastUsedAt.flatMap { value in
+                    (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(value))
+                        ?? (try? Date.ISO8601FormatStyle().parse(value))
+                }
+                return SimulatorHostDevice(
+                    identifier: device.udid,
+                    name: device.name,
+                    descriptiveName: "\(device.name) — \(runtimeName)",
+                    runtimeIdentifier: runtimeIdentifier,
+                    runtimeName: runtimeName,
+                    productFamily: type?.productFamily ?? "",
+                    state: device.state,
+                    catalogXcodeURL: available ? catalogXcodeURL : nil,
+                    deviceSetPath: deviceSetPath,
+                    modelIdentifier: type?.modelIdentifier,
+                    deviceTypeIdentifier: device.deviceTypeIdentifier,
+                    isAvailable: available,
+                    lastUsedAt: lastUsedAt,
+                    createdAt: device.dataPath.flatMap { path in
+                        try? URL(filePath: path).deletingLastPathComponent()
+                            .resourceValues(forKeys: [.creationDateKey]).creationDate
+                    },
+                    pairIdentifiers: Set((catalog.pairs ?? [:]).compactMap { pairID, pair in
+                        pair.watch.udid == device.udid || pair.phone.udid == device.udid ? pairID : nil
+                    }),
+                    activePairedDeviceID: (catalog.pairs ?? [:]).values.first(where: {
+                        $0.isActive && ($0.watch.udid == device.udid || $0.phone.udid == device.udid)
+                    }).map { pair in
+                        .simulator(udid: pair.watch.udid == device.udid ? pair.phone.udid : pair.watch.udid,
+                                   deviceSetPath: deviceSetPath)
+                    }
+                )
+            }
+        }.sorted {
+            let order = $0.runtimeName.compare($1.runtimeName, options: .numeric)
+            return order == .orderedSame
+                ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                : order == .orderedDescending
+        }
+    }
+}
+
+package struct XcodeSimulatorConnection: Sendable, Equatable {
+    package struct Event: Sendable, Hashable, Comparable {
+        package let processIdentifier: Int32
+        package let startSeconds: UInt64
+        package let startMicroseconds: UInt64
+        package var startTime: TimeInterval { TimeInterval(startSeconds) + TimeInterval(startMicroseconds) / 1_000_000 }
+        package static func < (lhs: Self, rhs: Self) -> Bool {
+            if lhs.startSeconds != rhs.startSeconds { return lhs.startSeconds < rhs.startSeconds }
+            if lhs.startMicroseconds != rhs.startMicroseconds { return lhs.startMicroseconds < rhs.startMicroseconds }
+            return lhs.processIdentifier < rhs.processIdentifier
+        }
+    }
+    package let event: Event
+    package let deviceIdentifier: String
+    package var deviceID: DeviceInventoryID { .simulator(udid: deviceIdentifier, deviceSetPath: deviceSetPath) }
+    package let xcodeURL: URL
+    package let deviceSetPath: String?
+
+    package init(event: Event, deviceIdentifier: String, xcodeURL: URL, deviceSetPath: String? = nil) {
+        self.event = event
+        self.deviceIdentifier = deviceIdentifier
+        self.xcodeURL = xcodeURL
+        self.deviceSetPath = deviceSetPath
+    }
+}
+
+package final class XcodeConnectionTracker {
+    private var latestHandled: [DeviceInventoryID: XcodeSimulatorConnection.Event] = [:]
+    private var latestObserved: [DeviceInventoryID: XcodeSimulatorConnection] = [:]
+
+    package func xcodeURL(forDevice identifier: DeviceInventoryID) -> URL? { latestObserved[identifier]?.xcodeURL }
+    package func hasPendingConnection(forDevice identifier: DeviceInventoryID,
+                              isCancelled: (XcodeSimulatorConnection) -> Bool = { _ in false }) -> Bool {
+        guard let observed = latestObserved[identifier], !isCancelled(observed) else { return false }
+        return latestHandled[identifier].map { $0 < observed.event } ?? true
+    }
+
+    package nonisolated(nonsending) func synchronize(
+        observations: [XcodeSimulatorConnection],
+        runningDeviceIdentifiers: Set<DeviceInventoryID>,
+        testingDeviceSetPath: String? = nil,
+        isCancelled: (XcodeSimulatorConnection) -> Bool = { _ in false },
+        transfer: (XcodeSimulatorConnection) async throws -> Void
+    ) async throws -> Bool {
+        for (identifier, connection) in latestObserved where connection.deviceSetPath != nil && connection.deviceSetPath != testingDeviceSetPath {
+            latestObserved.removeValue(forKey: identifier)
+            latestHandled.removeValue(forKey: identifier)
+        }
+        // A stopped device cancels a failed handoff, even if its originating app already exited.
+        for (identifier, connection) in latestObserved where !runningDeviceIdentifiers.contains(identifier) {
+            latestHandled[identifier] = connection.event
+        }
+        for connection in observations where runningDeviceIdentifiers.contains(connection.deviceID)
+            && (connection.deviceSetPath == nil || connection.deviceSetPath == testingDeviceSetPath) {
+            if let previous = latestObserved[connection.deviceID], previous.event >= connection.event { continue }
+            latestObserved[connection.deviceID] = connection
+        }
+        var changed = false
+        var firstFailure: (any Error)?
+        for connection in latestObserved.values.sorted(by: { $0.event < $1.event }) {
+            if let latest = latestHandled[connection.deviceID], latest >= connection.event { continue }
+            if isCancelled(connection) {
+                latestHandled[connection.deviceID] = connection.event
+                continue
+            }
+            do {
+                try await transfer(connection)
+                latestHandled[connection.deviceID] = connection.event
+                changed = true
+            } catch {
+                if error is CancellationError, isCancelled(connection) {
+                    latestHandled[connection.deviceID] = connection.event
+                } else if firstFailure == nil { firstFailure = error }
+            }
+        }
+        if let firstFailure { throw firstFailure }
+        return changed
+    }
+}
+
+package enum SimulatorProcessConnections {
+    package static func read() throws -> [XcodeSimulatorConnection] {
+        let testingDeviceSetPath = SimulatorDeviceSets.testingPath()
+        let capacity = Int(proc_listallpids(nil, 0)) + 128
+        guard capacity > 128 else { throw CLIError.io("process-list", "Could not enumerate simulator application processes.") }
+        var processes = [pid_t](repeating: 0, count: capacity)
+        let count = processes.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard count >= 0 else { throw CLIError.io("process-list", "Could not enumerate simulator application processes.") }
+        var result: [XcodeSimulatorConnection] = []
+        for pid in processes.prefix(Int(count)) where pid > 0 {
+            var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+            guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { continue }
+            let executable = String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            guard executable.contains("/data/Containers/Bundle/Application/") else { continue }
+            var info = proc_bsdinfo()
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
+                  info.pbi_uid == getuid() else { continue }
+            var query = [CTL_KERN, KERN_PROCARGS2, pid]
+            var size = 0
+            guard sysctl(&query, UInt32(query.count), nil, &size, nil, 0) == 0, size > 4 else { continue }
+            var data = Data(count: size)
+            let status = data.withUnsafeMutableBytes { sysctl(&query, UInt32(query.count), $0.baseAddress, &size, nil, 0) }
+            guard status == 0 else { continue } // Processes can exit while the snapshot is being read.
+            data.count = size
+            var current = proc_bsdinfo()
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &current, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
+                  current.pbi_start_tvsec == info.pbi_start_tvsec, current.pbi_start_tvusec == info.pbi_start_tvusec else { continue }
+            if let connection = decode(data, executablePath: executable, event: .init(processIdentifier: pid, startSeconds: info.pbi_start_tvsec, startMicroseconds: info.pbi_start_tvusec), testingDeviceSetPath: testingDeviceSetPath) {
+                result.append(connection)
+            }
+        }
+        return result
+    }
+
+    package static func decode(_ arguments: Data, executablePath: String, event: XcodeSimulatorConnection.Event, testingDeviceSetPath: String? = nil) -> XcodeSimulatorConnection? {
+        guard arguments.count >= MemoryLayout<Int32>.size else { return nil }
+        let argumentCount = arguments.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argumentCount >= 0 else { return nil }
+        var cursor = 4
+        func nextString() -> String? {
+            guard cursor < arguments.count, let end = arguments[cursor...].firstIndex(of: 0) else { return nil }
+            defer { cursor = end + 1 }
+            return String(data: arguments[cursor..<end], encoding: .utf8)
+        }
+        guard nextString() != nil else { return nil } // executable path precedes argv, padded with NULs.
+        while cursor < arguments.count, arguments[cursor] == 0 { cursor += 1 }
+        for _ in 0..<argumentCount { guard nextString() != nil else { return nil } }
+        var environment: [String: String] = [:]
+        let relevant: Set<String> = ["SIMULATOR_UDID", "GPUTOOLS_XCODE_DEVELOPER_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_LIBRARY_PATH"]
+        while let entry = nextString(), !entry.isEmpty {
+            guard let equals = entry.firstIndex(of: "=") else { continue }
+            let key = String(entry[..<equals])
+            if relevant.contains(key) { environment[key] = String(entry[entry.index(after: equals)...]) }
+        }
+        guard let rawIdentifier = environment["SIMULATOR_UDID"], let identifier = UUID(uuidString: rawIdentifier)?.uuidString else { return nil }
+        let defaultDevice = executablePath.contains("/CoreSimulator/Devices/\(identifier)/data/Containers/Bundle/Application/")
+        let testingDevice = testingDeviceSetPath.map { path in
+            URL(fileURLWithPath: executablePath).resolvingSymlinksInPath().path.hasPrefix(
+                URL(fileURLWithPath: path).resolvingSymlinksInPath().appendingPathComponent("\(identifier)/data/Containers/Bundle/Application").path + "/"
+            )
+        } ?? false
+        guard defaultDevice || testingDevice else { return nil }
+        var candidates = Set<String>()
+        for key in ["GPUTOOLS_XCODE_DEVELOPER_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_LIBRARY_PATH"] {
+            for path in (environment[key] ?? "").split(separator: ":") {
+                guard let developer = path.range(of: ".app/Contents/Developer"),
+                      key == "GPUTOOLS_XCODE_DEVELOPER_PATH" || path.contains("/Contents/Developer/Platforms/") else { continue }
+                candidates.insert(String(path[..<developer.lowerBound]) + ".app")
+            }
+        }
+        guard candidates.count == 1, let path = candidates.first, path.hasPrefix("/") else { return nil }
+        return XcodeSimulatorConnection(event: event, deviceIdentifier: identifier, xcodeURL: URL(fileURLWithPath: path, isDirectory: true), deviceSetPath: testingDevice ? testingDeviceSetPath : nil)
+    }
+}
+
+package final class SimulatorBootTracker {
+    package struct Observation {
+        package let catalogChanged: Bool
+        package let devicesToAttach: [DeviceInventoryID]
+    }
+
+    private var catalog: [DeviceInventoryID: SimulatorHostDevice] = [:]
+    private var pending: Set<DeviceInventoryID> = []
+    /// A cancelled open may have booted before the catalog observed it. Retire only that boot's automatic attach.
+    private var cancelledAttachments: Set<DeviceInventoryID> = []
+    private var initialized = false
+
+    package func reset() { pending = []; cancelledAttachments = []; initialized = false }
+    package func didAttach(_ identifier: DeviceInventoryID) { pending.remove(identifier) }
+    package func didCancelAttachment(_ identifier: DeviceInventoryID) {
+        pending.remove(identifier)
+        cancelledAttachments.insert(identifier)
+    }
+    package func forgetTestingDevices() {
+        let identifiers = Set(catalog.filter { $0.value.deviceSetPath != nil }.keys)
+        catalog = catalog.filter { $0.value.deviceSetPath == nil }
+        pending.subtract(identifiers)
+        cancelledAttachments = cancelledAttachments.filter {
+            if case .simulator(_, let path) = $0 { return path == nil }
+            return true
+        }
+    }
+
+    package func observe(_ devices: [SimulatorHostDevice], attachInitially: Bool, allowsAttachments: Bool = true,
+                 isCurrentObservation: (DeviceInventoryID) -> Bool = { _ in true }) -> Observation {
+        let current = Dictionary(devices.map { ($0.inventoryID, $0) }, uniquingKeysWith: { first, _ in first })
+        let changed = current != catalog
+        defer { catalog = current }
+        guard allowsAttachments else {
+            reset()
+            return Observation(catalogChanged: changed, devicesToAttach: [])
+        }
+        cancelledAttachments = cancelledAttachments.filter { identifier in
+            !isCurrentObservation(identifier) || current[identifier]?.state != "Shutdown"
+        }
+        let booted = Set(current.filter { $0.value.state == "Booted" }.keys)
+        pending.formIntersection(booted)
+        pending.subtract(cancelledAttachments)
+        for identifier in booted where !cancelledAttachments.contains(identifier) {
+            if initialized {
+                if catalog[identifier]?.state != "Booted" { pending.insert(identifier) }
+            } else if attachInitially { pending.insert(identifier) }
+        }
+        initialized = true
+        return Observation(catalogChanged: changed, devicesToAttach: pending.sorted { $0.sortKey < $1.sortKey })
+    }
+}
+
+package enum SimulatorStartupSelection {
+    package static func device(in devices: [SimulatorHostDevice], attachInitially: Bool, startsSession: Bool, startsLastDevice: Bool, current: DeviceInventoryID?, hasOwnedDevices: Bool) -> SimulatorHostDevice? {
+        guard startsSession, startsLastDevice, !hasOwnedDevices,
+              !(attachInitially && devices.contains(where: { $0.state == "Booted" })) else { return nil }
+        if case .simulator(let savedIdentifier, let path)? = current,
+           let identifier = UUID(uuidString: savedIdentifier),
+           let chosen = devices.first(where: { $0.deviceSetPath == path && UUID(uuidString: $0.identifier) == identifier }) { return chosen }
+        return devices.last(where: { $0.productFamily == "iPhone" }) ?? devices.first
+    }
+}
+
+package enum SimulatorDeviceSets {
+    package static func testingPath() -> String? {
+        let renderer = UserDefaults(suiteName: ToolConstants.neoHostBundleIdentifier)
+        let manager = ToolConstants.managerDefaults
+        return testingPath(showTesting: renderer?.object(forKey: "ShowTestingDevices") as? Bool ?? manager?.object(forKey: "ShowTestingDevices") as? Bool ?? true,
+                           customPath: renderer?.string(forKey: "TestingDeviceSetPath") ?? manager?.string(forKey: "TestingDeviceSetPath"))
+    }
+
+    package static func testingPath(showTesting: Bool, customPath: String?, homeURL: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+        guard showTesting else { return nil }
+        let path = customPath.map { NSString(string: $0).expandingTildeInPath }
+            ?? homeURL.appendingPathComponent("Library/Developer/XCTestDevices").path
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        guard url != homeURL.appendingPathComponent("Library/Developer/CoreSimulator/Devices").resolvingSymlinksInPath().standardizedFileURL else { return nil }
+        return url.path
+    }
+}

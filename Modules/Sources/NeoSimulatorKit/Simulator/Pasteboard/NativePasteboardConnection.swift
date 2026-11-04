@@ -1,5 +1,4 @@
 import AppKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// A device's CoreDevice pasteboard connection. Transfers run one at a time in the order they were requested or
 /// observed. A queued automatic send yields to a change that the connection observes later, and a device copy's

@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// Bottom canvas content retained with the screen across presentations.
 @MainActor

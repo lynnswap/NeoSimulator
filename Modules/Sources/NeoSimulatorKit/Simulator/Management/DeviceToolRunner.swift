@@ -1,6 +1,5 @@
 import Foundation
 import Darwin
-import XcodeSimulatorHost
 
 @MainActor
 package final class DeviceToolRunner {

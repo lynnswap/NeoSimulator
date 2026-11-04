@@ -1,7 +1,6 @@
 import AppKit
 import Observation
 import Synchronization
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// Capabilities used for command visibility and availability.
 package struct DeviceCapabilities {

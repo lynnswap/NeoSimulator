@@ -42,10 +42,10 @@ jobs:
           swift --version
 
       - name: Test package
-        run: xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme XcodeSimulatorHost -destination 'platform=macOS,arch=arm64'
+        run: xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme NeoSimulatorKit -destination 'platform=macOS,arch=arm64'
 
-      - name: Test native input focus
-        run: scripts/test-input-focus.sh
+      - name: Test app bundle
+        run: scripts/test-app-bundle.sh
 
       - name: Build public API consumer
         working-directory: Examples/MinimalSimulatorApp
@@ -59,7 +59,7 @@ jobs:
         run: |
           bash -n \
             scripts/build-local.sh \
-            scripts/test-input-focus.sh \
+            scripts/test-app-bundle.sh \
             scripts/build-release.sh \
             scripts/package-release.sh
           python3 -m compileall -q scripts

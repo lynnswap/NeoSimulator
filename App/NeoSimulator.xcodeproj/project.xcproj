@@ -231,6 +231,18 @@
                 },
                 {
                   "path": "ErrorAlert.swift"
+                },
+                {
+                  "kind": "folder",
+                  "path": "Native"
+                },
+                {
+                  "kind": "folder",
+                  "path": "Installations"
+                },
+                {
+                  "kind": "folder",
+                  "path": "System"
                 }
               ]
             },
@@ -573,6 +585,10 @@
                       ]
                     }
                   ]
+                },
+                {
+                  "kind": "folder",
+                  "path": "Backend"
                 }
               ]
             },
@@ -600,6 +616,70 @@
                       ]
                     }
                   ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "group",
+          "path": "Tests 2"
+        },
+        {
+          "kind": "group",
+          "path": "Tests",
+          "children": [
+            {
+              "kind": "group",
+              "path": "NeoSimulatorHostSupportTests",
+              "children": [
+                {
+                  "path": "DeviceReportTests.swift"
+                },
+                {
+                  "path": "RemoteDeviceScreenTests.swift"
+                },
+                {
+                  "path": "XcodeConnectionTrackerTests.swift"
+                },
+                {
+                  "path": "DeviceInventoryTests.swift"
+                },
+                {
+                  "path": "DeviceManagementTests.swift"
+                },
+                {
+                  "path": "NativeDeviceCanvasTests.swift"
+                },
+                {
+                  "path": "CodeSignatureValidatorTests.swift"
+                },
+                {
+                  "path": "ReceiptStoreTests.swift"
+                },
+                {
+                  "path": "DeviceInspectorTests.swift"
+                },
+                {
+                  "path": "RemoteDeviceRecordingTests.swift"
+                },
+                {
+                  "path": "InstallationInspectorTests.swift"
+                },
+                {
+                  "path": "BackgroundServicesTests.swift"
+                },
+                {
+                  "path": "TestSupport.swift"
+                },
+                {
+                  "path": "HostModeControllerTests.swift"
+                },
+                {
+                  "path": "DefaultsStoreTests.swift"
+                },
+                {
+                  "path": "DeviceInventoryObservationTests.swift"
                 }
               ]
             }

@@ -1,5 +1,4 @@
 import NeoSimulatorKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 
 /// Composes the renderer's application lifecycle around the reusable simulator engine.
@@ -64,7 +63,7 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
             if let initialDevice { engine.adopt(initialDevice) }
             try writeRegistration()
             requestObserver = DistributedNotificationCenter.default().addObserver(
-                forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererRequest"),
+                forName: RendererRequest.notificationName,
                 object: sessionIdentifier, queue: .main
             ) { [weak self] notification in
                 let action = notification.userInfo?["action"] as? String
@@ -278,19 +277,8 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         }
     }
 
-    private struct Registration: Codable {
-        let processIdentifier: Int32
-        let ownerProcessIdentifier: Int32?
-        let ownerLaunchDate: Date?
-        let applicationPath: String
-        let xcodePath: String
-        let sessionIdentifier: String
-        let deviceIdentifiers: [SimulatorDeviceIdentifier]
-    }
-
     private var registrationURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/NeoSimulator/renderers")
+        RendererRegistration.directoryURL
             .appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier).json")
     }
 
@@ -298,13 +286,14 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         let url = registrationURL
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        let registration = Registration(processIdentifier: ProcessInfo.processInfo.processIdentifier,
-                                        ownerProcessIdentifier: owner?.processIdentifier,
-                                        ownerLaunchDate: owner?.launchDate,
-                                        applicationPath: Bundle.main.bundleURL.standardizedFileURL.path,
-                                        xcodePath: runtime.xcodeURL.standardizedFileURL.path,
-                                        sessionIdentifier: sessionIdentifier,
-                                        deviceIdentifiers: engine.registrationDeviceIdentifiers)
+        let registration = RendererRegistration(processIdentifier: ProcessInfo.processInfo.processIdentifier,
+            applicationPath: Bundle.main.bundleURL.standardizedFileURL.path,
+            xcodePath: runtime.xcodeURL.standardizedFileURL.path,
+            sessionIdentifier: sessionIdentifier,
+            deviceIdentifiers: engine.registrationDeviceIdentifiers.map {
+                .simulator(udid: $0.identifier, deviceSetPath: $0.deviceSetPath)
+            },
+            ownerProcessIdentifier: owner?.processIdentifier, ownerLaunchDate: owner?.launchDate)
         try JSONEncoder().encode(registration).write(to: url, options: .atomic)
         DistributedNotificationCenter.default().postNotificationName(
             Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"),

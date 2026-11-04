@@ -1,5 +1,4 @@
 import NeoSimulatorKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 
 /// Builds the main menu and routes device commands to the key window.
