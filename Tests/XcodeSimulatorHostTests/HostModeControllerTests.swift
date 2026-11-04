@@ -72,6 +72,7 @@ struct HostModeControllerTests {
                 finish = continuation
             }
         }
+        let observer = Task.immediate { try await CoreDeviceRuntime.preparedValue(of: preparation) }
         do {
             _ = try await CoreDeviceRuntime.preparedValue(of: preparation, deadline: ContinuousClock.now)
             Issue.record("An unfinished initialization ignored its deadline")
@@ -80,6 +81,7 @@ struct HostModeControllerTests {
         }
         #expect(!preparation.isCancelled)
         finish?.resume(returning: 42)
+        #expect(try await observer.value == 42)
         #expect(try await CoreDeviceRuntime.preparedValue(of: preparation) == 42)
     }
 
