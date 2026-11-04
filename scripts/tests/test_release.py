@@ -259,20 +259,25 @@ class ReleaseTagTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             notes = Path(directory) / "notes.md"
             notes.write_text(self.draft["body"])
-            for existing in (False, True):
-                responses = [{"object": {"sha": self.sha}}, [[self.draft]] if existing else [[]]]
-                responses += [[self.tag]] if existing else [[], [], [self.tag]]
-                with patch.object(release, "api", side_effect=responses), \
-                        patch.object(release, "run", return_value=self.draft["html_url"]) as run:
-                    release.start_release(self.repository, self.version, self.sha, notes, False)
-                calls = [call.args[0] for call in run.call_args_list]
-                self.assertEqual(calls[-1][:4], ["gh", "workflow", "run", "release.yml"])
-                if existing:
-                    self.assertEqual(len(calls), 1)
-                else:
-                    self.assertEqual(calls[0][:4], ["gh", "release", "create", self.version])
-                    self.assertEqual(json.loads(run.call_args_list[1].kwargs["input"]),
-                                     {"ref": f"refs/tags/{self.version}", "sha": self.sha})
+            for prerelease in (False, True):
+                for existing in (False, True):
+                    with self.subTest(prerelease=prerelease, existing=existing):
+                        draft = {**self.draft, "prerelease": prerelease}
+                        responses = [{"object": {"sha": self.sha}}, [[draft]] if existing else [[]]]
+                        responses += [[self.tag]] if existing else [[], [], [self.tag]]
+                        with patch.object(release, "api", side_effect=responses), \
+                                patch.object(release, "run", return_value=draft["html_url"]) as run:
+                            release.start_release(self.repository, self.version, self.sha, notes, prerelease)
+                        calls = [call.args[0] for call in run.call_args_list]
+                        self.assertEqual(calls[-1][:4], ["gh", "workflow", "run", "release.yml"])
+                        self.assertEqual(calls[-1][-2:], ["-f", f"prerelease={str(prerelease).lower()}"])
+                        if existing:
+                            self.assertEqual(len(calls), 1)
+                        else:
+                            self.assertEqual(calls[0][:4], ["gh", "release", "create", self.version])
+                            self.assertIn(f"--prerelease={str(prerelease).lower()}", calls[0])
+                            self.assertEqual(json.loads(run.call_args_list[1].kwargs["input"]),
+                                             {"ref": f"refs/tags/{self.version}", "sha": self.sha})
 
     def test_start_with_uploaded_assets_requires_original_run(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -284,22 +289,35 @@ class ReleaseTagTests(unittest.TestCase):
                 run.assert_not_called()
 
     def test_prepare_pins_ui_draft_and_creates_tag_before_checks(self):
-        with patch.object(release, "api", side_effect=[[[{**self.draft, "target_commitish": "main"}]], [], [self.tag]]), \
-                patch.object(release, "patch_release", return_value=self.draft) as update, \
-                patch.object(release, "run") as run:
-            self.assertEqual(release.prepare_draft(self.version, self.sha), self.draft)
-        update.assert_called_once_with(self.repository, 42, {"target_commitish": self.sha})
-        self.assertEqual(json.loads(run.call_args.kwargs["input"]),
-                         {"ref": f"refs/tags/{self.version}", "sha": self.sha})
+        for prerelease in (False, True):
+            with self.subTest(prerelease=prerelease):
+                draft = {**self.draft, "prerelease": prerelease}
+                with patch.object(release, "api", side_effect=[[[{**draft, "target_commitish": "main"}]], [], [self.tag]]), \
+                        patch.object(release, "patch_release", return_value=draft) as update, \
+                        patch.object(release, "run") as run:
+                    self.assertEqual(release.prepare_draft(self.version, self.sha, prerelease), draft)
+                update.assert_called_once_with(self.repository, 42, {"target_commitish": self.sha})
+                self.assertEqual(json.loads(run.call_args.kwargs["input"]),
+                                 {"ref": f"refs/tags/{self.version}", "sha": self.sha})
+
+    def test_prepare_rejects_a_different_release_kind_before_creating_a_tag(self):
+        for prerelease in (False, True):
+            with self.subTest(prerelease=prerelease), \
+                    patch.object(release, "api", return_value=[[{**self.draft, "prerelease": not prerelease}]]), \
+                    patch.object(release, "run") as run, patch.object(release, "patch_release") as update:
+                with self.assertRaisesRegex(release.ReleaseError, "prerelease setting"):
+                    release.prepare_draft(self.version, self.sha, prerelease)
+                run.assert_not_called()
+                update.assert_not_called()
 
     def test_prepare_reuses_annotated_tag_and_rejects_conflict(self):
         annotated = {**self.tag, "object": {"type": "tag", "sha": "c" * 40}}
         with patch.object(release, "run") as run:
             with patch.object(release, "api", side_effect=[[[self.draft]], [annotated], {"object": self.tag["object"]}]):
-                release.prepare_draft(self.version, self.sha)
+                release.prepare_draft(self.version, self.sha, False)
             with patch.object(release, "api", side_effect=[[[{**self.draft, "target_commitish": "main"}]], [{**self.tag, "object": {"type": "commit", "sha": "b" * 40}}]]), patch.object(release, "patch_release") as update:
                 with self.assertRaisesRegex(release.ReleaseError, "differs"):
-                    release.prepare_draft(self.version, self.sha)
+                    release.prepare_draft(self.version, self.sha, False)
                 update.assert_not_called()
             run.assert_not_called()
 

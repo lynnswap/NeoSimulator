@@ -7,6 +7,11 @@ on:
         description: Existing draft release tag to publish after CI succeeds, for example v1.2.3
         required: true
         type: string
+      prerelease:
+        description: Publish as a prerelease (must match the draft release)
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,7 +41,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
-        run: python3 scripts/prepare_release.py prepare --version "$RELEASE_VERSION" --source-sha "$GITHUB_SHA"
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          python3 scripts/prepare_release.py prepare \
+            --version "$RELEASE_VERSION" \
+            --source-sha "$GITHUB_SHA" \
+            --prerelease "$RELEASE_PRERELEASE"
 
   checks:
     name: Release Checks
