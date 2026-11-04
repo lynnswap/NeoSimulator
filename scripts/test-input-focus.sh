@@ -8,4 +8,6 @@ xcodebuild \
   -skipPackagePluginValidation \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$repo_root/.build/host-tests" \
+  CODE_SIGN_IDENTITY=- \
+  CODE_SIGN_STYLE=Manual \
   test
