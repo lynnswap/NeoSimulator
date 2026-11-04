@@ -23,6 +23,7 @@ package final class SimulatorScreenHost: NSObject {
     package var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
     package var onNoScreens: (() -> Void)?
     package var onConflict: ((String, (any Error)?) -> Void)?
+    package var onConflictBegan: ((String) -> Void)?
     package var isStopped: Bool { stopped }
     package var openedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> { Set(sessions.keys) }
     package private(set) var ownedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> = []
@@ -1016,11 +1017,12 @@ package final class SimulatorScreenHost: NSObject {
         if let onError { onError(error) } else { hostLog(error.localizedDescription) }
     }
 
-    private func handleHostConflict() {
+    package func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
         yieldToAnotherHost()
         guard !isTerminating else { return }
         isTerminating = true
+        onConflictBegan?(name)
         Task {
             var failure: (any Error)?
             do { try await stop(keepingDevicesRunning: true) }

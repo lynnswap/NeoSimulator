@@ -18,6 +18,9 @@ final class DeviceScreens {
     @ObservationIgnored private var contexts: [URL: SimulatorContext] = [:]
     /// Invalidated contexts remain available until their native resources have finished closing.
     @ObservationIgnored private var retiredContexts: [SimulatorContext] = []
+    @ObservationIgnored private lazy var hostTakeovers = HostTakeovers<SimulatorContext> { [weak self] error in
+        self?.onError?(error)
+    }
     /// Set while the app quits, until a cancelled quit resumes.
     @ObservationIgnored private(set) var isQuitting = false
     @ObservationIgnored private var locationObserver: (any NSObjectProtocol)?
@@ -187,6 +190,7 @@ final class DeviceScreens {
             try attach(screen, as: request.deviceID)
             try await present(previousPresentation)
         } catch {
+            if case SimulatorError.conflict = error { context.checkForHostConflict() }
             if context.isStopped { throw CancellationError() }
             if Task.isCancelled, !preservesPresentation {
                 try await Task { try await context.releaseScreen(identifier) }.value
@@ -215,6 +219,17 @@ final class DeviceScreens {
             HostPreferences.defaults.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
         }
         configuration.onError = { [weak self] error in self?.onError?(error) }
+        configuration.onHostConflictBegan = { [weak self] context, name in
+            guard let self else { return }
+            self.hostTakeovers.begin(context, hostName: name) {
+                for other in Array(self.contexts.values) + self.retiredContexts where other !== context {
+                    other.checkForHostConflict()
+                }
+            }
+        }
+        configuration.onHostConflictEnded = { [weak self] context, failure in
+            self?.hostTakeovers.end(context, failure: failure)
+        }
         configuration.onApplicationsChange = { [weak self] device in self?.onApplicationsChange?(device.inventoryID) }
         configuration.guestLifetime = ManagedGuestLifetime(windowClosed: { [weak self] device, choice, finishing in
             guard let self else { return }
@@ -230,14 +245,12 @@ final class DeviceScreens {
         })
         let created = try await SimulatorContext.load(xcodeURL: sourceURL, configuration: configuration)
         if Task.isCancelled || isQuitting {
-            do { try await Task { try await created.invalidate() }.value }
-            catch { retiredContexts.append(created); throw error }
+            try await Task { try await self.retire(created) }.value
             throw CancellationError()
         }
         // Two devices can finish loading the same Xcode concurrently.
         if let current = contexts[sourceURL], !current.isStopped {
-            do { try await created.invalidate() }
-            catch { retiredContexts.append(created); throw error }
+            try await retire(created)
             return current
         }
         if let stopped = contexts.removeValue(forKey: sourceURL) { retiredContexts.append(stopped) }
@@ -245,6 +258,12 @@ final class DeviceScreens {
         return created
     }
 
+
+    private func retire(_ context: SimulatorContext) async throws {
+        retiredContexts.append(context)
+        try await context.invalidate()
+        retiredContexts.removeAll { $0 === context }
+    }
 
     /// Prepares the open screens of simulators that a management action stops or restarts. A booted simulator keeps
     /// its screen through a restart; the others release it. A failure finishes the restarts it already prepared.

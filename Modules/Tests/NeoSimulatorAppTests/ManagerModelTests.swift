@@ -11,6 +11,49 @@ import Synchronization
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func aHostTakeoverRetainsItsContextsAndReportsEveryCleanupFailureTogether() throws {
+        var reports: [any Error] = []
+        let takeovers = HostTakeovers<NSObject> { reports.append($0) }
+        var first: NSObject? = NSObject()
+        weak var retained = first
+        let second = NSObject()
+        takeovers.begin(try #require(first), hostName: "Simulator") {
+            takeovers.begin(second, hostName: "Simulator", checkOthers: {})
+        }
+        first = nil
+        #expect(retained != nil)
+        takeovers.end(try #require(retained), failure: SimulatorError.operation("First input cleanup failed"))
+        #expect(reports.isEmpty)
+        takeovers.end(second, failure: SimulatorError.operation("Second input cleanup failed"))
+        let report = try #require(reports.first)
+        #expect(reports.count == 1)
+        switch report {
+        case SimulatorError.conflict(let message):
+            #expect(message == "Simulator is now displaying the simulators.\nFirst input cleanup failed\nSecond input cleanup failed")
+        default:
+            Issue.record("Expected a host conflict, got \(report)")
+        }
+    }
+
+    @Test func overlappingHostTakeoversAndLaterEventsReportIndependently() {
+        var reports: [String] = []
+        let takeovers = HostTakeovers<NSObject> { reports.append($0.localizedDescription) }
+        let first = NSObject(), second = NSObject(), newer = NSObject()
+        takeovers.begin(first, hostName: "Simulator") {
+            takeovers.begin(second, hostName: "Simulator", checkOthers: {})
+        }
+        takeovers.begin(newer, hostName: "Device Hub", checkOthers: {})
+        takeovers.end(newer, failure: nil)
+        #expect(reports == ["Device Hub is now displaying the simulators."])
+        takeovers.end(first, failure: nil)
+        #expect(reports.count == 1)
+        takeovers.end(second, failure: nil)
+        #expect(reports.last == "Simulator is now displaying the simulators.")
+        takeovers.begin(newer, hostName: "Simulator", checkOthers: {})
+        takeovers.end(newer, failure: nil)
+        #expect(reports.count == 3)
+    }
+
     @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile])
     func launchAppliesThePreferenceAndQuitEndsTheSession(_ accessFailure: CocoaError.Code?) async throws {
         let source = ManagerModelSource(devices: [])

@@ -337,6 +337,9 @@
                     },
                     {
                       "path": "DeviceScreens.swift"
+                    },
+                    {
+                      "path": "HostTakeovers.swift"
                     }
                   ]
                 },
