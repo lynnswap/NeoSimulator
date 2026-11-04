@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var connectionTimer: Timer?
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
+    private var coreDeviceInitializationPanel: NSPanel?
     private var activeStateObservation: DeviceActiveStateObservation?
     private var quitKeepingDevicesRunning: Bool?
     private var restartsAfterQuitting = false
@@ -67,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        CoreDeviceRuntime.onInitializationDelayChanged = { [weak self] delayed in
+            self?.updateCoreDeviceInitializationNotice(delayed)
+        }
         model.requestHostPreferenceAccess = { [hostPreferenceAccess] in try hostPreferenceAccess.request() }
         model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
@@ -176,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !quitting else { return .terminateLater }
         quitting = true
+        updateCoreDeviceInitializationNotice(false)
         screens.beginQuitting()
         let preparation = Task.immediate { try await model.prepareForQuit() }
         let restoring = restartsAfterQuitting ? screens.restorations() : []
@@ -372,6 +377,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if alert.suppressionButton?.state == .on { defaults.set(quitKeepingDevicesRunning, forKey: "DetachOnAppQuit") }
         NSApp.terminate(nil)
+    }
+
+    private func updateCoreDeviceInitializationNotice(_ delayed: Bool) {
+        guard delayed, !quitting else {
+            coreDeviceInitializationPanel?.close()
+            coreDeviceInitializationPanel = nil
+            return
+        }
+        guard coreDeviceInitializationPanel == nil else { return }
+        let content = CoreDeviceRecoveryView(copyCommand: { [weak self] in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(CoreDeviceRecoveryView.recoveryCommand, forType: .string)
+            self?.updateCoreDeviceInitializationNotice(false)
+        }, keepWaiting: { [weak self] in self?.updateCoreDeviceInitializationNotice(false) })
+        let panel = NSPanel(contentViewController: NSHostingController(rootView: content))
+        panel.title = "Device Service Recovery"
+        panel.styleMask = [.titled, .closable]
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        coreDeviceInitializationPanel = panel
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
     }
 
     private func present(_ error: any Error) {
