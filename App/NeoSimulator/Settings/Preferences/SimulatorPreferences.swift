@@ -32,6 +32,17 @@ final class SimulatorPreferences {
         }
     }
 
+    func newSimulatorDeviceType(for family: Int) -> String? {
+        creationDefaults?.string(forKey: "NewSimulatorDeviceType.\(family)")
+    }
+    func newSimulatorRuntime(for family: Int) -> String? {
+        creationDefaults?.string(forKey: "NewSimulatorRuntime.\(family)")
+    }
+    func setNewSimulatorSelection(deviceType: String?, runtime: String?, for family: Int) {
+        creationDefaults?.set(deviceType, forKey: "NewSimulatorDeviceType.\(family)")
+        creationDefaults?.set(runtime, forKey: "NewSimulatorRuntime.\(family)")
+    }
+
     init(defaults: UserDefaults = HostPreferences.defaults,
          creationDefaults: UserDefaults? = HostPreferences.deviceSettingsDefaults) {
         self.defaults = defaults

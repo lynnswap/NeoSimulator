@@ -32,8 +32,8 @@ final class DevicesSettingsState {
     }
 
     func reload() {
-        let previous = form
-        guard loading == nil, previous?.isCreating != true else { return }
+        let previous = isVisible ? form : nil
+        guard loading == nil, form?.isCreating != true else { return }
         isLoading = true
         issue = nil
         loading = Task { [weak self, makeSimulator, reportFailure] in

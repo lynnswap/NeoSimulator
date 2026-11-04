@@ -8722,6 +8722,79 @@ struct InputFocusTests {
         #expect(model.forwardTitle == "Create")
     }
 
+    @Test func newSimulatorRemembersChoicesWithoutNamesOrPairing() throws {
+        let domain = "NeoSimulator.CreationChoices.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let base = pairingCatalog()
+        let catalog = SimulatorCatalog(
+            deviceTypes: base.deviceTypes + [.init(identifier: "second-pad", name: "iPad B", productFamily: 2)],
+            runtimes: base.runtimes + [.init(identifier: "next-ios", name: "Next iOS")],
+            supportedDeviceTypes: base.supportedDeviceTypes.merging([
+                "ios": ["phone", "incompatible-phone", "pad", "second-pad"],
+                "next-ios": ["phone", "incompatible-phone", "pad", "second-pad"],
+            ]) { $1 },
+            canPair: base.canPair)
+        func makeForm(_ catalog: SimulatorCatalog) -> NewSimulatorModel {
+            NewSimulatorModel(catalog: catalog, create: { _, _, _ in "" }, pair: { _, _ in },
+                              preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults))
+        }
+        let first = makeForm(catalog)
+        first.name = "My iPhone"
+        first.watchName = "My Watch"
+        first.selectDeviceType("incompatible-phone")
+        first.selectRuntime("next-ios")
+        first.selectWatchType("w2")
+        first.selectWatchRuntime("new")
+        first.setAddsWatch(true)
+
+        let reopened = makeForm(catalog)
+        #expect(reopened.deviceType == "incompatible-phone" && reopened.runtime == "next-ios")
+        #expect(reopened.watchType == "w2" && reopened.watchRuntime == "new")
+        #expect(reopened.name.isEmpty && reopened.watchName.isEmpty && !reopened.addsWatch)
+
+        first.selectFamily(2)
+        first.selectDeviceType("second-pad")
+        first.selectRuntime("next-ios")
+        let companion = NewSimulatorModel(catalog: catalog, pairingWith: .init(
+            identifier: "watch", name: "Watch", productFamily: "Apple Watch", deviceType: "w1", runtime: "new"),
+            create: { _, _, _ in "" }, pair: { _, _ in },
+            preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults))
+        companion.selectDeviceType("phone")
+        companion.selectRuntime("ios")
+        let afterCompanion = makeForm(catalog)
+        #expect(afterCompanion.family == 2 && afterCompanion.deviceType == "second-pad")
+        #expect(afterCompanion.runtime == "next-ios")
+        afterCompanion.selectFamily(1)
+        #expect(afterCompanion.deviceType == "phone" && afterCompanion.runtime == "ios")
+
+        afterCompanion.selectFamily(4)
+        afterCompanion.selectDeviceType("w3")
+        let refreshedWatch = makeForm(catalog)
+        refreshedWatch.restoreInput(from: afterCompanion)
+        let reopenedWatch = makeForm(catalog)
+        #expect(reopenedWatch.deviceType == "w3" && reopenedWatch.runtime == "old")
+
+        afterCompanion.selectFamily(1)
+        afterCompanion.selectDeviceType("incompatible-phone")
+        afterCompanion.selectRuntime("next-ios")
+        let changedCatalog = SimulatorCatalog(
+            deviceTypes: [
+                .init(identifier: "phone", name: "iPhone", productFamily: 1),
+                .init(identifier: "incompatible-phone", name: "New iPhone", productFamily: 1),
+                .init(identifier: "w2", name: "New Watch", productFamily: 4),
+                .init(identifier: "w3", name: "Watch", productFamily: 4),
+            ],
+            runtimes: [.init(identifier: "ios", name: "iOS"), .init(identifier: "old", name: "watchOS")],
+            supportedDeviceTypes: ["ios": ["phone"], "old": ["w3"]], canPair: { _, _, _, _ in false })
+        let fallback = makeForm(changedCatalog)
+        fallback.restoreInput(from: afterCompanion)
+        #expect(fallback.deviceType == "phone" && fallback.runtime == "ios" && fallback.canProceed)
+        #expect(fallback.watchType == "w3" && fallback.watchRuntime == "old")
+        let availableAgain = makeForm(catalog)
+        #expect(availableAgain.deviceType == "incompatible-phone" && availableAgain.runtime == "next-ios")
+    }
+
     @Test func newSimulatorWatchPageKeepsTheWatchCompatibleAndPairable() {
         let pairings = PairingChecks()
         let model = NewSimulatorModel(catalog: pairingCatalog(pairings), create: { _, _, _ in "" }, pair: { _, _ in })
