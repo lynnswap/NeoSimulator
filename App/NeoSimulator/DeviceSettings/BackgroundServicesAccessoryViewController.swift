@@ -75,8 +75,9 @@ private struct BackgroundServicesProfileForm: View {
                 }
             }
         }
-        .formStyle(.grouped)
-        .scrollDisabled(true)
+        // WORKAROUND: OS 27で表示できないので、ひとまずcolumns + paddigで対応
+        .formStyle(.columns)
+        .scenePadding()
         .fixedSize(horizontal: false, vertical: true)
         .alert("Unable to Save Service Profile", isPresented: $model.showsActionIssue) {
             Button("OK") { model.actionIssue = nil }
