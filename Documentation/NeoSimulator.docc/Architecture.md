@@ -29,7 +29,7 @@ An installation without that file uses a legacy receipt's intent when available,
 or NeoSimulator by default. The receipt records managed Xcode settings independently
 of that preference. Status, connection synchronization, and screen opening use
 local metadata. Startup applies the preference and checks Xcode's settings for
-external conflicts, as do explicit host changes, release, and restoration.
+external conflicts, as do explicit host changes and restoration.
 
 The controller also tracks whether this manager session successfully applied its
 display preference. Participating sessions follow the shared preferred host. The
@@ -55,14 +55,11 @@ screen restoration after relaunch. It reads and applies the preference in one
 transaction, using the same Xcode
 resolution as device operations, without launching a renderer; screen requests start
 renderers as needed. After the manager has closed its screens and renderers and
-prepared any requested relaunch, it releases the route to the receipt's original values while retaining the preferred
-host. Release does not open Device Hub or shut down devices. Managers register their
-process identifier and launch date in `display-sessions.json` under the same lock as
-preference changes. Each normal exit removes its session; the last session restores
-settings even when other processes are still finishing their exit. Stale entries from
-exited processes are removed on the next change. External preference conflicts are preserved.
-Force quit and crashes leave the receipt for recovery on the next launch and normal
-quit; no background launch service is installed.
+prepared any requested relaunch, it ends automatic hosting in its controller.
+The selected route remains configured after exit. Only an explicit host change
+or restoration changes the preferences. The receipt remains available for
+explicit restoration and interrupted preference transactions; no background
+launch service is installed.
 
 The manager remains in the Dock in both modes. Its Dock Device menu and File
 Open Simulator menu share the device catalog and launch action. They group

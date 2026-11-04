@@ -30,8 +30,8 @@ Use Xcode for Build & Run as usual. Change **Preferred Display Host** in
 choices are preserved. Switching leaves simulator devices running, and NeoSimulator
 stays in the Dock in either mode.
 
-Quitting restores Xcode's previous display settings, normally Device Hub.
-NeoSimulator does not launch automatically.
+Quitting keeps your selected display host. NeoSimulator does not launch
+automatically. Choose Device Hub in Settings to use it for future Xcode runs.
 
 See <doc:UsingNeoSimulator> for device controls, screen capture, and app
 management.

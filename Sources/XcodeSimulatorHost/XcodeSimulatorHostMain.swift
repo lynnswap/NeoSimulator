@@ -313,7 +313,7 @@ public actor SimulatorHostController {
         }
     }
 
-    /// Applies the preferred display host for this manager's lifetime without opening a screen.
+    /// Applies the preferred display host and enables automatic hosting without opening a screen.
     public func beginSession() async throws {
         try await operation {
             let xcode = try await self.resolveXcode(nil)
@@ -322,17 +322,9 @@ public actor SimulatorHostController {
         }
     }
 
-    /// Returns Xcode's managed settings to their saved values without changing the preference or opening Device Hub.
+    /// Ends automatic hosting for this controller while preserving the selected display settings.
     public func endSession() async throws {
-        try await operation {
-            do {
-                try await self.releaseHostSession()
-                self.allowsSessionHosting = false
-            } catch {
-                self.invalidateHostAfterFailedChange(error)
-                throw error
-            }
-        }
+        try await operation { self.allowsSessionHosting = false }
     }
 
     public func installedXcodes() async throws -> [SimulatorXcode] {
@@ -989,15 +981,7 @@ public actor SimulatorHostController {
     @concurrent
     private func beginHostSession(xcodeURL: URL) async throws {
         let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
-        let owner = try await RendererOwnerIdentity.current()
-        _ = try await makeCore(workspace: workspace).beginSession(xcodeURL: xcodeURL, owner: owner)
-    }
-
-    @concurrent
-    private func releaseHostSession() async throws {
-        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
-        let owner = try await RendererOwnerIdentity.current()
-        _ = try await makeCore(workspace: workspace).release(owner: owner)
+        _ = try await makeCore(workspace: workspace).beginSession(xcodeURL: xcodeURL)
     }
 
     @concurrent
@@ -1009,8 +993,7 @@ public actor SimulatorHostController {
     @concurrent
     private func useHost(_ host: SimulatorHost, xcodeURL: URL, launchDisplay: Bool) async throws {
         let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
-        let owner = try await RendererOwnerIdentity.current()
-        _ = try await makeCore(workspace: workspace).use(host, xcodeURL: xcodeURL, launchDisplay: launchDisplay, owner: owner)
+        _ = try await makeCore(workspace: workspace).use(host, xcodeURL: xcodeURL, launchDisplay: launchDisplay)
     }
 
     @concurrent
