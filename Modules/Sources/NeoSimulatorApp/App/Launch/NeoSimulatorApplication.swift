@@ -1,9 +1,8 @@
 import AppKit
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
-@main
-enum NeoSimulatorApplication {
-    @MainActor static func main() {
+public enum NeoSimulatorApplication {
+    @MainActor public static func main(makeLicenses: @escaping @MainActor () -> NSViewController) {
         let app = NSApplication.shared
 #if DEBUG
         let environment = ProcessInfo.processInfo.environment
@@ -26,7 +25,7 @@ enum NeoSimulatorApplication {
             defaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.Renderer") ?? .standard,
             deviceSettingsDefaults: .standard)
         HostPreferences.registerDefaults()
-        let delegate = AppDelegate(splitViewAutosaveName: "NeoSimulatorDevices")
+        let delegate = AppDelegate(makeLicenses: makeLicenses, splitViewAutosaveName: "NeoSimulatorDevices")
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
     }

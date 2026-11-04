@@ -7,10 +7,10 @@ final class SettingsViewController: NSTabViewController {
     let devices: DevicesSettingsViewController
     let capture: CaptureSettingsViewController
     let serviceProfiles: ServiceProfilesSettingsViewController
-    let licenses: LicensesSettingsViewController
+    let licenses: NSViewController
     var onContentSizeChange: ((NSSize) -> Void)?
 
-    init(model: SimulatorManagerModel, restart: @escaping () -> Void,
+    init(makeLicenses: () -> NSViewController, model: SimulatorManagerModel, restart: @escaping () -> Void,
          makeSimulator: @escaping () async throws -> NewSimulatorModel,
          preferences: SimulatorPreferences, reportFailure: @escaping (Error) -> Void) {
         general = GeneralSettingsViewController(model: model, preferences: preferences,
@@ -18,7 +18,7 @@ final class SettingsViewController: NSTabViewController {
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
         serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
-        licenses = LicensesSettingsViewController()
+        licenses = makeLicenses()
         super.init(nibName: nil, bundle: nil)
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
@@ -74,6 +74,13 @@ struct PreviewViewController<Controller: NSViewController>: NSViewControllerRepr
 
 @MainActor
 enum SettingsPreview {
+    static func licenses() -> NSViewController {
+        let controller = NSViewController()
+        controller.view = NSView()
+        controller.title = "Licenses"
+        controller.preferredContentSize = NSSize(width: 720, height: 520)
+        return controller
+    }
     static func preferences() -> SimulatorPreferences {
         let defaults = UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.SettingsPreview")!
         return SimulatorPreferences(defaults: defaults, creationDefaults: defaults)

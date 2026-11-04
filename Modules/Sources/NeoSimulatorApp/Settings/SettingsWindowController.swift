@@ -3,9 +3,9 @@ import AppKit
 @MainActor
 final class SettingsWindowController: NSWindowController {
     let settings: SettingsViewController
-    init(model: SimulatorManagerModel, restart: @escaping () -> Void, makeSimulator: @escaping () async throws -> NewSimulatorModel,
+    init(makeLicenses: () -> NSViewController, model: SimulatorManagerModel, restart: @escaping () -> Void, makeSimulator: @escaping () async throws -> NewSimulatorModel,
          preferences: SimulatorPreferences, reportFailure: @escaping (Error) -> Void) {
-        let content = SettingsViewController(model: model, restart: restart, makeSimulator: makeSimulator,
+        let content = SettingsViewController(makeLicenses: makeLicenses, model: model, restart: restart, makeSimulator: makeSimulator,
                                              preferences: preferences, reportFailure: reportFailure)
         settings = content
         let window = NSWindow(contentViewController: content)

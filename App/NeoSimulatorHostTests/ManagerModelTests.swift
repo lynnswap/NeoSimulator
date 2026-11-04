@@ -98,7 +98,7 @@ struct ManagerModelTests {
         #expect(items.allSatisfy { $0.itemIdentifier.rawValue != "NewSimulator" })
         var created: [String] = []
         var attempts = 0
-        let windowController = SettingsWindowController(model: model, restart: {}, makeSimulator: {
+        let windowController = SettingsWindowController(makeLicenses: SettingsPreview.licenses, model: model, restart: {}, makeSimulator: {
             attempts += 1
             if attempts == 1 { throw SimulatorError.operation("Catalog unavailable") }
             return NewSimulatorModel(catalog: SimulatorCatalog(
@@ -165,7 +165,7 @@ struct ManagerModelTests {
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        let controller = SettingsWindowController(model: model, restart: {},
+        let controller = SettingsWindowController(makeLicenses: SettingsPreview.licenses, model: model, restart: {},
             makeSimulator: { throw SimulatorError.operation("Unused") },
             preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
             reportFailure: { _ in Issue.record("Unexpected failure") })
@@ -238,7 +238,7 @@ struct ManagerModelTests {
                 create: { _, _, _ in "created" }, pair: { _, _ in },
                 preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults))
         }
-        let controller = SettingsViewController(model: model, restart: {}, makeSimulator: { makeForm() },
+        let controller = SettingsViewController(makeLicenses: SettingsPreview.licenses, model: model, restart: {}, makeSimulator: { makeForm() },
                                                 preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
                                                 reportFailure: { _ in Issue.record("Unexpected failure") })
         _ = controller.view
@@ -671,7 +671,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: source)
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -744,7 +744,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -794,7 +794,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -854,7 +854,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -912,7 +912,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -977,7 +977,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow(defaults: defaults)
         let main = try #require(app.mainWindow)
@@ -1029,7 +1029,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -1075,7 +1075,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: source)
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -1130,7 +1130,7 @@ struct ManagerModelTests {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -1856,7 +1856,7 @@ struct ManagerModelTests {
             accessRequests += 1
             #expect(window?.isVisible == true)
         })
-        let app = AppDelegate(hostPreferenceAccess: access)
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses, hostPreferenceAccess: access)
         app.model = SimulatorManagerModel(source: source)
         defer { app.mainWindow?.window?.close() }
         var events = source.events.makeAsyncIterator()
@@ -2728,7 +2728,7 @@ struct ManagerModelTests {
         manager.backgroundServices.inspect(device, selectionCount: 1)
         manager.backgroundServices.setVisible(true)
         await manager.backgroundServices.finishReading()
-        let settings = SettingsWindowController(model: manager, restart: {},
+        let settings = SettingsWindowController(makeLicenses: SettingsPreview.licenses, model: manager, restart: {},
             makeSimulator: { throw SimulatorError.operation("Unused") },
             preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
             reportFailure: { _ in Issue.record("Unexpected failure") })

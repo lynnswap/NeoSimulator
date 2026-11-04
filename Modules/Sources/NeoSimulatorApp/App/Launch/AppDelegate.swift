@@ -36,10 +36,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var simulatorMenus = MenuController(application: nil,
         gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init), pasteboardSync: screens.pasteboardSync)
 
+    private let makeLicenses: () -> NSViewController
     private let splitViewAutosaveName: NSSplitView.AutosaveName?
 
-    init(hostPreferenceAccess: HostPreferenceAccess = HostPreferenceAccess(),
+    init(makeLicenses: @escaping () -> NSViewController,
+         hostPreferenceAccess: HostPreferenceAccess = HostPreferenceAccess(),
          splitViewAutosaveName: NSSplitView.AutosaveName? = nil) {
+        self.makeLicenses = makeLicenses
         self.hostPreferenceAccess = hostPreferenceAccess
         self.splitViewAutosaveName = splitViewAutosaveName
         super.init()
@@ -282,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettings(selectingServiceProfile profileID: UUID?) {
         if settingsWindow == nil {
-            settingsWindow = SettingsWindowController(model: model,
+            settingsWindow = SettingsWindowController(makeLicenses: makeLicenses, model: model,
                 restart: { [weak self] in self?.restartForFrameworkChange() },
                 makeSimulator: { [weak self] in
                     guard let self else { throw CancellationError() }

@@ -39,7 +39,7 @@ struct InputFocusTests {
         let model = SimulatorManagerModel(source: source)
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
