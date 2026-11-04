@@ -1078,12 +1078,11 @@ struct ManagerModelTests {
         await source.returnOnNextRead(SimulatorDeviceSettings(appearance: "dark"))
         await source.completeWrite()
         try await wait(timeout: .seconds(5)) {
-            !model.isBusy
+            !model.isBusy && bController.isEmbedded == selectsAnotherDevice && !aController.isEmbedded
         }
         #expect(main.selectedIdentifiers == [selectsAnotherDevice ? bID : aID])
         #expect(pane.liveDeviceIdentifier == (selectsAnotherDevice ? bID : nil))
-        #expect(bController.isEmbedded == selectsAnotherDevice)
-        #expect(!aController.isEmbedded && aSession.state == .connected)
+        #expect(aSession.state == .connected)
         try await aSession.stop()
         try await bSession.stop()
         main.window?.close()
