@@ -6012,6 +6012,12 @@ struct InputFocusTests {
         let mainFrame = window.frame
         let content = controller.presentationViewController.view
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        display.deviceFrameReadCount = 0
+        display.resizeRectReadCount = 0
+        content.needsLayout = true
+        content.layoutSubtreeIfNeeded()
+        #expect(display.resizeRectReadCount > 0)
+        #expect(display.deviceFrameReadCount == display.resizeRectReadCount)
         for corner in [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft] {
             controller.performCanvasZoom(.fit)
             let scale = controller.canvasZoom.scale
@@ -10150,7 +10156,9 @@ private final class TestDisplay: SimulatorDisplay {
     var bezelPadding: NSSize?
     var chromePadding: NSSize? { showsBezel ? bezelPadding : nil }
     var deviceInsets = NSEdgeInsetsZero
+    var deviceFrameReadCount = 0
     var deviceFrame: NSRect {
+        deviceFrameReadCount += 1
         guard chromePadding != nil else { return view.bounds }
         return NSRect(x: deviceInsets.left * renderScale, y: deviceInsets.bottom * renderScale,
                       width: view.bounds.width - (deviceInsets.left + deviceInsets.right) * renderScale,

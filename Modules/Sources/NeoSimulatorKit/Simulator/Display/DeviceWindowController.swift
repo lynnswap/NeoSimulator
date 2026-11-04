@@ -2133,8 +2133,8 @@ private final class DeviceContentView: NSView, DisplayContentView {
             }
             return
         }
-        let frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
         let bezelRects = displayResizeRects?() ?? []
+        var fallbackFrame: NSRect?
         for handle in resizeHandles {
             handle.isHidden = false
             if let area = bezelRects.first(where: { $0.corner == handle.corner }) {
@@ -2146,6 +2146,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
                                       width: size.width, height: size.height)
                 handle.resizeRects = [handle.bounds]
             } else {
+                let frame: NSRect
+                if let fallbackFrame { frame = fallbackFrame }
+                else {
+                    frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
+                    fallbackFrame = frame
+                }
                 let radius: CGFloat = 24
                 handle.frame = NSRect(x: (handle.corner.isLeft ? frame.minX : frame.maxX) - radius,
                                       y: (handle.corner.isLower ? frame.minY : frame.maxY) - radius,
