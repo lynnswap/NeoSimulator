@@ -11,6 +11,9 @@ public enum CoreDeviceRuntime {
     private static var uiXcodeOverride: URL?
     private static var uiXcodePreparation: Task<URL, any Error>?
 
+    /// Reports a prolonged initialization and clears the notice when initialization finishes.
+    public static var onInitializationDelayChanged: (@MainActor (Bool) -> Void)?
+
     /// Overrides the UI framework installation before any device screen is opened.
     /// Device runtimes and their owning Xcode processes are selected independently.
     public static func configureUIFrameworks(xcodeURL: URL?) throws {
@@ -47,13 +50,35 @@ public enum CoreDeviceRuntime {
         } else {
             let manager = try deviceManagerIncludingSimulators()
             preparation = Task {
-                let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.DeviceManager")))
-                let initialize = try await type.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
-                try await unsafe initialize.unsafeInvoke(on: manager)
+                try await reportInitializationDelay(during: {
+                    let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.DeviceManager")))
+                    let initialize = try await type.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
+                    try await unsafe initialize.unsafeInvoke(on: manager)
+                }, onChange: { onInitializationDelayChanged?($0) })
             }
             managerInitialization = preparation
         }
         try await preparedValue(of: preparation)
+    }
+
+    /// A delay offers recovery guidance without ending the native initialization or its consumers' waits.
+    static func reportInitializationDelay(during initialize: @MainActor () async throws -> Void,
+                                          waitUntilDelayed: @escaping @MainActor () async throws -> Void = {
+                                              try await Task.sleep(for: .seconds(60))
+                                          },
+                                          onChange: @escaping @MainActor (Bool) -> Void) async throws {
+        var delayed = false
+        let notice = Task {
+            try await waitUntilDelayed()
+            try Task.checkCancellation()
+            delayed = true
+            onChange(true)
+        }
+        defer {
+            notice.cancel()
+            if delayed { onChange(false) }
+        }
+        try await initialize()
     }
 
     @MainActor

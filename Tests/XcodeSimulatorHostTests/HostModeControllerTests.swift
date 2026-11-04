@@ -64,6 +64,38 @@ struct HostModeControllerTests {
         #expect(try await CoreDeviceRuntime.preparedValue(of: preparation) == 42)
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func initializationDelayOffersRecoveryWithoutEndingTheWait(_ reachesDelay: Bool) async throws {
+        let delay = AsyncStream<Void>.makeStream()
+        let clockEntered = XCTestExpectation(description: "Initialization notice starts waiting")
+        let clockExited = XCTestExpectation(description: "Initialization notice stops waiting")
+        let reported = XCTestExpectation(description: "Delayed initialization offers recovery")
+        var finish: CheckedContinuation<Void, any Error>?
+        var changes: [Bool] = []
+        let preparation = Task.immediate {
+            try await CoreDeviceRuntime.reportInitializationDelay(during: {
+                try await withCheckedThrowingContinuation { finish = $0 }
+            }, waitUntilDelayed: {
+                clockEntered.fulfill()
+                for await _ in delay.stream { break }
+                clockExited.fulfill()
+            }, onChange: {
+                changes.append($0)
+                if $0 { reported.fulfill() }
+            })
+        }
+        #expect(await XCTWaiter.fulfillment(of: [clockEntered], timeout: 5) == .completed)
+        if reachesDelay {
+            delay.continuation.yield(())
+            #expect(await XCTWaiter.fulfillment(of: [reported], timeout: 5) == .completed)
+            #expect(changes == [true])
+        }
+        finish?.resume()
+        try await preparation.value
+        #expect(await XCTWaiter.fulfillment(of: [clockExited], timeout: 5) == .completed)
+        #expect(changes == (reachesDelay ? [true, false] : []))
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func stalledScreenOpenDoesNotHoldAnotherDevicesTransaction() async throws {
         let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
