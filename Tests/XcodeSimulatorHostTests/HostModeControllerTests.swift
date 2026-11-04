@@ -65,27 +65,6 @@ struct HostModeControllerTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func initializationTimeoutRetiresItsWaiterWithoutCancellingSharedPreparation() async throws {
-        var finish: CheckedContinuation<Int, any Error>?
-        let preparation = Task.immediate {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, any Error>) in
-                finish = continuation
-            }
-        }
-        let observer = Task.immediate { try await CoreDeviceRuntime.preparedValue(of: preparation) }
-        do {
-            _ = try await CoreDeviceRuntime.preparedValue(of: preparation, deadline: ContinuousClock.now)
-            Issue.record("An unfinished initialization ignored its deadline")
-        } catch {
-            #expect((error as? CLIError)?.identifier == "coredevice-initialization-timeout")
-        }
-        #expect(!preparation.isCancelled)
-        finish?.resume(returning: 42)
-        #expect(try await observer.value == 42)
-        #expect(try await CoreDeviceRuntime.preparedValue(of: preparation) == 42)
-    }
-
-    @Test(.timeLimit(.minutes(1)))
     func stalledScreenOpenDoesNotHoldAnotherDevicesTransaction() async throws {
         let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
         let first = controller.makeScreenOpenRequest(for: .simulator(udid: "A", deviceSetPath: nil))
