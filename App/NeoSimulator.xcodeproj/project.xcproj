@@ -626,10 +626,6 @@
         },
         {
           "kind": "group",
-          "path": "Tests 2"
-        },
-        {
-          "kind": "group",
           "path": "Tests",
           "children": [
             {
@@ -685,6 +681,10 @@
                   "path": "DeviceInventoryObservationTests.swift"
                 }
               ]
+            },
+            {
+              "kind": "folder",
+              "path": "NeoSimulatorAppTests"
             }
           ]
         }
@@ -716,19 +716,12 @@
       "path": "NeoSimulatorRenderer",
       "children": [
         {
+          "path": "Info.plist"
+        },
+        {
           "path": "Settings.bundle",
           "target-membership": [
             "NeoSimulatorRenderer/resources"
-          ]
-        },
-        {
-          "kind": "group",
-          "path": "App",
-          "children": [
-            {
-              "kind": "group",
-              "path": "Launch"
-            }
           ]
         },
         {
@@ -826,51 +819,13 @@
                   ]
                 }
               ]
-            },
-            {
-              "kind": "group",
-              "path": "Menus"
-            },
-            {
-              "kind": "group",
-              "path": "Errors"
             }
           ]
-        },
-        {
-          "kind": "group",
-          "path": "DeviceBrowser",
-          "children": [
-            {
-              "kind": "group",
-              "path": "Menus"
-            },
-            {
-              "kind": "group",
-              "path": "Creation"
-            }
-          ]
-        },
-        {
-          "kind": "group",
-          "path": "DeviceSettings"
-        },
-        {
-          "kind": "group",
-          "path": "DeviceInspector"
-        },
-        {
-          "kind": "group",
-          "path": "RemoteDevice"
         },
         {
           "kind": "group",
           "path": "Settings",
           "children": [
-            {
-              "kind": "group",
-              "path": "Preferences"
-            },
             {
               "path": "LicensesSettingsModel.swift",
               "target-membership": [
@@ -884,90 +839,6 @@
                 "NeoSimulator/compile-sources",
                 "NeoSimulatorLicenseTests/compile-sources"
               ]
-            }
-          ]
-        },
-        {
-          "kind": "group",
-          "path": "Simulator",
-          "children": [
-            {
-              "kind": "group",
-              "path": "Runtime"
-            },
-            {
-              "kind": "group",
-              "path": "Display"
-            },
-            {
-              "kind": "group",
-              "path": "Input"
-            },
-            {
-              "kind": "group",
-              "path": "Capture"
-            },
-            {
-              "kind": "group",
-              "path": "Hosting"
-            },
-            {
-              "kind": "group",
-              "path": "Audio"
-            },
-            {
-              "kind": "group",
-              "path": "Location"
-            },
-            {
-              "kind": "group",
-              "path": "Management"
-            },
-            {
-              "kind": "group",
-              "path": "Import"
-            },
-            {
-              "kind": "group",
-              "path": "Pasteboard"
-            },
-            {
-              "kind": "group",
-              "path": "Commands"
-            },
-            {
-              "kind": "group",
-              "path": "Session"
-            }
-          ]
-        },
-        {
-          "kind": "group",
-          "path": "DeviceAppearance",
-          "children": [
-            {
-              "kind": "group",
-              "path": "Symbols"
-            }
-          ]
-        },
-        {
-          "kind": "group",
-          "path": "DeviceInput",
-          "children": [
-            {
-              "kind": "group",
-              "path": "Keyboard"
-            }
-          ]
-        },
-        {
-          "kind": "group",
-          "path": "DeviceDisplay",
-          "children": [
-            {
-              "kind": "group",
-              "path": "Layout"
             }
           ]
         },
