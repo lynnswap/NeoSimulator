@@ -1,8 +1,10 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 
 @MainActor
-enum SimulatorDeviceMenu {
-    static func items<ID: Hashable>(for devices: [SimulatorMenuDevice<ID>], hasWindow: (ID) -> Bool,
+package enum SimulatorDeviceMenu {
+    package static func items<ID: Hashable>(for devices: [SimulatorMenuDevice<ID>], hasWindow: (ID) -> Bool,
                       action: Selector, target: AnyObject?) -> [NSMenuItem] {
         func deviceItems(_ device: SimulatorMenuDevice<ID>) -> [NSMenuItem] {
             let state: NSControl.StateValue =

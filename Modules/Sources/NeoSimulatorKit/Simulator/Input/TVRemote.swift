@@ -3,7 +3,7 @@ import AppKit
 /// One app-wide, non-key Apple TV Remote panel. Targets the key or frontmost device window;
 /// only Apple TV accepts its input. It hides while inactive and follows device-window changes.
 @MainActor
-final class TVRemoteController: NSWindowController, NSWindowDelegate {
+package final class TVRemoteController: NSWindowController, NSWindowDelegate {
     /// The device window whose device the remote controls now.
     private let target: @MainActor () -> DeviceWindowController?
     private let buttons: [TVRemoteButtonView]
@@ -16,11 +16,11 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     private var windowObservers: [any NSObjectProtocol] = []
 
     /// Simulator-compatible frame autosave key.
-    static let frameAutosaveName = "Apple TV Remote Window"
+    package static let frameAutosaveName = "Apple TV Remote Window"
 
     /// Builds the 155×515-point remote layout with AppKit and SF Symbols.
     /// `target` selects the device window controlled by the remote.
-    init(target: @escaping @MainActor () -> DeviceWindowController? = TVRemoteController.keyOrFrontmostDeviceWindow) {
+    package init(target: @escaping @MainActor () -> DeviceWindowController? = TVRemoteController.keyOrFrontmostDeviceWindow) {
         self.target = target
         let panel = TVRemotePanel(contentRect: NSRect(origin: .zero, size: TVRemoteLayout.size),
                                   styleMask: .borderless, backing: .buffered, defer: true)
@@ -66,7 +66,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
         ]
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
     isolated deinit {
         if let optionMonitor { NSEvent.removeMonitor(optionMonitor) }
@@ -74,20 +74,20 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     }
 
     /// Finds the key device window, falling back to the frontmost.
-    static func keyOrFrontmostDeviceWindow() -> DeviceWindowController? {
+    package static func keyOrFrontmostDeviceWindow() -> DeviceWindowController? {
         DeviceWindowController.keyDeviceWindow
             ?? NSApp.orderedWindows.lazy.compactMap { $0.windowController as? DeviceWindowController }.first
     }
 
     /// Whether the panel shows, which Window ▸ Show Apple TV Remote's title follows.
-    var isVisible: Bool { window?.isVisible == true }
+    package var isVisible: Bool { window?.isVisible == true }
 
     /// Window ▸ Show Apple TV Remote, or Hide Apple TV Remote while it shows.
-    func toggle() {
+    package func toggle() {
         if isVisible { close() } else { showWindow(nil) }
     }
 
-    override func showWindow(_ sender: Any?) {
+    package override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         // Forward app-wide modifier changes to the touch surface.
         if optionMonitor == nil {
@@ -99,7 +99,7 @@ final class TVRemoteController: NSWindowController, NSWindowDelegate {
     }
 
     /// Releases every device's remote inputs, including previously failed releases.
-    func windowWillClose(_ notification: Notification) {
+    package func windowWillClose(_ notification: Notification) {
         if let optionMonitor { NSEvent.removeMonitor(optionMonitor) }
         optionMonitor = nil
         buttons.forEach { $0.reset() }
@@ -350,16 +350,16 @@ private final class TVRemoteButtonView: NSView {
 
 /// Click presses Select; Option turns pointer motion into a touch.
 /// Touches begin on entry/Option-down and end on exit/Option-up, with normalized coordinates.
-final class TVRemoteTouchSurface: NSView {
-    var onSelect: (Bool) -> Void = { _ in }
-    var onTouch: (CGPoint) -> Void = { _ in }
-    var onLift: (CGPoint) -> Void = { _ in }
+package final class TVRemoteTouchSurface: NSView {
+    package var onSelect: (Bool) -> Void = { _ in }
+    package var onTouch: (CGPoint) -> Void = { _ in }
+    package var onLift: (CGPoint) -> Void = { _ in }
     private var isPointerInside = false
     private var isSelectDown = false
     /// Last normalized point measured from the top-left corner.
-    private(set) var point = CGPoint.zero
+    package private(set) var point = CGPoint.zero
 
-    override init(frame: NSRect) {
+    package override init(frame: NSRect) {
         super.init(frame: frame)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp,
                                                              .inVisibleRect], owner: self, userInfo: nil))
@@ -368,29 +368,29 @@ final class TVRemoteTouchSurface: NSView {
         setAccessibilityLabel("Select")
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override var mouseDownCanMoveWindow: Bool { false }
+    package override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    package override var mouseDownCanMoveWindow: Bool { false }
 
-    override func mouseDown(with event: NSEvent) { setSelect(true) }
-    override func mouseUp(with event: NSEvent) { setSelect(false) }
+    package override func mouseDown(with event: NSEvent) { setSelect(true) }
+    package override func mouseUp(with event: NSEvent) { setSelect(false) }
 
-    override func accessibilityPerformPress() -> Bool {
+    package override func accessibilityPerformPress() -> Bool {
         setSelect(true)
         setSelect(false)
         return true
     }
 
-    override func mouseEntered(with event: NSEvent) {
+    package override func mouseEntered(with event: NSEvent) {
         isPointerInside = true
         follow(event)
     }
 
-    override func mouseMoved(with event: NSEvent) { follow(event) }
+    package override func mouseMoved(with event: NSEvent) { follow(event) }
 
     /// Tracking areas omit entry/exit during a drag, so handle boundary crossings explicitly.
-    override func mouseDragged(with event: NSEvent) {
+    package override func mouseDragged(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)) {
             isPointerInside = true
             follow(event)
@@ -399,21 +399,21 @@ final class TVRemoteTouchSurface: NSView {
         }
     }
 
-    override func mouseExited(with event: NSEvent) {
+    package override func mouseExited(with event: NSEvent) {
         isPointerInside = false
         move(to: event)
         onLift(point)
     }
 
     /// Option starts or ends a touch while the pointer is over the surface.
-    func optionChanged(isDown: Bool) {
+    package func optionChanged(isDown: Bool) {
         guard isPointerInside else { return }
         if isDown { onTouch(point) } else { onLift(point) }
     }
 
     /// Forgets Select and the pointer without releasing or lifting, as the
     /// panel closes.
-    func reset() {
+    package func reset() {
         isSelectDown = false
         isPointerInside = false
     }

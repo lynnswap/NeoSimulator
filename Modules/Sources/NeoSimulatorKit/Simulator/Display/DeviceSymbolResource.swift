@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 extension NSImage {
-    static func deviceControlSymbol(named name: String, accessibilityDescription: String) -> NSImage? {
+    package static func deviceControlSymbol(named name: String, accessibilityDescription: String) -> NSImage? {
         let image = NSImage(systemSymbolName: name, accessibilityDescription: accessibilityDescription)
             ?? (NSImage.perform(NSSelectorFromString("imageWithPrivateSystemSymbolName:"), with: name)?
                 .takeUnretainedValue() as? NSImage)
@@ -15,8 +15,8 @@ extension NSImage {
 
 /// A custom symbol whose images and palette paths come from one asset catalog.
 @MainActor
-final class DeviceSymbolResource {
-    let image: NSImage
+package final class DeviceSymbolResource {
+    package let image: NSImage
     private let layers: [Layer]
     private let canvasSize: CGSize
 
@@ -27,13 +27,13 @@ final class DeviceSymbolResource {
     }
 
     /// Returns nil when the catalog does not contain the named symbol.
-    static func load(named name: String, from catalogURL: URL,
+    package static func load(named name: String, from catalogURL: URL,
                             weight: NSFont.Weight = .regular) async throws -> DeviceSymbolResource? {
         guard let contents = try await read(named: name, from: catalogURL, weight: weight.rawValue) else { return nil }
         return DeviceSymbolResource(contents)
     }
 
-    func palette(primary: some ShapeStyle, secondary: some ShapeStyle) -> some View {
+    package func palette(primary: some ShapeStyle, secondary: some ShapeStyle) -> some View {
         Palette(resource: self, primary: AnyShapeStyle(primary), secondary: AnyShapeStyle(secondary))
     }
 

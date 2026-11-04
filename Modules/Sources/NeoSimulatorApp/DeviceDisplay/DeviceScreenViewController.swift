@@ -1,7 +1,9 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Observation
 import ObservationBridge
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The manager's center pane, which shows the selected device's live screen or its preview.
 /// The manager window owns the selection and toolbar, and attaches `canvasAccessory` to this pane's split view item.

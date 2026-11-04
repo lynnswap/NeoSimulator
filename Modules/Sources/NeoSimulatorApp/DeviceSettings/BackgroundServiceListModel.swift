@@ -1,6 +1,8 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 import Observation
-import XcodeSimulatorHost
 
 @MainActor @Observable
 final class BackgroundServiceListModel {

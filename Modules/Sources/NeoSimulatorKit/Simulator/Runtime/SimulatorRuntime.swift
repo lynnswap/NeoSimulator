@@ -13,22 +13,22 @@ extension Measurement: @retroactive ABIBridgeSwiftValue where UnitType == UnitAn
 
 /// Uses one UI toolkit per process and a separate CoreSimulator context for each Xcode.
 @MainActor
-final class SimulatorRuntime {
+package final class SimulatorRuntime {
     private static var loadedUIXcodeURL: URL?
     private static var contextXcodeURLs: Set<URL> = []
     private static var preparations: [URL: Task<SimulatorRuntime, any Error>] = [:]
     /// The Xcode that owns this device context and its command-line tools.
-    let xcodeURL: URL
+    package let xcodeURL: URL
     /// The process's fixed SimulatorKit and user-interface factory.
-    let uiXcodeURL: URL
-    let coreSimulator: CoreSimulatorInterface
-    let display: SimulatorDisplayInterface
-    let input: SimulatorInputInterface
-    let pasteboard: SimulatorPasteboardInterface
-    let audio: SimulatorAudioInterface
+    package let uiXcodeURL: URL
+    package let coreSimulator: CoreSimulatorInterface
+    package let display: SimulatorDisplayInterface
+    package let input: SimulatorInputInterface
+    package let pasteboard: SimulatorPasteboardInterface
+    package let audio: SimulatorAudioInterface
 
     /// Joins a context's in-flight preparation while its native values stay on the main actor.
-    static func load(xcodeURL: URL, uiXcodeURL: URL? = nil) async throws -> SimulatorRuntime {
+    package static func load(xcodeURL: URL, uiXcodeURL: URL? = nil) async throws -> SimulatorRuntime {
         try Task.checkCancellation()
         let source = xcodeURL.resolvingSymlinksInPath()
         if let preparation = preparations[source] {
@@ -72,7 +72,7 @@ final class SimulatorRuntime {
         try validateLoadedImages()
     }
 
-    static func creationCatalog(xcodeURL: URL) async throws -> SimulatorCatalog {
+    package static func creationCatalog(xcodeURL: URL) async throws -> SimulatorCatalog {
         try load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
         let interface = try await CoreSimulatorInterface(runtime: .shared)
         let set = try SimulatorDeviceSet(interface: interface,
@@ -93,7 +93,7 @@ final class SimulatorRuntime {
     }
 
     /// Keeps the UI toolkit fixed while allowing plugins belonging to an opened device context.
-    func validateLoadedImages() throws {
+    package func validateLoadedImages() throws {
         let prefix = uiXcodeURL.path + "/"
         for index in 0..<_dyld_image_count() {
             guard let pointer = _dyld_get_image_name(index) else { continue }
@@ -113,7 +113,7 @@ final class SimulatorRuntime {
     }
 
     /// Opens the default device set, or the set at `path`.
-    func openDeviceSet(at path: String? = nil) throws -> SimulatorDeviceSet {
+    package func openDeviceSet(at path: String? = nil) throws -> SimulatorDeviceSet {
         try SimulatorDeviceSet(
             interface: coreSimulator,
             developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path)
@@ -123,7 +123,7 @@ final class SimulatorRuntime {
 
     /// The SimulatorKit members that move a digitizer's touches to a device's native touchscreen, prepared once for
     /// the process's SimulatorKit. A failure to prepare them stays for the process.
-    func touchInterface() async throws -> SimulatorTouchInterface {
+    package func touchInterface() async throws -> SimulatorTouchInterface {
         let preparation = Self.touchPreparation ?? Task { try await SimulatorTouchInterface(runtime: .shared) }
         Self.touchPreparation = preparation
         return try await CoreDeviceRuntime.preparedValue(of: preparation)
@@ -132,102 +132,102 @@ final class SimulatorRuntime {
 
 /// SimulatorKit display members and the IDEPlaygroundSimulator display factory.
 @MainActor
-struct SimulatorDisplayInterface {
-    let screen: NativeObjCMethod<AnyObject?>
-    let isDefault: NativeObjCMethod<Bool>
-    let isCarPlay: NativeObjCMethod<Bool>
-    let buttonTarget: NativeSwiftMethod<() -> UInt32>
-    typealias ScreenEventHandler = NativeSwiftClosure<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
+package struct SimulatorDisplayInterface {
+    package let screen: NativeObjCMethod<AnyObject?>
+    package let isDefault: NativeObjCMethod<Bool>
+    package let isCarPlay: NativeObjCMethod<Bool>
+    package let buttonTarget: NativeSwiftMethod<() -> UInt32>
+    package typealias ScreenEventHandler = NativeSwiftClosure<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
     /// `SimDeviceScreen.register(types:queue:handler:)`. Releasing the
     /// returned registration ends it.
-    let registerScreenEvents: NativeSwiftMethod<(NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue>
+    package let registerScreenEvents: NativeSwiftMethod<(NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue>
     /// `SimDeviceScreen.ScreenEventTypes.properties`.
-    let screenPropertyEvents: NativeSwiftValue
+    package let screenPropertyEvents: NativeSwiftValue
     /// `SimDeviceScreen.properties`, an `id<SimScreenProperties>`.
-    let screenProperties: NativeSwiftMethod<() -> AnyObject>
+    package let screenProperties: NativeSwiftMethod<() -> AnyObject>
     /// `SimDeviceScreen.scale`, the screen's pixels per point.
-    let screenScale: NativeSwiftMethod<() -> CGFloat>
+    package let screenScale: NativeSwiftMethod<() -> CGFloat>
     /// `SimDeviceScreen.displayClass`.
-    let displayClass: NativeSwiftMethod<() -> UInt16>
+    package let displayClass: NativeSwiftMethod<() -> UInt16>
     /// `SimDevice.screenAdapter`, the device's `SimDeviceScreenAdapter`.
-    let screenAdapter = ScreenAdapterGetter()
+    package let screenAdapter = ScreenAdapterGetter()
     /// Screens currently published by the device's screen adapter.
-    let adapterScreens: NativeSwiftMethod<() -> [UInt32: NativeSwiftValue]>
-    typealias AdapterEventHandler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
+    package let adapterScreens: NativeSwiftMethod<() -> [UInt32: NativeSwiftValue]>
+    package typealias AdapterEventHandler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
     /// Screen-adapter registration. Releasing the token ends callbacks except those already queued.
-    let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
+    package let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
     /// Messages to CoreSimDeviceIO's screen proxies: `SimScreenProperties`
     /// and `SimScreenMode`.
-    let screenMessages = ProxyMessages()
+    package let screenMessages = ProxyMessages()
     /// Default CarPlay properties: `SimCarPlayPropertyKeyStark` and `SimCarPlayPropertyKeyHasTouchScreen`.
-    let carPlayProperties: NSDictionary
-    let factoryClass: AnyClass
-    let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
-    let showChrome: NativeSwiftMethod<(Bool) -> Void>
-    let chromeView: NativeSwiftMethod<() -> NSView>
-    let digitizerView: NativeSwiftMethod<() -> NSView>
+    package let carPlayProperties: NSDictionary
+    package let factoryClass: AnyClass
+    package let createDisplay: NativeObjCMethod<NSView?, AnyObject, UInt32>
+    package let showChrome: NativeSwiftMethod<(Bool) -> Void>
+    package let chromeView: NativeSwiftMethod<() -> NSView>
+    package let digitizerView: NativeSwiftMethod<() -> NSView>
     /// `SimDisplayView.renderableView`, which shows the framebuffer: the screen without its bezel.
-    let renderableView: NativeSwiftMethod<() -> NSView>
-    let renderScale: NativeSwiftMethod<() -> CGFloat>
-    let setRenderScale: NativeSwiftMethod<(CGFloat) -> Void>
+    package let renderableView: NativeSwiftMethod<() -> NSView>
+    package let renderScale: NativeSwiftMethod<() -> CGFloat>
+    package let setRenderScale: NativeSwiftMethod<(CGFloat) -> Void>
     /// `SimDisplayView.size(for:)`.
-    let sizeForScale: NativeSwiftMethod<(CGFloat) -> CGSize>
+    package let sizeForScale: NativeSwiftMethod<(CGFloat) -> CGSize>
     /// `SimDisplayView.scale(for:)`.
-    let scaleForSize: NativeSwiftMethod<(CGSize) -> CGFloat>
-    let rotation: NativeSwiftMethod<(Measurement<UnitAngle>) -> Void>
-    let disconnect: NativeSwiftMethod<(NativeSwiftClosure<() -> Void>) -> Void>
-    let beginResize: NativeSwiftMethod<() -> Void>
-    let endResize: NativeSwiftMethod<() -> Void>
+    package let scaleForSize: NativeSwiftMethod<(CGSize) -> CGFloat>
+    package let rotation: NativeSwiftMethod<(Measurement<UnitAngle>) -> Void>
+    package let disconnect: NativeSwiftMethod<(NativeSwiftClosure<() -> Void>) -> Void>
+    package let beginResize: NativeSwiftMethod<() -> Void>
+    package let endResize: NativeSwiftMethod<() -> Void>
     /// `SimDisplayView.typedResizeRects`, an array of `SimDisplayView.TypedResizeRect`.
-    let resizeRects: NativeSwiftMethod<() -> NativeSwiftValue>
+    package let resizeRects: NativeSwiftMethod<() -> NativeSwiftValue>
     /// That array's `count` and subscript.
-    let resizeRectCount: NativeSwiftMethod<() -> Int>
-    let resizeRectAtIndex: NativeSwiftMethod<(Int) -> NativeSwiftValue>
+    package let resizeRectCount: NativeSwiftMethod<() -> Int>
+    package let resizeRectAtIndex: NativeSwiftMethod<(Int) -> NativeSwiftValue>
     /// `SimDisplayView.TypedResizeRect.rect`.
-    let resizeRectFrame: NativeSwiftMethod<() -> CGRect>
+    package let resizeRectFrame: NativeSwiftMethod<() -> CGRect>
     /// `SimDisplayView.TypedResizeRect.type`, a `SimDeviceChrome.ResizeRectType`.
-    let resizeRectType: NativeSwiftMethod<() -> NativeSwiftValue>
+    package let resizeRectType: NativeSwiftMethod<() -> NativeSwiftValue>
     /// `SimDeviceChrome.ResizeRectType.rawValue`.
-    let resizeRectTypeName: NativeSwiftMethod<() -> String>
+    package let resizeRectTypeName: NativeSwiftMethod<() -> String>
     /// `SimDisplayView.showResizeCursors`.
-    let showResizeCursors: NativeSwiftMethod<(Bool) -> Void>
-    let chromeState: NativeSwiftType
-    let setChromeState: NativeSwiftMethod<(NativeSwiftValue) -> Void>
+    package let showResizeCursors: NativeSwiftMethod<(Bool) -> Void>
+    package let chromeState: NativeSwiftType
+    package let setChromeState: NativeSwiftMethod<(NativeSwiftValue) -> Void>
     /// `SimDisplayChromeView.chrome`, an optional `SimDeviceChrome`.
-    let chrome: NativeSwiftMethod<() -> NativeSwiftValue>
+    package let chrome: NativeSwiftMethod<() -> NativeSwiftValue>
     /// `SimDeviceChrome.images`.
-    let chromeImages: NativeSwiftMethod<() -> NativeSwiftValue>
+    package let chromeImages: NativeSwiftMethod<() -> NativeSwiftValue>
     /// `SimDeviceChrome.Images.padding`.
-    let chromeImagesPadding: NativeSwiftMethod<() -> CGSize>
-    let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
-    let keyboardDelegate: Ivar
+    package let chromeImagesPadding: NativeSwiftMethod<() -> CGSize>
+    package let setKeyboardEnabled: NativeSwiftMethod<(Bool) -> Void>
+    package let keyboardDelegate: Ivar
     /// `SimDisplayView._userInterfacePlugin` has no getter and stores one object.
     /// SimulatorKit loads it while connecting a device with a user-interface profile.
-    let userInterfacePlugin: Ivar
+    package let userInterfacePlugin: Ivar
     /// Messages to a plugin, whose class its bundle provides only once loaded;
     /// `SimDeviceUserInterfacePlugin` must declare them.
-    let pluginMessages = ProxyMessages()
+    package let pluginMessages = ProxyMessages()
     /// `SimDigitizerInputView.supportScrolling`.
-    let setSupportsScrolling: NativeSwiftMethod<(Bool) -> Void>
+    package let setSupportsScrolling: NativeSwiftMethod<(Bool) -> Void>
     /// `SimDigitizerInputView.supportTouchPressure`.
-    let setSupportsTouchPressure: NativeSwiftMethod<(Bool) -> Void>
+    package let setSupportsTouchPressure: NativeSwiftMethod<(Bool) -> Void>
     /// `SimDigitizerInputView.useForceTrackpadForPressure`.
-    let setUsesTrackpadForce: NativeSwiftMethod<(Bool) -> Void>
+    package let setUsesTrackpadForce: NativeSwiftMethod<(Bool) -> Void>
     /// `SimDigitizerInputView.simulatedTouchMode`, a `TouchMode` passed as
     /// its raw value: see `SimulatedTouchMode`.
-    let setSimulatedTouchMode: NativeSwiftMethod<(Int) -> Void>
+    package let setSimulatedTouchMode: NativeSwiftMethod<(Int) -> Void>
     /// `SimDigitizerInputView.drawOptions`, a `DrawOption` option set, which
     /// is resilient and so passed indirectly.
-    let drawOptions: NativeSwiftMethod<() -> NativeSwiftValue>
-    let setDrawOptions: NativeSwiftMethod<(NativeSwiftValue) -> Void>
+    package let drawOptions: NativeSwiftMethod<() -> NativeSwiftValue>
+    package let setDrawOptions: NativeSwiftMethod<(NativeSwiftValue) -> Void>
     /// `DrawOption.rawValue` and `DrawOption(rawValue:)`.
-    let drawOptionRawValue: NativeSwiftMethod<() -> Int>
-    let makeDrawOption: NativeSwiftFunction<(Int) -> NativeSwiftValue>
+    package let drawOptionRawValue: NativeSwiftMethod<() -> Int>
+    package let makeDrawOption: NativeSwiftFunction<(Int) -> NativeSwiftValue>
     /// The raw values of `DrawOption.normalTouch`, `.pinchTouches`,
     /// `.pinchPivotPoint`, and `.edgeGestures`.
     private let touchIndicatorOptions: (singleTouches: Int, pinches: Int, pinchPivotPoint: Int, edgeGestures: Int)
 
-    init(runtime: ABIRuntime) async throws {
+    package init(runtime: ABIRuntime) async throws {
         guard let screenClass = NSClassFromString("SimulatorKit.SimDeviceScreen"),
             let factoryClass = NSClassFromString("IDEPlaygroundSimulator.IDESimulatorPlaygroundUntil"),
             let displayViewClass = NSClassFromString("SimulatorKit.SimDisplayView")
@@ -407,7 +407,7 @@ struct SimulatorDisplayInterface {
     }
 
     /// The raw value of `indicator`'s `DrawOption`.
-    func drawOption(for indicator: TouchIndicator) -> Int {
+    package func drawOption(for indicator: TouchIndicator) -> Int {
         switch indicator {
         case .singleTouches: touchIndicatorOptions.singleTouches
         case .pinches: touchIndicatorOptions.pinches
@@ -417,7 +417,7 @@ struct SimulatorDisplayInterface {
     }
 
     /// The device's default non-CarPlay screen, or nil while it is not ready.
-    func defaultScreen(of device: SimulatorDevice) -> (identifier: UInt32, object: AnyObject)? {
+    package func defaultScreen(of device: SimulatorDevice) -> (identifier: UInt32, object: AnyObject)? {
         // The synchronous screen initializer waits for missing IDs and blocks AppKit during boot.
         guard let adapter = try? screenAdapter.adapter(of: device.object),
               let screens = try? unsafe adapterScreens.unsafeInvoke(on: adapter) else { return nil }
@@ -432,7 +432,7 @@ struct SimulatorDisplayInterface {
         return nil
     }
 
-    func appScreen(uniqueID: String, of device: SimulatorDevice) throws -> (identifier: UInt32, object: AnyObject)? {
+    package func appScreen(uniqueID: String, of device: SimulatorDevice) throws -> (identifier: UInt32, object: AnyObject)? {
         guard let adapter = try screenAdapter.adapter(of: device.object) else { return nil }
         for (identifier, value) in try unsafe adapterScreens.unsafeInvoke(on: adapter) {
             let screen = try value.withCopy { $0 as AnyObject }
@@ -446,11 +446,11 @@ struct SimulatorDisplayInterface {
 
     /// `SimScreenType`'s TVOut, the external display that I/O ▸ External
     /// Displays configures. 0 is a device's own screen and 2 is CarPlay.
-    static let externalScreenType: UInt64 = 1
+    package static let externalScreenType: UInt64 = 1
 
     /// Observes connected TVOut screens on the main queue, including future connections.
     /// Releasing the token ends reports except those already queued; nil means no adapter.
-    func registerForExternalScreens(
+    package func registerForExternalScreens(
         of device: SimulatorDevice,
         found: @escaping @MainActor (Result<(identifier: UInt32, object: AnyObject), any Error>) -> Void
     ) throws -> AnyObject? {
@@ -479,11 +479,11 @@ struct SimulatorDisplayInterface {
 /// ABIBridge must bind the SimDevice extension member through an instance.
 /// Reuse the first binding for subsequent devices.
 @MainActor
-final class ScreenAdapterGetter {
+package final class ScreenAdapterGetter {
     private var getter: NativeSwiftMethod<() -> AnyObject?>?
 
     /// Resolves the extension before synchronous screen enumeration or registration starts.
-    func prepare(for device: AnyObject) async throws {
+    package func prepare(for device: AnyObject) async throws {
         guard getter == nil else { return }
         getter = try await ABIRuntime.shared.object(device).resolve(.swift(.getter(
             "(extension in SimulatorKit):__C.SimDevice.screenAdapter.getter : SimulatorKit.SimDeviceScreenAdapter?",
@@ -492,7 +492,7 @@ final class ScreenAdapterGetter {
 
     /// The device's `SimDeviceScreenAdapter`, which SimulatorKit keeps for
     /// the device's lifetime, or nil when it has none.
-    func adapter(of device: AnyObject) throws -> AnyObject? {
+    package func adapter(of device: AnyObject) throws -> AnyObject? {
         let getter = try self.getter ?? ABIRuntime.shared.object(device).resolveAndWait(.swift(.getter(
             "(extension in SimulatorKit):__C.SimDevice.screenAdapter.getter : SimulatorKit.SimDeviceScreenAdapter?",
             as: (() -> AnyObject?).self))).method
@@ -503,10 +503,10 @@ final class ScreenAdapterGetter {
 
 /// Caches no-argument Objective-C messages by proxy or plugin class.
 @MainActor
-final class ProxyMessages {
+package final class ProxyMessages {
     private var methods: [String: Any] = [:]
 
-    func send<Result>(_ selector: String, to object: AnyObject, as type: Result.Type = Result.self) throws -> Result {
+    package func send<Result>(_ selector: String, to object: AnyObject, as type: Result.Type = Result.self) throws -> Result {
         let key = "\(ObjectIdentifier(Swift.type(of: object))) \(selector)"
         let method = try methods[key] as? NativeObjCMethod<Result> ?? ABIRuntime.shared.object(object)
             .resolveAndWait(.objc(.method(selector, as: (() -> Result).self))).method
@@ -517,18 +517,18 @@ final class ProxyMessages {
 
 /// The selected Xcode's device-profile plugin. SimulatorKit owns its input overlay;
 /// the host installs its toolbar and forwards commands through the responder chain.
-struct SimulatorUserInterfacePlugin {
+package struct SimulatorUserInterfacePlugin {
     /// The messages the host sends to a plugin.
-    static let selectors = ["overlayView", "toolbar"]
+    package static let selectors = ["overlayView", "toolbar"]
 
-    let overlayView: NSView?
-    let toolbar: NSToolbar?
+    package let overlayView: NSView?
+    package let toolbar: NSToolbar?
 }
 
 /// Connection to the device's existing TVOut screen, also used for CarPlay.
 /// CoreSimulator exposes no creatable screen properties for devices without one.
 @MainActor
-protocol SimulatorExternalScreen: AnyObject {
+package protocol SimulatorExternalScreen: AnyObject {
     var screenID: UInt32 { get }
     /// When the device last booted. The guest's CarPlay session belongs to
     /// the boot that started it.
@@ -562,14 +562,14 @@ protocol SimulatorExternalScreen: AnyObject {
 
 /// A CarPlay request that was not sent because the device restarted after it
 /// was decided for the device's earlier boot.
-struct CarPlayRequestMoot: Error {}
+package struct CarPlayRequestMoot: Error {}
 
 /// The external display of one device, through SimulatorKit's
 /// `SimDeviceScreen` and CoreSimDeviceIO's `SimScreen`.
 @MainActor
-final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
+package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     /// The messages this connection sends to proxies, by protocol.
-    static let selectors = [
+    package static let selectors = [
         ("SimScreen", ["setCurrentMode:pixelSize:carPlayProperties:completionQueue:completionHandler:",
                        "setPowerState:completionQueue:completionHandler:", "screenProperties"]),
         ("SimScreenProperties", ["screenID", "powerState", "screenType", "pixelSize", "currentMode",
@@ -578,9 +578,9 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
                            "refreshRate"]),
     ]
 
-    typealias Completion = @convention(block) (NSError?) -> Void
+    package typealias Completion = @convention(block) (NSError?) -> Void
 
-    let screenID: UInt32
+    package let screenID: UInt32
     private let device: SimulatorDevice
     /// The `SimDeviceScreen`.
     private let screen: AnyObject
@@ -593,7 +593,7 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     /// The HID client that sends the CarPlay service's messages, from the first.
     private var hidClient: AnyObject?
 
-    init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
+    package init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
          keyboard: NativeDeviceKeyboard? = nil, changed: @escaping @MainActor () -> Void) throws {
         self.device = device
         self.screen = screen.object
@@ -621,9 +621,9 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
 
     isolated deinit { disconnect() }
 
-    var deviceBootDate: Date? { device.lastBootDate }
+    package var deviceBootDate: Date? { device.lastBootDate }
 
-    func state() throws -> ExternalScreenState {
+    package func state() throws -> ExternalScreenState {
         let messages = runtime.display.screenMessages
         let properties = try self.properties()
         let currentMode = try messages.send("currentMode", to: properties, as: AnyObject?.self)
@@ -635,9 +635,9 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
             refreshRate: try currentMode.map { try refreshRate(of: $0) } ?? 0)
     }
 
-    func supportedModes() throws -> [ExternalScreenMode] { try advertisedModes().map(mode) }
+    package func supportedModes() throws -> [ExternalScreenMode] { try advertisedModes().map(mode) }
 
-    func setMode(pixelSize size: CGSize, scale: CGFloat, carPlay: Bool,
+    package func setMode(pixelSize size: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) throws {
         let simScreen = try connectedScreen()
         // One read of the modes, whose order the choice's index refers to.
@@ -653,15 +653,15 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
                                                Self.completed(completion))
     }
 
-    func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {
+    package func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {
         try unsafe setPowerState.unsafeInvoke(on: connectedScreen(), 0, .main, Self.completed(completion))
     }
 
-    func saveCarPlayConfiguration(carPlay: Bool) throws {
+    package func saveCarPlayConfiguration(carPlay: Bool) throws {
         try CarPlayConfiguration.save(carPlay: carPlay, to: device.extendedDisplayFile())
     }
 
-    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
+    package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
         Task { [device] in
             do {
                 try await device.setCarPlayEnabled(enabled, inBoot: boot)
@@ -672,18 +672,18 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         }
     }
 
-    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws {
+    package func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws {
         let client = try hidClient ?? runtime.input.connect(to: device)
         hidClient = client
         try runtime.input.sendCarPlayService(connected: connected, hasTouchScreen: CarPlayConfiguration.hasTouchScreen,
                                              client: client, completion: completion)
     }
 
-    func makeDisplay() async throws -> any SimulatorDisplay {
+    package func makeDisplay() async throws -> any SimulatorDisplay {
         try await SimulatorConnection(device: device, screen: (screenID, screen), runtime: runtime, keyboard: keyboard, ownsKeyboard: false)
     }
 
-    func disconnect() {
+    package func disconnect() {
         // Releasing the registration ends the screen events.
         events = nil
     }
@@ -732,32 +732,32 @@ final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
 
 /// The SimulatorKit HID client used for hardware buttons and HID usages.
 @MainActor
-struct SimulatorInputInterface {
-    typealias Completion = @convention(block) (NSError?) -> Void
+package struct SimulatorInputInterface {
+    package typealias Completion = @convention(block) (NSError?) -> Void
 
-    let clientClass: AnyClass
-    let makeClient: NativeObjCMethod<AnyObject, AnyObject>
-    let send: NativeObjCMethod<Void, OpaquePointer, Bool, DispatchQueue?, Completion?>
+    package let clientClass: AnyClass
+    package let makeClient: NativeObjCMethod<AnyObject, AnyObject>
+    package let send: NativeObjCMethod<Void, OpaquePointer, Bool, DispatchQueue?, Completion?>
     /// `IndigoHIDMessageForButton(button, state, target)`.
-    let messageForButton: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32>
+    package let messageForButton: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32>
     /// `IndigoHIDMessageForHIDArbitrary(target, usagePage, usage, state)`.
-    let messageForUsage: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32, UInt32>
+    package let messageForUsage: NativeFunction<OpaquePointer?, UInt32, UInt32, UInt32, UInt32>
     /// `IndigoHIDMessageForWatchGesture(gesture)`.
-    let messageForWatchGesture: NativeFunction<OpaquePointer?, UInt32>
+    package let messageForWatchGesture: NativeFunction<OpaquePointer?, UInt32>
     /// `IndigoHIDGetKeyboardType()`, the type of the Mac's keyboard.
-    let keyboardType: NativeFunction<UInt32>
+    package let keyboardType: NativeFunction<UInt32>
     /// CarPlay HID service messages target the external display's touch destination.
-    let createCarPlayService: NativeFunction<OpaquePointer?, Bool>
-    let removeCarPlayService: NativeFunction<OpaquePointer?>
+    package let createCarPlayService: NativeFunction<OpaquePointer?, Bool>
+    package let removeCarPlayService: NativeFunction<OpaquePointer?>
     /// `IndigoHIDMessageForTrackpadMoveEvent`: normalized Apple TV Remote touch coordinates.
-    let messageForTrackpadMove: NativeFunction<OpaquePointer?, CGPoint, UInt32>
+    package let messageForTrackpadMove: NativeFunction<OpaquePointer?, CGPoint, UInt32>
 
     /// The targets that Simulator.app's Apple TV Remote sends its buttons and
     /// its touch surface's touches to, whatever the screen.
-    static let tvRemoteButtonTarget: UInt32 = 0x15
-    static let tvRemoteTouchTarget: UInt32 = 0x16
+    package static let tvRemoteButtonTarget: UInt32 = 0x15
+    package static let tvRemoteTouchTarget: UInt32 = 0x16
 
-    init(runtime: ABIRuntime) async throws {
+    package init(runtime: ABIRuntime) async throws {
         guard let clientClass = NSClassFromString("SimulatorKit.SimDeviceLegacyHIDClient") else {
             throw SimulatorError.unavailable("Required private class SimulatorKit.SimDeviceLegacyHIDClient is unavailable")
         }
@@ -801,7 +801,7 @@ struct SimulatorInputInterface {
     }
 
     /// Returns the host keyboard type as the byte required by SimDevice, throwing on overflow.
-    func currentKeyboardType() throws -> UInt8 {
+    package func currentKeyboardType() throws -> UInt8 {
         let type = try unsafe keyboardType.unsafeInvoke()
         guard let byte = UInt8(exactly: type) else {
             throw SimulatorError.operation("SimulatorKit reported keyboard type \(type), which the device cannot take.")
@@ -809,7 +809,7 @@ struct SimulatorInputInterface {
         return byte
     }
 
-    func connect(to device: SimulatorDevice) throws -> AnyObject {
+    package func connect(to device: SimulatorDevice) throws -> AnyObject {
         guard let allocated = allocate(clientClass) else {
             throw SimulatorError.unavailable("Could not allocate simulator input")
         }
@@ -817,7 +817,7 @@ struct SimulatorInputInterface {
     }
 
     /// Device buttons use states 1/2; Apple TV Remote buttons use their own target and states 1/0.
-    func message(_ input: HIDInput, _ state: HIDState, target: UInt32) throws -> HIDMessage {
+    package func message(_ input: HIDInput, _ state: HIDState, target: UInt32) throws -> HIDMessage {
         let message = switch input {
         case .button(let button): try unsafe messageForButton.unsafeInvoke(button.rawValue, state.rawValue, target)
         case .usage(let page, let usage): try unsafe messageForUsage.unsafeInvoke(target, page, usage, state.rawValue)
@@ -831,13 +831,13 @@ struct SimulatorInputInterface {
 
     /// Sends a message. SimulatorKit reports delivery to `completion` on the
     /// main queue.
-    func send(_ hidMessage: HIDMessage, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
+    package func send(_ hidMessage: HIDMessage, client: AnyObject, completion: (@MainActor (Error?) -> Void)?) throws {
         try send(hidMessage.take(), client: client, completion: completion)
     }
 
     /// Builds and patches a remote touch message using the layout validated at startup.
     /// The caller must send or free the message.
-    func message(for touch: TVRemoteTouch) throws -> OpaquePointer {
+    package func message(for touch: TVRemoteTouch) throws -> OpaquePointer {
         guard let message = try unsafe messageForTrackpadMove.unsafeInvoke(touch.point, Self.tvRemoteTouchTarget) else {
             throw SimulatorError.operation("Could not allocate simulator input")
         }
@@ -849,7 +849,7 @@ struct SimulatorInputInterface {
     }
 
     /// Sends a watch gesture, a single message without down and up events.
-    func send(_ gesture: WatchGesture, client: AnyObject, completion: @escaping @MainActor (Error?) -> Void) throws {
+    package func send(_ gesture: WatchGesture, client: AnyObject, completion: @escaping @MainActor (Error?) -> Void) throws {
         guard let message = try unsafe messageForWatchGesture.unsafeInvoke(gesture.rawValue) else {
             throw SimulatorError.operation("Could not allocate simulator input")
         }
@@ -858,7 +858,7 @@ struct SimulatorInputInterface {
 
     /// Sends the CarPlay HID-service change; completion reports send status, not guest creation.
     /// The guest creates the service only once.
-    func sendCarPlayService(connected: Bool, hasTouchScreen: Bool, client: AnyObject,
+    package func sendCarPlayService(connected: Bool, hasTouchScreen: Bool, client: AnyObject,
                             completion: @escaping @MainActor (Error?) -> Void) throws {
         let message = try unsafe connected ? createCarPlayService.unsafeInvoke(hasTouchScreen)
                                            : removeCarPlayService.unsafeInvoke()
@@ -882,14 +882,14 @@ struct SimulatorInputInterface {
 /// The SimulatorKit members that give a digitizer's interpreted touches to a device's native touchscreen through a
 /// `SimDigitizerInputViewDelegate` whose methods are this host's callbacks.
 @MainActor
-struct SimulatorTouchInterface {
-    static let delegateProtocol = "SimulatorKit.SimDigitizerInputViewDelegate"
+package struct SimulatorTouchInterface {
+    package static let delegateProtocol = "SimulatorKit.SimDigitizerInputViewDelegate"
 
     /// `SimDigitizerInputView.delegate`, an optional `SimDigitizerInputViewDelegate` that the view keeps weakly.
-    let delegate: NativeSwiftMethod<() -> NativeSwiftValue?>
-    let setDelegate: NativeSwiftMethod<(NativeSwiftValue?) -> Void>
+    package let delegate: NativeSwiftMethod<() -> NativeSwiftValue?>
+    package let setDelegate: NativeSwiftMethod<(NativeSwiftValue?) -> Void>
     /// The conventions of the delegate's resilient event arguments, which are passed indirectly.
-    let eventABIs: [NativeSwiftType: NativeType]
+    package let eventABIs: [NativeSwiftType: NativeType]
     /// `SimDigitizerInputView.TouchEvent`'s `touch1`, `touch2`, `type`, and `edge`.
     private let firstPoint: NativeSwiftMethod<() -> NativeSwiftValue>
     private let secondPoint: NativeSwiftMethod<() -> NativeSwiftValue>
@@ -899,7 +899,7 @@ struct SimulatorTouchInterface {
     private let x: NativeSwiftMethod<() -> CGFloat>
     private let y: NativeSwiftMethod<() -> CGFloat>
 
-    init(runtime: ABIRuntime) async throws {
+    package init(runtime: ABIRuntime) async throws {
         let digitizer = try await runtime.resolve(.swift(.type("SimulatorKit.SimDigitizerInputView")))
         delegate = try await digitizer.resolve(.swift(.getter("delegate", as: (() -> NativeSwiftValue?).self)))
         setDelegate = try await digitizer.resolve(.swift(.setter("delegate", as: ((NativeSwiftValue?) -> Void).self)))
@@ -929,7 +929,7 @@ struct SimulatorTouchInterface {
 
     /// A touch event of a digitizer, in unit coordinates from the top-left corner of the screen in its own orientation,
     /// which SimulatorKit also sends in its Indigo messages. Nil for an event that changes no touch.
-    func touch(_ event: NativeSwiftBorrowedValue) throws -> NativeDigitizerTouch? {
+    package func touch(_ event: NativeSwiftBorrowedValue) throws -> NativeDigitizerTouch? {
         guard let phase = Self.phase(try unsafe eventType.unsafeInvoke(on: event)) else { return nil }
         let second = try unsafe secondPoint.unsafeInvoke(on: event).copyEnumPayloadAndWait(forCase: "some")
         return NativeDigitizerTouch(point: try point(unsafe firstPoint.unsafeInvoke(on: event)),
@@ -940,7 +940,7 @@ struct SimulatorTouchInterface {
     /// The touch phase of a touch event's `NSEvent.EventType`. SimulatorKit's own delegate does not read the event's
     /// phase: it passes the type to `IndigoHIDMessageForMouseNSEvent`, which starts a touch for a mouse-down, ends it for
     /// a mouse-up, and moves it for a drag. Other types change no touch.
-    static func phase(_ type: Int) -> RemoteDeviceTouchPhase? {
+    package static func phase(_ type: Int) -> RemoteDeviceTouchPhase? {
         switch NSEvent.EventType(rawValue: UInt(bitPattern: type)) {
         case .leftMouseDown, .rightMouseDown: .began
         case .leftMouseUp, .rightMouseUp: .ended
@@ -956,7 +956,7 @@ struct SimulatorTouchInterface {
     /// The edge of an `IndigoHIDEdge`. SimulatorKit's digitizer measures a touch's start from each edge of its
     /// unflipped bounds and gives the nearest as 1 for the top, 2 for the left, 3 for the bottom, and 4 for the right.
     /// Other values mark no edge.
-    static func edge(_ rawValue: Int) -> RemoteDeviceTouchEdge {
+    package static func edge(_ rawValue: Int) -> RemoteDeviceTouchEdge {
         switch rawValue {
         case 1: .top
         case 2: .left
@@ -968,32 +968,32 @@ struct SimulatorTouchInterface {
 }
 
 /// A touch of a SimulatorKit digitizer, as its delegate receives it.
-struct NativeDigitizerTouch: Equatable {
-    var point: CGPoint
-    var secondPoint: CGPoint?
-    var phase: RemoteDeviceTouchPhase
-    var edge: RemoteDeviceTouchEdge
+package struct NativeDigitizerTouch: Equatable {
+    package var point: CGPoint
+    package var secondPoint: CGPoint?
+    package var phase: RemoteDeviceTouchPhase
+    package var edge: RemoteDeviceTouchEdge
 }
 
 /// SimPasteboardPlus, which CoreSimulator loads: the host end of a device's
 /// pasteboard connection, which Simulator.app and `simctl pbsync` use.
 @MainActor
-struct SimulatorPasteboardInterface {
-    let interfaceClass: AnyClass
+package struct SimulatorPasteboardInterface {
+    package let interfaceClass: AnyClass
     /// `initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:`.
-    let makeInterface: NativeObjCMethod<AnyObject, UInt32, NSPasteboard, AnyObject?, DispatchQueue?>
+    package let makeInterface: NativeObjCMethod<AnyObject, UInt32, NSPasteboard, AnyObject?, DispatchQueue?>
     /// Sends the managed pasteboard to the device.
-    let push: NativeObjCMethod<Void>
+    package let push: NativeObjCMethod<Void>
     /// Asks the device for its pasteboard, which then replaces the managed one.
-    let pull: NativeObjCMethod<Void>
+    package let pull: NativeObjCMethod<Void>
     /// Start and stop the automatic synchronization of Edit ▸ Automatically
     /// Sync Pasteboard.
-    let enableAutomaticSync: NativeObjCMethod<Void>
-    let disableAutomaticSync: NativeObjCMethod<Void>
+    package let enableAutomaticSync: NativeObjCMethod<Void>
+    package let disableAutomaticSync: NativeObjCMethod<Void>
     /// The guest's pasteboard service, `SimPasteboardInterfaceListener.machServiceName`.
-    let serviceName: String
+    package let serviceName: String
 
-    init(runtime: ABIRuntime) async throws {
+    package init(runtime: ABIRuntime) async throws {
         guard let interfaceClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterface"),
               let listenerClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterfaceListener") else {
             throw SimulatorError.unavailable("SimPasteboardPlus pasteboard classes are unavailable")
@@ -1018,7 +1018,7 @@ struct SimulatorPasteboardInterface {
     }
 
     /// Connects without transferring. Synchronization requires `enableRemoteAutosync`.
-    func connect(to device: SimulatorDevice, managing pasteboard: NSPasteboard,
+    package func connect(to device: SimulatorDevice, managing pasteboard: NSPasteboard,
                  events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> SimulatorPasteboardConnection {
         let port = try device.lookUp(serviceName)
         guard let allocated = allocate(interfaceClass) else {
@@ -1032,7 +1032,7 @@ struct SimulatorPasteboardInterface {
 }
 
 /// A callback about a device's pasteboard connection, as SimPasteboardPlus reports it.
-enum SimulatorPasteboardEvent {
+package enum SimulatorPasteboardEvent {
     /// The connection became active: once after connecting, and again each
     /// time the device has taken a push, which `simctl pbsync` waits for.
     case activated
@@ -1059,7 +1059,7 @@ enum SimulatorPasteboardEvent {
 
 /// A device's pasteboard connection. Releasing it closes the connection.
 @MainActor
-protocol SimulatorPasteboard: AnyObject {
+package protocol SimulatorPasteboard: AnyObject {
     /// SimPasteboardPlus `pull`: Edit ▸ Get Pasteboard.
     func pull() throws
     /// SimPasteboardPlus `push`: Edit ▸ Send Pasteboard.
@@ -1075,11 +1075,11 @@ protocol SimulatorPasteboard: AnyObject {
 
 extension SimulatorPasteboard {
     /// SimPasteboardPlus reports every push alike.
-    func pushAutomatically() throws { try push() }
+    package func pushAutomatically() throws { try push() }
 }
 
 @MainActor
-final class SimulatorPasteboardConnection: SimulatorPasteboard {
+package final class SimulatorPasteboardConnection: SimulatorPasteboard {
     private let object: AnyObject
     private let delegate: SimulatorPasteboardDelegate
     private let interface: SimulatorPasteboardInterface
@@ -1090,37 +1090,37 @@ final class SimulatorPasteboardConnection: SimulatorPasteboard {
         self.interface = interface
     }
 
-    func pull() throws { try unsafe interface.pull.unsafeInvoke(on: object) }
-    func push() throws { try unsafe interface.push.unsafeInvoke(on: object) }
-    func setAutomaticSync(_ enabled: Bool) throws {
+    package func pull() throws { try unsafe interface.pull.unsafeInvoke(on: object) }
+    package func push() throws { try unsafe interface.push.unsafeInvoke(on: object) }
+    package func setAutomaticSync(_ enabled: Bool) throws {
         try unsafe (enabled ? interface.enableAutomaticSync : interface.disableAutomaticSync).unsafeInvoke(on: object)
     }
-    func disconnect() { delegate.events = nil }
+    package func disconnect() { delegate.events = nil }
 }
 
 /// Optional SimPasteboardDelegate callbacks arrive on the main queue.
 /// The connection does not require declared protocol conformance.
 @MainActor
-final class SimulatorPasteboardDelegate: NSObject {
-    var events: ((SimulatorPasteboardEvent) -> Void)?
+package final class SimulatorPasteboardDelegate: NSObject {
+    package var events: ((SimulatorPasteboardEvent) -> Void)?
 
-    init(_ events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) { self.events = events }
+    package init(_ events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) { self.events = events }
 
-    @objc func simPasteboardDidBecomeActive(_ interface: AnyObject) { events?(.activated) }
+    @objc package func simPasteboardDidBecomeActive(_ interface: AnyObject) { events?(.activated) }
 
-    @objc func simPasteboardDidLoseConnection(_ interface: AnyObject) { events?(.lostConnection) }
+    @objc package func simPasteboardDidLoseConnection(_ interface: AnyObject) { events?(.lostConnection) }
 
-    @objc func simPasteboardDidApplySnapshot(_ interface: AnyObject, fromHost host: NSUUID, incomingGeneration: Int64,
+    @objc package func simPasteboardDidApplySnapshot(_ interface: AnyObject, fromHost host: NSUUID, incomingGeneration: Int64,
                                              toPasteboard pasteboard: NSPasteboard, atGeneration generation: Int64) {
         events?(.applied(generation: Int(generation)))
     }
 
-    @objc func simPasteboardErrorApplyingSnapshot(_ interface: AnyObject, fromHost host: NSUUID, generation: Int64,
+    @objc package func simPasteboardErrorApplyingSnapshot(_ interface: AnyObject, fromHost host: NSUUID, generation: Int64,
                                                   error: NSError, toPasteboard pasteboard: NSPasteboard) {
         events?(.failedToApply(error))
     }
 
-    @objc func simPasteboardDidChangeAutoNotifyState(_ interface: AnyObject, forPasteboard pasteboard: NSPasteboard,
+    @objc package func simPasteboardDidChangeAutoNotifyState(_ interface: AnyObject, forPasteboard pasteboard: NSPasteboard,
                                                      toStatus enabled: Bool) {
         events?(.synchronizationChanged(enabled))
     }
@@ -1129,18 +1129,18 @@ final class SimulatorPasteboardDelegate: NSObject {
 /// Binds CoreSimDeviceIO's SimAudioHostRoutable port directly.
 /// Xcode 27 removed SimulatorKit's SimDeviceAudioClient; this also supports custom device sets.
 @MainActor
-struct SimulatorAudioInterface {
+package struct SimulatorAudioInterface {
     /// `SimDevice.io`, the device's `SimDeviceIOClient`.
-    let deviceIO: NativeObjCMethod<AnyObject?>
+    package let deviceIO: NativeObjCMethod<AnyObject?>
     /// `SimDeviceIOClient.ioPorts`, remote proxies of the device's I/O ports.
-    let ioPorts: NativeObjCMethod<[AnyObject]>
-    let routable: Protocol
+    package let ioPorts: NativeObjCMethod<[AnyObject]>
+    package let routable: Protocol
 
-    typealias DevicesChanged = @convention(block) (NSArray?) -> Void
-    typealias RouteChanged = @convention(block) (UInt64, NSString?) -> Void
-    typealias RouteCompletion = @convention(block) (NSError?) -> Void
+    package typealias DevicesChanged = @convention(block) (NSArray?) -> Void
+    package typealias RouteChanged = @convention(block) (UInt64, NSString?) -> Void
+    package typealias RouteCompletion = @convention(block) (NSError?) -> Void
 
-    init(runtime: ABIRuntime) async throws {
+    package init(runtime: ABIRuntime) async throws {
         guard let device = NSClassFromString("SimDevice"), let client = NSClassFromString("SimDeviceIOClient") else {
             throw SimulatorError.unavailable("CoreSimulator's device I/O classes are unavailable")
         }
@@ -1174,7 +1174,7 @@ struct SimulatorAudioInterface {
 
     /// Connects to the device's audio route port, which a booted device that
     /// has `SimFeatureRoutableAudio` provides.
-    func connect(to device: SimulatorDevice,
+    package func connect(to device: SimulatorDevice,
                  changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> SimulatorAudioConnection {
         guard let io = try unsafe deviceIO.unsafeInvoke(on: device.object) else {
             throw SimulatorError.unavailable("The device did not provide its I/O ports.")
@@ -1196,7 +1196,7 @@ struct SimulatorAudioInterface {
 
 /// A device's audio routes: CoreSimDeviceIO's `SimAudioHostRoutable`.
 @MainActor
-protocol SimulatorAudioRoutes: AnyObject {
+package protocol SimulatorAudioRoutes: AnyObject {
     /// The Mac's audio devices and the guest's routes as the port reports them now.
     func state() throws -> AudioRouteState
     /// Routes to a device UID or system default. A throw means nothing was sent;
@@ -1209,8 +1209,8 @@ protocol SimulatorAudioRoutes: AnyObject {
 
 /// Observes host-device and guest-route changes, including those made by other processes.
 @MainActor
-final class SimulatorAudioConnection: SimulatorAudioRoutes {
-    static let portSelectors = [
+package final class SimulatorAudioConnection: SimulatorAudioRoutes {
+    package static let portSelectors = [
         "availableHostDevices", "guestInputHostDeviceUID", "guestOutputHostDeviceUID",
         "effectiveDefaultInputDeviceUID", "effectiveDefaultOutputDeviceUID",
         "routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:",
@@ -1281,7 +1281,7 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
         { error in DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } } }
     }
 
-    func state() throws -> AudioRouteState {
+    package func state() throws -> AudioRouteState {
         var devices: [HostAudioDevice] = []
         for object in try unsafe availableDevices.unsafeInvoke() ?? [] {
             let members = try self.members ?? HostAudioDeviceMembers(object)
@@ -1295,11 +1295,11 @@ final class SimulatorAudioConnection: SimulatorAudioRoutes {
                                defaultOutput: try unsafe defaultOutput.unsafeInvoke())
     }
 
-    func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws {
+    package func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws {
         try unsafe routeGuest.unsafeInvoke(scope.rawValue, route, .main, Self.routeCompleted(completion))
     }
 
-    func disconnect() {
+    package func disconnect() {
         guard isConnected else { return }
         isConnected = false
         do { try unsafe unregister.unsafeInvoke(token) } catch {
@@ -1346,7 +1346,7 @@ private func allocate(_ type: AnyClass) -> AnyObject? {
 }
 
 /// A hardware button, by its Indigo HID button number.
-enum DeviceButton: UInt32 {
+package enum DeviceButton: UInt32 {
     case home = 0, lock = 1, applePay = 500, softwareKeyboard = 1008, siri = 1010
     /// The watch side button.
     case side = 3000
@@ -1356,7 +1356,7 @@ enum DeviceButton: UInt32 {
     case actionStaccato = 3002
 
     /// The HID usage page and usage that CoreDevice's and DeviceKit's buttons send for this button.
-    var nativeUsage: (page: Int, usage: Int) {
+    package var nativeUsage: (page: Int, usage: Int) {
         switch self {
         case .home: (0x0c, 0x40)
         case .lock: (0x0c, 0x30)
@@ -1377,18 +1377,18 @@ enum DeviceButton: UInt32 {
 
 /// A button of the Apple TV Remote, by the Indigo HID button number that
 /// Simulator.app's remote sends.
-enum TVRemoteButton: UInt32 {
+package enum TVRemoteButton: UInt32 {
     case select = 0x190, menu = 0x191, tv = 0x192, playPause = 0x194
     case volumeUp = 0x195, volumeDown = 0x196, siri = 0x3f2
 }
 
 /// A touch on the Apple TV Remote's touch surface.
-struct TVRemoteTouch: Equatable {
-    enum Phase { case began, moved, ended }
+package struct TVRemoteTouch: Equatable {
+    package enum Phase { case began, moved, ended }
 
-    var phase: Phase
+    package var phase: Phase
     /// Where the touch is, from 0 to 1 from the surface's top-left corner.
-    var point: CGPoint
+    package var point: CGPoint
 }
 
 /// Trackpad-message layout: header followed by two 0xA0-byte digitizer events.
@@ -1417,12 +1417,12 @@ private enum TrackpadMessage {
 }
 
 /// Watch-gesture values accepted by IndigoHIDMessageForWatchGesture.
-enum WatchGesture: UInt32 {
+package enum WatchGesture: UInt32 {
     case doubleTap = 0, wristFlick = 1
 }
 
 /// An input Simulator.app sends as a down event and an up event.
-enum HIDInput: Hashable {
+package enum HIDInput: Hashable {
     case button(DeviceButton)
     /// A HID usage, such as a key on the consumer usage page.
     case usage(page: UInt32, usage: UInt32)
@@ -1431,13 +1431,13 @@ enum HIDInput: Hashable {
     /// Held remote touch, built by `SimulatorDisplay.message(for:)` with its coordinates.
     case tvRemoteTouch
 
-    static let screenshot = HIDInput.usage(page: 0x0c, usage: 0x65)
-    static let volumeUp = HIDInput.usage(page: 0x0c, usage: 0xe9)
-    static let volumeDown = HIDInput.usage(page: 0x0c, usage: 0xea)
+    package static let screenshot = HIDInput.usage(page: 0x0c, usage: 0x65)
+    package static let volumeUp = HIDInput.usage(page: 0x0c, usage: 0xe9)
+    package static let volumeDown = HIDInput.usage(page: 0x0c, usage: 0xea)
 
     /// The HID usage that a device's native button service takes for this input. Nil for the Apple TV Remote's inputs,
     /// which go to the remote's own targets.
-    var nativeButtonUsage: (page: Int, usage: Int)? {
+    package var nativeButtonUsage: (page: Int, usage: Int)? {
         switch self {
         case .button(let button): button.nativeUsage
         case .usage(let page, let usage): (Int(page), Int(usage))
@@ -1446,18 +1446,18 @@ enum HIDInput: Hashable {
     }
 }
 
-enum HIDState: UInt32 { case down = 1, up = 2 }
+package enum HIDState: UInt32 { case down = 1, up = 2 }
 
 /// A Core Animation debug option of the guest, numbered as
 /// `SimDevice setCADebugOption:enabled:` numbers it.
-enum CADebugOption: UInt32 {
+package enum CADebugOption: UInt32 {
     case colorCopiedImages = 1
     case colorBlendedLayers = 2
     case colorMisalignedImages = 14
     case colorOffscreenRendered = 17
 
     /// The Debug menu's title for the option.
-    var title: String {
+    package var title: String {
         switch self {
         case .colorCopiedImages: "Color Copied Images"
         case .colorBlendedLayers: "Color Blended Layers"
@@ -1468,10 +1468,10 @@ enum CADebugOption: UInt32 {
 }
 
 /// `SimScreenUIOrientation`, the guest's interface orientation.
-enum SimScreenUIOrientation {
+package enum SimScreenUIOrientation {
     /// The angle SimulatorKit's `SimScreenUIOrientation.toAngle()` gives a
     /// raw orientation: landscape 4 is shown at +90° and landscape 3 at -90°.
-    static func displayAngle(_ rawValue: UInt32) -> Double {
+    package static func displayAngle(_ rawValue: UInt32) -> Double {
         switch rawValue {
         case 2: 180
         case 3: -90
@@ -1482,24 +1482,24 @@ enum SimScreenUIOrientation {
 }
 
 /// Raw SimDigitizerInputView.TouchMode values used when trackpad force is unavailable.
-enum SimulatedTouchMode: Int {
+package enum SimulatedTouchMode: Int {
     case shallow = 0, deep = 1
 }
 
 /// An Indigo HID message for one event. Sending transfers it to SimulatorKit;
 /// a message that is not sent is freed.
-final class HIDMessage {
-    let input: HIDInput
-    let state: HIDState
+package final class HIDMessage {
+    package let input: HIDInput
+    package let state: HIDState
     private var pointer: OpaquePointer?
 
-    init(input: HIDInput, state: HIDState, pointer: OpaquePointer) {
+    package init(input: HIDInput, state: HIDState, pointer: OpaquePointer) {
         self.input = input
         self.state = state
         self.pointer = pointer
     }
 
-    func take() -> OpaquePointer {
+    package func take() -> OpaquePointer {
         guard let pointer else { preconditionFailure("A HID message is sent once.") }
         self.pointer = nil
         return pointer
@@ -1509,13 +1509,13 @@ final class HIDMessage {
 }
 
 /// A resize area supplied by the device bezel, in display-view coordinates.
-struct DisplayResizeRect {
-    var corner: DisplayResizeCorner
-    var rect: NSRect
+package struct DisplayResizeRect {
+    package var corner: DisplayResizeCorner
+    package var rect: NSRect
 }
 
 @MainActor
-protocol SimulatorDisplay: AnyObject {
+package protocol SimulatorDisplay: AnyObject {
     var isBooted: Bool { get }
     var captureDisplayID: UInt32? { get throws }
     func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay
@@ -1649,20 +1649,20 @@ protocol SimulatorDisplay: AnyObject {
 }
 
 extension SimulatorDisplay {
-    var deviceFrame: NSRect { view.bounds }
-    var resizeRects: [DisplayResizeRect] { [] }
-    var usesNativeCanvas: Bool { false }
-    var nativePoseControls: NativeDevicePoseControls? { nil }
-    func setCanvasMagnification(_ magnification: CGFloat?) {}
-    var captureDisplayID: UInt32? { nil }
-    func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
+    package var deviceFrame: NSRect { view.bounds }
+    package var resizeRects: [DisplayResizeRect] { [] }
+    package var usesNativeCanvas: Bool { false }
+    package var nativePoseControls: NativeDevicePoseControls? { nil }
+    package func setCanvasMagnification(_ magnification: CGFloat?) {}
+    package var captureDisplayID: UInt32? { nil }
+    package func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
         throw SimulatorError.unavailable("This display cannot connect to the app resizing screen.")
     }
 }
 
 @MainActor
-final class SimulatorConnection: SimulatorDisplay {
-    let view: NSView
+package final class SimulatorConnection: SimulatorDisplay {
+    package let view: NSView
     /// `SimDisplayView.digitizerView`.
     private let digitizerView: NSView?
     /// The display's user-interface plugin, once found.
@@ -1671,17 +1671,17 @@ final class SimulatorConnection: SimulatorDisplay {
     private let chromeView: NSView?
     private let nativeCanvas: NativeDeviceCanvas?
     private var nativeScale: CGFloat = 1
-    var usesNativeCanvas: Bool { nativeCanvas != nil }
-    var nativePoseControls: NativeDevicePoseControls? { nativeCanvas?.poseControls }
+    package var usesNativeCanvas: Bool { nativeCanvas != nil }
+    package var nativePoseControls: NativeDevicePoseControls? { nativeCanvas?.poseControls }
     private let device: SimulatorDevice
     private let buttonTarget: UInt32
     private let connectedDisplayID: UInt32
-    var captureDisplayID: UInt32? {
+    package var captureDisplayID: UInt32? {
         get throws { try nativeCanvas?.captureDisplayID ?? connectedDisplayID }
     }
     private var hidClient: AnyObject?
     private var disconnected = false
-    var onPropertiesChange: (() -> Void)?
+    package var onPropertiesChange: (() -> Void)?
     private var screenEvents: NativeSwiftValue?
     private let screen: AnyObject
     /// The device's native keyboard, which takes the Mac's keyboard instead of SimulatorKit's Indigo keyboard.
@@ -1703,7 +1703,7 @@ final class SimulatorConnection: SimulatorDisplay {
     /// A `touchRoute` that the display's digitizer cannot take leaves the screen with SimulatorKit's keyboard and
     /// touches, without `keyboard` and `trackpad`: the guest drops SimulatorKit's touches and buttons once native input
     /// starts.
-    init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
+    package init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
          nativeCanvas: NativeDeviceCanvas? = nil, keyboard: NativeDeviceKeyboard? = nil, ownsKeyboard: Bool = true,
          trackpad: NativeDeviceTrackpad? = nil, touchRoute: NativeTouchRoute? = nil) async throws {
         self.nativeCanvas = nativeCanvas
@@ -1788,7 +1788,7 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
 
-    func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
+    package func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
         // Device Hub waits up to 30 seconds for the same uniqueId in this device's
         // screen adapter. CoreDevice displayId and SimulatorKit screenID differ.
         for _ in 0..<120 {
@@ -1805,11 +1805,11 @@ final class SimulatorConnection: SimulatorDisplay {
         throw SimulatorError.unavailable("Timed out waiting for the app resizing screen.")
     }
 
-    var isBooted: Bool { !disconnected && device.state == 3 }
+    package var isBooted: Bool { !disconnected && device.state == 3 }
 
-    var inputView: NSView { nativeCanvas?.inputView ?? plugin?.overlayView ?? digitizerView ?? view }
+    package var inputView: NSView { nativeCanvas?.inputView ?? plugin?.overlayView ?? digitizerView ?? view }
 
-    var deviceFrame: NSRect {
+    package var deviceFrame: NSRect {
         guard nativeCanvas == nil else { return view.bounds }
         if chromePadding != nil {
             // SimDisplayView also reserves space for hardware buttons outside the device artwork.
@@ -1824,7 +1824,7 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
 
-    func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
+    package func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
         guard nativeCanvas == nil else { return nil }
         if let plugin { return plugin }
         let display = runtime.display
@@ -1842,10 +1842,10 @@ final class SimulatorConnection: SimulatorDisplay {
     }
 
     /// The messages that read the backlight, by protocol.
-    static let backlightSelectors = [("SimScreenProperties", ["backlight"]), ("SimScreenBacklight", ["state"])]
+    package static let backlightSelectors = [("SimScreenProperties", ["backlight"]), ("SimScreenBacklight", ["state"])]
 
     // Read properties directly: SimDisplayView.backlightState lags until its change callback.
-    var backlightState: Int32? {
+    package var backlightState: Int32? {
         guard !disconnected else { return nil }
         let display = runtime.display
         return read("read the backlight", otherwise: nil) {
@@ -1855,44 +1855,44 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
 
-    func announceRecording(started: Bool) {
+    package func announceRecording(started: Bool) {
         let name = started ? "SimulatorVideoRecordingStartedNotification" : "SimulatorVideoRecordingStoppedNotification"
         NotificationCenter.default.post(name: Notification.Name(name), object: nil,
                                         userInfo: [name + "DeviceUserInfoKey": device.object])
     }
 
-    var renderScale: CGFloat {
+    package var renderScale: CGFloat {
         if nativeCanvas != nil { return nativeScale }
         return read("read the display scale", otherwise: 0) { try unsafe runtime.display.renderScale.unsafeInvoke(on: view) }
     }
 
-    func setRenderScale(_ scale: CGFloat) {
+    package func setRenderScale(_ scale: CGFloat) {
         if let nativeCanvas { nativeScale = scale; nativeCanvas.setZoom(scale); return }
         perform("scale the display") { try unsafe runtime.display.setRenderScale.unsafeInvoke(on: view, scale) }
         view.invalidateIntrinsicContentSize()
     }
 
-    func setCanvasMagnification(_ magnification: CGFloat?) { nativeCanvas?.setMagnification(magnification) }
+    package func setCanvasMagnification(_ magnification: CGFloat?) { nativeCanvas?.setMagnification(magnification) }
 
-    func size(for scale: CGFloat) -> NSSize {
+    package func size(for scale: CGFloat) -> NSSize {
         if let nativeCanvas { return NSSize(width: nativeCanvas.naturalSize.width * scale, height: nativeCanvas.naturalSize.height * scale) }
         return read("measure the display", otherwise: .zero) { try unsafe runtime.display.sizeForScale.unsafeInvoke(on: view, scale) }
     }
 
-    func scale(for size: NSSize) -> CGFloat {
+    package func scale(for size: NSSize) -> CGFloat {
         if let nativeCanvas { return min(size.width / nativeCanvas.naturalSize.width, size.height / nativeCanvas.naturalSize.height) }
         return read("measure the display", otherwise: 0) { try unsafe runtime.display.scaleForSize.unsafeInvoke(on: view, size) }
     }
 
-    var screenScale: CGFloat? {
+    package var screenScale: CGFloat? {
         read("read the screen scale", otherwise: nil) { try unsafe runtime.display.screenScale.unsafeInvoke(on: screen) }
     }
 
-    var displayClass: UInt16? {
+    package var displayClass: UInt16? {
         read("read the display class", otherwise: nil) { try unsafe runtime.display.displayClass.unsafeInvoke(on: screen) }
     }
 
-    var chromePadding: NSSize? {
+    package var chromePadding: NSSize? {
         guard let chromeView else { return nil }
         let display = runtime.display
         return read("read the device bezel", otherwise: nil) {
@@ -1902,7 +1902,7 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
 
-    var resizeRects: [DisplayResizeRect] {
+    package var resizeRects: [DisplayResizeRect] {
         guard nativeCanvas == nil, chromePadding != nil else { return [] }
         let display = runtime.display
         return read("read the bezel's resize corners", otherwise: []) {
@@ -1919,12 +1919,12 @@ final class SimulatorConnection: SimulatorDisplay {
         }
     }
 
-    func setShowsResizeCursors(_ shows: Bool) {
+    package func setShowsResizeCursors(_ shows: Bool) {
         guard nativeCanvas == nil else { return }
         perform("show resize cursors") { try unsafe runtime.display.showResizeCursors.unsafeInvoke(on: view, shows) }
     }
 
-    var guestInterfaceAngle: Double? {
+    package var guestInterfaceAngle: Double? {
         guard nativeCanvas == nil, !disconnected,
               let properties = try? unsafe runtime.display.screenProperties.unsafeInvoke(on: screen),
               let orientation = try? unsafe ABIRuntime.shared.object(properties)
@@ -1933,11 +1933,11 @@ final class SimulatorConnection: SimulatorDisplay {
         return SimScreenUIOrientation.displayAngle(orientation)
     }
 
-    func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
+    package func message(for input: HIDInput, _ state: HIDState) throws -> HIDMessage {
         try runtime.input.message(input, state, target: buttonTarget)
     }
 
-    func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
+    package func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         if let usage = message.input.nativeButtonUsage {
             let state: RemoteDeviceButtonState = message.state == .down ? .down : .up
             if let nativeCanvas {
@@ -1954,38 +1954,38 @@ final class SimulatorConnection: SimulatorDisplay {
         try runtime.input.send(message, client: hidClient, completion: completion)
     }
 
-    func message(for touch: TVRemoteTouch) throws -> HIDMessage {
+    package func message(for touch: TVRemoteTouch) throws -> HIDMessage {
         HIDMessage(input: .tvRemoteTouch, state: touch.phase == .ended ? .up : .down,
                    pointer: try runtime.input.message(for: touch))
     }
 
-    func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
+    package func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
         guard let hidClient else { throw SimulatorError.operation("Simulator input is disconnected") }
         try runtime.input.send(gesture, client: hidClient, completion: completion)
     }
 
-    func toggleAppearance() throws { try device.toggleAppearance() }
-    func postNotification(_ name: String) async throws { try await device.postNotification(name) }
-    func notificationState(_ name: String) throws -> UInt64 { try device.notificationState(name) }
-    func setNotificationState(_ name: String, to state: UInt64) async throws { try await device.setNotificationState(name, to: state) }
-    func contentSizeCategory() throws -> Int { try device.contentSizeCategory() }
-    func setContentSizeCategory(_ category: Int) throws { try device.setContentSizeCategory(category) }
-    func increaseContrastMode() throws -> Int { try device.increaseContrastMode() }
-    func setIncreaseContrast(_ enabled: Bool) throws { try device.setIncreaseContrast(enabled) }
-    func triggerCloudSync() async throws { try await device.triggerCloudSync() }
-    func logDirectory() throws -> URL { try device.logDirectory() }
-    func memoryWarningFile() throws -> URL { try device.memoryWarningFile() }
-    func caDebugOption(_ option: CADebugOption) throws -> Bool { try device.caDebugOption(option) }
-    func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
+    package func toggleAppearance() throws { try device.toggleAppearance() }
+    package func postNotification(_ name: String) async throws { try await device.postNotification(name) }
+    package func notificationState(_ name: String) throws -> UInt64 { try device.notificationState(name) }
+    package func setNotificationState(_ name: String, to state: UInt64) async throws { try await device.setNotificationState(name, to: state) }
+    package func contentSizeCategory() throws -> Int { try device.contentSizeCategory() }
+    package func setContentSizeCategory(_ category: Int) throws { try device.setContentSizeCategory(category) }
+    package func increaseContrastMode() throws -> Int { try device.increaseContrastMode() }
+    package func setIncreaseContrast(_ enabled: Bool) throws { try device.setIncreaseContrast(enabled) }
+    package func triggerCloudSync() async throws { try await device.triggerCloudSync() }
+    package func logDirectory() throws -> URL { try device.logDirectory() }
+    package func memoryWarningFile() throws -> URL { try device.memoryWarningFile() }
+    package func caDebugOption(_ option: CADebugOption) throws -> Bool { try device.caDebugOption(option) }
+    package func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
         try device.setCADebugOption(option, enabled: enabled)
     }
-    func locationScenarios() async throws -> [LocationScenario] { try await device.locationScenarios() }
-    func clearSimulatedLocation() async throws { try await device.clearSimulatedLocation() }
-    func setLocation(latitude: Double, longitude: Double) async throws {
+    package func locationScenarios() async throws -> [LocationScenario] { try await device.locationScenarios() }
+    package func clearSimulatedLocation() async throws { try await device.clearSimulatedLocation() }
+    package func setLocation(latitude: Double, longitude: Double) async throws {
         try await device.setLocation(latitude: latitude, longitude: longitude)
     }
-    func setLocationScenario(_ name: String) async throws { try await device.setLocationScenario(name) }
-    func setHardwareKeyboardConnected(_ connected: Bool) async throws {
+    package func setLocationScenario(_ name: String) async throws { try await device.setLocationScenario(name) }
+    package func setHardwareKeyboardConnected(_ connected: Bool) async throws {
         var failure: (any Error)?
         do { try await device.setHardwareKeyboardEnabled(connected, keyboardType: runtime.input.currentKeyboardType()) }
         catch { failure = error }
@@ -1999,15 +1999,15 @@ final class SimulatorConnection: SimulatorDisplay {
         }
         if let failure { throw failure }
     }
-    func setKeyboardLanguage(_ language: String) async throws { try await device.setKeyboardLanguage(language) }
-    func connectPasteboard(_ pasteboard: NSPasteboard,
+    package func setKeyboardLanguage(_ language: String) async throws { try await device.setKeyboardLanguage(language) }
+    package func connectPasteboard(_ pasteboard: NSPasteboard,
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
         try runtime.pasteboard.connect(to: device, managing: pasteboard, events: events)
     }
-    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes {
+    package func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes {
         try runtime.audio.connect(to: device, changed: changed)
     }
-    func registerForExternalScreen(
+    package func registerForExternalScreen(
         changed: @escaping @MainActor () -> Void,
         found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
     ) throws -> AnyObject? {
@@ -2018,7 +2018,7 @@ final class SimulatorConnection: SimulatorDisplay {
             })
         }
     }
-    func setChromeVisible(_ visible: Bool) {
+    package func setChromeVisible(_ visible: Bool) {
         if let nativeCanvas { nativeCanvas.setChromeVisible(visible); return }
         guard let chromeView else { return }
         let display = runtime.display
@@ -2032,7 +2032,7 @@ final class SimulatorConnection: SimulatorDisplay {
         }
         view.invalidateIntrinsicContentSize()
     }
-    func setKeyboardEnabled(_ enabled: Bool) {
+    package func setKeyboardEnabled(_ enabled: Bool) {
         guard nativeCanvas == nil, !disconnected else { return }
         // SimulatorKit's digitizer passes the keys it does not handle to the native keyboard. A device UI plugin's
         // overlay takes the input instead, so SimulatorKit's keyboard remains with that display.
@@ -2051,10 +2051,10 @@ final class SimulatorConnection: SimulatorDisplay {
             try unsafe runtime.display.setKeyboardEnabled.unsafeInvoke(on: keyboard as AnyObject, enabled)
         }
     }
-    func setTrackpadEnabled(_ enabled: Bool) {
+    package func setTrackpadEnabled(_ enabled: Bool) {
         trackpadInput?.isEnabled = enabled && !disconnected
     }
-    func setSupportsScrolling(_ supports: Bool) {
+    package func setSupportsScrolling(_ supports: Bool) {
         guard !disconnected, let digitizerView else { return }
         perform("enable scrolling") {
             try unsafe runtime.display.setSupportsScrolling.unsafeInvoke(on: digitizerView, supports)
@@ -2062,7 +2062,7 @@ final class SimulatorConnection: SimulatorDisplay {
     }
     private var edgeSwipeUpdates: Task<Void, Never>?
 
-    func setWantsEdgeSwipes(_ wants: Bool) {
+    package func setWantsEdgeSwipes(_ wants: Bool) {
         guard nativeCanvas == nil, !disconnected else { return }
         let previous = edgeSwipeUpdates
         edgeSwipeUpdates = Task { [weak self] in
@@ -2077,25 +2077,25 @@ final class SimulatorConnection: SimulatorDisplay {
             }
         }
     }
-    func setSupportsTouchPressure(_ supports: Bool) {
+    package func setSupportsTouchPressure(_ supports: Bool) {
         guard !disconnected, let digitizerView else { return }
         perform("enable touch pressure") {
             try unsafe runtime.display.setSupportsTouchPressure.unsafeInvoke(on: digitizerView, supports)
         }
     }
-    func setUsesTrackpadForce(_ uses: Bool) {
+    package func setUsesTrackpadForce(_ uses: Bool) {
         guard !disconnected, let digitizerView else { return }
         perform("use the trackpad's force") {
             try unsafe runtime.display.setUsesTrackpadForce.unsafeInvoke(on: digitizerView, uses)
         }
     }
-    func setSimulatedTouchMode(_ mode: SimulatedTouchMode) {
+    package func setSimulatedTouchMode(_ mode: SimulatedTouchMode) {
         guard !disconnected, let digitizerView else { return }
         perform("set the touch pressure") {
             try unsafe runtime.display.setSimulatedTouchMode.unsafeInvoke(on: digitizerView, mode.rawValue)
         }
     }
-    func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool) {
+    package func setTouchIndicator(_ indicator: TouchIndicator, shown: Bool) {
         guard !disconnected, let digitizerView else { return }
         let display = runtime.display
         perform("show touch indicators") {
@@ -2105,16 +2105,16 @@ final class SimulatorConnection: SimulatorDisplay {
                 on: digitizerView, display.makeDrawOption.unsafeInvoke(shown ? options | option : options & ~option))
         }
     }
-    func setRotation(degrees: Double) {
+    package func setRotation(degrees: Double) {
         guard nativeCanvas == nil else { return }
         perform("rotate the display") {
             try unsafe runtime.display.rotation.unsafeInvoke(on: view, Measurement(value: degrees, unit: .degrees))
         }
         view.invalidateIntrinsicContentSize()
     }
-    func beginResize() { guard nativeCanvas == nil else { return }; perform("begin resizing") { try unsafe runtime.display.beginResize.unsafeInvoke(on: view) } }
-    func endResize() { guard nativeCanvas == nil else { return }; perform("end resizing") { try unsafe runtime.display.endResize.unsafeInvoke(on: view) } }
-    func disconnect() {
+    package func beginResize() { guard nativeCanvas == nil else { return }; perform("begin resizing") { try unsafe runtime.display.beginResize.unsafeInvoke(on: view) } }
+    package func endResize() { guard nativeCanvas == nil else { return }; perform("end resizing") { try unsafe runtime.display.endResize.unsafeInvoke(on: view) } }
+    package func disconnect() {
         guard !disconnected else { return }
         disconnected = true
         // The digitizer gets its own delegate back before SimulatorKit disconnects the display, so no more touches reach
@@ -2138,7 +2138,7 @@ final class SimulatorConnection: SimulatorDisplay {
         keyboard?.setEnabled(false, for: self)
         trackpadInput?.isEnabled = false
     }
-    func stop() async throws {
+    package func stop() async throws {
         disconnect()
         var failures: [String] = []
         if let digitizerTouches {
@@ -2182,16 +2182,16 @@ final class SimulatorConnection: SimulatorDisplay {
 
 /// The native route of an integrated screen's touches and buttons: the device's services, and the SimulatorKit members
 /// that take the screen's digitizer touches for them.
-struct NativeTouchRoute {
-    let input: NativeDeviceScreenInput
-    let interface: SimulatorTouchInterface
+package struct NativeTouchRoute {
+    package let input: NativeDeviceScreenInput
+    package let interface: SimulatorTouchInterface
 }
 
 /// Gives a SimulatorKit digitizer a delegate whose methods are this host's callbacks, until `restore()`. The delegate
 /// sends the touches the digitizer interprets, after its Option two-finger, pinned-finger, and edge handling, and passes
 /// the digitizer's other callbacks, such as its first-responder requests, to the delegate it replaces.
 @MainActor
-final class NativeDigitizerTouches {
+package final class NativeDigitizerTouches {
     private weak var digitizer: NSView?
     private let interface: SimulatorTouchInterface
     private let send: (NativeDigitizerTouch) -> Void
@@ -2201,7 +2201,7 @@ final class NativeDigitizerTouches {
     /// The digitizer keeps its delegate weakly, so this keeps the replacement for as long as the digitizer has it.
     private var replacement: NativeSwiftValue?
 
-    init(digitizer: NSView, interface: SimulatorTouchInterface, send: @escaping (NativeDigitizerTouch) -> Void) async throws {
+    package init(digitizer: NSView, interface: SimulatorTouchInterface, send: @escaping (NativeDigitizerTouch) -> Void) async throws {
         self.digitizer = digitizer
         self.interface = interface
         self.send = send
@@ -2227,7 +2227,7 @@ final class NativeDigitizerTouches {
     }
 
     /// Gives the digitizer its own delegate back. After a failure, the digitizer and this owner keep the replacement.
-    func restore() throws {
+    package func restore() throws {
         guard replacement != nil else { return }
         if let digitizer { try unsafe interface.setDelegate.unsafeInvoke(on: digitizer, original?.copy()) }
         replacement = nil
@@ -2289,14 +2289,14 @@ final class NativeDigitizerTouches {
 /// Calls a digitizer delegate's requirements other than its touch events, through the protocol's requirements, which
 /// select the witnesses of the delegate's own conformance.
 @MainActor
-final class NativeDigitizerForwarding {
+package final class NativeDigitizerForwarding {
     private let delegate: NativeSwiftValue
     private let mouseMoved: NativeSwiftMethod<(NativeSwiftBorrowedValue, Bool) -> Void>
     private let firstResponder: NativeSwiftMethod<(NativeSwiftBorrowedValue, Bool) -> Void>
     private let pressure: NativeSwiftMethod<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
     private let scroll: NativeSwiftMethod<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
 
-    init(delegate existential: NativeSwiftValue, interface: SimulatorTouchInterface) async throws {
+    package init(delegate existential: NativeSwiftValue, interface: SimulatorTouchInterface) async throws {
         let delegate = try existential.copyUnderlyingValue()
         let name = SimulatorTouchInterface.delegateProtocol + ".simDigitizerInputView"
         mouseMoved = try await delegate.type.resolve(.swift(.method(name + "(_:wantsMouseMovedEvents:)",
@@ -2310,19 +2310,19 @@ final class NativeDigitizerForwarding {
         self.delegate = delegate
     }
 
-    func wantsMouseMovedEvents(_ view: NativeSwiftBorrowedValue, _ wants: Bool) throws {
+    package func wantsMouseMovedEvents(_ view: NativeSwiftBorrowedValue, _ wants: Bool) throws {
         try unsafe mouseMoved.unsafeInvoke(on: delegate, view, wants)
     }
 
-    func wantsFirstResponder(_ view: NativeSwiftBorrowedValue, _ wants: Bool) throws {
+    package func wantsFirstResponder(_ view: NativeSwiftBorrowedValue, _ wants: Bool) throws {
         try unsafe firstResponder.unsafeInvoke(on: delegate, view, wants)
     }
 
-    func pressureEvent(_ view: NativeSwiftBorrowedValue, _ event: NativeSwiftBorrowedValue) throws {
+    package func pressureEvent(_ view: NativeSwiftBorrowedValue, _ event: NativeSwiftBorrowedValue) throws {
         try unsafe pressure.unsafeInvoke(on: delegate, view, event)
     }
 
-    func scrollEvent(_ view: NativeSwiftBorrowedValue, _ event: NativeSwiftBorrowedValue) throws {
+    package func scrollEvent(_ view: NativeSwiftBorrowedValue, _ event: NativeSwiftBorrowedValue) throws {
         try unsafe scroll.unsafeInvoke(on: delegate, view, event)
     }
 }
@@ -2332,18 +2332,18 @@ final class NativeDigitizerForwarding {
 /// delivers after menu key equivalents. `handle` takes them for the native keyboard; events it declines continue
 /// along the chain, as they did before.
 @MainActor
-final class NativeKeyboardResponder: NSResponder {
+package final class NativeKeyboardResponder: NSResponder {
     private let handle: (NSEvent) -> Bool
     private weak var view: NSView?
 
-    init(handle: @escaping (NSEvent) -> Bool) {
+    package init(handle: @escaping (NSEvent) -> Bool) {
         self.handle = handle
         super.init()
     }
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
     /// AppKit resets a view's next responder when the view moves to another superview, so this attaches again then.
-    func attach(after view: NSView) {
+    package func attach(after view: NSView) {
         guard view.nextResponder !== self else { return }
         detach()
         nextResponder = view.nextResponder
@@ -2351,15 +2351,15 @@ final class NativeKeyboardResponder: NSResponder {
         self.view = view
     }
 
-    func detach() {
+    package func detach() {
         if let view, view.nextResponder === self { view.nextResponder = nextResponder }
         view = nil
     }
 
-    override func keyDown(with event: NSEvent) {
+    package override func keyDown(with event: NSEvent) {
         if !handle(event) { super.keyDown(with: event) }
     }
-    override func keyUp(with event: NSEvent) {
+    package override func keyUp(with event: NSEvent) {
         if !handle(event) { super.keyUp(with: event) }
     }
 }
@@ -2369,7 +2369,7 @@ final class NativeKeyboardResponder: NSResponder {
 /// Events that begin elsewhere, such as over the bezel or a bar above the canvas, and Option-scrolling, which pans the
 /// canvas, continue as before.
 @MainActor
-final class NativeTrackpadInput: NSResponder {
+package final class NativeTrackpadInput: NSResponder {
     private weak var display: NSView?
     private weak var framebuffer: NSView?
     private let send: @MainActor (NSEvent, CGAffineTransform) -> Void
@@ -2382,14 +2382,14 @@ final class NativeTrackpadInput: NSResponder {
     private var takesPinch = false
 
     /// While enabled, the device takes the gestures; disabling ends those in progress.
-    var isEnabled = false {
+    package var isEnabled = false {
         didSet {
             guard isEnabled != oldValue else { return }
             if isEnabled { start() } else { stop() }
         }
     }
 
-    init(display: NSView, framebuffer: NSView, send: @escaping @MainActor (NSEvent, CGAffineTransform) -> Void,
+    package init(display: NSView, framebuffer: NSView, send: @escaping @MainActor (NSEvent, CGAffineTransform) -> Void,
          endGestures: @escaping @MainActor () -> Void) {
         self.display = display
         self.framebuffer = framebuffer
@@ -2397,7 +2397,7 @@ final class NativeTrackpadInput: NSResponder {
         self.endGestures = endGestures
         super.init()
     }
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
     isolated deinit {
         if let monitor { NSEvent.removeMonitor(monitor) }
@@ -2445,7 +2445,7 @@ final class NativeTrackpadInput: NSResponder {
         return true
     }
 
-    override func mouseMoved(with event: NSEvent) {
+    package override func mouseMoved(with event: NSEvent) {
         guard isEnabled, let framebuffer, isOverFramebuffer(event) else { return }
         send(event, NativeDeviceTrackpad.coordinateTransform(fromWindowTo: framebuffer))
     }

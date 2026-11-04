@@ -11,7 +11,7 @@ public struct SimulatorDeviceSnapshot: Identifiable, Sendable {
     public let family: SimulatorDeviceFamily
     public let state: SimulatorDeviceState
 
-    init(_ device: AvailableDevice) {
+    package init(_ device: AvailableDevice) {
         id = device.identity
         name = device.name
         runtimeName = device.runtimeName
@@ -51,7 +51,7 @@ public enum SimulatorScreenEnd: Sendable {
 public enum SimulatorButton: Sendable {
     case home, lock, side, siri, volumeUp, volumeDown
 
-    @MainActor var command: DeviceCommand.ID {
+    @MainActor package var command: DeviceCommand.ID {
         switch self {
         case .home: .home
         case .lock: .lock
@@ -62,7 +62,7 @@ public enum SimulatorButton: Sendable {
         }
     }
 
-    var input: HardwareInput {
+    package var input: HardwareInput {
         switch self {
         case .home: .press(.button(.home))
         case .lock: .press(.button(.lock))

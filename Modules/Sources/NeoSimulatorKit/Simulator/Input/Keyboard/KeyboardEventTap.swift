@@ -3,13 +3,13 @@ import IOKit.hidsystem
 
 /// A synchronous filter: returning true consumes an event before AppKit handles shortcuts.
 @MainActor
-protocol KeyboardEventTap: AnyObject {
+package protocol KeyboardEventTap: AnyObject {
     func start(receive: @escaping @MainActor (CGEventType, CGEvent) -> Bool) throws
     func stop()
 }
 
 @MainActor
-final class SystemKeyboardEventTap: KeyboardEventTap {
+package final class SystemKeyboardEventTap: KeyboardEventTap {
     private struct StartFailure: LocalizedError {
         let errorDescription: String?
         let recoverySuggestion: String?
@@ -22,7 +22,7 @@ final class SystemKeyboardEventTap: KeyboardEventTap {
     private var source: CFRunLoopSource?
     private var receive: (@MainActor (CGEventType, CGEvent) -> Bool)?
 
-    init(applicationName: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+    package init(applicationName: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ProcessInfo.processInfo.processName,
          access: @escaping () -> IOHIDAccessType = { IOHIDCheckAccess(kIOHIDRequestTypePostEvent) },
          createTap: @escaping (CGEventMask, CGEventTapCallBack, UnsafeMutableRawPointer?) -> CFMachPort? = { mask, callback, context in
@@ -34,7 +34,7 @@ final class SystemKeyboardEventTap: KeyboardEventTap {
         self.createTap = createTap
     }
 
-    func start(receive: @escaping @MainActor (CGEventType, CGEvent) -> Bool) throws {
+    package func start(receive: @escaping @MainActor (CGEventType, CGEvent) -> Bool) throws {
         self.receive = receive
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
             | (1 << CGEventType.flagsChanged.rawValue)
@@ -70,7 +70,7 @@ final class SystemKeyboardEventTap: KeyboardEventTap {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
     }
 
-    func stop() {
+    package func stop() {
         receive = nil
         if let port { CGEvent.tapEnable(tap: port, enable: false); CFMachPortInvalidate(port) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }

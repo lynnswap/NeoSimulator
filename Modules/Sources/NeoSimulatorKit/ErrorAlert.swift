@@ -1,12 +1,12 @@
 import AppKit
 
 extension NSAlert {
-    convenience init(presenting error: any Error) {
+    package convenience init(presenting error: any Error) {
         self.init(error: error)
         addDiagnosticDetails()
     }
 
-    func addDiagnosticDetails(_ technicalDetails: String? = nil) {
+    package func addDiagnosticDetails(_ technicalDetails: String? = nil) {
         let width: CGFloat = 460
         func height(of text: String, font: NSFont) -> CGFloat {
             (text as NSString).boundingRect(with: NSSize(width: width, height: .greatestFiniteMagnitude),

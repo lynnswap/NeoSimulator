@@ -1,5 +1,7 @@
-import AppKit
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
 @_spi(NeoSimulator) import XcodeSimulatorHost
+import AppKit
 
 @MainActor
 final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {

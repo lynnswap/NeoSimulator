@@ -4,186 +4,186 @@ import Synchronization
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// Capabilities used for command visibility and availability.
-struct DeviceCapabilities {
+package struct DeviceCapabilities {
     /// `SimDeviceType.productFamilyID`.
-    enum Family: Int { case iPhone = 1, iPad = 2, tv = 3, watch = 4, vision = 7 }
+    package enum Family: Int { case iPhone = 1, iPad = 2, tv = 3, watch = 4, vision = 7 }
 
-    var family: Family?
+    package var family: Family?
     /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
-    var runtimeVersion: UInt32
+    package var runtimeVersion: UInt32
     /// `SimDevice supportsFeature:`, which combines device-type and runtime support.
-    var supportsFeature: (String) -> Bool
+    package var supportsFeature: (String) -> Bool
     /// Whether this presentation controls orientation through `devicectl`.
     /// Native compositions own their rotation; custom device sets are not addressable by this API.
-    var controlsOrientation = true
+    package var controlsOrientation = true
     /// Whether the device type has a framebuffer mask that captures can apply.
-    var hasFramebufferMask = false
+    package var hasFramebufferMask = false
     /// The screen's corner radius in points; 0 for a square screen.
-    var screenCornerRadius = 0.0
+    package var screenCornerRadius = 0.0
     /// The screen's points per inch, for Physical Size; nil when unknown.
-    var screenPointsPerInch: Double?
+    package var screenPointsPerInch: Double?
     /// Whether the device type has a user-interface plugin, which
     /// SimulatorKit loads for its display, such as Apple Vision Pro's.
-    var hasUserInterfacePlugin = false
+    package var hasUserInterfacePlugin = false
     /// Whether the guest runs Stage Manager, also on an external display
     /// (`DeviceSupportsEnhancedMultitasking`), as iPads from M1 do.
-    var supportsEnhancedMultitasking = false
+    package var supportsEnhancedMultitasking = false
 
-    var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
+    package var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     /// Vision displays have no bezel.
-    var supportsDeviceBezels: Bool { family != .vision }
-    var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
-    var supportsExternalDisplays: Bool { supportsFeature(Self.externalDisplay) && supportsFeature(Self.integratedDisplay) }
-    var supportsCarPlay: Bool { supportsExternalDisplays && supportsFeature(Self.carPlay) }
+    package var supportsDeviceBezels: Bool { family != .vision }
+    package var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
+    package var supportsExternalDisplays: Bool { supportsFeature(Self.externalDisplay) && supportsFeature(Self.integratedDisplay) }
+    package var supportsCarPlay: Bool { supportsExternalDisplays && supportsFeature(Self.carPlay) }
     /// Whether the device has a Digital Crown or Digital Dial, which the
     /// pointer's scrolling turns.
-    var hasCrownOrDial: Bool { supportsFeature(Self.digitalCrown) || supportsFeature(Self.digitalDial) }
+    package var hasCrownOrDial: Bool { supportsFeature(Self.digitalCrown) || supportsFeature(Self.digitalDial) }
 
     /// Limits that apply regardless of the external screen's advertised modes.
     /// See `ExternalDisplayLimit.extendedDisplay` for the pre-iPadOS 27 failure.
-    func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
+    package func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
         mode == .size3840x2160 && family == .iPad && supportsEnhancedMultitasking && runtimeVersion < 0x1B_00_00
             ? .extendedDisplay : nil
     }
 
-    static let displayRotation = "com.apple.CoreSimulator.display.rotation"
-    static let actionButtonSting = "com.apple.hid.sting"
-    static let actionButtonStaccato = "com.apple.hid.staccato"
-    static let siri = "com.apple.siri"
-    static let routableAudio = "com.apple.CoreSimulator.audio.routable"
-    static let applePayAuthorization = "com.apple.hid.applepay.authorize"
-    static let touchID = "com.apple.touch-id"
-    static let faceID = "com.apple.pearl-id"
+    package static let displayRotation = "com.apple.CoreSimulator.display.rotation"
+    package static let actionButtonSting = "com.apple.hid.sting"
+    package static let actionButtonStaccato = "com.apple.hid.staccato"
+    package static let siri = "com.apple.siri"
+    package static let routableAudio = "com.apple.CoreSimulator.audio.routable"
+    package static let applePayAuthorization = "com.apple.hid.applepay.authorize"
+    package static let touchID = "com.apple.touch-id"
+    package static let faceID = "com.apple.pearl-id"
     /// `SimFeatureOysterID`: Optic ID, Apple Vision Pro's.
-    static let opticID = "com.apple.oyster-id"
+    package static let opticID = "com.apple.oyster-id"
     /// Apple Vision Pro's `SimFeatureHoverboard95880941`, required by Show Gaze Target.
-    static let hoverboard = "com.apple.hid.hoverboard.95880941"
-    static let standBy = "com.apple.display.ambient-overlay"
+    package static let hoverboard = "com.apple.hid.hoverboard.95880941"
+    package static let standBy = "com.apple.display.ambient-overlay"
     /// `SimFeatureUIKitSlowMotionStateful`: the guest keeps slow animations on
     /// until they are turned off.
-    static let slowMotionStateful = "com.apple.UIKit.SimulatorSlowMotionStateful"
+    package static let slowMotionStateful = "com.apple.UIKit.SimulatorSlowMotionStateful"
     /// `SimFeatureUIKitGraphicsQualityOverride`.
-    static let graphicsQualityOverride = "com.apple.UIKit.SimulatorGraphicsQualityOverride"
+    package static let graphicsQualityOverride = "com.apple.UIKit.SimulatorGraphicsQualityOverride"
     /// `SimFeatureKeyboard`, required for hardware keyboard input.
-    static let keyboard = "com.apple.hid.keyboard"
+    package static let keyboard = "com.apple.hid.keyboard"
     /// SimFeatureTouchPressure, including 3D Touch.
-    static let touchPressure = "com.apple.hid.touch-pressure"
+    package static let touchPressure = "com.apple.hid.touch-pressure"
     /// `SimFeaturePasteboard`: the guest runs the pasteboard service that Get
     /// and Send Pasteboard connect to. `simctl pbsync` requires it.
-    static let pasteboard = "com.apple.CoreSimulator.pasteboard"
+    package static let pasteboard = "com.apple.CoreSimulator.pasteboard"
     /// `SimFeatureExternalDisplay`: the device has an external display port.
-    static let externalDisplay = "com.apple.display.supports-external"
+    package static let externalDisplay = "com.apple.display.supports-external"
     /// `SimFeatureInternalDisplay`: the device has its own screen.
-    static let integratedDisplay = "com.apple.display.integrated"
+    package static let integratedDisplay = "com.apple.display.integrated"
     /// `SimFeatureCarPlay`: the guest runs CarPlay on its external display.
-    static let carPlay = "com.apple.carplay"
+    package static let carPlay = "com.apple.carplay"
     /// SimFeatureAlwaysOnDisplay; the watch dims instead of turning off.
-    static let alwaysOnDisplay = "com.apple.display.aot"
+    package static let alwaysOnDisplay = "com.apple.display.aot"
     /// SimFeatureTVRemote.
-    static let tvRemote = "com.apple.hid.tv-remote"
+    package static let tvRemote = "com.apple.hid.tv-remote"
     /// `SimFeatureWatchGestures`: the watch takes Device ▸ Gestures.
-    static let watchGestures = "com.apple.hid.watch.gestures"
+    package static let watchGestures = "com.apple.hid.watch.gestures"
     /// Digital Crown or Digital Dial input consumes pointer scrolling.
-    static let digitalCrown = "com.apple.hid.digital-crown"
-    static let digitalDial = "com.apple.hid.digital-dial"
+    package static let digitalCrown = "com.apple.hid.digital-crown"
+    package static let digitalDial = "com.apple.hid.digital-dial"
     /// `SimFeatureFallDetection`: the watch takes Features ▸ Simulate Fall.
-    static let fallDetection = "com.apple.motion.fall-detection"
+    package static let fallDetection = "com.apple.motion.fall-detection"
 }
 
 /// Simulator-compatible standard-defaults keys.
-enum HostPreferences {
+package enum HostPreferences {
     // UserDefaults permits concurrent access; the mutex protects replacement of the stores.
     private struct Configuration: @unchecked Sendable {
         let defaults: UserDefaults
         let deviceSettings: UserDefaults?
     }
     private static let configuration = Mutex(Configuration(defaults: .standard, deviceSettings: .standard))
-    static var defaults: UserDefaults { configuration.withLock { $0.defaults } }
-    static var deviceSettingsDefaults: UserDefaults? { configuration.withLock { $0.deviceSettings } }
+    package static var defaults: UserDefaults { configuration.withLock { $0.defaults } }
+    package static var deviceSettingsDefaults: UserDefaults? { configuration.withLock { $0.deviceSettings } }
 
     /// Selects the host's settings before creating simulator contexts or windows.
-    static func configure(defaults: UserDefaults, deviceSettingsDefaults: UserDefaults?) {
+    package static func configure(defaults: UserDefaults, deviceSettingsDefaults: UserDefaults?) {
         configuration.withLock { $0 = Configuration(defaults: defaults, deviceSettings: deviceSettingsDefaults) }
     }
 
     /// SimulatorKit reads this standard-defaults key to follow the guest's interface orientation.
-    static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
+    package static let rotateWindowWhenSignaledByGuest = "RotateWindowWhenSignaledByGuest"
     /// Debug ▸ Show Parallel Testing Devices, on unless turned off.
-    static let showTestingDevices = "ShowTestingDevices"
+    package static let showTestingDevices = "ShowTestingDevices"
     /// Window ▸ Show Device Bezels, on unless turned off. It applies to every
     /// device window: see `PreferenceStore.showsDeviceBezels`.
-    static let showChrome = "ShowChrome"
+    package static let showChrome = "ShowChrome"
     /// Title-bar style preferences; see `DeviceToolbar.style`.
-    static let useMonobar = "UseMonobar"
-    static let useCompactTitleBar = "UseCompactTitleBar"
+    package static let useMonobar = "UseMonobar"
+    package static let useCompactTitleBar = "UseCompactTitleBar"
     /// Overrides the path of Xcode's parallel testing device set.
-    static let testingDeviceSetPath = "TestingDeviceSetPath"
+    package static let testingDeviceSetPath = "TestingDeviceSetPath"
     /// Whether closing a device window leaves the device running instead of
     /// shutting it down.
-    static let detachOnWindowClose = "DetachOnWindowClose"
+    package static let detachOnWindowClose = "DetachOnWindowClose"
     /// Whether quitting leaves devices running instead of shutting them down.
-    static let detachOnAppQuit = "DetachOnAppQuit"
+    package static let detachOnAppQuit = "DetachOnAppQuit"
     /// Whether launching shows windows for devices that are already booted.
-    static let attachBootedOnStart = "AttachBootedOnStart"
+    package static let attachBootedOnStart = "AttachBootedOnStart"
     /// Whether launching starts the last chosen device; both must be on.
-    static let sessionOnLaunch = "SessionOnLaunch"
-    static let startLastDeviceOnLaunch = "StartLastDeviceOnLaunch"
+    package static let sessionOnLaunch = "SessionOnLaunch"
+    package static let startLastDeviceOnLaunch = "StartLastDeviceOnLaunch"
     /// The device last chosen to open, which launching starts.
-    static let currentDeviceUDID = "CurrentDeviceUDID"
+    package static let currentDeviceUDID = "CurrentDeviceUDID"
     /// How long quitting waits for devices to disconnect and shut down, in seconds.
-    static let terminationTimeout = "TerminationTimeout"
+    package static let terminationTimeout = "TerminationTimeout"
     /// The folder Save Screen saves into.
-    static let screenShotSaveLocation = "ScreenShotSaveLocation"
+    package static let screenShotSaveLocation = "ScreenShotSaveLocation"
     /// Whether Save Screen and Record Screen apply the device's mask.
-    static let screenShotUseMask = "ScreenShotUseMask"
+    package static let screenShotUseMask = "ScreenShotUseMask"
     /// Debug ▸ Slow Animations, which connecting applies to each device that
     /// keeps the setting.
-    static let slowMotionAnimation = "SlowMotionAnimation"
+    package static let slowMotionAnimation = "SlowMotionAnimation"
     /// Debug ▸ Graphics Quality Override, a `GraphicsQuality` value, which
     /// connecting applies to each device that supports it unless it is the default.
-    static let graphicsQualityOverride = "GraphicsQualityOverride"
+    package static let graphicsQualityOverride = "GraphicsQualityOverride"
     /// Animated GIF export from a recording's thumbnail.
-    static let gifMaxFramerate = "GifMaxFramerate"
-    static let gifMaxFrameSize = "GifMaxFrameSize"
-    static let gifUseDither = "GifUseDither"
-    static let gifDitherDepth = "GifDitherDepth"
+    package static let gifMaxFramerate = "GifMaxFramerate"
+    package static let gifMaxFrameSize = "GifMaxFrameSize"
+    package static let gifUseDither = "GifUseDither"
+    package static let gifDitherDepth = "GifDitherDepth"
     /// The last Features ▸ Location choice, which each connection restores:
     /// see `LocationSelection`.
-    static let locationMode = "LocationMode"
-    static let locationScenario = "LocationScenario"
+    package static let locationMode = "LocationMode"
+    package static let locationScenario = "LocationScenario"
     /// The coordinate Custom Location… last set.
-    static let locationLatitude = "LocationLatitude"
-    static let locationLongitude = "LocationLongitude"
+    package static let locationLatitude = "LocationLatitude"
+    package static let locationLongitude = "LocationLongitude"
     /// Per-device preferences keyed by UDID.
-    static let devicePreferences = "DevicePreferences"
+    package static let devicePreferences = "DevicePreferences"
     /// I/O ▸ Keyboard ▸ Use the Same Keyboard Language as macOS, on unless
     /// turned off: see `PreferenceStore.syncsKeyboardLanguage`.
-    static let enableKeyboardSync = "EnableKeyboardSync"
+    package static let enableKeyboardSync = "EnableKeyboardSync"
     /// Per-device hardware keyboard preference, with an app-wide default.
-    static let connectHardwareKeyboard = "ConnectHardwareKeyboard"
+    package static let connectHardwareKeyboard = "ConnectHardwareKeyboard"
     /// I/O ▸ Touch Pressure ▸ Use Trackpad Force, on unless turned off; it
     /// applies only with a Force Touch trackpad. See `TouchPressure`.
-    static let useTrackpadForce = "UseTrackpadForce"
+    package static let useTrackpadForce = "UseTrackpadForce"
     /// The touch indicators every device window draws: see `TouchIndicator`.
-    static let showSingleTouches = "ShowSingleTouches"
-    static let showPinches = "ShowPinches"
-    static let showPinchPivotPoint = "ShowPinchPivotPoint"
-    static let highlightEdgeGestures = "HighlightEdgeGestures"
+    package static let showSingleTouches = "ShowSingleTouches"
+    package static let showPinches = "ShowPinches"
+    package static let showPinchPivotPoint = "ShowPinchPivotPoint"
+    package static let highlightEdgeGestures = "HighlightEdgeGestures"
     /// The arrangements of the Mac's screens that device windows were saved
     /// in, by UUID: see `PreferenceStore.screenConfiguration(for:)`.
-    static let screenConfigurations = "ScreenConfigurations"
+    package static let screenConfigurations = "ScreenConfigurations"
     /// I/O ▸ Audio Input's and Audio Output's recent routes, which every
     /// device follows: see `PreferenceStore.recentAudioRoutes(in:)`.
-    static let recentAudioInputDeviceUIDs = "RecentAudioInputDeviceUIDs"
-    static let recentAudioOutputDeviceUIDs = "RecentAudioOutputDeviceUIDs"
+    package static let recentAudioInputDeviceUIDs = "RecentAudioInputDeviceUIDs"
+    package static let recentAudioOutputDeviceUIDs = "RecentAudioOutputDeviceUIDs"
     /// Edit ▸ Automatically Sync Pasteboard, on unless turned off: see `PasteboardSync`.
-    static let pasteboardAutomaticSync = "PasteboardAutomaticSync"
+    package static let pasteboardAutomaticSync = "PasteboardAutomaticSync"
     /// Whether dragging the bezel moves the window; defaults to on.
-    static let allowsMoveByDragOnWindowChrome = "AllowsMoveByDragOnWindowChrome"
+    package static let allowsMoveByDragOnWindowChrome = "AllowsMoveByDragOnWindowChrome"
 
     /// Registers shared defaults.
     /// Show Pinch Gestures follows Simulator.app's registered default, not its Settings.bundle fallback.
-    static func registerDefaults() {
+    package static func registerDefaults() {
         HostPreferences.defaults.register(defaults: [
             showTestingDevices: true, showChrome: true, useMonobar: true, useCompactTitleBar: false,
             detachOnWindowClose: false, detachOnAppQuit: false,
@@ -211,17 +211,17 @@ enum HostPreferences {
 }
 
 /// Per-device location selection, persisted as the last app-wide choice.
-enum LocationSelection: Equatable {
+package enum LocationSelection: Equatable {
     case none, custom
     /// A runtime scenario, by its `LocationScenario.name`.
     case scenario(String)
 
-    static let noneMode = 5101, customMode = 5102
+    package static let noneMode = 5101, customMode = 5102
     /// Scenario menu tag stored in Simulator.app preferences.
-    static let scenarioMode = 5103
+    package static let scenarioMode = 5103
 
     /// Unknown modes or scenarios unavailable to this device restore as None.
-    static func saved(among scenarios: [LocationScenario]) -> Self {
+    package static func saved(among scenarios: [LocationScenario]) -> Self {
         let defaults = HostPreferences.defaults
         let mode = defaults.integer(forKey: HostPreferences.locationMode)
         guard mode > customMode else { return mode == customMode ? .custom : .none }
@@ -231,7 +231,7 @@ enum LocationSelection: Equatable {
     }
 
     /// Persists for the next connection. None retains the previous scenario name.
-    func save() {
+    package func save() {
         let defaults = HostPreferences.defaults
         switch self {
         case .none: defaults.set(Self.noneMode, forKey: HostPreferences.locationMode)
@@ -244,11 +244,11 @@ enum LocationSelection: Equatable {
 }
 
 /// Shared desired locations survive a renderer handoff without replacing another device's choice.
-struct DeviceLocationPreset {
-    let selection: LocationSelection
-    let coordinate: (latitude: Double, longitude: Double)?
+package struct DeviceLocationPreset {
+    package let selection: LocationSelection
+    package let coordinate: (latitude: Double, longitude: Double)?
 
-    static func load(for identifier: String, among scenarios: [LocationScenario]) throws -> Self? {
+    package static func load(for identifier: String, among scenarios: [LocationScenario]) throws -> Self? {
         let defaults = try store()
         guard defaults.synchronize() else { throw SimulatorError.operation("Could not read the saved simulator location.") }
         let key = "DeviceLocationPreset.\(identifier)"
@@ -273,7 +273,7 @@ struct DeviceLocationPreset {
         }
     }
 
-    func save(for identifier: String) throws {
+    package func save(for identifier: String) throws {
         let defaults = try Self.store()
         var record: [String: Any]
         switch selection {
@@ -296,11 +296,11 @@ struct DeviceLocationPreset {
 }
 
 /// A physical device orientation, named as `devicectl` names it.
-enum DeviceOrientation: String, CaseIterable {
+package enum DeviceOrientation: String, CaseIterable {
     case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
 
     /// Display rotation for an upright view of this orientation. Flat orientations keep the previous angle.
-    var displayAngle: Double? {
+    package var displayAngle: Double? {
         switch self {
         case .portrait: 0
         case .landscapeLeft: 90
@@ -312,13 +312,13 @@ enum DeviceOrientation: String, CaseIterable {
 }
 
 /// The device's orientation and the display angle that follows it.
-struct OrientationReading: Equatable {
-    var physical: DeviceOrientation
+package struct OrientationReading: Equatable {
+    package var physical: DeviceOrientation
     /// The angle of the last upright orientation, kept while the device is flat.
-    var displayAngle: Double
+    package var displayAngle: Double
 
     /// Reads the JSON output of `devicectl device orientation get`.
-    init(devicectlOutput data: Data) throws {
+    package init(devicectlOutput data: Data) throws {
         struct Output: Decodable {
             struct Result: Decodable {
                 var deviceOrientation: String
@@ -340,13 +340,13 @@ struct OrientationReading: Equatable {
 
 /// Debug ▸ Graphics Quality Override, as the guest's
 /// `com.apple.UIKit.ForceGraphicsQuality` state numbers it.
-enum GraphicsQuality: Int {
+package enum GraphicsQuality: Int {
     case deviceDefault = 0, low = 10, high = 100
 }
 
 /// Edit ▸ Get Pasteboard or Send Pasteboard: a one-time copy of a whole
 /// pasteboard, with all its types, between the Mac and the device.
-enum PasteboardTransfer {
+package enum PasteboardTransfer {
     /// Replaces the Mac pasteboard with the device's: SimPasteboardPlus `pull`.
     case get
     /// Replaces the device's pasteboard with the Mac's: `push`.
@@ -354,7 +354,7 @@ enum PasteboardTransfer {
 }
 
 /// Hardware-input event timing.
-enum HardwareInput {
+package enum HardwareInput {
     /// Pressed and released at once.
     case press(HIDInput)
     /// Pressed, then released after a delay.
@@ -366,25 +366,25 @@ enum HardwareInput {
 }
 
 /// The guest's `com.apple.sos.user-fell` state and Simulator.app menu tags.
-enum FallResolution: UInt64 {
+package enum FallResolution: UInt64 {
     case confirmed = 0, dismissed = 1, rejected = 2, unresponsive = 3
 }
 
 /// Owns a connected device's display, input, tools, and device-changing operations.
 /// Window controllers present this state and report its failures.
 @MainActor @Observable
-final class DeviceSession {
-    let device: AvailableDevice
-    let capabilities: DeviceCapabilities
-    @ObservationIgnored let primaryDisplay: any SimulatorDisplay
+package final class DeviceSession {
+    package let device: AvailableDevice
+    package let capabilities: DeviceCapabilities
+    @ObservationIgnored package let primaryDisplay: any SimulatorDisplay
     @ObservationIgnored private var appDisplay: (any SimulatorDisplay)?
-    var display: any SimulatorDisplay { appDisplay ?? primaryDisplay }
-    @ObservationIgnored var onDisplayWillChange: (() -> Void)?
-    @ObservationIgnored var onDisplayChange: (() -> Void)?
+    package var display: any SimulatorDisplay { appDisplay ?? primaryDisplay }
+    @ObservationIgnored package var onDisplayWillChange: (() -> Void)?
+    @ObservationIgnored package var onDisplayChange: (() -> Void)?
     /// Lets the presentation owner capture its geometry before applying a rotation synchronously.
-    @ObservationIgnored var onDisplayRotation: ((_ angle: Double, _ update: () -> Void) -> Void)?
-    @ObservationIgnored var onAppResizeGeometryChange: (() -> Void)?
-    @ObservationIgnored var onAppResizeError: ((any Error) -> Void)?
+    @ObservationIgnored package var onDisplayRotation: ((_ angle: Double, _ update: () -> Void) -> Void)?
+    @ObservationIgnored package var onAppResizeGeometryChange: (() -> Void)?
+    @ObservationIgnored package var onAppResizeError: ((any Error) -> Void)?
     @ObservationIgnored private var resizeTransport: (any AppResizeTransport)?
     @ObservationIgnored private var resizePreparation: Task<Void, Never>?
     @ObservationIgnored private var resizeObservation: Task<Void, Never>?
@@ -395,16 +395,16 @@ final class DeviceSession {
     @ObservationIgnored private var resizeLease: (any AppResizeSession)?
     @ObservationIgnored private var resizeGeneration = 0
     @ObservationIgnored private var pendingAppSize: CGSize?
-    private(set) var supportsAppResize = false
-    private(set) var appResizeEligibility = AppResizeEligibility.unavailable
-    private(set) var isStartingAppResize = false
-    private(set) var appResizeGeometry: AppResizeGeometry?
-    private(set) var isResizingApp = false
-    var canResizeApp: Bool {
+    package private(set) var supportsAppResize = false
+    package private(set) var appResizeEligibility = AppResizeEligibility.unavailable
+    package private(set) var isStartingAppResize = false
+    package private(set) var appResizeGeometry: AppResizeGeometry?
+    package private(set) var isResizingApp = false
+    package var canResizeApp: Bool {
         canPerformToolOperation && recording == nil && supportsAppResize
             && (isResizingApp || isStartingAppResize || appResizeEligibility == .eligible)
     }
-    @ObservationIgnored let tools: DeviceTools
+    @ObservationIgnored package let tools: DeviceTools
     /// Keeps the device's keyboard preferences and the app-wide ones.
     @ObservationIgnored private let preferences: any PreferenceStore
     /// The Mac keyboard's language, which Use the Same Keyboard Language as
@@ -451,25 +451,25 @@ final class DeviceSession {
     /// The removal of the display's native input that disconnecting starts and `stop()` joins, until it fails.
     @ObservationIgnored private var inputRemoval: Task<Void, any Error>?
     /// A tool operation or a modal step that leads to one is in progress.
-    private(set) var isBusy = false
-    private(set) var isConnected = true
-    private(set) var recording: VideoRecording?
+    package private(set) var isBusy = false
+    package private(set) var isConnected = true
+    package private(set) var recording: VideoRecording?
     /// The orientation last read from the device.
-    private(set) var orientation: DeviceOrientation?
+    package private(set) var orientation: DeviceOrientation?
     /// The angle the display is shown at, which a guest-initiated rotation
     /// can set without changing `orientation`.
-    @ObservationIgnored private(set) var displayAngle: Double = 0
+    @ObservationIgnored package private(set) var displayAngle: Double = 0
     /// The guest's interface orientation angle last observed, so that only its
     /// changes rotate the display. A manual rotation does not change it.
     @ObservationIgnored private var guestAngle: Double?
     /// The location routes the device's runtime listed when this session connected.
-    private(set) var locationScenarios: [LocationScenario] = []
+    package private(set) var locationScenarios: [LocationScenario] = []
     /// Last location applied by the host; CoreSimulator does not report the guest's location.
-    private(set) var location: LocationSelection?
+    package private(set) var location: LocationSelection?
 
     /// The pasteboard is untouched until a transfer or synchronization starts.
     /// `externalScreenTimeout` defaults to the host's wait for the primary screen.
-    init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
+    package init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
          tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
          openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
@@ -534,7 +534,7 @@ final class DeviceSession {
         }
     }
 
-    func toggleAppResize(size: CGSize) {
+    package func toggleAppResize(size: CGSize) {
         if isResizingApp || isStartingAppResize || resizeLease != nil { stopAppResize(); return }
         guard canResizeApp, let resizeTransport else { return }
         resizeGeneration += 1
@@ -596,7 +596,7 @@ final class DeviceSession {
     }
 
     /// Requests guest point geometry; native scene feedback remains authoritative.
-    func resizeApp(to size: CGSize) {
+    package func resizeApp(to size: CGSize) {
         guard isResizingApp, let geometry = appResizeGeometry,
               size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
         pendingAppSize = CGSize(width: min(max(size.width, geometry.minimumSize.width), geometry.maximumSize.width),
@@ -619,7 +619,7 @@ final class DeviceSession {
         }
     }
 
-    func stopAppResize() {
+    package func stopAppResize() {
         resizeGeneration += 1
         resizeStart?.cancel(); resizeStart = nil
         resizeUpdates?.cancel(); resizeUpdates = nil
@@ -657,15 +657,15 @@ final class DeviceSession {
         inputSteps.removeAll()
     }
 
-    var canPerformCommands: Bool { isConnected && display.isBooted }
-    var canPerformToolOperation: Bool { canPerformCommands && !isBusy }
-    var canStartRecording: Bool { canPerformToolOperation && recording == nil && !isStartingAppResize }
+    package var canPerformCommands: Bool { isConnected && display.isBooted }
+    package var canPerformToolOperation: Bool { canPerformCommands && !isBusy }
+    package var canStartRecording: Bool { canPerformToolOperation && recording == nil && !isStartingAppResize }
 
     // MARK: Immediate device input
 
     /// Sends a hardware input. The first failure of its events, including a
     /// delivery failure SimulatorKit reports later, goes to `failure`.
-    func send(_ input: HardwareInput, failure: @escaping @MainActor (Error) -> Void) {
+    package func send(_ input: HardwareInput, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands else { return }
         let report = FirstFailure(failure)
         switch input {
@@ -794,7 +794,7 @@ final class DeviceSession {
         }
     }
 
-    func shake() async throws {
+    package func shake() async throws {
         guard canPerformCommands else { return }
         try await display.postNotification("com.apple.UIKit.SimulatorShake")
     }
@@ -812,7 +812,7 @@ final class DeviceSession {
     private var takesTVRemote: Bool { capabilities.family == .tv }
 
     /// Holds a remote button until `releaseRemoteButton(_:)`.
-    func pressRemoteButton(_ button: TVRemoteButton, failure: @escaping @MainActor (Error) -> Void) {
+    package func pressRemoteButton(_ button: TVRemoteButton, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands, takesTVRemote else { return }
         let report = FirstFailure(failure)
         let event = HIDInput.tvRemote(button)
@@ -822,14 +822,14 @@ final class DeviceSession {
     }
 
     /// Releases a remote button. An undelivered release is retried by the next release or disconnection.
-    func releaseRemoteButton(_ button: TVRemoteButton) {
+    package func releaseRemoteButton(_ button: TVRemoteButton) {
         let event = HIDInput.tvRemote(button)
         guard let report = remoteReports[event] else { return }
         releaseHeldInput(event, report: report)
     }
 
     /// Starts or moves a remote touch, in normalized coordinates from the top-left corner.
-    func touchRemote(at point: CGPoint, failure: @escaping @MainActor (Error) -> Void) {
+    package func touchRemote(at point: CGPoint, failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformCommands, takesTVRemote, !isTouchingRemote || point != remoteTouchPoint else { return }
         let report = isTouchingRemote ? remoteReports[.tvRemoteTouch] ?? FirstFailure(failure) : FirstFailure(failure)
         let touch = TVRemoteTouch(phase: isTouchingRemote ? .moved : .began, point: point)
@@ -848,13 +848,13 @@ final class DeviceSession {
     }
 
     /// Releases held remote inputs, including failed releases. Also called during disconnection.
-    func releaseRemoteInputs() {
+    package func releaseRemoteInputs() {
         isTouchingRemote = false
         for (event, report) in remoteReports { releaseHeldInput(event, report: report) }
     }
 
     /// Ends the remote touch. An undelivered end is retried by the next release or disconnection.
-    func liftRemoteTouch(at point: CGPoint) {
+    package func liftRemoteTouch(at point: CGPoint) {
         guard let report = remoteReports[.tvRemoteTouch] else { return }
         if isTouchingRemote {
             isTouchingRemote = false
@@ -864,10 +864,10 @@ final class DeviceSession {
     }
 
     /// Watch backlight state: 0 or 1 means Always On is selected; 2 clears it. Other values preserve it.
-    private(set) var showsAlwaysOn = false
+    package private(set) var showsAlwaysOn = false
 
     /// Refreshes Always On when the display connects or its properties change.
-    func followBacklight() {
+    package func followBacklight() {
         guard capabilities.family == .watch, !isDisconnected else { return }
         switch display.backlightState {
         case 0, 1: showsAlwaysOn = true
@@ -876,18 +876,18 @@ final class DeviceSession {
         }
     }
 
-    func toggleAppearance() throws {
+    package func toggleAppearance() throws {
         guard canPerformCommands else { return }
         try display.toggleAppearance()
     }
 
     // MARK: Guest features
 
-    enum Biometric {
+    package enum Biometric {
         case touchID, faceID, opticID
 
         /// The `SimDevice` feature of the biometric.
-        var feature: String {
+        package var feature: String {
             switch self {
             case .touchID: DeviceCapabilities.touchID
             case .faceID: DeviceCapabilities.faceID
@@ -901,17 +901,17 @@ final class DeviceSession {
 
     /// Whether biometrics are enrolled. Touch ID, Face ID, and Optic ID share
     /// this guest state.
-    var isBiometricEnrolled: Bool {
+    package var isBiometricEnrolled: Bool {
         canPerformCommands && (try? display.notificationState(Self.biometricEnrollment)) == 1
     }
 
-    func toggleBiometricEnrollment() async throws {
+    package func toggleBiometricEnrollment() async throws {
         guard canPerformCommands else { return }
         try await toggleState(of: Self.biometricEnrollment)
     }
 
     /// Presents a matching or non-matching finger, face, or eye to the guest.
-    func sendBiometric(_ biometric: Biometric, matching: Bool) async throws {
+    package func sendBiometric(_ biometric: Biometric, matching: Bool) async throws {
         guard canPerformCommands else { return }
         let source = switch biometric {
         case .touchID: "fingerTouch"
@@ -921,20 +921,20 @@ final class DeviceSession {
         try await display.postNotification("com.apple.BiometricKit_Sim.\(source).\(matching ? "match" : "nomatch")")
     }
 
-    func toggleInCallStatusBar() async throws {
+    package func toggleInCallStatusBar() async throws {
         guard canPerformCommands else { return }
         try await display.postNotification("com.apple.iphonesimulator.toggleincallstatusbar")
     }
 
     /// Reports a simulated fall and its resolution to the guest.
-    func simulateFall(_ resolution: FallResolution) async throws {
+    package func simulateFall(_ resolution: FallResolution) async throws {
         guard canPerformCommands else { return }
         try await send(resolution.rawValue, to: "com.apple.sos.user-fell")
     }
 
-    var showsStandBy: Bool { canPerformCommands && (try? display.notificationState(Self.standBy)) == 1 }
+    package var showsStandBy: Bool { canPerformCommands && (try? display.notificationState(Self.standBy)) == 1 }
 
-    func toggleStandBy() async throws {
+    package func toggleStandBy() async throws {
         guard canPerformCommands else { return }
         try await toggleState(of: Self.standBy)
     }
@@ -955,7 +955,7 @@ final class DeviceSession {
     }
 
     /// Changes text size, clamped to the supported accessibility range.
-    func changeTextSize(by delta: Int) throws {
+    package func changeTextSize(by delta: Int) throws {
         guard canPerformCommands else { return }
         let sizes = 1...12
         let category = try display.contentSizeCategory()
@@ -966,7 +966,7 @@ final class DeviceSession {
         try display.setContentSizeCategory(category + delta)
     }
 
-    func toggleIncreaseContrast() throws {
+    package func toggleIncreaseContrast() throws {
         guard canPerformCommands else { return }
         switch try display.increaseContrastMode() {
         case 1: try display.setIncreaseContrast(true)
@@ -975,19 +975,19 @@ final class DeviceSession {
         }
     }
 
-    func triggerCloudSync() async throws { try await display.triggerCloudSync() }
+    package func triggerCloudSync() async throws { try await display.triggerCloudSync() }
 
     // MARK: Keyboard
 
-    var supportsKeyboard: Bool { capabilities.supportsFeature(DeviceCapabilities.keyboard) }
+    package var supportsKeyboard: Bool { capabilities.supportsFeature(DeviceCapabilities.keyboard) }
 
     /// The per-device keyboard preference controls both host typing and the guest keyboard.
-    var connectsHardwareKeyboard: Bool {
+    package var connectsHardwareKeyboard: Bool {
         supportsKeyboard && preferences.connectsHardwareKeyboard(forDevice: device.identity.preferenceIdentifier)
     }
 
     /// Saves the choice before applying it, so a failed change remains selected and can be retried.
-    func toggleHardwareKeyboard() async throws {
+    package func toggleHardwareKeyboard() async throws {
         guard canPerformCommands else { return }
         let connects = !preferences.connectsHardwareKeyboard(forDevice: device.identity.preferenceIdentifier)
         preferences.setConnectsHardwareKeyboard(connects, forDevice: device.identity.preferenceIdentifier)
@@ -995,15 +995,15 @@ final class DeviceSession {
     }
 
     /// Use the Same Keyboard Language as macOS, an app-wide preference.
-    var syncsKeyboardLanguage: Bool { preferences.syncsKeyboardLanguage }
+    package var syncsKeyboardLanguage: Bool { preferences.syncsKeyboardLanguage }
 
     /// Updates only the preference; language applies at the next connection or input-source change.
-    func toggleKeyboardLanguageSync() {
+    package func toggleKeyboardLanguageSync() {
         preferences.set(!preferences.syncsKeyboardLanguage, forKey: HostPreferences.enableKeyboardSync)
     }
 
     /// Applies the Mac input-source language while keyboard-language synchronization is enabled.
-    func syncKeyboardLanguage() async throws {
+    package func syncKeyboardLanguage() async throws {
         guard canPerformCommands, preferences.syncsKeyboardLanguage else { return }
         guard let language = hostKeyboardLanguage() else {
             throw SimulatorError.operation("Could not determine the language of the Mac's keyboard.")
@@ -1013,7 +1013,7 @@ final class DeviceSession {
 
     /// Applies the per-device keyboard choice, then the Mac input-source language.
     /// Each failure is reported independently; the app-wide choice is only a fallback.
-    func applyKeyboardSettings(failure: (Error) -> Void) async {
+    package func applyKeyboardSettings(failure: (Error) -> Void) async {
         guard canPerformCommands else { return }
         do { try await display.setHardwareKeyboardConnected(preferences.connectsHardwareKeyboard(forDevice: device.identity.preferenceIdentifier)) }
         catch { failure(error) }
@@ -1026,13 +1026,13 @@ final class DeviceSession {
     private static let forceGraphicsQuality = "com.apple.UIKit.ForceGraphicsQuality"
 
     /// Stateful slow animations, as opposed to a frontmost-app toggle.
-    var keepsSlowAnimations: Bool { capabilities.supportsFeature(DeviceCapabilities.slowMotionStateful) }
+    package var keepsSlowAnimations: Bool { capabilities.supportsFeature(DeviceCapabilities.slowMotionStateful) }
 
     /// The app preference, independent of guest state.
-    var slowAnimations: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.slowMotionAnimation) }
+    package var slowAnimations: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.slowMotionAnimation) }
 
     /// Toggles the preference and sends it to the guest.
-    func toggleSlowAnimations() async throws {
+    package func toggleSlowAnimations() async throws {
         guard canPerformCommands else { return }
         let enabled = !slowAnimations
         try await send(enabled ? 1 : 0, to: Self.slowMotionAnimation) {
@@ -1040,12 +1040,12 @@ final class DeviceSession {
         }
     }
 
-    var graphicsQuality: GraphicsQuality? {
+    package var graphicsQuality: GraphicsQuality? {
         GraphicsQuality(rawValue: HostPreferences.defaults.integer(forKey: HostPreferences.graphicsQualityOverride))
     }
 
     /// Sends the quality to the guest and saves it as `GraphicsQualityOverride`.
-    func setGraphicsQuality(_ quality: GraphicsQuality) async throws {
+    package func setGraphicsQuality(_ quality: GraphicsQuality) async throws {
         guard canPerformCommands else { return }
         try await send(UInt64(quality.rawValue), to: Self.forceGraphicsQuality) {
             HostPreferences.defaults.set(quality.rawValue, forKey: HostPreferences.graphicsQualityOverride)
@@ -1053,10 +1053,10 @@ final class DeviceSession {
     }
 
     /// Stops PineBoard so launchd restarts it with the new graphics quality.
-    func restartSystemUI() async throws { try await tools.stopSystemUI() }
+    package func restartSystemUI() async throws { try await tools.stopSystemUI() }
 
     /// Applies slow animations and non-default graphics quality when the device connects.
-    func applyDebugSettings() async throws {
+    package func applyDebugSettings() async throws {
         if keepsSlowAnimations { try await send(slowAnimations ? 1 : 0, to: Self.slowMotionAnimation) }
         if capabilities.supportsFeature(DeviceCapabilities.graphicsQualityOverride),
            let quality = graphicsQuality, quality != .deviceDefault {
@@ -1065,13 +1065,13 @@ final class DeviceSession {
     }
 
     /// Whether a Core Animation debug option is on, as the device reports it.
-    func isOn(_ option: CADebugOption) -> Bool {
+    package func isOn(_ option: CADebugOption) -> Bool {
         canPerformCommands && (try? display.caDebugOption(option)) == true
     }
 
     /// Turns a Core Animation debug option on or off. CoreSimulator reports no
     /// failure of the change, so the option is read back.
-    func toggle(_ option: CADebugOption) throws {
+    package func toggle(_ option: CADebugOption) throws {
         guard canPerformCommands else { return }
         let enabled = try !display.caDebugOption(option)
         try display.setCADebugOption(option, enabled: enabled)
@@ -1081,7 +1081,7 @@ final class DeviceSession {
     }
 
     /// Debug ▸ Open System Log…: opens the device's `system.log` with `openLog`.
-    func openSystemLog() async throws {
+    package func openSystemLog() async throws {
         let log = try display.logDirectory().appendingPathComponent("system.log")
         guard FileManager.default.fileExists(atPath: log.path) else {
             throw SimulatorError.operation("The device has no system log at \(log.path).")
@@ -1089,7 +1089,7 @@ final class DeviceSession {
         try await openLog(log)
     }
 
-    static func openInConsole(_ log: URL) async throws {
+    package static func openInConsole(_ log: URL) async throws {
         guard let console = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
             throw SimulatorError.unavailable("Console is not installed.")
         }
@@ -1099,7 +1099,7 @@ final class DeviceSession {
 
     /// Writes the guest's memory-warning trigger file and reports write failures.
     /// A successful write does not establish that an app handled the warning.
-    func simulateMemoryWarning() throws {
+    package func simulateMemoryWarning() throws {
         guard canPerformCommands else { return }
         try Data().write(to: display.memoryWarningFile())
     }
@@ -1107,14 +1107,14 @@ final class DeviceSession {
     // MARK: Location
 
     /// Reflects a location already applied by the manager without applying it again.
-    func refreshLocationSelection() throws {
+    package func refreshLocationSelection() throws {
         if let preset = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: locationScenarios) {
             location = preset.selection
         }
     }
 
     /// Restores the saved location after loading the runtime's scenarios. No scenarios means no selection.
-    func restoreLocation() async throws {
+    package func restoreLocation() async throws {
         let scenarios = try await display.locationScenarios()
         // Right after a boot, listing takes up to a second. The session can
         // end meanwhile, and a choice made meanwhile is kept.
@@ -1130,13 +1130,13 @@ final class DeviceSession {
 
     /// Features ▸ Location ▸ None or a scenario, for this device only; the
     /// choice is also saved for later connections.
-    func selectLocation(_ selection: LocationSelection) async throws {
+    package func selectLocation(_ selection: LocationSelection) async throws {
         guard canPerformCommands else { return }
         try await use(selection)
     }
 
     /// Custom Location…'s OK: saves the coordinate and selects it.
-    func setCustomLocation(latitude: Double, longitude: Double) async throws {
+    package func setCustomLocation(latitude: Double, longitude: Double) async throws {
         guard canPerformCommands else { return }
         HostPreferences.defaults.set(latitude, forKey: HostPreferences.locationLatitude)
         HostPreferences.defaults.set(longitude, forKey: HostPreferences.locationLongitude)
@@ -1175,14 +1175,14 @@ final class DeviceSession {
     }
 
     /// Manual transfer is unavailable during automatic synchronization.
-    var canTransferPasteboard: Bool { exchangesPasteboard && !synchronizesPasteboard }
+    package var canTransferPasteboard: Bool { exchangesPasteboard && !synchronizesPasteboard }
 
     /// Whether Edit ▸ Automatically Sync Pasteboard is on for this session.
-    var synchronizesPasteboard: Bool { pasteboardSync?.isOn == true }
+    package var synchronizesPasteboard: Bool { pasteboardSync?.isOn == true }
 
     /// Transfers the pasteboard, connecting lazily and reporting immediate or later failures.
     /// The connection stays open for subsequent transfers and lazy pasteboard data.
-    func transferPasteboard(_ transfer: PasteboardTransfer, failure: @escaping @MainActor (Error) -> Void) {
+    package func transferPasteboard(_ transfer: PasteboardTransfer, failure: @escaping @MainActor (Error) -> Void) {
         guard canTransferPasteboard else { return }
         let report = { (reason: Error) in
             failure(SimulatorError.operation(transfer == .get
@@ -1205,7 +1205,7 @@ final class DeviceSession {
     }
 
     /// Starts synchronization on connection by sending the Mac pasteboard to the device.
-    func startPasteboardSync() {
+    package func startPasteboardSync() {
         guard synchronizesPasteboard, exchangesPasteboard, pasteboardConnection == nil else { return }
         do { try connectPasteboard().pushAutomatically() } catch {
             hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
@@ -1214,7 +1214,7 @@ final class DeviceSession {
 
     /// Updates synchronization without transferring data. Enabling connects lazily;
     /// disabling keeps the connection available for manual transfers.
-    func updatePasteboardSync() {
+    package func updatePasteboardSync() {
         if let pasteboardConnection {
             setAutomaticSync(of: pasteboardConnection)
         } else if synchronizesPasteboard, exchangesPasteboard {
@@ -1225,7 +1225,7 @@ final class DeviceSession {
     }
 
     /// Sends changes received from another device without echoing this device's last pasteboard back.
-    func sendSynchronizedPasteboard() {
+    package func sendSynchronizedPasteboard() {
         guard let pasteboardConnection else { return }
         guard (hostPasteboard ?? .general).changeCount != lastReceivedGeneration else {
             hostLog("The Mac pasteboard still holds the pasteboard of \(device.name); it is not sent back")
@@ -1320,18 +1320,18 @@ final class DeviceSession {
 
     /// Whether I/O ▸ Audio Input and Audio Output apply to the device:
     /// `SimFeatureRoutableAudio`.
-    var routesAudio: Bool { capabilities.supportsFeature(DeviceCapabilities.routableAudio) }
+    package var routesAudio: Bool { capabilities.supportsFeature(DeviceCapabilities.routableAudio) }
 
     /// The device's audio routes as its audio port last reported them; nil
     /// until the port connects, and when it cannot.
-    private(set) var audioRoutes: AudioRouteState?
+    package private(set) var audioRoutes: AudioRouteState?
     @ObservationIgnored private var audioConnection: (any SimulatorAudioRoutes)?
     /// Why the device's audio port could not connect.
     @ObservationIgnored private var audioConnectionFailure: Error?
 
     /// Connects the audio port and restores the device's route initially and when host devices change.
     /// Routing failures go to `failure`.
-    func connectAudioRoutes(failure: @escaping @MainActor (Error) -> Void) {
+    package func connectAudioRoutes(failure: @escaping @MainActor (Error) -> Void) {
         guard routesAudio, audioConnection == nil, !isDisconnected else { return }
         do {
             audioConnection = try display.connectAudioRoutes { [weak self] change in
@@ -1361,7 +1361,7 @@ final class DeviceSession {
     }
 
     /// An explicit app-menu command applies to every window and becomes that device's saved choice.
-    func applyChosenAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
+    package func applyChosenAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
         guard routesAudio, !isDisconnected else { return }
         do {
             if let route = preferences.recentAudioRoutes(in: scope).first {
@@ -1373,7 +1373,7 @@ final class DeviceSession {
 
     /// Prefers the device's saved route, falling back to recent routes available on the Mac.
     /// Keeps the current route when none is available; reports a failed port connection.
-    func synchronizeAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
+    package func synchronizeAudioRoute(in scope: AudioScope, failure: @escaping @MainActor (Error) -> Void) {
         guard routesAudio, !isDisconnected else { return }
         let name = device.name
         guard let audioConnection, let state = audioRoutes else {
@@ -1409,7 +1409,7 @@ final class DeviceSession {
     // MARK: External displays
 
     /// Last external screen state; nil while disconnected or unavailable.
-    private(set) var externalScreen: ExternalScreenState?
+    package private(set) var externalScreen: ExternalScreenState?
     /// The session's connection to the device's external display.
     @ObservationIgnored private var externalScreenConnection: (any SimulatorExternalScreen)?
     /// The modes the external display advertises, read when the session
@@ -1427,13 +1427,13 @@ final class DeviceSession {
     @ObservationIgnored private var choiceDuringWait: (mode: ExternalDisplayMode, failure: @MainActor (Error) -> Void)?
     @ObservationIgnored private let externalScreenTimeout: Duration
     /// Runs on the main actor after `externalScreen` changes.
-    @ObservationIgnored var onExternalScreenChange: (() -> Void)?
+    @ObservationIgnored package var onExternalScreenChange: (() -> Void)?
 
     /// Menu selection derived from the actual display, which other tools may also change.
-    var externalDisplayMode: ExternalDisplayMode? { externalScreen?.mode }
+    package var externalDisplayMode: ExternalDisplayMode? { externalScreen?.mode }
 
     /// Why `mode` cannot be displayed; nil if supported or advertised modes are not yet known.
-    func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
+    package func externalDisplayLimit(for mode: ExternalDisplayMode) -> ExternalDisplayLimit? {
         if let limit = capabilities.externalDisplayLimit(for: mode) { return limit }
         guard let size = mode.pixelSize, let modes = externalScreenModes else { return nil }
         do throws(ExternalDisplayLimit) {
@@ -1446,7 +1446,7 @@ final class DeviceSession {
 
     /// Whether the guest renders at the screen's reported size. Unknown and CarPlay states pass.
     /// See `ExternalScreenMode.guestSize(for:refreshRate:among:)` for guest mode substitution.
-    func externalDisplayShowsItsSize(in state: ExternalScreenState) -> Bool {
+    package func externalDisplayShowsItsSize(in state: ExternalScreenState) -> Bool {
         guard state.isPoweredOn, !state.isCarPlay, let modes = externalScreenModes else { return true }
         return ExternalScreenMode.guestSize(for: state.pixelSize, refreshRate: state.refreshRate, among: modes)
             == state.pixelSize
@@ -1455,7 +1455,7 @@ final class DeviceSession {
     /// Waits for the adapter's asynchronous enumeration, then applies the latest pending or saved choice.
     /// A saved Disabled choice leaves an externally enabled display alone on connection.
     /// Late reports still connect; failures go to `failure`.
-    func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
+    package func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, !isDisconnected, externalScreenConnection == nil,
               externalScreenRegistration == nil else { return }
         waitForExternalScreen(failure: failure)
@@ -1524,7 +1524,7 @@ final class DeviceSession {
 
     /// Saves the choice before applying it, preserving it across restarts and failures.
     /// Retries external-screen discovery when needed. Reports all failures for a choice together.
-    func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
+    package func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, mode != .carPlay || capabilities.supportsCarPlay else { return }
         preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.identity.preferenceIdentifier)
         guard canPerformCommands else { return }
@@ -1540,7 +1540,7 @@ final class DeviceSession {
     }
 
     /// A display of the external display for its window.
-    func makeExternalDisplay() async throws -> any SimulatorDisplay {
+    package func makeExternalDisplay() async throws -> any SimulatorDisplay {
         guard let externalScreenConnection else { throw SimulatorError.unavailable("The external display is not connected.") }
         return try await externalScreenConnection.makeDisplay()
     }
@@ -1591,7 +1591,7 @@ final class DeviceSession {
 
     /// Whether the session has an external display, which disconnecting turns
     /// off, as quitting waits for.
-    var hasExternalDisplay: Bool { externalScreenConnection != nil }
+    package var hasExternalDisplay: Bool { externalScreenConnection != nil }
 
     /// Queues power-off and ends this host's CarPlay session before disconnecting.
     /// Keeps the saved choice and CarPlay configuration for the next connection.
@@ -1625,20 +1625,20 @@ final class DeviceSession {
 
     /// Holds the single device-operation slot for a modal step, such as a save
     /// panel, that precedes a tool operation. Returns false when it is taken.
-    func reserve() -> Bool {
+    package func reserve() -> Bool {
         guard canPerformToolOperation else { return false }
         isBusy = true
         return true
     }
 
-    func release() {
+    package func release() {
         guard operation == nil else { return }
         isBusy = false
     }
 
     /// Runs one device tool operation at a time. The caller must hold no
     /// reservation. Errors other than cancellation are passed to `failure`.
-    func run(_ body: @escaping @MainActor () async throws -> Void,
+    package func run(_ body: @escaping @MainActor () async throws -> Void,
              failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformToolOperation else { return }
         isBusy = true
@@ -1658,7 +1658,7 @@ final class DeviceSession {
     }
 
     /// Reads physical orientation; automatic rotation subsequently follows guest interface orientation.
-    func readOrientation() async throws {
+    package func readOrientation() async throws {
         let reading = try await tools.orientation()
         try Task.checkCancellation()
         orientation = reading.physical
@@ -1669,7 +1669,7 @@ final class DeviceSession {
 
     /// Applies a changed guest interface orientation in a deterministic order.
     /// Resuming automatic rotation reapplies it even after a manual display rotation.
-    func followGuestInterfaceOrientation(enabled: Bool) -> Bool {
+    package func followGuestInterfaceOrientation(enabled: Bool) -> Bool {
         guard enabled else {
             guestAngle = nil
             return false
@@ -1680,11 +1680,11 @@ final class DeviceSession {
         return true
     }
 
-    func rotate(left: Bool) async throws {
+    package func rotate(left: Bool) async throws {
         try apply(await tools.rotate(left: left))
     }
 
-    func setOrientation(_ orientation: DeviceOrientation) async throws {
+    package func setOrientation(_ orientation: DeviceOrientation) async throws {
         try apply(await tools.setOrientation(orientation))
     }
 
@@ -1704,7 +1704,7 @@ final class DeviceSession {
     }
 
     /// Saves the screen to a file chosen in a save panel, replacing it.
-    func saveScreenshot(to destination: URL, mask: DeviceTools.ScreenMask) async throws {
+    package func saveScreenshot(to destination: URL, mask: DeviceTools.ScreenMask) async throws {
         try await CaptureFile.write(to: destination, extension: "png") { temporary in
             try await tools.screenshot(to: temporary, mask: mask, displayID: display.captureDisplayID)
             try Self.checkPNG(at: temporary)
@@ -1712,14 +1712,14 @@ final class DeviceSession {
     }
 
     /// The screen as a PNG, without the device's mask, for Edit ▸ Copy Screen.
-    func screenPNG() async throws -> Data {
+    package func screenPNG() async throws -> Data {
         let temporary = try await screenshot(mask: .ignored)
         defer { try? FileManager.default.removeItem(at: temporary) }
         return try Data(contentsOf: temporary)
     }
 
     /// Takes a screenshot into a new temporary PNG, which the caller owns.
-    func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
+    package func screenshot(mask: DeviceTools.ScreenMask) async throws -> URL {
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("simulator_screenshot_\(UUID().uuidString).png")
         do {
@@ -1741,10 +1741,10 @@ final class DeviceSession {
     }
 
     /// Whether a recording to a chosen file will replace `file` when it finishes.
-    func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
+    package func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
 
     /// Announces recording state changes to the device plugin.
-    func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
+    package func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
         guard canPerformCommands, recording == nil else { return }
         guard !isStartingAppResize else {
             throw SimulatorError.operation("Wait for the app display to connect before starting a recording.")
@@ -1759,11 +1759,11 @@ final class DeviceSession {
         display.announceRecording(started: true)
     }
 
-    func stopRecording() { recording?.stop() }
+    package func stopRecording() { recording?.stop() }
 
     /// Stops an active recording and waits until it is finalized, so that a
     /// restart does not cut it off. The recording store reports its errors.
-    func finishRecording() async {
+    package func finishRecording() async {
         guard let recording else { return }
         recording.stop()
         try? await recording.waitUntilFinished()
@@ -1771,9 +1771,9 @@ final class DeviceSession {
 
     /// Called once an import that attempted to install applications ends, whatever its outcome,
     /// because a failed or cancelled batch can still have installed some of them.
-    @ObservationIgnored var onApplicationsChange: (() -> Void)?
+    @ObservationIgnored package var onApplicationsChange: (() -> Void)?
 
-    func importFiles(_ urls: [URL]) async throws {
+    package func importFiles(_ urls: [URL]) async throws {
         var installsApplications = false
         defer { if installsApplications { onApplicationsChange?() } }
         try await SimulatorFileImport.perform(urls) { url, kind in
@@ -1786,16 +1786,16 @@ final class DeviceSession {
         }
     }
 
-    func openURL(_ url: URL) async throws { try await tools.openURL(url) }
+    package func openURL(_ url: URL) async throws { try await tools.openURL(url) }
 
-    func shutDown() async throws {
+    package func shutDown() async throws {
         isConnected = false
         try await tools.shutdown()
     }
 
     // MARK: Lifetime
 
-    func disconnect() {
+    package func disconnect() {
         guard !isDisconnected else { return }
         // Release held inputs, the remote's touch included, while the input
         // client can still send.
@@ -1829,7 +1829,7 @@ final class DeviceSession {
 
     /// Disconnects, then waits until the display has sent the native input it accepted and removed its services.
     /// After a failure, the next call removes what the display's input owners kept.
-    func stop() async throws {
+    package func stop() async throws {
         disconnect()
         let removal = inputRemoval ?? removeInput()
         inputRemoval = removal

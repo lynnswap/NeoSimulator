@@ -1,10 +1,11 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Darwin
 import Synchronization
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
-@main
-enum NeoSimulatorApp {
+public enum NeoSimulatorServiceMain {
     @MainActor private static var controller: HostApplication?
     @MainActor private static var ownerMonitor: RendererOwnerMonitor?
 
@@ -38,7 +39,7 @@ enum NeoSimulatorApp {
     }
 
     @MainActor
-    static func main() {
+    public static func main() {
 #if DEBUG
         if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
             NSApplication.shared.run()

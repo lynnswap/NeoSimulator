@@ -1,28 +1,30 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Observation
 import SwiftUI
 
 @MainActor
-protocol DeviceBrowserSource: AnyObject {
+package protocol DeviceBrowserSource: AnyObject {
     func availableSimulatorDevices() throws -> [AvailableDevice]
     func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws
 }
 
 @MainActor @Observable
-final class DeviceBrowserModel {
+package final class DeviceBrowserModel {
     private weak var source: (any DeviceBrowserSource)?
-    private(set) var devices: [AvailableDevice] = []
-    private(set) var opening: Set<SimulatorDeviceIdentifier> = []
-    var errorMessage: String?
-    var search = "" {
+    package private(set) var devices: [AvailableDevice] = []
+    package private(set) var opening: Set<SimulatorDeviceIdentifier> = []
+    package var errorMessage: String?
+    package var search = "" {
         didSet { if search != oldValue { updateSections() } }
     }
-    struct RuntimeSection: Identifiable {
-        let id: String
-        let devices: [AvailableDevice]
+    package struct RuntimeSection: Identifiable {
+        package let id: String
+        package let devices: [AvailableDevice]
     }
-    private(set) var sections: [RuntimeSection] = []
-    var showsError: Bool {
+    package private(set) var sections: [RuntimeSection] = []
+    package var showsError: Bool {
         get { errorMessage != nil }
         set { if !newValue { errorMessage = nil } }
     }
@@ -37,12 +39,12 @@ final class DeviceBrowserModel {
             .sorted { $0.id.compare($1.id, options: .numeric) == .orderedDescending }
     }
 
-    init(source: any DeviceBrowserSource) {
+    package init(source: any DeviceBrowserSource) {
         self.source = source
         refresh()
     }
 
-    func refresh() {
+    package func refresh() {
         do {
             devices = try source?.availableSimulatorDevices().sorted {
             let runtimeOrder = $0.runtimeName.compare($1.runtimeName, options: .numeric)
@@ -55,7 +57,7 @@ final class DeviceBrowserModel {
     }
 
     @discardableResult
-    func open(_ device: AvailableDevice) -> Task<Void, Never>? {
+    package func open(_ device: AvailableDevice) -> Task<Void, Never>? {
         guard let source, device.canOpen, opening.insert(device.identity).inserted else { return nil }
         return Task {
             defer { opening.remove(device.identity); refresh() }
@@ -66,9 +68,9 @@ final class DeviceBrowserModel {
     }
 }
 
-struct DeviceBrowserView: View {
-    @Bindable var model: DeviceBrowserModel
-    var body: some View {
+package struct DeviceBrowserView: View {
+    @Bindable package var model: DeviceBrowserModel
+    package var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
@@ -156,10 +158,10 @@ struct DeviceBrowserView: View {
 }
 
 @MainActor
-final class DeviceBrowserWindowController: NSWindowController {
+package final class DeviceBrowserWindowController: NSWindowController {
     private let model: DeviceBrowserModel
 
-    init(source: any DeviceBrowserSource) {
+    package init(source: any DeviceBrowserSource) {
         model = DeviceBrowserModel(source: source)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -172,12 +174,12 @@ final class DeviceBrowserWindowController: NSWindowController {
         super.init(window: window)
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    func refresh() { model.refresh() }
-    func report(_ error: Error) { model.errorMessage = error.localizedDescription }
+    package func refresh() { model.refresh() }
+    package func report(_ error: Error) { model.errorMessage = error.localizedDescription }
 
-    func show() {
+    package func show() {
         refresh()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

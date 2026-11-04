@@ -2,24 +2,24 @@ import AppKit
 import QuartzCore
 
 @MainActor
-final class DisplayPresentationView: NSView {
-    struct Snapshot {
-        let modelSize: NSSize
-        let centerInScreen: NSPoint
-        let scale: CGFloat
-        let angle: CGFloat
+package final class DisplayPresentationView: NSView {
+    package struct Snapshot {
+        package let modelSize: NSSize
+        package let centerInScreen: NSPoint
+        package let scale: CGFloat
+        package let angle: CGFloat
     }
 
     private var display: NSView?
 
-    override init(frame: NSRect) {
+    package override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    func setDisplay(_ view: NSView) {
+    package func setDisplay(_ view: NSView) {
         layer?.removeAllAnimations()
         display?.removeFromSuperview()
         display = view
@@ -28,17 +28,17 @@ final class DisplayPresentationView: NSView {
         addSubview(view)
     }
 
-    func setDisplayFrame(_ frame: NSRect) {
+    package func setDisplayFrame(_ frame: NSRect) {
         self.frame = frame
         display?.frame = bounds
     }
 
-    override func viewDidMoveToWindow() {
+    package override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         layer?.removeAnimation(forKey: "displayRotation")
     }
 
-    var snapshot: Snapshot? {
+    package var snapshot: Snapshot? {
         guard let window, window.isVisible, let layer, let superview else { return nil }
         let model = convert(bounds, to: nil)
         let shown = layer.animation(forKey: "displayRotation") == nil ? layer : layer.presentation() ?? layer
@@ -48,7 +48,7 @@ final class DisplayPresentationView: NSView {
                         scale: hypot(transform.a, transform.b), angle: atan2(transform.b, transform.a))
     }
 
-    func animateRotation(from previous: Snapshot?, by degrees: Double) {
+    package func animateRotation(from previous: Snapshot?, by degrees: Double) {
         guard let previous, let layer, let window, window.isVisible,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         var rotation = degrees.truncatingRemainder(dividingBy: 360)

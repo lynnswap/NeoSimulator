@@ -1,55 +1,65 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Observation
 
 @MainActor @Observable
-final class NewSimulatorModel {
-    struct ExistingDevice {
-        let identifier: String
-        let name: String
-        let productFamily: String
-        let deviceType: String
-        let runtime: String
+package final class NewSimulatorModel {
+    package struct ExistingDevice {
+        package let identifier: String
+        package let name: String
+        package let productFamily: String
+        package let deviceType: String
+        package let runtime: String
+
+        package init(identifier: String, name: String, productFamily: String, deviceType: String, runtime: String) {
+            self.identifier = identifier
+            self.name = name
+            self.productFamily = productFamily
+            self.deviceType = deviceType
+            self.runtime = runtime
+        }
     }
 
-    typealias Create = @MainActor (_ name: String, _ deviceType: String, _ runtime: String) async throws -> String
-    typealias Pair = @MainActor (_ watch: String, _ phone: String) async throws -> Void
+    package typealias Create = @MainActor (_ name: String, _ deviceType: String, _ runtime: String) async throws -> String
+    package typealias Pair = @MainActor (_ watch: String, _ phone: String) async throws -> Void
 
-    let catalog: SimulatorCatalog
-    let existingDevice: ExistingDevice?
+    package let catalog: SimulatorCatalog
+    package let existingDevice: ExistingDevice?
     private let preferences: SimulatorPreferences?
     private let create: Create
     private let pair: Pair
-    var name = ""
-    var watchName = ""
-    private(set) var family: Int?
-    private(set) var deviceType: String?
-    private(set) var runtime: String?
-    private(set) var watchType: String?
-    private(set) var watchRuntime: String?
-    private(set) var availableWatchRuntimes: [SimulatorCatalog.Runtime] = []
+    package var name = ""
+    package var watchName = ""
+    package private(set) var family: Int?
+    package private(set) var deviceType: String?
+    package private(set) var runtime: String?
+    package private(set) var watchType: String?
+    package private(set) var watchRuntime: String?
+    package private(set) var availableWatchRuntimes: [SimulatorCatalog.Runtime] = []
     private var runtimeNames: [String: String] = [:]
-    private(set) var addsWatch = false
-    private(set) var showsWatchPage = false
-    private(set) var isCreating = false
-    private(set) var message: String?
-    var error: String?
-    @ObservationIgnored var onCreated: (() -> Void)?
-    @ObservationIgnored var onFailure: ((Error) -> Void)?
-    var onCancel: (() -> Void)?
+    package private(set) var addsWatch = false
+    package private(set) var showsWatchPage = false
+    package private(set) var isCreating = false
+    package private(set) var message: String?
+    package var error: String?
+    @ObservationIgnored package var onCreated: (() -> Void)?
+    @ObservationIgnored package var onFailure: ((Error) -> Void)?
+    package var onCancel: (() -> Void)?
     @ObservationIgnored private var creation: Task<Void, Never>?
     @ObservationIgnored private var runtimeNameLoading: Task<Void, Never>?
 
-    var showsError: Bool {
+    package var showsError: Bool {
         get { error != nil }
         set { if !newValue { error = nil } }
     }
 
-    func startLoadingRuntimeNames() {
+    package func startLoadingRuntimeNames() {
         guard runtimeNameLoading == nil else { return }
         runtimeNameLoading = Task { [weak self] in await self?.loadRuntimeNames() }
     }
 
-    init(catalog: SimulatorCatalog, pairingWith existingDevice: ExistingDevice? = nil,
+    package init(catalog: SimulatorCatalog, pairingWith existingDevice: ExistingDevice? = nil,
          create: @escaping Create, pair: @escaping Pair, preferences: SimulatorPreferences? = nil) {
         self.catalog = catalog
         self.existingDevice = existingDevice
@@ -71,16 +81,16 @@ final class NewSimulatorModel {
         showsWatchPage = existingDevice != nil && !createsPhone
     }
 
-    var createsPhone: Bool { existingDevice?.productFamily == "Apple Watch" }
-    var title: String {
+    package var createsPhone: Bool { existingDevice?.productFamily == "Apple Watch" }
+    package var title: String {
         existingDevice.map { $0.productFamily == "Apple Watch" ? "New iPhone Simulator" : "New Watch Simulator" }
             ?? "New Simulator"
     }
-    var heading: String {
+    package var heading: String {
         existingDevice.map { "Create \(createsPhone ? "an iPhone" : "an Apple Watch") for \($0.name)" }
             ?? "Create a new simulator"
     }
-    var families: [(id: Int, name: String)] {
+    package var families: [(id: Int, name: String)] {
         var seen: Set<Int> = []
         return catalog.deviceTypes.compactMap { type in
             guard seen.insert(type.productFamily).inserted else { return nil }
@@ -95,7 +105,7 @@ final class NewSimulatorModel {
             return (type.productFamily, name)
         }
     }
-    var deviceTypes: [SimulatorCatalog.DeviceType] {
+    package var deviceTypes: [SimulatorCatalog.DeviceType] {
         catalog.deviceTypes.filter { type in
             if existingDevice == nil { return type.productFamily == family }
             return !createsPhone || (type.productFamily == 1 && catalog.runtimes.contains {
@@ -103,7 +113,7 @@ final class NewSimulatorModel {
             })
         }
     }
-    var runtimes: [SimulatorCatalog.Runtime] {
+    package var runtimes: [SimulatorCatalog.Runtime] {
         catalog.runtimes.filter { runtime in
             if existingDevice == nil {
                 return deviceTypes.contains { catalog.runtime(runtime.identifier, supports: $0.identifier) }
@@ -111,12 +121,12 @@ final class NewSimulatorModel {
             return !createsPhone || deviceTypes.contains { simulatorRuntimeSupports(runtime.identifier, type: $0.identifier) }
         }
     }
-    func runtimeName(_ runtime: SimulatorCatalog.Runtime) -> String {
+    package func runtimeName(_ runtime: SimulatorCatalog.Runtime) -> String {
         guard let build = runtime.buildVersion else { return runtime.name }
         return "\(runtimeNames[build] ?? runtime.name) (\(build))"
     }
 
-    func loadRuntimeNames(using load: @Sendable () async throws -> Data = {
+    package func loadRuntimeNames(using load: @Sendable () async throws -> Data = {
         let url = URL(string: "https://devimages-cdn.apple.com/downloads/xcode/simulators/index2.dvtdownloadableindex")!
         return try await URLSession.shared.data(from: url).0
     }) async {
@@ -127,19 +137,19 @@ final class NewSimulatorModel {
         runtimeNames = names
     }
 
-    var watchTypes: [SimulatorCatalog.DeviceType] {
+    package var watchTypes: [SimulatorCatalog.DeviceType] {
         catalog.deviceTypes.filter { type in
             type.productFamily == 4 && (existingDevice == nil || catalog.runtimes.contains {
                 watchRuntimeSupports($0.identifier, type: type.identifier)
             })
         }
     }
-    var deviceNamePlaceholder: String { deviceType.flatMap(catalog.deviceType)?.name ?? "" }
-    var watchNamePlaceholder: String { watchType.flatMap(catalog.deviceType)?.name ?? "" }
-    var canAddWatch: Bool { existingDevice == nil && deviceType.flatMap(catalog.deviceType)?.productFamily == 1 }
-    var pairsWatch: Bool { (existingDevice != nil && !createsPhone) || (canAddWatch && addsWatch) }
-    var forwardTitle: String { pairsWatch && !showsWatchPage ? "Next" : "Create" }
-    var canProceed: Bool {
+    package var deviceNamePlaceholder: String { deviceType.flatMap(catalog.deviceType)?.name ?? "" }
+    package var watchNamePlaceholder: String { watchType.flatMap(catalog.deviceType)?.name ?? "" }
+    package var canAddWatch: Bool { existingDevice == nil && deviceType.flatMap(catalog.deviceType)?.productFamily == 1 }
+    package var pairsWatch: Bool { (existingDevice != nil && !createsPhone) || (canAddWatch && addsWatch) }
+    package var forwardTitle: String { pairsWatch && !showsWatchPage ? "Next" : "Create" }
+    package var canProceed: Bool {
         guard !isCreating else { return false }
         if existingDevice != nil || showsWatchPage { return canPair }
         return deviceType.flatMap { type in runtime.map { simulatorRuntimeSupports($0, type: type) } } == true
@@ -153,7 +163,7 @@ final class NewSimulatorModel {
         return catalog.canPair(watch, watchRuntime, phone, phoneRuntime)
     }
 
-    func selectFamily(_ value: Int?) {
+    package func selectFamily(_ value: Int?) {
         family = value
         preferences?.newSimulatorFamily = value
         resetSimulatorSelection()
@@ -178,7 +188,7 @@ final class NewSimulatorModel {
             updateRuntime(savedRuntime)
         }
     }
-    func selectDeviceType(_ value: String?) {
+    package func selectDeviceType(_ value: String?) {
         updateDeviceType(value)
         saveSimulatorSelection()
     }
@@ -190,7 +200,7 @@ final class NewSimulatorModel {
         }
         if !canAddWatch { addsWatch = false }
     }
-    func selectRuntime(_ value: String?) {
+    package func selectRuntime(_ value: String?) {
         updateRuntime(value)
         saveSimulatorSelection()
     }
@@ -208,8 +218,8 @@ final class NewSimulatorModel {
         preferences?.setNewSimulatorSelection(deviceType: deviceType, runtime: runtime, for: family)
     }
 
-    func setAddsWatch(_ value: Bool) { addsWatch = canAddWatch && value }
-    func selectWatchType(_ value: String?) {
+    package func setAddsWatch(_ value: Bool) { addsWatch = canAddWatch && value }
+    package func selectWatchType(_ value: String?) {
         updateWatchType(value)
         saveWatchSelection()
     }
@@ -221,7 +231,7 @@ final class NewSimulatorModel {
             watchRuntime = availableWatchRuntimes.first?.identifier
         }
     }
-    func selectWatchRuntime(_ value: String?) {
+    package func selectWatchRuntime(_ value: String?) {
         updateWatchRuntime(value)
         saveWatchSelection()
     }
@@ -258,7 +268,7 @@ final class NewSimulatorModel {
         return catalog.canPair(type, runtime, existingDevice.deviceType, existingDevice.runtime)
     }
 
-    func restoreInput(from previous: NewSimulatorModel) {
+    package func restoreInput(from previous: NewSimulatorModel) {
         name = previous.name
         watchName = previous.watchName
         if families.contains(where: { $0.id == previous.family }) {
@@ -270,13 +280,13 @@ final class NewSimulatorModel {
         setAddsWatch(previous.addsWatch)
         showsWatchPage = previous.showsWatchPage && pairsWatch
     }
-    func previous() { showsWatchPage = false }
-    func forward() {
+    package func previous() { showsWatchPage = false }
+    package func forward() {
         guard canProceed else { return }
         if pairsWatch && !showsWatchPage { showsWatchPage = true }
         else { createSimulator() }
     }
-    func waitForCreation() async { await creation?.value }
+    package func waitForCreation() async { await creation?.value }
 
     private func createSimulator() {
         let newDevice: (name: String, type: String, runtime: String)

@@ -2,8 +2,8 @@ import AppKit
 
 /// Catalog shared by device menus, toolbars, and validation.
 @MainActor
-struct DeviceCommand {
-    enum ID: String, CaseIterable {
+package struct DeviceCommand {
+    package enum ID: String, CaseIterable {
         case saveScreen, saveScreenAs, recordScreen, recordScreenAs, stopRecording, importFiles, copyScreen
         case getPasteboard, sendPasteboard
         case restart, eraseAllContentAndSettings, shutDown, rotateLeft, rotateRight
@@ -29,35 +29,35 @@ struct DeviceCommand {
     }
 
     /// Device Hub's canvas rotates left by default; Option reverses it.
-    static func canvasRotation(modifierFlags: NSEvent.ModifierFlags) -> ID {
+    package static func canvasRotation(modifierFlags: NSEvent.ModifierFlags) -> ID {
         modifierFlags.contains(.option) ? .rotateRight : .rotateLeft
     }
 
-    struct Toolbar {
+    package struct Toolbar {
         /// A toolbar button's appearance and action.
-        struct Face {
-            let id: ID
-            let symbol: String
+        package struct Face {
+            package let id: ID
+            package let symbol: String
             /// Accessibility image description; nil uses the symbol's own description.
-            let imageDescription: String?
+            package let imageDescription: String?
             /// Tooltip override; nil uses the label.
-            var toolTip: String?
+            package var toolTip: String?
         }
 
         /// Item label and default tooltip.
-        let label: String
-        let toolTip: String?
-        let symbol: String
+        package let label: String
+        package let toolTip: String?
+        package let symbol: String
         /// Accessibility image description, defaulting to the label.
-        let imageDescription: String
+        package let imageDescription: String
         /// Simulator.app toolbar width, used by `DeviceToolbar.buttonsWidth`.
-        let buttonWidth: CGFloat
+        package let buttonWidth: CGFloat
         /// Alternate shown while Option is held over the toolbar.
-        let optionAlternate: Face?
+        package let optionAlternate: Face?
         /// Alternate shown whenever its command can run, regardless of Option.
-        let alternate: Face?
+        package let alternate: Face?
 
-        init(label: String, toolTip: String? = nil, symbol: String, imageDescription: String? = nil,
+        package init(label: String, toolTip: String? = nil, symbol: String, imageDescription: String? = nil,
              buttonWidth: CGFloat, optionAlternate: Face? = nil, alternate: Face? = nil) {
             self.label = label
             self.toolTip = toolTip
@@ -69,33 +69,33 @@ struct DeviceCommand {
         }
     }
 
-    let id: ID
-    let title: String
-    var key = ""
-    var modifiers: NSEvent.ModifierFlags = .command
+    package let id: ID
+    package let title: String
+    package var key = ""
+    package var modifiers: NSEvent.ModifierFlags = .command
     /// Replaces the preceding menu item while the extra modifier is held.
-    var isAlternate = false
+    package var isAlternate = false
     /// Assigns shortcuts shared by commands according to the key device.
-    var hasKey: ((DeviceCapabilities?) -> Bool)?
-    var toolbar: Toolbar?
+    package var hasKey: ((DeviceCapabilities?) -> Bool)?
+    package var toolbar: Toolbar?
     /// Unsupported commands are hidden.
-    var isSupported: (DeviceCapabilities) -> Bool = { _ in true }
+    package var isSupported: (DeviceCapabilities) -> Bool = { _ in true }
     /// Defaults to a connected, booted device.
-    var isEnabled: (DeviceWindowController) -> Bool = { $0.session.canPerformCommands }
+    package var isEnabled: (DeviceWindowController) -> Bool = { $0.session.canPerformCommands }
     /// Nil preserves the current checkmark.
-    var state: ((DeviceWindowController) -> NSControl.StateValue?)?
+    package var state: ((DeviceWindowController) -> NSControl.StateValue?)?
     /// Preserves the checkmark when no device window is active.
-    var keepsStateWithoutWindow = false
+    package var keepsStateWithoutWindow = false
     /// Dynamic title.
-    var stateTitle: ((DeviceWindowController) -> String)?
+    package var stateTitle: ((DeviceWindowController) -> String)?
     /// Dynamic subtitle; nil clears it.
-    var stateSubtitle: ((DeviceWindowController) -> String?)?
-    let perform: (DeviceWindowController) -> Void
+    package var stateSubtitle: ((DeviceWindowController) -> String?)?
+    package let perform: (DeviceWindowController) -> Void
 
-    static func command(_ id: ID) -> DeviceCommand { catalog[id]! }
+    package static func command(_ id: ID) -> DeviceCommand { catalog[id]! }
 
     /// Updates menu state and returns availability for the active device window.
-    func validate(_ item: NSMenuItem, for controller: DeviceWindowController?) -> Bool {
+    package func validate(_ item: NSMenuItem, for controller: DeviceWindowController?) -> Bool {
         guard let controller else {
             if !keepsStateWithoutWindow { item.state = .off }
             item.title = title
@@ -112,7 +112,7 @@ struct DeviceCommand {
         return isEnabled(controller)
     }
 
-    static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: ([
+    package static let catalog: [ID: DeviceCommand] = Dictionary(uniqueKeysWithValues: ([
         DeviceCommand(id: .resizeApp, title: "Resize App",
                       toolbar: Toolbar(label: "Resize App", symbol: "aspectratio", buttonWidth: 32),
                       isEnabled: { $0.session.canResizeApp },
@@ -442,30 +442,30 @@ struct DeviceCommand {
     }
 
     /// Simulator.app toolbar order; capability validation omits unsupported items.
-    static let toolbarItems: [ID] = [.captureKeyboard, .home, .saveScreen, .rotateRight, .alwaysOn]
+    package static let toolbarItems: [ID] = [.captureKeyboard, .home, .saveScreen, .rotateRight, .alwaysOn]
 }
 
 /// Plugin commands use the first-responder chain for validation and execution.
 /// The XROS overlay supplies checkmarks, scene submenus, and actions;
 /// without it in the key window, AppKit disables these commands.
 @MainActor
-struct PluginCommand {
-    let title: String
-    let action: Selector
-    var key = ""
-    var modifiers: NSEvent.ModifierFlags = []
+package struct PluginCommand {
+    package let title: String
+    package let action: Selector
+    package var key = ""
+    package var modifiers: NSEvent.ModifierFlags = []
     /// Whether the key device shows the item, as Simulator.app's
     /// `deviceWindowBecameKey:` decides. By default, only Apple Vision shows it.
-    var isShown: (DeviceCapabilities) -> Bool = { $0.family == .vision }
+    package var isShown: (DeviceCapabilities) -> Bool = { $0.family == .vision }
 
     /// The command whose item sends `action`.
-    static func command(for action: Selector) -> PluginCommand? { byAction[action] }
+    package static func command(for action: Selector) -> PluginCommand? { byAction[action] }
 
     // Device. Simulator.app shows Re-Center Open Apps for every device, where
     // only Apple Vision Pro's overlay takes it.
-    static let recenterOpenApps = PluginCommand(title: "Re-Center Open Apps", action: Selector(("recenterAllOpenApps:")),
+    package static let recenterOpenApps = PluginCommand(title: "Re-Center Open Apps", action: Selector(("recenterAllOpenApps:")),
                                                 isShown: { _ in true })
-    static let viewportModes = [
+    package static let viewportModes = [
         PluginCommand(title: "Interaction Mode", action: Selector(("viewportModeChangedToInteraction:")), key: "1",
                       modifiers: [.control, .command]),
         PluginCommand(title: "Look Around Mode", action: Selector(("viewportModeChangedToLookAround:")), key: "2",
@@ -477,20 +477,20 @@ struct PluginCommand {
         PluginCommand(title: "Dolly Mode", action: Selector(("viewportModeChangedToDolly:")), key: "5",
                       modifiers: [.control, .command]),
     ]
-    static let resetCamera = PluginCommand(title: "Reset Camera", action: Selector(("resetViewportCamera:")), key: "0",
+    package static let resetCamera = PluginCommand(title: "Reset Camera", action: Selector(("resetViewportCamera:")), key: "0",
                                            modifiers: [.control, .command])
     /// The overlay gives the item a submenu of the runtime's scenes when it
     /// validates it.
-    static let simulatedScenes = PluginCommand(title: "Simulated Scenes", action: Selector(("selectSimulatedScene:")))
+    package static let simulatedScenes = PluginCommand(title: "Simulated Scenes", action: Selector(("selectSimulatedScene:")))
     // I/O ▸ Set Immersion To. Simulator.app also has Increase Immersion and
     // Decrease Immersion, and 0% and 25% here, but hides them for every device.
-    static let immersionLevels = [
+    package static let immersionLevels = [
         PluginCommand(title: "50%", action: Selector(("setImmersionTo50:"))),
         PluginCommand(title: "75%", action: Selector(("setImmersionTo75:"))),
         PluginCommand(title: "100%", action: Selector(("setImmersionTo100:"))),
     ]
     // Starts a guest FaceTime call with the local user and these simulated participant counts.
-    static let faceTimeSessions = [
+    package static let faceTimeSessions = [
         PluginCommand(title: "User and 1 Spatial Participant",
                       action: Selector(("configureSimulatedFaceTimeSession1x1:"))),
         PluginCommand(title: "User and 2 Spatial Participants",
@@ -505,7 +505,7 @@ struct PluginCommand {
                       action: Selector(("configureSimulatedFaceTimeSession1x4x8:"))),
     ]
     // Debug
-    static let showGazeTarget = PluginCommand(title: "Show Gaze Target", action: Selector(("toggleShowGazeTarget:")),
+    package static let showGazeTarget = PluginCommand(title: "Show Gaze Target", action: Selector(("toggleShowGazeTarget:")),
                                               isShown: { $0.supportsFeature(DeviceCapabilities.hoverboard) })
 
     private static let byAction = Dictionary(uniqueKeysWithValues: (
@@ -515,7 +515,7 @@ struct PluginCommand {
 }
 
 /// Splits parenthesized device details into the subtitle and removes the Apple Watch title prefix.
-func deviceWindowTitles(name: String, runtimeName: String) -> (title: String, subtitle: String) {
+package func deviceWindowTitles(name: String, runtimeName: String) -> (title: String, subtitle: String) {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     func shown(_ title: Substring) -> String {
         let prefix = "Apple Watch "
@@ -534,7 +534,7 @@ func deviceWindowTitles(name: String, runtimeName: String) -> (title: String, su
 
 extension ExternalDisplayMode {
     /// The command of the mode's I/O ▸ External Displays item.
-    var commandID: DeviceCommand.ID {
+    package var commandID: DeviceCommand.ID {
         switch self {
         case .disabled: .externalDisplayDisabled
         case .size640x480: .externalDisplay640x480

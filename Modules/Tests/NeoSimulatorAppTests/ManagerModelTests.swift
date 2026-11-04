@@ -1,6 +1,9 @@
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorService
 import AppKit
 import Foundation
-import LicenseList
 import Observation
 import SwiftUI
 import Testing
@@ -196,31 +199,6 @@ struct ManagerModelTests {
         }
     }
 
-    @Test func licensesIncludePackagesAndPortedCodeAndUseNativeSelection() throws {
-        let model = LicensesSettingsModel()
-        #expect(model.issue == nil)
-        let names = Set(model.libraries.map(\.name))
-        #expect(names.isSuperset(of: ["LicenseList", "ABIBridge", "ObservationBridge", "simslim"]))
-        let simslim = try #require(model.libraries.first { $0.name == "simslim" })
-        #expect(simslim.licenseBody.contains("Copyright (c) 2026 Interlap"))
-        #expect(simslim.licenseBody.contains("Permission is hereby granted"))
-        #expect(model.libraries.allSatisfy { !$0.licenseBody.isEmpty })
-
-        let controller = LicensesSettingsViewController(model: model)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
-                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentViewController = controller
-        window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
-        window.layoutIfNeeded()
-        #expect(controller.view.frame.size == NSSize(width: 720, height: 520))
-        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }.first)
-        #expect(table.selectedRow == 0)
-        let row = try #require(model.libraries.firstIndex { $0.id == simslim.id })
-        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        #expect(model.selectedLibrary?.id == simslim.id)
-    }
 
     @Test func settingsRefreshRuntimesAndRememberTheDeviceFamily() async throws {
         let domain = "NeoSimulator.CreationFixture.\(UUID().uuidString)"

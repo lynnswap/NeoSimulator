@@ -2,7 +2,7 @@ import AppKit
 
 /// External display choices, using Simulator.app's persisted menu tags.
 /// Fixed sizes use one point per pixel; CarPlay uses `CarPlayConfiguration`.
-enum ExternalDisplayMode: Int, CaseIterable {
+package enum ExternalDisplayMode: Int, CaseIterable {
     case disabled = 2114
     case size640x480 = 2214
     case size720x480 = 2514
@@ -13,12 +13,12 @@ enum ExternalDisplayMode: Int, CaseIterable {
     case carPlay = 2714
 
     /// The sizes, in the menu's order.
-    static let sizes: [ExternalDisplayMode] = [
+    package static let sizes: [ExternalDisplayMode] = [
         .size640x480, .size720x480, .size1024x768, .size1280x720, .size1920x1080, .size3840x2160,
     ]
 
     /// The title in Simulator.app's MainMenu.nib.
-    var title: String {
+    package var title: String {
         switch self {
         case .disabled: "Disabled"
         case .size640x480: "640×480"
@@ -32,7 +32,7 @@ enum ExternalDisplayMode: Int, CaseIterable {
     }
 
     /// The screen's pixel size, or nil for Disabled.
-    var pixelSize: CGSize? {
+    package var pixelSize: CGSize? {
         switch self {
         case .disabled: nil
         case .size640x480: CGSize(width: 640, height: 480)
@@ -47,28 +47,28 @@ enum ExternalDisplayMode: Int, CaseIterable {
 
     /// The screen's scale, in pixels per point: 1 for every size, as
     /// Simulator.app sets them, and the CarPlay configuration's for CarPlay.
-    var scale: CGFloat { self == .carPlay ? CarPlayConfiguration.scale : 1 }
+    package var scale: CGFloat { self == .carPlay ? CarPlayConfiguration.scale : 1 }
 }
 
 /// Simulator.app's default `StarkConfig`: 800×480 at scale 2, touch enabled, no wheel/back/home controls.
-enum CarPlayConfiguration {
-    static let pixelSize = CGSize(width: 800, height: 480)
-    static let scale: CGFloat = 2
-    static let hasTouchScreen = true
+package enum CarPlayConfiguration {
+    package static let pixelSize = CGSize(width: 800, height: 480)
+    package static let scale: CGFloat = 2
+    package static let hasTouchScreen = true
 
     /// The configuration as Simulator.app writes it to the device's
     /// `extended_display.plist`, under its plain keys.
-    static var file: [String: Any] {
+    package static var file: [String: Any] {
         ["stark": true, "width": Int(pixelSize.width), "height": Int(pixelSize.height), "scale": Double(scale),
          "hasBackButton": false, "hasHomeButton": false, "hasWheel": false, "hasWheelBump": false,
          "hasTouchScreen": hasTouchScreen, "hasTouchScreenLofi": false, "protocols": [String]()]
     }
 
     /// What Simulator.app writes there for every other choice.
-    static var disabledFile: [String: Any] { ["stark": 0] }
+    package static var disabledFile: [String: Any] { ["stark": 0] }
 
     /// Writes the configuration in place, creating its parent directory.
-    static func save(carPlay: Bool, to url: URL) throws {
+    package static func save(carPlay: Bool, to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try PropertyListSerialization.data(fromPropertyList: carPlay ? file : disabledFile, format: .xml, options: 0)
             .write(to: url)
@@ -77,22 +77,22 @@ enum CarPlayConfiguration {
 
 /// A device's external display, CoreSimulator's TVOut screen, as its
 /// `SimScreenProperties` report it.
-struct ExternalScreenState: Equatable {
+package struct ExternalScreenState: Equatable {
     /// `powerState` is 1. CoreSimulator turns the screen on when its mode is set.
-    var isPoweredOn: Bool
+    package var isPoweredOn: Bool
     /// `pixelSize`.
-    var pixelSize: CGSize
+    package var pixelSize: CGSize
     /// `currentMode.preferredUIScale`, the screen's pixels per point.
-    var scale: CGFloat
+    package var scale: CGFloat
     /// `carPlayProperties` is not nil: the screen is a CarPlay screen, as
     /// SimulatorKit's `SimDeviceScreen.isCarPlay` says of a TVOut screen.
-    var isCarPlay = false
+    package var isCarPlay = false
     /// `currentMode.refreshRate` in hertz, which decides what the guest
     /// shows (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`).
-    var refreshRate: Double = 60
+    package var refreshRate: Double = 60
 
     /// Derives the menu choice from actual screen state. Returns nil for unlisted sizes or scales.
-    var mode: ExternalDisplayMode? {
+    package var mode: ExternalDisplayMode? {
         guard isPoweredOn else { return .disabled }
         guard !isCarPlay else { return .carPlay }
         return ExternalDisplayMode.sizes.first { $0.pixelSize == pixelSize && $0.scale == scale }
@@ -101,8 +101,8 @@ struct ExternalScreenState: Equatable {
 
 /// A mode that a screen advertises, `SimScreenMode`: the pixel sizes it
 /// takes, by its `sizeRule`, at its `preferredUIScale` and `refreshRate`.
-struct ExternalScreenMode: Equatable {
-    enum Sizes: Equatable {
+package struct ExternalScreenMode: Equatable {
+    package enum Sizes: Equatable {
         /// Size rule 0: `exactSize`.
         case exact(CGSize)
         /// Size rule 1: from `minSize` through `maxSize` in each dimension.
@@ -113,12 +113,12 @@ struct ExternalScreenMode: Equatable {
 
     /// The sizes the mode takes, or nil for a size rule this host does not
     /// know. Simulator.app traps on such a rule; here the mode takes no size.
-    var sizes: Sizes?
-    var scale: CGFloat
+    package var sizes: Sizes?
+    package var scale: CGFloat
     /// In hertz; CoreSimulator reports hundredths of a hertz.
-    var refreshRate: Double
+    package var refreshRate: Double
 
-    func accepts(_ size: CGSize, scale: CGFloat) -> Bool {
+    package func accepts(_ size: CGSize, scale: CGFloat) -> Bool {
         guard scale == self.scale, let sizes else { return false }
         switch sizes {
         case .exact(let exact): return exact == size
@@ -131,12 +131,12 @@ struct ExternalScreenMode: Equatable {
 
     /// Guest CoreAnimation accepts 49–60.5 Hz for SpringBoard's external display selection
     /// (`ModeSet::preferred_mode_with_criteria_internal`, iOS 18.5, 26.0, and 26.5).
-    static let guestRefreshRates: ClosedRange<Double> = 49...60.5
+    package static let guestRefreshRates: ClosedRange<Double> = 49...60.5
 
     /// Predicts SpringBoard's mode: the highest width × height × whole-hertz value at an accepted rate.
     /// An unsupported rate or a size below the advertised 720×480 mode therefore yields 720×480,
     /// even though the host window retains the requested size.
-    static func guestSize(for size: CGSize, refreshRate: Double, among modes: [ExternalScreenMode]) -> CGSize {
+    package static func guestSize(for size: CGSize, refreshRate: Double, among modes: [ExternalScreenMode]) -> CGSize {
         let exact = modes.compactMap { mode -> (size: CGSize, rate: Double)? in
             guard case .exact(let size) = mode.sizes else { return nil }
             return (size, mode.refreshRate)
@@ -153,7 +153,7 @@ struct ExternalScreenMode: Equatable {
     }
 
     /// Which mode NeoSimulator sets for `size` at `scale`, with that size.
-    enum Choice: Equatable {
+    package enum Choice: Equatable {
         case current
         case advertised(Int)
     }
@@ -162,7 +162,7 @@ struct ExternalScreenMode: Equatable {
     /// TVOut may advertise only 120 Hz while accepting 60 Hz, so a compatible mode
     /// can supply the rate and format for the requested size. Rejects unsupported sizes
     /// and modes the guest would replace; see `guestSize(for:refreshRate:among:)`.
-    static func choice(for size: CGSize, scale: CGFloat, current: ExternalScreenState?,
+    package static func choice(for size: CGSize, scale: CGFloat, current: ExternalScreenState?,
                        among modes: [ExternalScreenMode]) throws(ExternalDisplayLimit) -> Choice {
         let keeps = { (rate: Double) in guestRefreshRates.contains(rate) }
         let takes = { (mode: ExternalScreenMode) in mode.accepts(size, scale: scale) }
@@ -189,7 +189,7 @@ struct ExternalScreenMode: Equatable {
 
 /// Why a device cannot show an External Displays item, which the item says
 /// and a choice of it reports instead of changing the display.
-enum ExternalDisplayLimit: LocalizedError, Equatable {
+package enum ExternalDisplayLimit: LocalizedError, Equatable {
     /// No mode of the device's external display takes the item's size at its scale.
     case noMode
     /// The guest shows its mode of this size instead (see
@@ -199,7 +199,7 @@ enum ExternalDisplayLimit: LocalizedError, Equatable {
     /// (`SBSystemShellExtendedDisplayControllerPolicy.m:199`; observed on 18.6, 26.0, and 26.5).
     case extendedDisplay
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .noMode: "The external display has no mode for this size."
         case .showsInstead(let size):
@@ -210,14 +210,14 @@ enum ExternalDisplayLimit: LocalizedError, Equatable {
     }
 
     /// What the item's subtitle says.
-    var menuSubtitle: String {
+    package var menuSubtitle: String {
         switch self {
         case .noMode, .extendedDisplay: "Not available on this device"
         case .showsInstead(let size): "This device shows \(Self.name(size))"
         }
     }
 
-    static func name(_ size: CGSize) -> String { "\(Int(size.width))×\(Int(size.height))" }
+    package static func name(_ size: CGSize) -> String { "\(Int(size.width))×\(Int(size.height))" }
 }
 
 private let externalDisplayKey = "SimulatorExternalDisplay"
@@ -225,19 +225,19 @@ private let externalDisplayKey = "SimulatorExternalDisplay"
 extension PreferenceStore {
     /// Persisted SimulatorExternalDisplay tag; malformed or missing values mean Disabled.
     /// Unknown integer tags are preserved.
-    func externalDisplayTag(forDevice identifier: String) -> Int {
+    package func externalDisplayTag(forDevice identifier: String) -> Int {
         preferences(forDevice: identifier)?[externalDisplayKey] as? Int ?? ExternalDisplayMode.disabled.rawValue
     }
 
     /// Saves the device's External Displays choice, keeping its other
     /// preferences and the other devices'.
-    func setExternalDisplayTag(_ tag: Int, forDevice identifier: String) {
+    package func setExternalDisplayTag(_ tag: Int, forDevice identifier: String) {
         updatePreferences(forDevice: identifier) { $0[externalDisplayKey] = tag }
     }
 }
 
 /// Independently failing steps of a display change, including CarPlay configuration and services.
-enum ExternalDisplayStep: Equatable {
+package enum ExternalDisplayStep: Equatable {
     /// Writing the device's `extended_display.plist`.
     case carPlayConfiguration
     /// Setting the screen's mode, or turning it off.
@@ -249,9 +249,9 @@ enum ExternalDisplayStep: Equatable {
 }
 
 /// A step of an external display change that failed, and why.
-struct ExternalDisplayFailure {
-    let step: ExternalDisplayStep
-    let error: Error
+package struct ExternalDisplayFailure {
+    package let step: ExternalDisplayStep
+    package let error: Error
 }
 
 /// Serializes external-display changes across a device's sessions; the latest pending choice wins.
@@ -265,7 +265,7 @@ struct ExternalDisplayFailure {
 /// Disconnection from a stopped device or `completionTimeout` abandons stalled work.
 /// Late completions are ignored so later sessions can proceed.
 @MainActor
-final class ExternalDisplayChanges {
+package final class ExternalDisplayChanges {
     private struct Change {
         let mode: ExternalDisplayMode
         let screen: any SimulatorExternalScreen
@@ -293,10 +293,10 @@ final class ExternalDisplayChanges {
     }
 
     /// Bounds completion waits beyond observed delays of up to 4.5 seconds across restarts.
-    static let defaultCompletionTimeout: Duration = .seconds(10)
+    package static let defaultCompletionTimeout: Duration = .seconds(10)
     /// Allows the guest to process power-off before CarPlay reconnects.
     /// Without a delay, iOS 26.5 may retain the old display and never render CarPlay.
-    static let defaultCarPlayReconnectionDelay: Duration = .seconds(1)
+    package static let defaultCarPlayReconnectionDelay: Duration = .seconds(1)
 
     private let completionTimeout: Duration
     private let carPlayReconnectionDelay: Duration
@@ -310,18 +310,18 @@ final class ExternalDisplayChanges {
     /// When a change last turned the display off.
     private var lastPowerOff: ContinuousClock.Instant?
 
-    init(completionTimeout: Duration = ExternalDisplayChanges.defaultCompletionTimeout,
+    package init(completionTimeout: Duration = ExternalDisplayChanges.defaultCompletionTimeout,
          carPlayReconnectionDelay: Duration = ExternalDisplayChanges.defaultCarPlayReconnectionDelay) {
         self.completionTimeout = completionTimeout
         self.carPlayReconnectionDelay = carPlayReconnectionDelay
     }
 
     /// Whether a change is in flight or waiting.
-    var isBusy: Bool { inFlight != nil || waiting != nil }
+    package var isBusy: Bool { inFlight != nil || waiting != nil }
 
     /// Queues the latest choice and reports its collected failures after completion.
     /// `savesCarPlayConfiguration` writes the guest configuration before changing its mode.
-    func apply(_ mode: ExternalDisplayMode, through screen: any SimulatorExternalScreen,
+    package func apply(_ mode: ExternalDisplayMode, through screen: any SimulatorExternalScreen,
                savesCarPlayConfiguration: Bool, report: @escaping @MainActor ([ExternalDisplayFailure]) -> Void) {
         let change = Change(mode: mode, screen: screen, savesCarPlayConfiguration: savesCarPlayConfiguration,
                             report: report)
@@ -329,7 +329,7 @@ final class ExternalDisplayChanges {
     }
 
     /// Drops pending and abandons in-flight changes owned by this screen connection.
-    func abandon(changesThrough screen: any SimulatorExternalScreen) {
+    package func abandon(changesThrough screen: any SimulatorExternalScreen) {
         if waiting?.screen === screen { waiting = nil }
         if let inFlight, inFlight.change.screen === screen {
             abandon(inFlight, reason: "its device is no longer booted", reporting: false)
@@ -339,7 +339,7 @@ final class ExternalDisplayChanges {
 
     /// Waits until no change is in flight or waiting, or until `deadline`.
     /// Returns whether the changes completed.
-    func idle(before deadline: ContinuousClock.Instant) async -> Bool {
+    package func idle(before deadline: ContinuousClock.Instant) async -> Bool {
         guard isBusy else { return true }
         return await withCheckedContinuation { continuation in
             let wait = IdleWait(continuation)
@@ -546,8 +546,8 @@ final class ExternalDisplayChanges {
 /// CoreSimulatorBridge counts starts and ends; an unmatched end prevents the next start.
 /// State advances only on replies. Timeout makes it unknown until restart, preventing
 /// further session requests. Replies from earlier boots or after timeout are ignored.
-struct CarPlaySessionState {
-    enum Session: Equatable {
+package struct CarPlaySessionState {
+    package enum Session: Equatable {
         case none, started
         /// A start or an end was not answered in time.
         case unknown
@@ -559,38 +559,38 @@ struct CarPlaySessionState {
     /// Whether the HID service was created and not removed since.
     private var service = false
 
-    init() {}
+    package init() {}
 
     private init(boot: Date?) { self.boot = boot }
 
     /// The session in `boot`; none in a boot without a request.
-    func session(in boot: Date?) -> Session { boot == self.boot ? session : .none }
+    package func session(in boot: Date?) -> Session { boot == self.boot ? session : .none }
 
-    func hasService(in boot: Date?) -> Bool { boot == self.boot && service }
+    package func hasService(in boot: Date?) -> Bool { boot == self.boot && service }
 
     /// Notes that a session request is sent in `boot`, which replaces the
     /// state of an earlier boot.
-    mutating func willSend(in boot: Date?) {
+    package mutating func willSend(in boot: Date?) {
         if boot != self.boot { self = CarPlaySessionState(boot: boot) }
     }
 
-    mutating func sessionAnswered(starting: Bool, succeeded: Bool, in boot: Date?) {
+    package mutating func sessionAnswered(starting: Bool, succeeded: Bool, in boot: Date?) {
         guard boot == self.boot, session != .unknown else { return }
         if succeeded { session = starting ? .started : .none }
     }
 
-    mutating func timedOut(in boot: Date?) {
+    package mutating func timedOut(in boot: Date?) {
         if boot == self.boot { session = .unknown }
     }
 
     /// Notes the answer to a creation or a removal of the HID service.
-    mutating func serviceAnswered(created: Bool, succeeded: Bool, in boot: Date?) {
+    package mutating func serviceAnswered(created: Bool, succeeded: Bool, in boot: Date?) {
         if boot == self.boot, succeeded { service = created }
     }
 
     /// Treats an unanswered HID change as potentially created so cleanup removes it.
     /// The guest safely ignores removal when no service exists.
-    mutating func serviceUnanswered(in boot: Date?) {
+    package mutating func serviceUnanswered(in boot: Date?) {
         if boot == self.boot { service = true }
     }
 }

@@ -1,7 +1,9 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Observation
 import ObservationBridge
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The device screens open in the manager, the in-process host that presents each Xcode's simulators, and the
 /// connections of remote screens.

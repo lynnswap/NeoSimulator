@@ -1,5 +1,7 @@
-import AppKit
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
 @_spi(NeoSimulator) import XcodeSimulatorHost
+import AppKit
 
 public enum NeoSimulatorApplication {
     @MainActor public static func main(makeLicenses: @escaping @MainActor () -> NSViewController) {

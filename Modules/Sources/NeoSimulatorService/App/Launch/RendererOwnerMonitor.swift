@@ -1,7 +1,9 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Darwin
 import Synchronization
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The deadline runs independently of AppKit, including while native display code blocks its run loop.
 final class RendererOwnerMonitor: Sendable {

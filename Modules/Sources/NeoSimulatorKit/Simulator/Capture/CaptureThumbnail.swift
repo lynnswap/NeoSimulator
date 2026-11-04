@@ -7,25 +7,25 @@ import UniformTypeIdentifiers
 
 /// Temporary screenshot or recording, owned until saved, deleted, or handed off.
 @MainActor
-final class CapturedContent {
-    enum Kind { case screenshot, movie }
+package final class CapturedContent {
+    package enum Kind { case screenshot, movie }
 
-    let kind: Kind
-    let owner: UUID?
+    package let kind: Kind
+    package let owner: UUID?
     /// The temporary capture, which saving moves and deleting removes.
-    let file: URL
+    package let file: URL
     /// The file name it is saved under.
-    let name: String
+    package let name: String
     /// Where dismissing the thumbnail saves it, chosen when it was captured.
-    let defaultFolder: URL
+    package let defaultFolder: URL
     /// Names another capture will take, which saving skips.
     private let isReserved: (URL) -> Bool
     /// Whether the capture has been saved, deleted, or handed to another app.
-    private(set) var isResolved = false
+    package private(set) var isResolved = false
     /// Where it was saved, from which a late drag delivery copies it.
     private var saved: URL?
 
-    init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, owner: UUID? = nil,
+    package init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, owner: UUID? = nil,
          isReserved: @escaping (URL) -> Bool = { _ in false }) {
         self.kind = kind
         self.owner = owner
@@ -38,7 +38,7 @@ final class CapturedContent {
     /// Moves the capture into `folder`, numbering a taken name. A failure
     /// keeps the capture where it is and names that location.
     @discardableResult
-    func save(into folder: URL) throws -> URL {
+    package func save(into folder: URL) throws -> URL {
         guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
         let saved = try CaptureFile.move(file, into: folder, named: name, isReserved: isReserved)
         isResolved = true
@@ -47,17 +47,17 @@ final class CapturedContent {
     }
 
     @discardableResult
-    func saveToDefaultLocation() throws -> URL { try save(into: defaultFolder) }
+    package func saveToDefaultLocation() throws -> URL { try save(into: defaultFolder) }
 
     /// Settles a capture a drop took through its file URL, which moved the
     /// temporary file away, and returns whether it did.
-    func settleIfTaken() -> Bool {
+    package func settleIfTaken() -> Bool {
         guard !isResolved, !FileManager.default.fileExists(atPath: file.path) else { return isResolved }
         isResolved = true
         return true
     }
 
-    func delete() throws {
+    package func delete() throws {
         guard !isResolved else { return }
         try FileManager.default.removeItem(at: file)
         isResolved = true
@@ -65,7 +65,7 @@ final class CapturedContent {
 
     /// Writes the capture to `destination`, which a drag or another app asked
     /// for, and gives up the temporary file.
-    func deliver(to destination: URL) throws {
+    package func deliver(to destination: URL) throws {
         if let saved { return try FileManager.default.copyItem(at: saved, to: destination) }
         guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
         try FileManager.default.moveItem(at: file, to: destination)
@@ -85,7 +85,7 @@ final class CapturedContent {
 
 /// Runs presentation effects and deadlines independently of the thumbnail's lifecycle.
 @MainActor
-protocol CaptureThumbnailTiming {
+package protocol CaptureThumbnailTiming {
     func animateWindow(_ window: NSWindow, duration: Double, timing: CAMediaTimingFunctionName?, changes: (NSWindow) -> Void, completion: @escaping @MainActor () -> Void)
     func animateLayer(duration: Double, timing: CAMediaTimingFunctionName, changes: () -> Void,
                       completion: @escaping @MainActor () -> Void)
@@ -137,22 +137,22 @@ private struct AppKitCaptureThumbnailTiming: CaptureThumbnailTiming {
 /// Floating capture preview. Dismissal saves to the default folder;
 /// menu actions and dragging can consume the capture instead.
 @MainActor
-final class CaptureThumbnail: NSObject {
+package final class CaptureThumbnail: NSObject {
     /// A new capture dismisses existing thumbnails.
-    private(set) static var active: [CaptureThumbnail] = []
+    package private(set) static var active: [CaptureThumbnail] = []
     /// Captures whose thumbnail has ended but that wait for an animated GIF
     /// or a drag's file promise; quitting saves those still unresolved.
     private static var pending: [CapturedContent] = []
     /// Animated GIFs being written, whose names other exports must not take.
     private static var exportingGIFs: Set<URL> = []
     /// Reports a failure of a thumbnail whose device window has closed.
-    static var reportDetached: (Error) -> Void = { hostLog($0.localizedDescription) }
+    package static var reportDetached: (Error) -> Void = { hostLog($0.localizedDescription) }
     /// Set while NeoSimulator quits: captures are saved instead of shown.
-    static var savesImmediately = false
+    package static var savesImmediately = false
 
-    enum Position { case right, left, over }
+    package enum Position { case right, left, over }
 
-    let content: CapturedContent
+    package let content: CapturedContent
     private weak var parent: NSWindow?
     private let window: NSWindow
     private let view: CaptureThumbnailView
@@ -171,7 +171,7 @@ final class CaptureThumbnail: NSObject {
     private var pauses = 0
     private var hiding = false
     /// Whether it has appeared and its timer runs.
-    private(set) var shown = false
+    package private(set) var shown = false
     private var dismissedExplicitly = false
     private var finished = false
     private var observers: [any NSObjectProtocol] = []
@@ -180,7 +180,7 @@ final class CaptureThumbnail: NSObject {
 
     /// Animates from `source` in screen coordinates. `rotation` corrects the unrotated framebuffer.
     /// `spacing` is the offset from the device window; `report` receives save/use failures.
-    init(_ content: CapturedContent, image: NSImage?, parent: NSWindow, source: NSRect, rotation: Double = 0,
+    package init(_ content: CapturedContent, image: NSImage?, parent: NSWindow, source: NSRect, rotation: Double = 0,
          cornerRadius: CGFloat = 0, spacing: NSSize, timing: any CaptureThumbnailTiming = AppKitCaptureThumbnailTiming(),
          report: @escaping (Error) -> Void) {
         self.content = content
@@ -205,7 +205,7 @@ final class CaptureThumbnail: NSObject {
     }
 
     /// Shows the thumbnail after dismissing every other one.
-    func show() {
+    package func show() {
         for other in Self.active { other.hide(animated: false) }
         Self.active.append(self)
         guard let parent else { finish(); return }
@@ -250,7 +250,7 @@ final class CaptureThumbnail: NSObject {
 
     /// Places a quarter-size preview beside the window, falling back to its lower-right corner.
     /// Full-screen placement uses the display bounds and stays above the Dock.
-    static func placement(source: NSRect, window frame: NSRect, fullScreen: Bool, screen bounds: NSRect,
+    package static func placement(source: NSRect, window frame: NSRect, fullScreen: Bool, screen bounds: NSRect,
                           visible: NSRect, spacing: NSSize) -> (frame: NSRect, position: Position) {
         let size = NSSize(width: source.width * 0.25 + 10, height: source.height * 0.25 + 10)
         var origin: NSPoint
@@ -301,14 +301,14 @@ final class CaptureThumbnail: NSObject {
 
     /// Hover, an open menu, a drag, or a moving device window keeps the
     /// thumbnail up; the timer starts again when they end.
-    func pause() {
+    package func pause() {
         pauses += 1
         cancelTimer?()
         // Only the timer's hide can be taken back; a capture the user used is done.
         if hiding, !finished, !dismissedExplicitly, !content.isResolved { cancelHide() }
     }
 
-    func resume() {
+    package func resume() {
         pauses = max(pauses - 1, 0)
         if pauses == 0 { startTimer() }
     }
@@ -323,7 +323,7 @@ final class CaptureThumbnail: NSObject {
 
     /// Ends the thumbnail. Unless the user dismissed it through its menu or a
     /// drag, the capture is saved to its default location.
-    func hide(animated: Bool) {
+    package func hide(animated: Bool) {
         // Ending at once also ends a hide in progress.
         guard !finished, !hiding || !animated else { return }
         hiding = true
@@ -377,7 +377,7 @@ final class CaptureThumbnail: NSObject {
 
     /// Saves unresolved captures before quitting, including those awaiting GIF export.
     @discardableResult
-    static func finishAll(owner: UUID? = nil) -> [Error] {
+    package static func finishAll(owner: UUID? = nil) -> [Error] {
         let thumbnails = active.filter { owner == nil || $0.content.owner == owner }
         var failures = thumbnails.compactMap { $0.finish(reporting: false) }
         let captures = pending.filter { owner == nil || $0.owner == owner }
@@ -428,7 +428,7 @@ final class CaptureThumbnail: NSObject {
 
     // MARK: Menu actions
 
-    func menu() -> NSMenu {
+    package func menu() -> NSMenu {
         let menu = NSMenu()
         func add(_ title: String, _ action: @escaping (CaptureThumbnail) throws -> Void) -> NSMenuItem {
             let item = menu.addItem(withTitle: title, action: #selector(performAction(_:)), keyEquivalent: "")
@@ -554,7 +554,7 @@ final class CaptureThumbnail: NSObject {
     // MARK: Dragging
 
     /// Offers a file promise, file URL, and screenshot PNG when dragging.
-    static func dragProvider(for content: CapturedContent, report: @escaping (Error) -> Void) -> NSFilePromiseProvider {
+    package static func dragProvider(for content: CapturedContent, report: @escaping (Error) -> Void) -> NSFilePromiseProvider {
         let type: UTType = content.kind == .screenshot ? .png : .quickTimeMovie
         let delivery = CaptureDelivery(content: content, report: report)
         let provider = CaptureFilePromiseProvider(fileType: type.identifier, delegate: delivery)
@@ -566,13 +566,13 @@ final class CaptureThumbnail: NSObject {
         return provider
     }
 
-    func dragBegan() {
+    package func dragBegan() {
         pause()
         window.orderOut(nil)
     }
 
     /// A completed drag has delivered the capture; a cancelled one saves it.
-    func dragEnded(_ operation: NSDragOperation) {
+    package func dragEnded(_ operation: NSDragOperation) {
         if !operation.isEmpty { dismissedExplicitly = true }
         if !operation.isEmpty, !content.isResolved {
             // A late promise delivery may follow thumbnail dismissal, so preserve the capture
@@ -829,16 +829,16 @@ private final class CaptureFilePromiseProvider: NSFilePromiseProvider {
 }
 
 /// Exports looping GIFs from movie sample times, with frame-rate and size limits and optional dithering.
-enum AnimatedGIF {
-    struct Options {
-        var maximumFrameRate: Double
-        var maximumFrameSize: Double
-        var dithers: Bool
-        var ditherDepth: Double
+package enum AnimatedGIF {
+    package struct Options {
+        package var maximumFrameRate: Double
+        package var maximumFrameSize: Double
+        package var dithers: Bool
+        package var ditherDepth: Double
 
         /// The `GifMaxFramerate`, `GifMaxFrameSize`, `GifUseDither`, and
         /// `GifDitherDepth` preferences.
-        static var preferred: Options {
+        package static var preferred: Options {
             let defaults = HostPreferences.defaults
             let rate = defaults.double(forKey: HostPreferences.gifMaxFramerate)
             return Options(maximumFrameRate: rate > 0 ? min(rate, 100) : 30,
@@ -848,7 +848,7 @@ enum AnimatedGIF {
         }
     }
 
-    static func export(_ movie: URL, to gif: URL, options: Options) async throws {
+    package static func export(_ movie: URL, to gif: URL, options: Options) async throws {
         let asset = AVURLAsset(url: movie)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw SimulatorError.operation("The recording contains no video track")

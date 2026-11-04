@@ -4,9 +4,9 @@ import AppKit
 /// Shares keyboard and scaling behavior with device windows, and saves separate geometry.
 /// Closing the window powers off the external display.
 @MainActor
-final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegate, DisplayScaling {
+package final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegate, DisplayScaling {
     /// Distinguishes CarPlay and guest-size mismatches in the subtitle.
-    static func subtitle(isCarPlay: Bool, showsSize: Bool = true) -> String {
+    package static func subtitle(isCarPlay: Bool, showsSize: Bool = true) -> String {
         isCarPlay ? "CarPlay" : showsSize ? "External Display" : "External Display – Size Not Shown by Device"
     }
 
@@ -15,9 +15,9 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         isCarPlay ? [.fullScreenAuxiliary] : [.fullScreenPrimary, .fullScreenAllowsTiling]
     }
 
-    let display: any SimulatorDisplay
+    package let display: any SimulatorDisplay
     /// The device window, whose device the menus act on while this window is key.
-    private(set) weak var deviceWindow: DeviceWindowController?
+    package private(set) weak var deviceWindow: DeviceWindowController?
     private let session: DeviceSession
     private let preferences: any PreferenceStore
     private let onClose: () -> Void
@@ -36,13 +36,13 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     /// Whether the guest shows the display's size, which the subtitle says when it does not.
     private var showsSize: Bool
     /// Whether the window is key, while the display can take the Mac's keyboard.
-    private(set) var isKey = false
-    let keyboard: DisplayKeyboardInput
+    package private(set) var isKey = false
+    package let keyboard: DisplayKeyboardInput
     private let fitting: DisplayFitting
     private var observers: [any NSObjectProtocol] = []
 
     /// - Parameter state: The external display's state, which gives its size.
-    init(session: DeviceSession, display: any SimulatorDisplay, state: ExternalScreenState,
+    package init(session: DeviceSession, display: any SimulatorDisplay, state: ExternalScreenState,
          deviceWindow: DeviceWindowController?, preferences: any PreferenceStore = HostPreferences.defaults,
          keyboardCaptureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
          applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
@@ -98,9 +98,9 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         showDisplay(at: initialScale)
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    static func makeWindow(_ frame: NSRect) -> NSWindow {
+    package static func makeWindow(_ frame: NSRect) -> NSWindow {
         NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable],
                  backing: .buffered, defer: false)
     }
@@ -111,7 +111,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     private static var screenFrames: [NSRect] { NSScreen.screens.map(\.frame) }
 
     /// Restores the saved center or cascades from the device window, then keeps it on screen.
-    func showNewWindow(cascadingFrom deviceWindow: NSWindow?) {
+    package func showNewWindow(cascadingFrom deviceWindow: NSWindow?) {
         guard let window else { return }
         let place: (NSWindow) -> Void
         if let center = savedCenter {
@@ -133,7 +133,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     }
 
     /// Closes and saves geometry without sending a power-off request.
-    func invalidate() {
+    package func invalidate() {
         guard !closed else { return }
         saveWindowGeometry()
         disconnect()
@@ -144,7 +144,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     // MARK: Window size
 
     /// Returns nil for Fit Screen when no host screen is available.
-    func scale(for mode: WindowScaleMode) -> CGFloat? {
+    package func scale(for mode: WindowScaleMode) -> CGFloat? {
         let screen = window?.screen
         switch mode {
         case .physicalSize:
@@ -197,7 +197,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     }
 
     /// Checks minimum scale and fit below the title bar for a display without a bezel.
-    func canSetScale(_ mode: WindowScaleMode) -> Bool {
+    package func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard validatesScale(mode), let window else { return false }
         guard mode != .fitScreen else { return true }
         guard let scale = scale(for: mode), scale >= minimumScale else { return false }
@@ -206,13 +206,13 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
         return size.width <= visible.width && size.height <= visible.height - titleBarHeight
     }
 
-    func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
+    package func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
         guard validatesScale(mode), let scale = scale(for: mode) else { return nil }
         return WindowScale.matches(display.renderScale, scale) ? .on : .off
     }
 
     /// Resizes below the top edge, centering Fit Screen and keeping fixed scales on screen.
-    func setScale(_ mode: WindowScaleMode) {
+    package func setScale(_ mode: WindowScaleMode) {
         guard let window, let scale = scale(for: mode) else { return }
         let previous = window.frame
         showDisplay(at: scale)
@@ -252,7 +252,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     }
 
     /// Updates screen size and CarPlay state while preserving display scale.
-    func screenChanged(_ state: ExternalScreenState) {
+    package func screenChanged(_ state: ExternalScreenState) {
         guard !closed else { return }
         let showsSize = session.externalDisplayShowsItsSize(in: state)
         if state.isCarPlay != isCarPlay || showsSize != self.showsSize, let window {
@@ -295,40 +295,40 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
 
     /// Gives the display the Mac's keyboard while the window is key and the
     /// device's hardware keyboard is connected, as the device window does.
-    func updateKeyboardInput() {
+    package func updateKeyboardInput() {
         keyboard.setEnabled(!closed && isKey && session.connectsHardwareKeyboard)
     }
 
-    func focusInput() {
+    package func focusInput() {
         guard !closed, display.isBooted else { return }
         keyboard.focus()
     }
 
     // MARK: NSWindowDelegate
 
-    func windowDidBecomeKey(_ notification: Notification) {
+    package func windowDidBecomeKey(_ notification: Notification) {
         guard !closed else { return }
         isKey = true
         updateKeyboardInput()
         focusInput()
     }
 
-    func windowDidResignKey(_ notification: Notification) {
+    package func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }
         isKey = false
         updateKeyboardInput()
     }
 
-    func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
-    func windowDidResize(_ notification: Notification) { if !isSizingWindow { resizeDisplay() } }
-    func windowDidEndLiveResize(_ notification: Notification) { if !closed { fitting.didEndLiveResize() } }
+    package func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
+    package func windowDidResize(_ notification: Notification) { if !isSizingWindow { resizeDisplay() } }
+    package func windowDidEndLiveResize(_ notification: Notification) { if !closed { fitting.didEndLiveResize() } }
 
-    func windowWillEnterFullScreen(_ notification: Notification) { fitting.willEnterFullScreen() }
+    package func windowWillEnterFullScreen(_ notification: Notification) { fitting.willEnterFullScreen() }
 
-    func windowDidFailToEnterFullScreen(_ window: NSWindow) { fitting.didFailToEnterFullScreen() }
+    package func windowDidFailToEnterFullScreen(_ window: NSWindow) { fitting.didFailToEnterFullScreen() }
 
     /// Restore the scale and origin from before full screen.
-    func windowDidExitFullScreen(_ notification: Notification) {
+    package func windowDidExitFullScreen(_ notification: Notification) {
         guard let geometry = fitting.didExitFullScreen(defaultScale: display.renderScale) else { return }
         showDisplay(at: geometry.scale)
         window?.setFrameOrigin(geometry.origin)
@@ -336,7 +336,7 @@ final class ExternalDisplayWindowController: NSWindowController, NSWindowDelegat
     }
 
     /// Closing the window turns the external display off.
-    func windowWillClose(_ notification: Notification) {
+    package func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         saveWindowGeometry()
         disconnect()

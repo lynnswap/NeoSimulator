@@ -1,11 +1,13 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import SwiftUI
 
 @MainActor
-final class NewSimulatorViewController: NSHostingController<NewSimulatorView> {
-    let model: NewSimulatorModel
+package final class NewSimulatorViewController: NSHostingController<NewSimulatorView> {
+    package let model: NewSimulatorModel
 
-    init(model: NewSimulatorModel) {
+    package init(model: NewSimulatorModel) {
         self.model = model
         super.init(rootView: NewSimulatorView(model: model))
         model.startLoadingRuntimeNames()
@@ -13,5 +15,5 @@ final class NewSimulatorViewController: NSHostingController<NewSimulatorView> {
         sizingOptions = [.standardBounds, .preferredContentSize]
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 }

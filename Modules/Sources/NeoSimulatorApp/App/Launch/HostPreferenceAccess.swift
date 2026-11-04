@@ -1,3 +1,6 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 
 /// Checks access in the manager process before its defaults subprocess reads or writes Device Hub settings.

@@ -8,6 +8,8 @@ let package = Package(
     products: [
         .library(name: "NeoSimulatorKit", targets: ["NeoSimulatorKit"]),
         .library(name: "XcodeSimulatorHost", targets: ["XcodeSimulatorHost"]),
+        .library(name: "NeoSimulatorApp", targets: ["NeoSimulatorApp"]),
+        .library(name: "NeoSimulatorService", targets: ["NeoSimulatorService"]),
     ],
     dependencies: [
         .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.16.2"),
@@ -24,6 +26,25 @@ let package = Package(
             ],
             path: "Modules/Sources/NeoSimulatorKit"
         ),
+        .target(name: "NeoSimulatorHostSupport", dependencies: [
+            "NeoSimulatorKit", "XcodeSimulatorHost",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], path: "Modules/Sources/NeoSimulatorHostSupport"),
+        .target(name: "NeoSimulatorApp", dependencies: [
+            "NeoSimulatorKit", "NeoSimulatorHostSupport", "XcodeSimulatorHost",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], path: "Modules/Sources/NeoSimulatorApp"),
+        .target(name: "NeoSimulatorService", dependencies: [
+            "NeoSimulatorKit", "NeoSimulatorHostSupport", "XcodeSimulatorHost",
+        ], path: "Modules/Sources/NeoSimulatorService"),
+        .testTarget(name: "NeoSimulatorAppTests", dependencies: [
+            "NeoSimulatorApp", "NeoSimulatorKit", "NeoSimulatorHostSupport", "NeoSimulatorService", "XcodeSimulatorHost",
+            .product(name: "ABIBridge", package: "ABIBridge"),
+        ], path: "Modules/Tests/NeoSimulatorAppTests", swiftSettings: [
+            .enableUpcomingFeature("MemberImportVisibility"),
+            .enableUpcomingFeature("InferIsolatedConformances"),
+            .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+        ]),
         .testTarget(name: "XcodeSimulatorHostTests", dependencies: ["XcodeSimulatorHost"]),
     ]
 )

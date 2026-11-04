@@ -4,11 +4,11 @@ import AppKit
 /// Only a key window with a connected hardware keyboard receives keys.
 /// Modifier state is synchronized on focus changes; Command key-ups require explicit forwarding.
 @MainActor
-final class DisplayKeyboardInput {
+package final class DisplayKeyboardInput {
     private weak var window: NSWindow?
     /// The window's display. A device window gets a new display when its
     /// device reconnects, which takes no keyboard until the window gives it.
-    var display: any SimulatorDisplay {
+    package var display: any SimulatorDisplay {
         willSet { capture.stop() }
         didSet { isEnabled = false }
     }
@@ -17,7 +17,7 @@ final class DisplayKeyboardInput {
     private var commandKeyUpMonitor: Any?
     private let captureTap: any KeyboardEventTap
     private let applicationIsActive: () -> Bool
-    lazy var capture = KeyboardCapture(tap: captureTap, isEligible: { [weak self] in
+    package lazy var capture = KeyboardCapture(tap: captureTap, isEligible: { [weak self] in
         guard let self, self.isEnabled, self.display.isBooted, self.applicationIsActive(), let window = self.window,
               window.isKeyWindow, window.attachedSheet == nil else { return false }
         return window.firstResponder === self.display.inputView
@@ -33,7 +33,7 @@ final class DisplayKeyboardInput {
         }
     }, releaseModifiers: { [weak self] _ in self?.releaseModifiers() })
 
-    init(window: NSWindow, display: any SimulatorDisplay, captureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
+    package init(window: NSWindow, display: any SimulatorDisplay, captureTap: any KeyboardEventTap = SystemKeyboardEventTap(),
          applicationIsActive: @escaping () -> Bool = { NSApp.isActive }) {
         self.window = window
         self.display = display
@@ -50,7 +50,7 @@ final class DisplayKeyboardInput {
     isolated deinit { invalidate() }
 
     /// Transfers keyboard ownership together with the display's presentation.
-    func attach(to window: NSWindow?) {
+    package func attach(to window: NSWindow?) {
         guard self.window !== window else { return }
         setEnabled(false)
         self.window = window
@@ -58,7 +58,7 @@ final class DisplayKeyboardInput {
 
     /// Gives the display the Mac's keyboard with the modifiers held now, or
     /// takes the keyboard away after releasing the guest's modifiers.
-    func setEnabled(_ enabled: Bool) {
+    package func setEnabled(_ enabled: Bool) {
         guard enabled != isEnabled else { return }
         isEnabled = enabled
         if enabled {
@@ -73,7 +73,7 @@ final class DisplayKeyboardInput {
     /// Focuses the display and synchronizes held modifiers, including for digitizer gestures.
     /// Returns false if another responder retains focus.
     @discardableResult
-    func focus() -> Bool {
+    package func focus() -> Bool {
         guard let window else { return false }
         let input = display.inputView
         window.makeFirstResponder(input)
@@ -88,7 +88,7 @@ final class DisplayKeyboardInput {
     }
 
     /// Stops forwarding the window's key-ups.
-    func invalidate() {
+    package func invalidate() {
         capture.stop()
         if let commandKeyUpMonitor { NSEvent.removeMonitor(commandKeyUpMonitor) }
         commandKeyUpMonitor = nil
@@ -105,7 +105,7 @@ final class DisplayKeyboardInput {
     }
 
     /// Synchronizes modifiers only for displays receiving keyboard input.
-    static func sendModifiers(_ flags: NSEvent.ModifierFlags) {
+    package static func sendModifiers(_ flags: NSEvent.ModifierFlags) {
         guard let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags,
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
             characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0) else { return }

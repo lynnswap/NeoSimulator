@@ -4,23 +4,23 @@ import Observation
 import Darwin
 
 @MainActor @Observable
-final class VideoRecording {
+package final class VideoRecording {
     private enum Event: Sendable {
         case output(Data)
         case drained
         case exited(Int32, Process.TerminationReason)
     }
-    private(set) var isStopping = false
+    package private(set) var isStopping = false
     private var firstFrameAt: Date?
-    var hasStarted: Bool { firstFrameAt != nil }
-    var startDate: Date? { isStopping || completion != nil ? nil : firstFrameAt }
+    package var hasStarted: Bool { firstFrameAt != nil }
+    package var startDate: Date? { isStopping || completion != nil ? nil : firstFrameAt }
     private let process: Process
     private var completion: Result<Void, Error>?
     private var waiters: [CheckedContinuation<Void, Error>] = []
     private var timer: Task<Void, Never>?
     private var forcedError: Error?
 
-    init(process: Process, startupTimeout: Duration = .seconds(30)) throws {
+    package init(process: Process, startupTimeout: Duration = .seconds(30)) throws {
         self.process = process
         let pipe = Pipe()
         process.standardInput = FileHandle.nullDevice
@@ -84,7 +84,7 @@ final class VideoRecording {
         armTimeout(startupTimeout, message: "Video recording did not start")
     }
 
-    func stop() {
+    package func stop() {
         guard completion == nil, !isStopping else { return }
         isStopping = true
         // simctl documents its first-frame acknowledgement as the safe point
@@ -93,7 +93,7 @@ final class VideoRecording {
         armTimeout(.seconds(30), message: "Video recording did not finish")
     }
 
-    func waitUntilFinished() async throws {
+    package func waitUntilFinished() async throws {
         if let completion { return try completion.get() }
         try await withCheckedThrowingContinuation { waiters.append($0) }
     }
@@ -112,7 +112,7 @@ final class VideoRecording {
 }
 
 @MainActor
-final class RecordingStore {
+package final class RecordingStore {
     private struct Entry {
         let recording: VideoRecording
         /// The chosen file, which another recording must not save to.
@@ -121,11 +121,11 @@ final class RecordingStore {
     }
     private var entries: [UUID: Entry] = [:]
     private var isFinishing = false
-    var onError: (Error) -> Void = { hostLog($0.localizedDescription) }
-    var hasActiveRecordings: Bool { !entries.isEmpty }
+    package var onError: (Error) -> Void = { hostLog($0.localizedDescription) }
+    package var hasActiveRecordings: Bool { !entries.isEmpty }
 
     /// Where a finished recording is saved.
-    enum Destination {
+    package enum Destination {
         /// A file chosen in a save panel, replaced when the recording finishes.
         case file(URL)
         /// Hands off a finalized temporary movie; handoff failures are reported as save failures.
@@ -133,12 +133,12 @@ final class RecordingStore {
     }
 
     /// Whether a recording to a chosen file will replace `file` when it finishes.
-    func isReserved(_ file: URL) -> Bool {
+    package func isReserved(_ file: URL) -> Bool {
         guard let key = try? Self.destinationKey(for: file) else { return false }
         return entries.values.contains { $0.destinationKey == key }
     }
 
-    func start(to destination: Destination, process: (URL) -> Process,
+    package func start(to destination: Destination, process: (URL) -> Process,
                onFinished: @escaping @MainActor () -> Void) throws -> VideoRecording {
         guard !isFinishing else { throw SimulatorError.operation("Recordings are finishing before NeoSimulator quits") }
         let identifier = UUID()
@@ -223,7 +223,7 @@ final class RecordingStore {
         return caseSensitive ? path : path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
     }
 
-    func finishAll() async {
+    package func finishAll() async {
         isFinishing = true
         let pending = Array(entries.values)
         for entry in pending { entry.recording.stop() }

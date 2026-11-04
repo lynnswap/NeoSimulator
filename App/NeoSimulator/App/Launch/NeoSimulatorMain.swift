@@ -1,4 +1,5 @@
 import AppKit
+import NeoSimulatorApp
 
 @main
 enum NeoSimulatorMain {

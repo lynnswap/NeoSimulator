@@ -1,6 +1,8 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 import Observation
-import XcodeSimulatorHost
 
 struct ServiceConfiguration: Codable, Equatable, Sendable {
     var disabledLabels: Set<String> = []

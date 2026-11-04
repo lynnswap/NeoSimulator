@@ -2,13 +2,13 @@ import Foundation
 import UniformTypeIdentifiers
 import XcodeSimulatorHost
 
-enum SimulatorFileImport {
-    enum Kind { case application, media }
+package enum SimulatorFileImport {
+    package enum Kind { case application, media }
 
     /// Application bundles and `.ipa` packages, whose type has no `UTType` constant.
-    static let applicationTypes = [UTType.applicationBundle] + [UTType(filenameExtension: "ipa")].compactMap { $0 }
+    package static let applicationTypes = [UTType.applicationBundle] + [UTType(filenameExtension: "ipa")].compactMap { $0 }
 
-    static func kind(of url: URL) throws -> Kind {
+    package static func kind(of url: URL) throws -> Kind {
         if ["app", "ipa"].contains(url.pathExtension.lowercased()) { return .application }
         if let type = UTType(filenameExtension: url.pathExtension),
            type.conforms(to: .image) || type.conforms(to: .movie) || type.conforms(to: .vCard) {
@@ -18,7 +18,7 @@ enum SimulatorFileImport {
     }
 
     @MainActor
-    static func perform(_ urls: [URL], importFile: (URL, Kind) async throws -> Void) async throws {
+    package static func perform(_ urls: [URL], importFile: (URL, Kind) async throws -> Void) async throws {
         var completed: [String] = []
         var failures: [String] = []
         for url in urls {

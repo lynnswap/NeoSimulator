@@ -21,6 +21,6 @@ public enum SimulatorError: LocalizedError, Sendable {
 
 }
 
-func hostLog(_ message: String) {
+package func hostLog(_ message: String) {
     FileHandle.standardError.write(Data("neo-simulator: \(message)\n".utf8))
 }

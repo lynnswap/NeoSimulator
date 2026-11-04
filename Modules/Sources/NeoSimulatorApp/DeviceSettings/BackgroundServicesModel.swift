@@ -1,6 +1,8 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 import Observation
-import XcodeSimulatorHost
 
 protocol BackgroundServicesSource: Sendable {
     func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices

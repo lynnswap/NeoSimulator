@@ -1,9 +1,13 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import SwiftUI
 
-struct NewSimulatorView: View {
-    @Bindable var model: NewSimulatorModel
+package struct NewSimulatorView: View {
+    @Bindable package var model: NewSimulatorModel
 
-    var body: some View {
+    package init(model: NewSimulatorModel) { self.model = model }
+
+    package var body: some View {
         Form {
             Section(model.heading) {
                 if model.showsWatchPage { watchFields }

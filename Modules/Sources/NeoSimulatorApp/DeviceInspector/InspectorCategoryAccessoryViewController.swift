@@ -1,3 +1,6 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 
 @MainActor
@@ -21,7 +24,6 @@ final class InspectorCategoryAccessoryViewController: NSSplitViewItemAccessoryVi
 
 #if DEBUG
 import SwiftUI
-import XcodeSimulatorHost
 
 #Preview("Info Categories") {
     InspectorCategoryPreview().frame(width: 320, height: 450)

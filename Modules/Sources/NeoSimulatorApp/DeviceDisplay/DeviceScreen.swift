@@ -1,7 +1,9 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Observation
 import ObservationBridge
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// One device screen open in the manager. It keeps the screen's canvas controls current, dispatches their actions,
 /// and moves the controller's presentation when the presentation owner asks.

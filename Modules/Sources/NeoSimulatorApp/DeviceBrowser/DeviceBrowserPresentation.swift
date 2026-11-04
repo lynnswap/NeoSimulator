@@ -1,5 +1,7 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
-import XcodeSimulatorHost
 
 /// Sort-specific sidebar sections, independent of outline row and selection objects.
 struct DeviceBrowserPresentation {

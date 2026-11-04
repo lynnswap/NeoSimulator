@@ -1,16 +1,23 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Darwin
 import Synchronization
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// The bundled helper waits for the old manager to exit before asking Launch Services to reopen it.
-struct ManagerRelaunch: Codable, Sendable {
-    let processIdentifier: Int32
-    let applicationURL: URL
-    let deviceURLs: [URL]
+package struct ManagerRelaunch: Codable, Sendable {
+    package let processIdentifier: Int32
+    package let applicationURL: URL
+    package let deviceURLs: [URL]
+
+    package init(processIdentifier: Int32, applicationURL: URL, deviceURLs: [URL]) {
+        self.processIdentifier = processIdentifier
+        self.applicationURL = applicationURL
+        self.deviceURLs = deviceURLs
+    }
 
     @concurrent
-    func schedule(using helperURL: URL) async throws -> Process {
+    package func schedule(using helperURL: URL) async throws -> Process {
         let process = Process()
         process.executableURL = helperURL
         process.arguments = ["--relaunch-manager"]
@@ -32,7 +39,7 @@ struct ManagerRelaunch: Codable, Sendable {
         return process
     }
 
-    static func waitForExit(of pid: Int32, ready: @escaping @Sendable () -> Void) async {
+    package static func waitForExit(of pid: Int32, ready: @escaping @Sendable () -> Void) async {
         await withCheckedContinuation { continuation in
             let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
             source.setRegistrationHandler(handler: ready)
@@ -46,7 +53,7 @@ struct ManagerRelaunch: Codable, Sendable {
     }
 
     @MainActor
-    static func runHelper() async -> Never {
+    package static func runHelper() async -> Never {
         do {
             let data = try FileHandle.standardInput.readToEnd() ?? Data()
             let request = try JSONDecoder().decode(Self.self, from: data)

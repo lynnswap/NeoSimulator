@@ -3,39 +3,39 @@ import AppKit
 
 /// Owns simulator connections and their resources independently of an application's menus or routing.
 @MainActor
-final class SimulatorScreenHost: NSObject {
-    let runtime: SimulatorRuntime
+package final class SimulatorScreenHost: NSObject {
+    package let runtime: SimulatorRuntime
     private let conflicts: HostConflictMonitor
     private let deviceSet: SimulatorDeviceSet
     private let recordings = RecordingStore()
     private let captureOwner = UUID()
     private let isManaged: Bool
-    let isHeadless: Bool
+    package let isHeadless: Bool
     private let isInProcess: Bool
     private let suppliedPasteboardSync: PasteboardSync?
     private let offersLifetimeChoice: Bool
-    var onPresent: ((DeviceWindowController) -> Void)?
-    var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void)?
-    var onError: ((Error) -> Void)?
-    var onChange: (() -> Void)?
-    var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
-    var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
-    var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
-    var onOwnershipChange: ((Bool) throws -> Void)?
-    var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
-    var onNoScreens: (() -> Void)?
-    var onConflict: ((String, (any Error)?) -> Void)?
-    var isStopped: Bool { stopped }
-    var openedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> { Set(sessions.keys) }
-    private(set) var ownedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> = []
-    var registrationDeviceIdentifiers: [SimulatorDeviceIdentifier] {
+    package var onPresent: ((DeviceWindowController) -> Void)?
+    package var onClose: ((SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void)?
+    package var onError: ((Error) -> Void)?
+    package var onChange: (() -> Void)?
+    package var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
+    package var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
+    package var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
+    package var onOwnershipChange: ((Bool) throws -> Void)?
+    package var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
+    package var onNoScreens: (() -> Void)?
+    package var onConflict: ((String, (any Error)?) -> Void)?
+    package var isStopped: Bool { stopped }
+    package var openedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> { Set(sessions.keys) }
+    package private(set) var ownedDeviceIdentifiers: Set<SimulatorDeviceIdentifier> = []
+    package var registrationDeviceIdentifiers: [SimulatorDeviceIdentifier] {
         ownedDeviceIdentifiers.union(closingShutdowns.keys).union(releasingDevices).sorted()
     }
-    var windowControllers: [DeviceWindowController] { Array(sessions.values) }
-    var hasPresentations: Bool { !sessions.isEmpty || !connections.isEmpty }
+    package var windowControllers: [DeviceWindowController] { Array(sessions.values) }
+    package var hasPresentations: Bool { !sessions.isEmpty || !connections.isEmpty }
     private var releasingDevices: Set<SimulatorDeviceIdentifier> = []
     private var registrationErrorReported = false
-    private(set) var isTerminating = false
+    package private(set) var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
     private var testingSet: SimulatorDeviceSet?
@@ -63,11 +63,11 @@ final class SimulatorScreenHost: NSObject {
     private lazy var pasteboardSync: PasteboardSync = suppliedPasteboardSync ?? PasteboardSync { [weak self] in
         self?.sessions.values.map(\.session) ?? []
     }
-    var pasteboardSynchronization: PasteboardSync { pasteboardSync }
+    package var pasteboardSynchronization: PasteboardSync { pasteboardSync }
     private var touchIndicatorObservation: DefaultsObservation?
     private var testingDevicesObservation: DefaultsObservation?
 
-    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
+    package init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
          headless: Bool = false, inProcess: Bool = false, pasteboardSync: PasteboardSync? = nil,
          offersLifetimeChoice: Bool = true) throws {
         try conflicts.check()
@@ -89,18 +89,18 @@ final class SimulatorScreenHost: NSObject {
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
-    func controller(for identifier: SimulatorDeviceIdentifier) -> DeviceWindowController? { sessions[identifier] }
-    func hasUnfinishedCleanup(for identifier: SimulatorDeviceIdentifier) -> Bool {
+    package func controller(for identifier: SimulatorDeviceIdentifier) -> DeviceWindowController? { sessions[identifier] }
+    package func hasUnfinishedCleanup(for identifier: SimulatorDeviceIdentifier) -> Bool {
         disconnectedSessions.contains { $0.device.identity == identifier }
             || (sessions[identifier] == nil && externalDisplayQueues[identifier] != nil)
     }
-    func adopt(_ identifier: SimulatorDeviceIdentifier) { ownedDeviceIdentifiers.insert(identifier) }
-    func creationCatalog() throws -> SimulatorCatalog { try deviceSet.readCatalog() }
-    func refreshLocationSelection(for identifier: SimulatorDeviceIdentifier) throws {
+    package func adopt(_ identifier: SimulatorDeviceIdentifier) { ownedDeviceIdentifiers.insert(identifier) }
+    package func creationCatalog() throws -> SimulatorCatalog { try deviceSet.readCatalog() }
+    package func refreshLocationSelection(for identifier: SimulatorDeviceIdentifier) throws {
         try sessions[identifier]?.session.refreshLocationSelection()
     }
 
-    func start(attachingBootedDevices: Bool = true) throws {
+    package func start(attachingBootedDevices: Bool = true) throws {
         do {
             try conflicts.check()
             touchIndicatorObservation = DefaultsObservation(
@@ -122,7 +122,7 @@ final class SimulatorScreenHost: NSObject {
         }
     }
 
-    func releaseDevice(_ identifier: SimulatorDeviceIdentifier,
+    package func releaseDevice(_ identifier: SimulatorDeviceIdentifier,
                                beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
         guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
                 || connections[identifier] != nil || closingShutdowns[identifier] != nil
@@ -186,13 +186,13 @@ final class SimulatorScreenHost: NSObject {
         }
     }
 
-    func availableSimulatorDevices() throws -> [AvailableDevice] {
+    package func availableSimulatorDevices() throws -> [AvailableDevice] {
         var devices = try readDevices()
         if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
         return devices.map(Self.describe)
     }
 
-    func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
+    package func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
         sessions[identifier]?.window?.isVisible == true
     }
 
@@ -202,7 +202,7 @@ final class SimulatorScreenHost: NSObject {
     }
 
     /// Updates the preference and every open window, including restarting devices.
-    func toggleShowDeviceBezels() {
+    package func toggleShowDeviceBezels() {
         let shows = !HostPreferences.defaults.showsDeviceBezels
         HostPreferences.defaults.set(shows, forKey: HostPreferences.showChrome)
         for controller in sessions.values { controller.setDeviceBezelVisible(shows) }
@@ -210,11 +210,11 @@ final class SimulatorScreenHost: NSObject {
 
     // MARK: Parallel testing devices
 
-    var showsTestingDevices: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.showTestingDevices) }
+    package var showsTestingDevices: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.showTestingDevices) }
 
     /// Debug ▸ Show Parallel Testing Devices. Hiding closes the testing
     /// devices' windows without shutting the devices down.
-    func toggleShowTestingDevices() {
+    package func toggleShowTestingDevices() {
         HostPreferences.defaults.set(!showsTestingDevices, forKey: HostPreferences.showTestingDevices)
     }
 
@@ -327,11 +327,11 @@ final class SimulatorScreenHost: NSObject {
                            supportsEnhancedMultitasking: device.supportsEnhancedMultitasking)
     }
 
-    func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
+    package func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         try await openSimulatorLocally(withIdentifier: identifier)
     }
 
-    func openPresentation(for identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = false) async throws -> DeviceWindowController {
+    package func openPresentation(for identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = false) async throws -> DeviceWindowController {
         let preservesPresentation = sessions[identifier] != nil || openingDevices.contains(identifier)
         return try await withScreenOpenCleanup(preservingExisting: preservesPresentation, operation: {
             try await self.openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded, presents: false)
@@ -340,25 +340,25 @@ final class SimulatorScreenHost: NSObject {
         }, cleanup: { try await self.releaseDevice(identifier) })
     }
 
-    func cancelRestart(for identifier: SimulatorDeviceIdentifier) async {
+    package func cancelRestart(for identifier: SimulatorDeviceIdentifier) async {
         guard let restart = restarting[identifier] else { return }
         restart.cancel()
         bootOperations[identifier]?.cancel()
         await restart.value
     }
 
-    func cancelOpeningResources(_ identifier: SimulatorDeviceIdentifier) {
+    package func cancelOpeningResources(_ identifier: SimulatorDeviceIdentifier) {
         connections[identifier]?.cancel()
         bootOperations[identifier]?.cancel()
     }
 
-    func releasePresentation(for identifier: SimulatorDeviceIdentifier,
+    package func releasePresentation(for identifier: SimulatorDeviceIdentifier,
                              beforeInvalidating: ((DeviceWindowController) -> Void)? = nil) async throws {
         try await releaseDevice(identifier, beforeInvalidating: beforeInvalidating)
         onChange?()
     }
 
-    func preparePresentationForRestart(for identifier: SimulatorDeviceIdentifier) async throws {
+    package func preparePresentationForRestart(for identifier: SimulatorDeviceIdentifier) async throws {
         guard !stopped, !isTerminating else { throw CancellationError() }
         guard let controller = sessions[identifier] else { return }
         guard !presentationRestarts.contains(identifier), controller.session.reserve() else {
@@ -379,7 +379,7 @@ final class SimulatorScreenHost: NSObject {
         }
     }
 
-    func finishPresentationRestart(for identifier: SimulatorDeviceIdentifier) async throws {
+    package func finishPresentationRestart(for identifier: SimulatorDeviceIdentifier) async throws {
         guard presentationRestarts.contains(identifier) else { return }
         defer { presentationRestarts.remove(identifier) }
         let deadline = ContinuousClock.now + .seconds(120)
@@ -401,7 +401,7 @@ final class SimulatorScreenHost: NSObject {
         try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: false, presents: false)
     }
 
-    func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true,
+    package func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true,
                                      presents: Bool = true) async throws {
         guard !releasingDevices.contains(identifier) else { throw CancellationError() }
         let preservesConnection = sessions[identifier] != nil || openingDevices.contains(identifier)
@@ -862,7 +862,7 @@ final class SimulatorScreenHost: NSObject {
 
     /// Another host owns the devices now, so they keep running: no pending or
     /// later shutdown runs.
-    func yieldToAnotherHost() {
+    package func yieldToAnotherHost() {
         yieldedToAnotherHost = true
         for shutdown in closingShutdowns.values { shutdown.cancel() }
         for shutdown in terminationShutdowns { shutdown.cancel() }
@@ -946,7 +946,7 @@ final class SimulatorScreenHost: NSObject {
 
     // MARK: Restart
 
-    func restartHeadlessDevice(_ identifier: SimulatorDeviceIdentifier, erasing: Bool) async throws {
+    package func restartHeadlessDevice(_ identifier: SimulatorDeviceIdentifier, erasing: Bool) async throws {
         guard restarting[identifier] == nil else {
             throw SimulatorError.operation("This simulator is already restarting.")
         }
@@ -966,7 +966,7 @@ final class SimulatorScreenHost: NSObject {
     }
 
     /// Disconnects, shuts down, optionally erases, boots, and reconnects the existing window.
-    func restartDevice(_ controller: DeviceWindowController, erasing: Bool,
+    package func restartDevice(_ controller: DeviceWindowController, erasing: Bool,
                                completion: ((Error?) -> Void)? = nil) {
         let identifier = controller.session.device.identity
         guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
@@ -1033,12 +1033,12 @@ final class SimulatorScreenHost: NSObject {
     /// Finishes presentation resources without terminating the owning application. Stopping again retries the
     /// native input that an earlier stop could not remove.
     /// The headless backend remains responsible for guest lifetime in integrated mode.
-    func stop(keepingDevicesRunning: Bool? = nil) async throws {
+    package func stop(keepingDevicesRunning: Bool? = nil) async throws {
         try await beginStopping(keepingDevicesRunning: keepingDevicesRunning).value
     }
 
     /// Freezes the shutdown targets before the shell cancels open requests and their ownership cleanup.
-    func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
+    package func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
         if let stoppingTask { return stoppingTask }
         isTerminating = true
         recordingTerminationErrors += CaptureThumbnail.finishAll(owner: captureOwner)
@@ -1085,7 +1085,7 @@ final class SimulatorScreenHost: NSObject {
         }
     }
 
-    func shutdown() {
+    package func shutdown() {
         guard !stopped else { return }
         stopped = true
         conflicts.onConflict = nil
@@ -1120,7 +1120,7 @@ final class SimulatorScreenHost: NSObject {
 
 /// An open may return after cancellation with a newly attached screen. Its cleanup must finish uncancelled.
 @MainActor
-func withScreenOpenCleanup<Value>(preservingExisting: Bool,
+package func withScreenOpenCleanup<Value>(preservingExisting: Bool,
                                  operation: () async throws -> Value,
                                  cleanup: @escaping @MainActor () async throws -> Void) async throws -> Value {
     do {

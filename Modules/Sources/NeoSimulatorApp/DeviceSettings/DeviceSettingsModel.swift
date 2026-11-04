@@ -1,6 +1,8 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 import Observation
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 protocol DeviceSettingsSource: Sendable {
     func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings

@@ -3,11 +3,11 @@ import UniformTypeIdentifiers
 @_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
-final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, DisplayScaling {
+package final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, DisplayScaling {
     /// The device's current connection. A restart replaces it after the
     /// device boots again, keeping this window.
-    private(set) var session: DeviceSession
-    var onSessionChange: (() -> Void)?
+    package private(set) var session: DeviceSession
+    package var onSessionChange: (() -> Void)?
     private var closed = false
     /// Suppresses geometry saving from restart until the next device connection.
     private var isRestarting = false
@@ -25,13 +25,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// AppKit keeps the compact window's decoration hierarchy while its canvas moves between presentations.
     private let compactContainer = NSView()
     private let fitting: DisplayFitting
-    let canvasZoom = CanvasZoom()
+    package let canvasZoom = CanvasZoom()
     private let keyboard: DisplayKeyboardInput
     private let makeKeyboardCaptureTap: @MainActor () -> any KeyboardEventTap
     private let makeExternalDisplayWindow: @MainActor (NSRect) -> NSWindow
     private let applicationIsActive: () -> Bool
     private var deviceToolbar: DeviceToolbar?
-    var canvasControls: DeviceCanvasControls? {
+    package var canvasControls: DeviceCanvasControls? {
         didSet {
             content.canvasControls = canvasControls
             canvasControls?.onLayoutChange = { [weak self] in
@@ -78,9 +78,9 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// it out, and macOS 26's heights for the styles it has not taken yet.
     private var titleBarHeights: [NSWindow.ToolbarStyle: CGFloat] = [.unified: 52, .expanded: 76, .unifiedCompact: 40]
     /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
-    let touchPressure: TouchPressure
+    package let touchPressure: TouchPressure
     /// Window ▸ Show Apple TV Remote's panel, which every window shares.
-    let tvRemote: TVRemoteController
+    package let tvRemote: TVRemoteController
     private var touchPressureObserver: (any NSObjectProtocol)?
     private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
@@ -89,16 +89,16 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private var isKey = false
     private weak var embeddedContainer: NSView?
     private weak var embeddedParent: NSViewController?
-    private(set) lazy var presentationViewController: NSViewController = {
+    package private(set) lazy var presentationViewController: NSViewController = {
         let controller = SimulatorPresentationViewController(owner: self)
         controller.view = content
         return controller
     }()
     private var presentationObservers: [NSObjectProtocol] = []
     private static weak var embeddedController: DeviceWindowController?
-    var isEmbedded: Bool { embeddedContainer != nil }
-    var presentationWindow: NSWindow? { isEmbedded ? content.window : window }
-    var onShowInMainWindow: (() -> Void)? {
+    package var isEmbedded: Bool { embeddedContainer != nil }
+    package var presentationWindow: NSWindow? { isEmbedded ? content.window : window }
+    package var onShowInMainWindow: (() -> Void)? {
         didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
     }
     private var permitsPresentationMove: Bool {
@@ -106,40 +106,40 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard let window = presentationWindow else { return true }
         return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
     }
-    var canMovePresentation: Bool { presentationWindow != nil && permitsPresentationMove }
+    package var canMovePresentation: Bool { presentationWindow != nil && permitsPresentationMove }
 
-    func validatePresentationMove() throws {
+    package func validatePresentationMove() throws {
         guard permitsPresentationMove else {
             throw SimulatorError.operation("Close the device's dialog or leave full screen before moving its screen.")
         }
     }
     private var canShowInMainWindow: Bool { canMovePresentation && onShowInMainWindow != nil }
-    @objc func showInMainWindow(_ sender: Any?) {
+    @objc package func showInMainWindow(_ sender: Any?) {
         guard canShowInMainWindow else { return }
         onShowInMainWindow?()
     }
-    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+    package func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         item.action != #selector(showInMainWindow(_:)) || canShowInMainWindow
     }
     /// The window of the device's external display while the display is on.
-    private(set) var externalDisplayWindow: ExternalDisplayWindowController?
+    package private(set) var externalDisplayWindow: ExternalDisplayWindowController?
     private var externalDisplayOpening: Task<Void, Never>?
     /// How often and how long the window looks for its display's
     /// user-interface plugin.
     private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
-    var staysOnTop: Bool { window?.level == .floating }
+    package var staysOnTop: Bool { window?.level == .floating }
     private var activeKeyboardInput: DisplayKeyboardInput {
         if let externalDisplayWindow, externalDisplayWindow.isKey { return externalDisplayWindow.keyboard }
         return keyboard
     }
-    var capturesKeyboard: Bool { activeKeyboardInput.capture.isCapturing }
+    package var capturesKeyboard: Bool { activeKeyboardInput.capture.isCapturing }
 
     /// The device window of the key window, whose device the menus act on:
     /// see `deviceWindow(for:)`.
-    static var keyDeviceWindow: DeviceWindowController? { deviceWindow(for: NSApp.keyWindow) }
+    package static var keyDeviceWindow: DeviceWindowController? { deviceWindow(for: NSApp.keyWindow) }
 
     /// Finds the owning device window, including for an external display window.
-    static func deviceWindow(for window: NSWindow?) -> DeviceWindowController? {
+    package static func deviceWindow(for window: NSWindow?) -> DeviceWindowController? {
         if let embeddedController, let window, embeddedController.presentationWindow === window {
             return embeddedController
         }
@@ -150,7 +150,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
     }
 
-    init(session: DeviceSession, preferences: any PreferenceStore = HostPreferences.defaults,
+    package init(session: DeviceSession, preferences: any PreferenceStore = HostPreferences.defaults,
          touchPressure: TouchPressure, tvRemote: TVRemoteController,
          offersLifetimeChoice: Bool = true,
          captureOwner: UUID? = nil,
@@ -291,7 +291,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Restores the saved center or cascades a new window, keeping it on screen.
     /// The first orientation reading may resize and recenter it unless the user has moved or resized it.
     /// Cascaded windows retain their top-left corner.
-    func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
+    package func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
         guard let window else { return }
         let place: ((NSWindow) -> Void)?
         if let center = savedCenter {
@@ -311,15 +311,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         readInitialOrientation()
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    override func showWindow(_ sender: Any?) {
+    package override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         hasPresentedCompactWindow = true
     }
 
     /// Changes only the presentation; the owner retains the session and its operations.
-    func embed(in parent: NSViewController) {
+    package func embed(in parent: NSViewController) {
         guard !closed else { return }
         let container = parent.view
         saveWindowGeometry()
@@ -366,7 +366,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Presents the same native display in its standalone window.
-    func showCompactWindow() {
+    package func showCompactWindow() {
         guard !closed else { return }
         let needsInitialPlacement = !hasPresentedCompactWindow
         releasePresentationFocus()
@@ -402,7 +402,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Removes a scene without ending its device connection.
-    func detachPresentation() {
+    package func detachPresentation() {
         session.stopAppResize()
         releasePresentationFocus()
         window?.orderOut(nil)
@@ -536,7 +536,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         attachUserInterfacePlugin()
     }
 
-    func toggleAppResize() {
+    package func toggleAppResize() {
         session.toggleAppResize(size: content.availableDisplaySize)
     }
 
@@ -615,13 +615,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Plugin-toolbar Home action.
-    @objc func homeButtonPressed(_ sender: Any?) { perform(.home) }
+    @objc package func homeButtonPressed(_ sender: Any?) { perform(.home) }
 
     /// Plugin-toolbar Save Screen action.
-    @objc func saveFramebufferImage(_ sender: Any?) { perform(.saveScreen) }
+    @objc package func saveFramebufferImage(_ sender: Any?) { perform(.saveScreen) }
 
     /// Plugin-toolbar recording action, including Option-click on Save Screen.
-    @objc func toggleVideoRecording(_ sender: Any?) {
+    @objc package func toggleVideoRecording(_ sender: Any?) {
         perform(session.recording == nil ? .recordScreen : .stopRecording)
     }
 
@@ -629,7 +629,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Finishes an active recording, then disconnects from the device so that
     /// it can shut down. The window stays open for `reconnect(_:)`.
-    func prepareForRestart() async {
+    package func prepareForRestart() async {
         isRestarting = true
         if let window = presentationWindow, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
@@ -645,7 +645,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Shows the device again after a restart, through its new connection.
-    func reconnect(_ session: DeviceSession, present: Bool = true) {
+    package func reconnect(_ session: DeviceSession, present: Bool = true) {
         guard !closed else {
             session.disconnect()
             return
@@ -678,7 +678,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         onSessionChange?()
     }
 
-    func showAndActivate() {
+    package func showAndActivate() {
         if !isEmbedded { showWindow(nil) }
         presentationWindow?.makeKeyAndOrderFront(nil)
         readInitialOrientation()
@@ -720,12 +720,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // MARK: Commands
 
-    @objc func saveScreenshot(_ sender: Any?) { perform(.saveScreen) }
-    @objc func recordScreen(_ sender: Any?) { perform(.recordScreen) }
-    @objc func recordScreenTo(_ sender: Any?) { perform(.recordScreenAs) }
-    @objc func stopScreenRecording(_ sender: Any?) { perform(.stopRecording) }
+    @objc package func saveScreenshot(_ sender: Any?) { perform(.saveScreen) }
+    @objc package func recordScreen(_ sender: Any?) { perform(.recordScreen) }
+    @objc package func recordScreenTo(_ sender: Any?) { perform(.recordScreenAs) }
+    @objc package func stopScreenRecording(_ sender: Any?) { perform(.stopRecording) }
 
-    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    package func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let command: DeviceCommand.ID?
         switch item.action {
         case #selector(saveScreenshot(_:)): command = .saveScreen
@@ -740,7 +740,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         return description.isSupported(session.capabilities) && description.isEnabled(self)
     }
 
-    func perform(_ id: DeviceCommand.ID) {
+    package func perform(_ id: DeviceCommand.ID) {
         let command = DeviceCommand.command(id)
         guard !closed, command.isSupported(session.capabilities), command.isEnabled(self) else { return }
         command.perform(self)
@@ -751,46 +751,46 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
     }
 
-    func send(_ input: HardwareInput) { session.send(input) { [weak self] in self?.present($0) } }
+    package func send(_ input: HardwareInput) { session.send(input) { [weak self] in self?.present($0) } }
 
     /// Runs an immediate device action and presents its failure on this window.
-    func run(_ action: () throws -> Void) {
+    package func run(_ action: () throws -> Void) {
         do { try action() } catch { present(error) }
     }
 
     /// Runs a guest command without blocking the main thread.
-    func runAsync(_ action: @escaping @MainActor () async throws -> Void) {
+    package func runAsync(_ action: @escaping @MainActor () async throws -> Void) {
         session.run(action, failure: { [weak self] in self?.present($0) })
     }
 
     /// Debug ▸ Open System Log…. Opening Console is not a device operation, so
     /// it does not take the device-operation slot.
-    func openSystemLog() {
+    package func openSystemLog() {
         Task { [weak self, session] in
             do { try await session.openSystemLog() } catch { self?.present(error) }
         }
     }
 
-    func rotate(left: Bool) {
+    package func rotate(left: Bool) {
         session.run({ [session] in
             try await session.rotate(left: left)
         }, failure: { [weak self] in self?.present($0) })
     }
 
-    func setOrientation(_ orientation: DeviceOrientation) {
+    package func setOrientation(_ orientation: DeviceOrientation) {
         session.run({ [session] in
             try await session.setOrientation(orientation)
         }, failure: { [weak self] in self?.present($0) })
     }
 
-    func shutDown() {
+    package func shutDown() {
         if let onShutDown { onShutDown(self); return }
         session.run({ [session] in try await session.shutDown() }, failure: { [weak self] in self?.present($0) })
     }
 
-    func restart() { onRestart(self, false) }
+    package func restart() { onRestart(self, false) }
 
-    func eraseAllContentAndSettings() {
+    package func eraseAllContentAndSettings() {
         guard let window = presentationWindow, session.reserve() else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -807,7 +807,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Changes the bezel while preserving display scale.
-    func setDeviceBezelVisible(_ visible: Bool) {
+    package func setDeviceBezelVisible(_ visible: Bool) {
         session.display.setChromeVisible(visible)
         bezelChanged()
         if isEmbedded { updateEmbeddedScale() }
@@ -877,14 +877,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         (window as? DeviceWindow)?.roundHeader(session.display.chromePadding != nil && !isFullScreen)
     }
 
-    func toggleStayOnTop() {
+    package func toggleStayOnTop() {
         window?.level = staysOnTop ? .normal : .floating
         customLocation?.window?.level = window?.level ?? .normal
     }
 
     // MARK: Keyboard and touch pressure
 
-    func toggleKeyboardCapture() {
+    package func toggleKeyboardCapture() {
         let keyboard = activeKeyboardInput
         if keyboard.capture.stop() { return }
         keyboard.focus()
@@ -892,7 +892,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Updates host keyboard input immediately; applies the saved choice to the guest asynchronously.
-    func toggleHardwareKeyboard() {
+    package func toggleHardwareKeyboard() {
         Task.immediate { [weak self, session] in
             do { try await session.toggleHardwareKeyboard() } catch { self?.present(error) }
         }
@@ -946,7 +946,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Features ▸ Location: Custom Location… asks for a coordinate first.
-    func selectLocation(_ selection: LocationSelection) {
+    package func selectLocation(_ selection: LocationSelection) {
         guard !closed, session.canPerformCommands else { return }
         guard selection == .custom else {
             changeLocation { [session] in try await session.selectLocation(selection) }
@@ -971,7 +971,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// I/O ▸ Audio Input or Audio Output: saves `route` as the app's most
     /// recent route for `scope`, which every device window then applies.
-    func selectAudioRoute(_ route: String, in scope: AudioScope) {
+    package func selectAudioRoute(_ route: String, in scope: AudioScope) {
         guard !closed else { return }
         preferences.chooseAudioRoute(route, in: scope)
         focusInput()
@@ -999,7 +999,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// File ▸ Save Screen: captures the screen without asking and shows its
     /// thumbnail, which saves it to the screenshot folder when dismissed.
-    func saveScreen() {
+    package func saveScreen() {
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
         let folder = CaptureFile.screenshotFolder()
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
@@ -1042,7 +1042,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// File ▸ Save Screen…: asks where to save, starting in the screenshot
     /// folder, and whether to apply the device's mask. Saving remembers both.
-    func chooseScreenshotDestination() {
+    package func chooseScreenshotDestination() {
         guard let window = presentationWindow, session.reserve() else { return }
         let hasMask = session.capabilities.hasFramebufferMask
         let panel = NSSavePanel()
@@ -1069,7 +1069,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Edit ▸ Copy Screen: puts a PNG of the screen on the Mac pasteboard,
     /// leaving the simulator's pasteboard alone.
-    func copyScreen() {
+    package func copyScreen() {
         session.run({ [session] in
             let png = try await session.screenPNG()
             NSPasteboard.general.clearContents()
@@ -1079,12 +1079,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Edit ▸ Get Pasteboard or Send Pasteboard. A failure that the device
     /// reports later is also presented on this window.
-    func transferPasteboard(_ transfer: PasteboardTransfer) {
+    package func transferPasteboard(_ transfer: PasteboardTransfer) {
         session.transferPasteboard(transfer) { [weak self] in self?.present($0) }
     }
 
     /// Records immediately; stopping creates a thumbnail that saves on dismissal.
-    func recordScreen() {
+    package func recordScreen() {
         guard let desktop = CaptureFile.desktop else {
             present(SimulatorError.operation("Could not find the Desktop folder to save the recording in."))
             return
@@ -1102,7 +1102,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// File ▸ Record Screen…: asks where to save the movie and whether to
     /// apply the device's mask, then starts recording.
-    func chooseRecordingDestination() {
+    package func chooseRecordingDestination() {
         guard let window = presentationWindow, session.reserve() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.quickTimeMovie]
@@ -1133,7 +1133,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         return view
     }
 
-    func chooseFilesToImport() {
+    package func chooseFilesToImport() {
         guard let window = presentationWindow, session.reserve() else { return }
         let panel = NSOpenPanel()
         panel.title = "Install App or Import Media"
@@ -1152,7 +1152,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         session.run({ [session] in try await session.importFiles(urls) }, failure: { [weak self] in self?.present($0) })
     }
 
-    func chooseURLToOpen() {
+    package func chooseURLToOpen() {
         guard let window = presentationWindow, session.reserve() else { return }
         let alert = NSAlert()
         alert.messageText = "Open URL in Simulator"
@@ -1180,14 +1180,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// I/O ▸ External Displays. A failure, also one that CoreSimulator
     /// reports later, is presented on this window.
-    func chooseExternalDisplay(_ mode: ExternalDisplayMode) {
+    package func chooseExternalDisplay(_ mode: ExternalDisplayMode) {
         guard !closed else { return }
         session.chooseExternalDisplay(mode) { [weak self] in self?.present($0) }
     }
 
     /// The window that the Window menu's scale commands scale: the external
     /// display's window while it is key, otherwise this one.
-    var scaledWindow: any DisplayScaling {
+    package var scaledWindow: any DisplayScaling {
         guard let externalDisplayWindow, externalDisplayWindow.isKey else { return self }
         return externalDisplayWindow
     }
@@ -1295,7 +1295,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         min(canvasZoom.fitScale, minimumScale)...max(canvasZoom.fitScale, 4)
     }
 
-    func canPerformCanvasZoom(_ action: CanvasZoom.Action) -> Bool {
+    package func canPerformCanvasZoom(_ action: CanvasZoom.Action) -> Bool {
         guard isEmbedded, fitting.scalesDisplay, session.canPerformCommands else { return false }
         switch action {
         case .fit: return true
@@ -1305,14 +1305,14 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
     }
 
-    func canvasZoomIsSelected(_ action: CanvasZoom.Action) -> Bool {
+    package func canvasZoomIsSelected(_ action: CanvasZoom.Action) -> Bool {
         switch (action, canvasZoom.mode) {
         case (.fit, .fit), (.physicalSize, .physicalSize): true
         default: false
         }
     }
 
-    func performCanvasZoom(_ action: CanvasZoom.Action) {
+    package func performCanvasZoom(_ action: CanvasZoom.Action) {
         guard canPerformCanvasZoom(action) else { return }
         switch action {
         case .fit:
@@ -1345,7 +1345,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Returns nil for Fit Screen when no host screen is available.
-    func scale(for mode: WindowScaleMode) -> CGFloat? {
+    package func scale(for mode: WindowScaleMode) -> CGFloat? {
         let screen = presentationWindow?.screen
         switch mode {
         case .physicalSize:
@@ -1383,7 +1383,7 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     /// Checks minimum scale and screen fit; a window with a bezel may extend beyond the screen.
-    func canSetScale(_ mode: WindowScaleMode) -> Bool {
+    package func canSetScale(_ mode: WindowScaleMode) -> Bool {
         guard validatesScale(mode), let window else { return false }
         if isEmbedded { return true }
         guard mode != .fitScreen else { return true }
@@ -1407,13 +1407,13 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     /// Checks actual scale even when the command is unavailable.
     /// Returns nil when prerequisite validation requires preserving the previous checkmark.
-    func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
+    package func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
         guard validatesScale(mode), let scale = scale(for: mode) else { return nil }
         return WindowScale.matches(presentationScale, scale) ? .on : .off
     }
 
     /// Resizes below the top edge. Fit Screen centers; fixed scales keep the window on screen.
-    func setScale(_ mode: WindowScaleMode) {
+    package func setScale(_ mode: WindowScaleMode) {
         if isEmbedded {
             guard canSetScale(mode), let scale = scale(for: mode) else { return }
             switch mode {
@@ -1560,18 +1560,18 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         fitting.fit()
     }
 
-    func focusInput() {
+    package func focusInput() {
         guard session.canPerformCommands, presentationWindow != nil else { return }
         if !keyboard.focus() { hostLog("Could not focus simulator input for \(session.device.id)") }
     }
 
-    func present(_ error: Error) {
+    package func present(_ error: Error) {
         guard !closed, let window = presentationWindow else { return }
         let alert = NSAlert(presenting: error)
         alert.beginSheetModal(for: window)
     }
 
-    func windowDidBecomeKey(_ notification: Notification) { activateDisplay() }
+    package func windowDidBecomeKey(_ notification: Notification) { activateDisplay() }
 
     private func activateDisplay(focusingInput: Bool = true) {
         guard !closed else { return }
@@ -1580,15 +1580,15 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         updateTrackpadInput()
         if focusingInput { focusInput() }
     }
-    func windowDidResignKey(_ notification: Notification) {
+    package func windowDidResignKey(_ notification: Notification) {
         guard !closed else { return }
         isKey = false
         updateKeyboardInput()
         updateTrackpadInput()
     }
-    func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
+    package func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
     /// A manual resize updates toolbar style while preserving content height, then fits the display.
-    func windowDidResize(_ notification: Notification) {
+    package func windowDidResize(_ notification: Notification) {
         guard !isSizingWindow else { return }
         if !closed, !isFullScreen, let window {
             let below = window.frame.height - content.headerHeight
@@ -1600,20 +1600,20 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         resizeDisplay()
     }
-    func windowWillEnterFullScreen(_ notification: Notification) {
+    package func windowWillEnterFullScreen(_ notification: Notification) {
         saveWindowGeometry()
         fitting.willEnterFullScreen()
         disableBezelResizeCursors()
         updateHeaderShape()
     }
-    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+    package func windowDidFailToEnterFullScreen(_ window: NSWindow) {
         fitting.didFailToEnterFullScreen()
         disableBezelResizeCursors()
         updateHeaderShape()
         bezelChanged()
     }
     /// Restores scale and origin explicitly; AppKit loses the origin of windows taller than the screen.
-    func windowDidExitFullScreen(_ notification: Notification) {
+    package func windowDidExitFullScreen(_ notification: Notification) {
         let geometry = fitting.didExitFullScreen(defaultScale: session.primaryDisplay.renderScale)
         disableBezelResizeCursors()
         updateHeaderShape()
@@ -1629,12 +1629,12 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
         // that happened meanwhile did not move it.
         moveWindowOntoScreen()
     }
-    func windowDidEndLiveResize(_ notification: Notification) {
+    package func windowDidEndLiveResize(_ notification: Notification) {
         if !closed { fitting.didEndLiveResize() }
     }
     /// File ▸ Close Window…: asks whether to shut the device down, and closes
     /// the window unless the choice is Cancel.
-    func closeAsking() {
+    package func closeAsking() {
         guard offersLifetimeChoice else { window?.close(); return }
         guard let window, window.attachedSheet == nil, !closed else { return }
         let alert = DeviceLifetimeChoice.alert(
@@ -1648,19 +1648,19 @@ final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     // Control-close asks which device lifetime to use.
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
+    package func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard offersLifetimeChoice, NSEvent.modifierFlags.contains(.control) else { return true }
         closeAsking()
         return false
     }
 
-    func windowWillClose(_ notification: Notification) {
+    package func windowWillClose(_ notification: Notification) {
         guard !closed else { return }
         saveWindowGeometry()
         disconnect()
         onClose(self, closeChoice)
     }
-    func invalidate() {
+    package func invalidate() {
         saveWindowGeometry()
         disconnect()
         window?.delegate = nil
@@ -1726,28 +1726,28 @@ private final class SimulatorPresentationViewController: NSViewController {
 
 /// Allows bezel padding beyond the screen and handles unconsumed bezel drags.
 @MainActor
-final class DeviceWindow: NSWindow {
+package final class DeviceWindow: NSWindow {
     /// The top padding of the display's bezel at scale 1; nil without a bezel.
-    var chromeTopPadding: CGFloat?
+    package var chromeTopPadding: CGFloat?
     /// The display's scale, which the padding scales with.
-    var displayScale: () -> CGFloat = { 1 }
+    package var displayScale: () -> CGFloat = { 1 }
     /// Handles mouse events left unconsumed by the window's views.
-    var handleMouseEvent: (NSEvent) -> Bool = { _ in false }
+    package var handleMouseEvent: (NSEvent) -> Bool = { _ in false }
 
-    override func mouseDown(with event: NSEvent) {
+    package override func mouseDown(with event: NSEvent) {
         if !handleMouseEvent(event) { super.mouseDown(with: event) }
     }
 
-    override func mouseDragged(with event: NSEvent) {
+    package override func mouseDragged(with event: NSEvent) {
         if !handleMouseEvent(event) { super.mouseDragged(with: event) }
     }
 
-    override func mouseUp(with event: NSEvent) {
+    package override func mouseUp(with event: NSEvent) {
         if !handleMouseEvent(event) { super.mouseUp(with: event) }
     }
 
     /// Allows top bezel padding beyond the screen; otherwise uses AppKit's frame constraint.
-    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+    package override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         guard let target = screen ?? self.screen, let chromeTopPadding else {
             return super.constrainFrameRect(frameRect, to: screen)
         }
@@ -1778,7 +1778,7 @@ final class DeviceWindow: NSWindow {
     }
 
     /// Matches the header's lower corners to the window or makes them square.
-    func roundHeader(_ rounded: Bool) {
+    package func roundHeader(_ rounded: Bool) {
         guard let layer = titlebarContainer?.layer else { return }
         guard rounded else {
             layer.cornerRadius = 0
@@ -2265,14 +2265,14 @@ private final class CanvasOverlayView: NSView {
     }
 }
 
-enum CaptureFile {
+package enum CaptureFile {
     /// Screenshot filename in local time.
-    static func screenshotName(device: String, date: Date) -> String {
+    package static func screenshotName(device: String, date: Date) -> String {
         name("Simulator Screenshot", device: device, date: date, extension: "png")
     }
 
     /// Recording filename in local time.
-    static func recordingName(device: String, date: Date) -> String {
+    package static func recordingName(device: String, date: Date) -> String {
         name("Simulator Screen Recording", device: device, date: date, extension: "mov")
     }
 
@@ -2286,10 +2286,10 @@ enum CaptureFile {
             .replacingOccurrences(of: "/", with: ".")
     }
 
-    static var desktop: URL? { FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first }
+    package static var desktop: URL? { FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first }
 
     /// Uses an existing ScreenShotSaveLocation, then Desktop, then /private/tmp.
-    static func screenshotFolder() -> URL {
+    package static func screenshotFolder() -> URL {
         if let location = HostPreferences.defaults.string(forKey: HostPreferences.screenShotSaveLocation) {
             let path = NSString(string: location).expandingTildeInPath
             var isDirectory: ObjCBool = false
@@ -2303,7 +2303,7 @@ enum CaptureFile {
 
     /// The first of `name`, "name #2" through "name #99" that is free in
     /// `folder` and not reserved.
-    static func unusedFile(in folder: URL, named name: String, isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
+    package static func unusedFile(in folder: URL, named name: String, isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
         let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
         for number in 1...99 {
             let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
@@ -2314,7 +2314,7 @@ enum CaptureFile {
 
     /// Moves the capture without overwriting, trying suffixes #2 through #99.
     /// A failure preserves the original file and reports its location.
-    static func move(_ capture: URL, into folder: URL, named name: String,
+    package static func move(_ capture: URL, into folder: URL, named name: String,
                      isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
         let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
         for number in 1...99 {
@@ -2333,7 +2333,7 @@ enum CaptureFile {
     }
 
     @MainActor
-    static func write(to destination: URL, extension suffix: String,
+    package static func write(to destination: URL, extension suffix: String,
                       produce: (URL) async throws -> Void) async throws {
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".neo-simulator-\(UUID().uuidString).\(suffix)")
@@ -2359,11 +2359,11 @@ enum CaptureFile {
 }
 
 /// Device lifetime selected when closing a window or quitting.
-enum DeviceLifetimeChoice: Equatable {
+package enum DeviceLifetimeChoice: Equatable {
     case shutDown, keepRunning
 
     /// Return chooses the default action.
-    @MainActor static func alert(quitting: Bool, keepsRunningByDefault: Bool) -> NSAlert {
+    @MainActor package static func alert(quitting: Bool, keepsRunningByDefault: Bool) -> NSAlert {
         let alert = NSAlert()
         if quitting {
             alert.messageText = "Do you want to shut down the simulated devices?"
@@ -2388,7 +2388,7 @@ enum DeviceLifetimeChoice: Equatable {
 
     /// The choice an alert response names, saved as the default under `key`
     /// when the suppression box is checked. Cancel names none.
-    @MainActor static func choice(for response: NSApplication.ModalResponse, of alert: NSAlert,
+    @MainActor package static func choice(for response: NSApplication.ModalResponse, of alert: NSAlert,
                        rememberingAs key: String) -> Self? {
         let choice: Self
         switch response {

@@ -1,8 +1,10 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Quartz
 import Carbon
 import IOKit.hid
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
 final class RemoteDeviceInputView: NSView {

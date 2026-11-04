@@ -1,9 +1,10 @@
-import AppKit
+import NeoSimulatorKit
 @_spi(NeoSimulator) import XcodeSimulatorHost
+import AppKit
 
 /// Composes the renderer's application lifecycle around the reusable simulator engine.
 @MainActor
-final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSource {
+package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSource {
     private let runtime: SimulatorRuntime
     private let engine: SimulatorScreenHost
     private let isManaged: Bool
@@ -24,9 +25,9 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     private let creationPreferences = SimulatorPreferences()
     private var menu: MenuController?
     private var openRequests: [String: (device: SimulatorDeviceIdentifier, preservesOwnership: Bool, task: Task<Void, Never>)] = [:]
-    var isStopped: Bool { engine.isStopped }
+    package var isStopped: Bool { engine.isStopped }
 
-    init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
+    package init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
          owner: RendererOwnerIdentity? = nil, headless: Bool = false) throws {
         self.runtime = runtime
         self.isManaged = isManaged
@@ -57,7 +58,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    func start(initialDeviceIdentifier: String? = nil, initialDeviceSetPath: String? = nil) throws {
+    package func start(initialDeviceIdentifier: String? = nil, initialDeviceSetPath: String? = nil) throws {
         let initialDevice = initialDeviceIdentifier.map { SimulatorDeviceIdentifier($0, deviceSetPath: initialDeviceSetPath) }
         if isManaged {
             if let initialDevice { engine.adopt(initialDevice) }
@@ -126,17 +127,17 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         }
     }
 
-    func availableSimulatorDevices() throws -> [AvailableDevice] { try engine.availableSimulatorDevices() }
-    func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
+    package func availableSimulatorDevices() throws -> [AvailableDevice] { try engine.availableSimulatorDevices() }
+    package func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
         engine.hasVisibleWindow(forDevice: identifier)
     }
-    func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
+    package func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         if isManaged { openManager(command: "open-device", queryItems: identifier.queryItems) }
         else { try await engine.openSimulator(withIdentifier: identifier) }
     }
-    func toggleShowDeviceBezels() { engine.toggleShowDeviceBezels() }
-    var showsTestingDevices: Bool { engine.showsTestingDevices }
-    func toggleShowTestingDevices() { engine.toggleShowTestingDevices() }
+    package func toggleShowDeviceBezels() { engine.toggleShowDeviceBezels() }
+    package var showsTestingDevices: Bool { engine.showsTestingDevices }
+    package func toggleShowTestingDevices() { engine.toggleShowTestingDevices() }
 
     private func activateWindows() {
         guard !isHeadless else { return }
@@ -184,7 +185,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             userInfo: result, deliverImmediately: true)
     }
 
-    func application(_ application: NSApplication, open urls: [URL]) {
+    package func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             do {
                 switch try RendererRequest(url: url) {
@@ -312,7 +313,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
             deliverImmediately: true)
     }
 
-    func showManagerSettings() { openManager(command: "settings") }
+    package func showManagerSettings() { openManager(command: "settings") }
 
     private func openManager(command: String, queryItems: [URLQueryItem] = []) {
         var components = URLComponents()
@@ -337,7 +338,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     /// Prefers the saved identity, then the last iPhone or first device across the available catalog.
-    static func initialDevice(in devices: [AvailableDevice], current: SimulatorDeviceIdentifier?) -> AvailableDevice? {
+    package static func initialDevice(in devices: [AvailableDevice], current: SimulatorDeviceIdentifier?) -> AvailableDevice? {
         if let current, let identifier = UUID(uuidString: current.identifier),
            let device = devices.first(where: { $0.identity.deviceSetPath == current.deviceSetPath && UUID(uuidString: $0.identifier) == identifier }) {
             return device
@@ -345,7 +346,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return devices.last { $0.productFamily == 1 && $0.deviceTypeName.contains("iPhone") } ?? devices.first
     }
 
-    static func observeHandoverSignal(_ onHandover: @escaping @MainActor @Sendable () -> Void) -> DispatchSourceSignal {
+    package static func observeHandoverSignal(_ onHandover: @escaping @MainActor @Sendable () -> Void) -> DispatchSourceSignal {
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
         // DispatchSourceHandler is not Sendable, so make this worker callback's isolation explicit.
@@ -361,7 +362,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return source
     }
 
-    nonisolated static func requestTerminationAfterOwnerExit() {
+    package nonisolated static func requestTerminationAfterOwnerExit() {
         CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
             MainActor.assumeIsolated {
                 guard let target = handoverTarget else { exit(EX_OK) }
@@ -396,7 +397,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
 
     /// Quit NeoSimulator…: asks whether to shut the devices down, and quits
     /// unless the choice is Cancel.
-    func quitAsking() {
+    package func quitAsking() {
         if isManaged {
             openManager(command: "quit", queryItems: [URLQueryItem(name: "ask", value: "true")])
             return
@@ -410,7 +411,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     }
 
     /// Brings the existing creation form forward or opens one.
-    func showNewSimulator() {
+    package func showNewSimulator() {
         guard !isStopped else { return }
         if newSimulator == nil {
             let catalog: SimulatorCatalog
@@ -434,7 +435,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         NSApp.activate()
     }
 
-    func showDeviceBrowser() {
+    package func showDeviceBrowser() {
         guard !isStopped else { return }
         if isHeadless { return }
         if isManaged {
@@ -456,13 +457,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         browser?.report(error)
     }
 
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    package func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         activateWindows()
         return true
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    package func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    package func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if isManaged, !engine.isStopped, !managerRequestedQuit, !handoverRequested, !ownerExitRequested {
             openManager(command: "quit")
             return .terminateCancel
@@ -487,13 +488,13 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         return .terminateLater
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    package func applicationWillTerminate(_ notification: Notification) {
         CaptureThumbnail.savesImmediately = true
         CaptureThumbnail.finishAll()
         shutdown()
     }
 
-    func shutdown() {
+    package func shutdown() {
         engine.shutdown()
         retireRegistration()
         if let locationObserver {

@@ -1,15 +1,16 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Darwin
 import Synchronization
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
-enum RendererRequest: Equatable {
+package enum RendererRequest: Equatable {
     case openDevice(SimulatorDeviceIdentifier)
     case quit(asks: Bool)
     case activate
     case showBrowser
 
-    init(url: URL) throws {
+    package init(url: URL) throws {
         guard url.scheme == "neosimulator-renderer", let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw SimulatorError.invalidArguments("Unsupported renderer URL: \(url.absoluteString)")
         }

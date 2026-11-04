@@ -1,39 +1,45 @@
 import Foundation
 
 /// Creation catalog in CoreSimulator order.
-struct SimulatorCatalog {
-    struct DeviceType: Codable, Equatable, Sendable {
-        let identifier: String
-        let name: String
-        let productFamily: Int
+package struct SimulatorCatalog {
+    package struct DeviceType: Codable, Equatable, Sendable {
+        package let identifier: String
+        package let name: String
+        package let productFamily: Int
+
+        package init(identifier: String, name: String, productFamily: Int) {
+            self.identifier = identifier
+            self.name = name
+            self.productFamily = productFamily
+        }
     }
 
-    struct Runtime: Codable, Equatable, Sendable {
-        let identifier: String
-        let name: String
-        let buildVersion: String?
+    package struct Runtime: Codable, Equatable, Sendable {
+        package let identifier: String
+        package let name: String
+        package let buildVersion: String?
 
-        init(identifier: String, name: String, buildVersion: String? = nil) {
+        package init(identifier: String, name: String, buildVersion: String? = nil) {
             self.identifier = identifier
             self.name = name
             self.buildVersion = buildVersion
         }
     }
 
-    struct RuntimeNames: Decodable, Sendable {
-        struct Downloadable: Decodable, Sendable {
-            struct Version: Decodable, Sendable {
-                let buildUpdate: String
+    package struct RuntimeNames: Decodable, Sendable {
+        package struct Downloadable: Decodable, Sendable {
+            package struct Version: Decodable, Sendable {
+                package let buildUpdate: String
             }
-            let name: String
-            let simulatorVersion: Version?
+            package let name: String
+            package let simulatorVersion: Version?
         }
 
-        let downloadables: [Downloadable]
-        let otherDownloadables: [Downloadable]
+        package let downloadables: [Downloadable]
+        package let otherDownloadables: [Downloadable]
 
         @concurrent
-        static func decode(_ data: Data) async throws -> [String: String] {
+        package static func decode(_ data: Data) async throws -> [String: String] {
             let index = try PropertyListDecoder().decode(Self.self, from: data)
             var names: [String: String] = [:]
             let suffix = " Simulator Runtime"
@@ -46,43 +52,51 @@ struct SimulatorCatalog {
         }
     }
 
-    let deviceTypes: [DeviceType]
-    let runtimes: [Runtime]
+    package let deviceTypes: [DeviceType]
+    package let runtimes: [Runtime]
     /// Supported device-type identifiers keyed by runtime.
-    let supportedDeviceTypes: [String: Set<String>]
+    package let supportedDeviceTypes: [String: Set<String>]
     /// Watch-first CoreSimulator pairing validation.
-    let canPair: @MainActor (_ watchType: String, _ watchRuntime: String,
+    package let canPair: @MainActor (_ watchType: String, _ watchRuntime: String,
                              _ phoneType: String, _ phoneRuntime: String) -> Bool
 
-    func runtime(_ runtime: String, supports deviceType: String) -> Bool {
+    package init(deviceTypes: [DeviceType], runtimes: [Runtime], supportedDeviceTypes: [String: Set<String>],
+                 canPair: @escaping @MainActor (String, String, String, String) -> Bool) {
+        self.deviceTypes = deviceTypes
+        self.runtimes = runtimes
+        self.supportedDeviceTypes = supportedDeviceTypes
+        self.canPair = canPair
+    }
+
+    package func runtime(_ runtime: String, supports deviceType: String) -> Bool {
         supportedDeviceTypes[runtime]?.contains(deviceType) == true
     }
 
-    func deviceType(_ identifier: String) -> DeviceType? { deviceTypes.first { $0.identifier == identifier } }
+    package func deviceType(_ identifier: String) -> DeviceType? { deviceTypes.first { $0.identifier == identifier } }
 }
 
 extension SimulatorCatalog {
     /// Transfers the read-only catalog across the Xcode-isolated utility process.
-    struct Snapshot: Codable, Sendable {
-        struct Pairing: Codable, Hashable, Sendable {
-            let watchType: String
-            let watchRuntime: String
-            let phoneType: String
-            let phoneRuntime: String
+    package struct Snapshot: Codable, Sendable {
+        package struct Pairing: Codable, Hashable, Sendable {
+            package let watchType: String
+            package let watchRuntime: String
+            package let phoneType: String
+            package let phoneRuntime: String
         }
 
-        let deviceTypes: [DeviceType]
-        let runtimes: [Runtime]
-        let supportedDeviceTypes: [String: Set<String>]
-        let pairings: Set<Pairing>
+        package let deviceTypes: [DeviceType]
+        package let runtimes: [Runtime]
+        package let supportedDeviceTypes: [String: Set<String>]
+        package let pairings: Set<Pairing>
 
         @concurrent
-        static func decode(_ data: Data) async throws -> Self {
+        package static func decode(_ data: Data) async throws -> Self {
             try JSONDecoder().decode(Self.self, from: data)
         }
 
         @MainActor
-        init(catalog: SimulatorCatalog) {
+        package init(catalog: SimulatorCatalog) {
             deviceTypes = catalog.deviceTypes
             runtimes = catalog.runtimes
             supportedDeviceTypes = catalog.supportedDeviceTypes
@@ -105,7 +119,7 @@ extension SimulatorCatalog {
         }
 
         @MainActor
-        func catalog() -> SimulatorCatalog {
+        package func catalog() -> SimulatorCatalog {
             let pairings = pairings
             return SimulatorCatalog(deviceTypes: deviceTypes, runtimes: runtimes, supportedDeviceTypes: supportedDeviceTypes) {
                 pairings.contains(Pairing(watchType: $0, watchRuntime: $1, phoneType: $2, phoneRuntime: $3))

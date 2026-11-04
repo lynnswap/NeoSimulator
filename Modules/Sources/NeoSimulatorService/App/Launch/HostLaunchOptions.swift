@@ -1,7 +1,9 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import Darwin
 import Synchronization
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 struct HostLaunchOptions {
     let xcodeURL: URL

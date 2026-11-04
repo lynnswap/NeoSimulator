@@ -1,11 +1,13 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 
 @MainActor
-final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
-    let form: NewSimulatorViewController
+package final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
+    package let form: NewSimulatorViewController
     private let onClose: () -> Void
 
-    init(model: NewSimulatorModel, reportFailure: @escaping (Error) -> Void, onClose: @escaping () -> Void = {}) {
+    package init(model: NewSimulatorModel, reportFailure: @escaping (Error) -> Void, onClose: @escaping () -> Void = {}) {
         let form = NewSimulatorViewController(model: model)
         self.form = form
         self.onClose = onClose
@@ -25,7 +27,7 @@ final class NewSimulatorWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    func windowWillClose(_ notification: Notification) { onClose() }
+    package func windowWillClose(_ notification: Notification) { onClose() }
 }

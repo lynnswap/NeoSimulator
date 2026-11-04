@@ -1,3 +1,7 @@
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorService
 import ABIBridge
 import AppKit
 import Darwin

@@ -1,5 +1,7 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import SwiftUI
-import XcodeSimulatorHost
 
 struct ManagerDeviceSettingsView: View {
     @Bindable var model: DeviceSettingsPanelModel

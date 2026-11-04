@@ -1,6 +1,8 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import SwiftUI
-import XcodeSimulatorHost
 
 @MainActor
 struct DeviceInformationView: View {

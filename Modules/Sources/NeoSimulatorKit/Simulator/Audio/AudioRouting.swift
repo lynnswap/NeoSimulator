@@ -1,79 +1,79 @@
 import Foundation
 
 /// Audio routes use CoreAudio device UIDs or the system-default sentinel.
-enum AudioRouting {
+package enum AudioRouting {
     /// CoreSimDeviceIO's SimAudioHostUseSystemDefaultDeviceUID, checked at startup.
-    static let systemDefault = "__sim__hostUseSystemDefaultDeviceUID"
+    package static let systemDefault = "__sim__hostUseSystemDefaultDeviceUID"
 
-    static let recentRouteLimit = 5
+    package static let recentRouteLimit = 5
 
     /// Posted with the preference store and the changed scope's raw value under `scopeKey`.
-    static let didChangeNotification = Notification.Name("dev.lynnswap.NeoSimulator.AudioRouteDidChange")
-    static let scopeKey = "scope"
+    package static let didChangeNotification = Notification.Name("dev.lynnswap.NeoSimulator.AudioRouteDidChange")
+    package static let scopeKey = "scope"
 }
 
 /// SimAudioDeviceScope values, also used as the isDefaultInScopes bitmask.
-enum AudioScope: UInt64 {
+package enum AudioScope: UInt64 {
     case input = 1, output = 2
 
-    var noun: String { self == .input ? "input" : "output" }
+    package var noun: String { self == .input ? "input" : "output" }
 }
 
-enum AudioRouteChange: Sendable {
+package enum AudioRouteChange: Sendable {
     case availableDevices, selectedDevice
 }
 
 /// Host audio device reported by CoreSimDeviceIO.
-struct HostAudioDevice: Equatable {
-    var uid: String
-    var name: String
-    var inputChannels: Int
-    var outputChannels: Int
+package struct HostAudioDevice: Equatable {
+    package var uid: String
+    package var name: String
+    package var inputChannels: Int
+    package var outputChannels: Int
     /// Bitmask of AudioScope values for which this device is the host default.
-    var defaultScopes: UInt64
+    package var defaultScopes: UInt64
 
-    func isDefault(in scope: AudioScope) -> Bool { defaultScopes & scope.rawValue != 0 }
+    package func isDefault(in scope: AudioScope) -> Bool { defaultScopes & scope.rawValue != 0 }
 }
 
 /// Result of selecting among recent routes.
-enum AudioRouteDecision: Equatable {
+package enum AudioRouteDecision: Equatable {
     case current
     case route(String)
     case unavailable
 }
 
 /// Audio-port snapshot.
-struct AudioRouteState: Equatable {
+package struct AudioRouteState: Equatable {
     /// In port order.
-    var devices: [HostAudioDevice]
-    var inputRoute: String?
-    var outputRoute: String?
+    package var devices: [HostAudioDevice]
+    package var inputRoute: String?
+    package var outputRoute: String?
     /// Effective host defaults reported by the port.
-    var defaultInput: String?
-    var defaultOutput: String?
+    package var defaultInput: String?
+    package var defaultOutput: String?
 
-    func devices(in scope: AudioScope) -> [HostAudioDevice] {
+    package func devices(in scope: AudioScope) -> [HostAudioDevice] {
         devices.filter { (scope == .input ? $0.inputChannels : $0.outputChannels) > 0 }
     }
 
-    func route(in scope: AudioScope) -> String? { scope == .input ? inputRoute : outputRoute }
+    package func route(in scope: AudioScope) -> String? { scope == .input ? inputRoute : outputRoute }
 
-    func usesSystemDefault(in scope: AudioScope) -> Bool { route(in: scope) == AudioRouting.systemDefault }
+    package func usesSystemDefault(in scope: AudioScope) -> Bool { route(in: scope) == AudioRouting.systemDefault }
 
     /// Uses the guest's route, falling back to the host default.
-    func selectedDevice(in scope: AudioScope) -> HostAudioDevice? {
+    package func selectedDevice(in scope: AudioScope) -> HostAudioDevice? {
         let devices = devices(in: scope)
         return devices.first { $0.uid == route(in: scope) } ?? devices.first { $0.isDefault(in: scope) }
     }
 
-    func defaultDevice(in scope: AudioScope) -> HostAudioDevice? {
+    package func defaultDevice(in scope: AudioScope) -> HostAudioDevice? {
         let uid = scope == .input ? defaultInput : defaultOutput
         return devices(in: scope).first { $0.uid == uid }
     }
 
     /// Uses the first recent route already selected or currently available.
     /// The system-default sentinel is available only with a default device in this scope.
-    func decision(among recent: [String], in scope: AudioScope) -> AudioRouteDecision {
+    package func decision(among recent: [String], in scope: AudioScope) -> AudioRouteDecision {
         let usesSystemDefault = usesSystemDefault(in: scope)
         let selected = selectedDevice(in: scope)?.uid
         let devices = devices(in: scope)
@@ -100,14 +100,14 @@ extension PreferenceStore {
         return defaults
     }
 
-    func preferredAudioRoutes(forDevice identifier: String, in scope: AudioScope) throws -> [String] {
+    package func preferredAudioRoutes(forDevice identifier: String, in scope: AudioScope) throws -> [String] {
         let saved = try deviceAudioPreferences().object(forKey: Self.deviceAudioRouteKey(identifier, scope)) as? String
         let route = saved == "systemDefault" ? AudioRouting.systemDefault : saved
         guard let route else { return recentAudioRoutes(in: scope) }
         return [route] + recentAudioRoutes(in: scope).filter { $0 != route }
     }
 
-    func saveAudioRoute(_ route: String, forDevice identifier: String, in scope: AudioScope) throws {
+    package func saveAudioRoute(_ route: String, forDevice identifier: String, in scope: AudioScope) throws {
         let store = try deviceAudioPreferences()
         store.set(route == AudioRouting.systemDefault ? "systemDefault" : route,
                   forKey: Self.deviceAudioRouteKey(identifier, scope))
@@ -121,13 +121,13 @@ extension PreferenceStore {
     }
 
     /// Most-recent-first routes; missing, empty, or malformed preferences mean System Default.
-    func recentAudioRoutes(in scope: AudioScope) -> [String] {
+    package func recentAudioRoutes(in scope: AudioScope) -> [String] {
         if let routes = object(forKey: Self.recentAudioRoutesKey(scope)) as? [String], !routes.isEmpty { return routes }
         return [AudioRouting.systemDefault]
     }
 
     /// Saves a unique, bounded recent-route list and notifies every device window.
-    func chooseAudioRoute(_ route: String, in scope: AudioScope) {
+    package func chooseAudioRoute(_ route: String, in scope: AudioScope) {
         var seen = Set<String>()
         let routes = ([route] + recentAudioRoutes(in: scope)).filter { seen.insert($0).inserted }
         set(Array(routes.prefix(AudioRouting.recentRouteLimit)), forKey: Self.recentAudioRoutesKey(scope))

@@ -7,7 +7,7 @@ import AppKit
 /// SimPasteboardPlus reports, and automatic ones their own, so that a requested transfer queued behind an automatic
 /// one, as after synchronization turns off, keeps its own result.
 @MainActor
-final class NativePasteboardConnection: SimulatorPasteboard {
+package final class NativePasteboardConnection: SimulatorPasteboard {
     private let transport: any PasteboardTransport
     private let pasteboard: NSPasteboard
     /// Orders the device copies that every device's connection observes. A session without it does not synchronize
@@ -36,7 +36,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         let generation: Int
     }
 
-    init(transport: any PasteboardTransport, managing pasteboard: NSPasteboard, sync: PasteboardSync?,
+    package init(transport: any PasteboardTransport, managing pasteboard: NSPasteboard, sync: PasteboardSync?,
          events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) {
         self.transport = transport
         self.pasteboard = pasteboard
@@ -50,7 +50,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         for observation in observations { observation.cancel() }
     }
 
-    func pull() {
+    package func pull() {
         enqueue { [transport, pasteboard] in
             do {
                 let generation = try await transport.read(into: pasteboard)
@@ -59,14 +59,14 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         }
     }
 
-    func push() {
+    package func push() {
         enqueue { [transport, pasteboard] in
             do { try await transport.send(pasteboard); return .activated }
             catch { return .failedToSend(error) }
         }
     }
 
-    func pushAutomatically() {
+    package func pushAutomatically() {
         // Sending the Mac pasteboard is no change of its own: a device copy observed before it already gives way to
         // the Mac change it sends, which changed the Mac pasteboard's count.
         enqueueSend(during: synchronization) { [transport, pasteboard] in
@@ -75,7 +75,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         }
     }
 
-    func setAutomaticSync(_ enabled: Bool) {
+    package func setAutomaticSync(_ enabled: Bool) {
         guard enabled else { return stopObserving() }
         guard observations.isEmpty else { return }
         let (transport, pasteboard, current) = (transport, pasteboard, synchronization)
@@ -93,7 +93,7 @@ final class NativePasteboardConnection: SimulatorPasteboard {
         ]
     }
 
-    func disconnect() {
+    package func disconnect() {
         events = nil
         stopObserving()
     }

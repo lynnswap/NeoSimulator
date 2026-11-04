@@ -963,7 +963,6 @@ struct SimulatorSettingsBackendTests {
     @Test(.timeLimit(.minutes(1))) func cancellingAReadStopsLaterQueriesWithoutReportingCancellationAsAnIssue() async {
         let device = simulator("device-A")
         let started = AsyncStream<Void>.makeStream()
-        let pending = AsyncStream<Void>.makeStream()
         var events = started.stream.makeAsyncIterator()
         let queries = Mutex<[[String]]>([])
         let reading = Task {
@@ -973,6 +972,7 @@ struct SimulatorSettingsBackendTests {
             }, readCommand: { _, arguments in
                 queries.withLock { $0.append(arguments) }
                 started.continuation.yield(())
+                let pending = AsyncStream<Void>.makeStream()
                 var waiting = pending.stream.makeAsyncIterator()
                 await waiting.next()
                 try Task.checkCancellation()

@@ -4,10 +4,10 @@ import Observation
 
 /// Captures shortcuts only while its displayed device owns focus. Escape remains a way out.
 @Observable @MainActor
-final class KeyboardCapture {
-    private(set) var isCapturing = false
-    @ObservationIgnored var failure: (any Error) -> Void = { _ in }
-    @ObservationIgnored var didStop: () -> Void = {}
+package final class KeyboardCapture {
+    package private(set) var isCapturing = false
+    @ObservationIgnored package var failure: (any Error) -> Void = { _ in }
+    @ObservationIgnored package var didStop: () -> Void = {}
     private let tap: any KeyboardEventTap
     private let isEligible: () -> Bool
     private let forward: (NSEvent) -> Void
@@ -25,7 +25,7 @@ final class KeyboardCapture {
         (kVK_Control, .control), (kVK_RightControl, .control), (kVK_Function, .function),
     ]
 
-    init(tap: any KeyboardEventTap = SystemKeyboardEventTap(), isEligible: @escaping () -> Bool,
+    package init(tap: any KeyboardEventTap = SystemKeyboardEventTap(), isEligible: @escaping () -> Bool,
          forward: @escaping (NSEvent) -> Void, releaseModifiers: @escaping ([NSEvent]) -> Void,
          initialModifierFlags: @escaping () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags },
          waitForEscapeHold: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
@@ -46,7 +46,7 @@ final class KeyboardCapture {
             })
     }
 
-    func start() throws {
+    package func start() throws {
         guard !isCapturing else { return }
         guard isEligible() else { throw SimulatorError.operation("Focus the device screen before capturing its keyboard.") }
         try tap.start { [weak self] type, event in self?.receive(type, event) ?? false }
@@ -63,7 +63,7 @@ final class KeyboardCapture {
     }
 
     @discardableResult
-    func stop() -> Bool {
+    package func stop() -> Bool {
         guard isCapturing else { return false }
         isCapturing = false
         tap.stop()

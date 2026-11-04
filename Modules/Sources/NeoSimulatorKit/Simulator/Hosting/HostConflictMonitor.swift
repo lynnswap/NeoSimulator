@@ -2,13 +2,13 @@ import AppKit
 import os
 
 @MainActor
-final class HostConflictMonitor {
+package final class HostConflictMonitor {
     private let observedConflict = OSAllocatedUnfairLock<String?>(initialState: nil)
     private let notificationCenter: NotificationCenter
     private var observer: (any NSObjectProtocol)?
-    var onConflict: (() -> Void)?
+    package var onConflict: (() -> Void)?
 
-    init(notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+    package init(notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter) {
         self.notificationCenter = notificationCenter
         let observedConflict = observedConflict
         observer = notificationCenter.addObserver(
@@ -23,7 +23,7 @@ final class HostConflictMonitor {
         }
     }
 
-    var conflictingHostName: String? {
+    package var conflictingHostName: String? {
         if let recorded = observedConflict.withLock({ $0 }) { return recorded }
         for identifier in ["com.apple.dt.Devices", "com.apple.iphonesimulator"] {
             if !NSRunningApplication.runningApplications(withBundleIdentifier: identifier).isEmpty {
@@ -33,7 +33,7 @@ final class HostConflictMonitor {
         return nil
     }
 
-    func check() throws {
+    package func check() throws {
         if let name = conflictingHostName {
             throw SimulatorError.conflict("\(name) is running or launched during startup; close it before opening the simulator display")
         }

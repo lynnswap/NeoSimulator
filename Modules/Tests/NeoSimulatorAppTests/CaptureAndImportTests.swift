@@ -1,3 +1,7 @@
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorService
 import AppKit
 import AVFoundation
 import Foundation

@@ -29,6 +29,15 @@
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
       <Testables>
+         <TestableReference skipped = "NO" parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "NeoSimulatorAppTests"
+               BuildableName = "NeoSimulatorAppTests"
+               BlueprintName = "NeoSimulatorAppTests"
+               ReferencedContainer = "container:..">
+            </BuildableReference>
+         </TestableReference>
          <TestableReference
             skipped = "NO"
             parallelizable = "NO">

@@ -1,7 +1,9 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 import Observation
 import SwiftUI
-import XcodeSimulatorHost
 
 @MainActor @Observable
 final class DeviceSettingsPanelModel {

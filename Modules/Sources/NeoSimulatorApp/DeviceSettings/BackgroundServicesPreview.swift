@@ -1,7 +1,9 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 #if DEBUG
 import AppKit
 import SwiftUI
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 struct BackgroundServicesPreview: NSViewControllerRepresentable {
     enum Scenario { case overrides, defaultProfile, defaultModified, stopped }

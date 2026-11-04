@@ -4,10 +4,10 @@ import SwiftUI
 
 /// Bottom canvas content retained with the screen across presentations.
 @MainActor
-final class DeviceCanvasControls: NSView {
-    var onAction: ((String) -> Void)?
-    var onLayoutChange: (() -> Void)?
-    var xcodeURL: URL?
+package final class DeviceCanvasControls: NSView {
+    package var onAction: ((String) -> Void)?
+    package var onLayoutChange: (() -> Void)?
+    package var xcodeURL: URL?
     private let host = CanvasControlsHostingView(rootView: CanvasBottomContent())
     private var content = CanvasBottomContent()
     private var modifierMonitor: Any?
@@ -16,7 +16,7 @@ final class DeviceCanvasControls: NSView {
     private var rotationImages: [DeviceCommand.ID: NSImage] = [:]
     private var postureImages: [DevicePosture: NSImage] = [:]
 
-    init() {
+    package init() {
         super.init(frame: .zero)
         isHidden = true
         host.sizingOptions = [.minSize, .intrinsicContentSize]
@@ -34,14 +34,14 @@ final class DeviceCanvasControls: NSView {
         }
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
     isolated deinit {
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
         artworkTask?.cancel()
     }
 
-    func update(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
+    package func update(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
                 recordingStartDate: Date? = nil, nativePoses: NativeDevicePoseControls? = nil,
                 nativePosesEnabled: Bool = true, posture: DevicePostureModel? = nil,
                 postureEnabled: Bool = true, postureAvailable: Bool = true, pairedDeviceName: String? = nil) {

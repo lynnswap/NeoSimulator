@@ -5,12 +5,12 @@ import ObservationBridge
 
 /// The device window's toolbar, built from the command catalog.
 @MainActor
-final class DeviceToolbar: NSObject, NSToolbarDelegate {
+package final class DeviceToolbar: NSObject, NSToolbarDelegate {
     private static let mainWindowItem = NSToolbarItem.Identifier("ShowInMainWindow")
     private static let nativeRotationItem = NSToolbarItem.Identifier("NativeDeviceRotation")
     /// Each window's items follow its own device. AppKit propagates insertions and
     /// removals to every toolbar with the same identifier, so none is shared.
-    let toolbar = NSToolbar(identifier: "DeviceToolbar.\(UUID().uuidString)")
+    package let toolbar = NSToolbar(identifier: "DeviceToolbar.\(UUID().uuidString)")
     private weak var controller: DeviceWindowController?
     private var pluginDelegate: PluginToolbarDelegate?
     private var observation: PortableObservationTracking.Token?
@@ -18,7 +18,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     private var usesCanvasControls = false
     private let commands: [DeviceCommand.ID]
     /// The modifier keys held now, which the buttons follow.
-    var modifierFlags: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
+    package var modifierFlags: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
     /// The toolbar's view, whose tracking area reports the pointer over it.
     private var pointerTracking: (view: NSView, area: NSTrackingArea)?
     /// Watches the modifier keys while the pointer is over the toolbar.
@@ -26,7 +26,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     /// Whether the buttons show their Option alternates.
     private var showsOptionAlternates = false
 
-    init(controller: DeviceWindowController) {
+    package init(controller: DeviceWindowController) {
         self.controller = controller
         commands = DeviceCommand.toolbarItems.filter {
             DeviceCommand.command($0).isSupported(controller.session.capabilities)
@@ -50,7 +50,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
     /// Tracks Option while the pointer is over the toolbar, including inactive windows.
     /// The toolbar view is private AppKit API; without it, buttons keep their default faces.
-    func attach(to window: NSWindow) {
+    package func attach(to window: NSWindow) {
         window.toolbar = toolbar
         guard toolbar.responds(to: NSSelectorFromString("_toolbarView")),
               let view = toolbar.value(forKey: "_toolbarView") as? NSView else { return }
@@ -61,7 +61,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     /// Preserves the plugin's toolbar and delegate while adding the host's presentation action.
-    func attachPluginToolbar(_ toolbar: NSToolbar, to window: NSWindow) {
+    package func attachPluginToolbar(_ toolbar: NSToolbar, to window: NSWindow) {
         pluginDelegate?.restore()
         let delegate = PluginToolbarDelegate(toolbar: toolbar, owner: self)
         pluginDelegate = delegate
@@ -76,7 +76,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
     /// Read physical modifier state so synthetic releases sent to devices do not
     /// clear an Option alternate while the user still holds Option.
-    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) {
+    @objc(mouseEntered:) package func mouseEntered(with event: NSEvent) {
         if modifierMonitor == nil {
             modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 self?.followOption()
@@ -86,7 +86,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         followOption()
     }
 
-    @objc(mouseExited:) func mouseExited(with event: NSEvent) {
+    @objc(mouseExited:) package func mouseExited(with event: NSEvent) {
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
         modifierMonitor = nil
         showOptionAlternates(false)
@@ -102,7 +102,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
     /// Like Simulator.app's toolbar nibs, the buttons sit between two flexible
     /// spaces; `apply(_:to:)` hides the last one.
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+    package func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.flexibleSpace] + commands.map { NSToolbarItem.Identifier($0.rawValue) } + [.flexibleSpace]
     }
 
@@ -121,7 +121,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
     }
 
     /// Chooses compact, unified, or expanded style from preferences and available width.
-    func style(forWidth width: CGFloat, title: String, subtitle: String,
+    package func style(forWidth width: CGFloat, title: String, subtitle: String,
                preferences: any PreferenceStore) -> NSWindow.ToolbarStyle {
         if preferences.usesCompactTitleBar { return .unifiedCompact }
         return preferences.usesMonobar && unifiedWidth(title: title, subtitle: subtitle) <= width ? .unified : .expanded
@@ -129,19 +129,19 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
 
     /// Hides the trailing flexible space in unified styles so buttons follow the title.
     /// Applies equally to built-in and plugin toolbars.
-    func apply(_ style: NSWindow.ToolbarStyle, to window: NSWindow) {
+    package func apply(_ style: NSWindow.ToolbarStyle, to window: NSWindow) {
         window.toolbarStyle = style
         if let last = window.toolbar?.items.last, last.itemIdentifier == .flexibleSpace {
             last.isHidden = style != .expanded
         }
     }
 
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+    package func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.mainWindowItem, Self.nativeRotationItem] + (controller?.session.supportsAppResize == true
             ? [NSToolbarItem.Identifier(DeviceCommand.ID.resizeApp.rawValue)] : []) + toolbarDefaultItemIdentifiers(toolbar)
     }
 
-    func setUsesCanvasControls(_ usesCanvasControls: Bool) {
+    package func setUsesCanvasControls(_ usesCanvasControls: Bool) {
         if self.usesCanvasControls && !usesCanvasControls {
             for item in toolbar.items + (pluginDelegate?.toolbar?.items ?? []) {
                 if ["home", "saveScreen", "rotateRight"].contains(item.itemIdentifier.rawValue) { item.isHidden = false }
@@ -152,7 +152,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         configureItems()
     }
 
-    func setShowsMainWindowAction(_ visible: Bool) {
+    package func setShowsMainWindowAction(_ visible: Bool) {
         showsMainWindowAction = visible
         updateMainWindowAction(in: toolbar)
         if let pluginToolbar = pluginDelegate?.toolbar { updateMainWindowAction(in: pluginToolbar) }
@@ -173,7 +173,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         } else if supports { toolbar.insertItem(withItemIdentifier: id, at: 0) }
     }
 
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+    package func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if itemIdentifier == Self.nativeRotationItem,
            let control = controller?.session.display.nativePoseControls, control.isAvailable {
@@ -316,7 +316,7 @@ final class DeviceToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    func updateNativeRotation() {
+    package func updateNativeRotation() {
         let control = controller?.session.display.nativePoseControls
         let visible = !usesCanvasControls && controller?.isEmbedded == false && control?.isAvailable == true
         if !usesCanvasControls { control?.isEnabled = controller?.session.canPerformCommands == true }

@@ -2,15 +2,15 @@ import AppKit
 
 /// Per-device custom-coordinate window; OK requires both fields to parse.
 @MainActor
-final class CustomLocationWindowController: NSWindowController, NSTextFieldDelegate {
-    let latitudeField = NSTextField()
-    let longitudeField = NSTextField()
-    let okButton = NSButton(title: "OK", target: nil, action: nil)
+package final class CustomLocationWindowController: NSWindowController, NSTextFieldDelegate {
+    package let latitudeField = NSTextField()
+    package let longitudeField = NSTextField()
+    package let okButton = NSButton(title: "OK", target: nil, action: nil)
     private let latitudeFormatter = CustomLocationWindowController.formatter(limit: 90)
     private let longitudeFormatter = CustomLocationWindowController.formatter(limit: 180)
     private let onOK: (_ latitude: Double, _ longitude: Double) -> Void
 
-    init(onOK: @escaping (_ latitude: Double, _ longitude: Double) -> Void) {
+    package init(onOK: @escaping (_ latitude: Double, _ longitude: Double) -> Void) {
         self.onOK = onOK
         // Like Simulator.app's, the window has no close, minimize, or zoom
         // button; Cancel closes it.
@@ -25,10 +25,10 @@ final class CustomLocationWindowController: NSWindowController, NSTextFieldDeleg
         window.initialFirstResponder = latitudeField
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
     /// Locale-aware decimal coordinates, six fraction digits, no grouping, bounded by `limit`.
-    static func formatter(limit: Double) -> NumberFormatter {
+    package static func formatter(limit: Double) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.minimumFractionDigits = 0
@@ -42,7 +42,7 @@ final class CustomLocationWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     /// Shows the window with the saved coordinate.
-    func show(latitude: Double, longitude: Double) {
+    package func show(latitude: Double, longitude: Double) {
         latitudeField.doubleValue = latitude
         longitudeField.doubleValue = longitude
         updateOK()
@@ -95,7 +95,7 @@ final class CustomLocationWindowController: NSWindowController, NSTextFieldDeleg
         return content
     }
 
-    func controlTextDidChange(_ notification: Notification) { updateOK() }
+    package func controlTextDidChange(_ notification: Notification) { updateOK() }
 
     private func updateOK() { okButton.isEnabled = coordinate != nil }
 

@@ -1,14 +1,16 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import Foundation
 import Observation
 
 @MainActor @Observable
-final class SimulatorPreferences {
+package final class SimulatorPreferences {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let creationDefaults: UserDefaults?
     @ObservationIgnored private var observations: [DefaultsObservation] = []
     @ObservationIgnored private var isReloading = false
     private static let familyKey = "NewSimulatorProductFamily"
-    var startLastDevice = true {
+    package var startLastDevice = true {
         didSet {
             guard !isReloading else { return }
             let enabled = startLastDevice
@@ -16,15 +18,15 @@ final class SimulatorPreferences {
             defaults.set(enabled, forKey: HostPreferences.sessionOnLaunch)
         }
     }
-    var keepRunningOnWindowClose = false { didSet { save(keepRunningOnWindowClose, forKey: HostPreferences.detachOnWindowClose) } }
-    var keepRunningOnQuit = false { didSet { save(keepRunningOnQuit, forKey: HostPreferences.detachOnAppQuit) } }
-    var showSingleTouches = false { didSet { save(showSingleTouches, forKey: HostPreferences.showSingleTouches) } }
-    var showPinches = true { didSet { save(showPinches, forKey: HostPreferences.showPinches) } }
-    var slowAnimations = false { didSet { save(slowAnimations, forKey: HostPreferences.slowMotionAnimation) } }
-    var includeDeviceMask = false { didSet { save(includeDeviceMask, forKey: HostPreferences.screenShotUseMask) } }
-    var gifImageSize = 640 { didSet { save(gifImageSize, forKey: HostPreferences.gifMaxFrameSize) } }
-    var gifFrameRate = 10 { didSet { save(gifFrameRate, forKey: HostPreferences.gifMaxFramerate) } }
-    var newSimulatorFamily: Int? {
+    package var keepRunningOnWindowClose = false { didSet { save(keepRunningOnWindowClose, forKey: HostPreferences.detachOnWindowClose) } }
+    package var keepRunningOnQuit = false { didSet { save(keepRunningOnQuit, forKey: HostPreferences.detachOnAppQuit) } }
+    package var showSingleTouches = false { didSet { save(showSingleTouches, forKey: HostPreferences.showSingleTouches) } }
+    package var showPinches = true { didSet { save(showPinches, forKey: HostPreferences.showPinches) } }
+    package var slowAnimations = false { didSet { save(slowAnimations, forKey: HostPreferences.slowMotionAnimation) } }
+    package var includeDeviceMask = false { didSet { save(includeDeviceMask, forKey: HostPreferences.screenShotUseMask) } }
+    package var gifImageSize = 640 { didSet { save(gifImageSize, forKey: HostPreferences.gifMaxFrameSize) } }
+    package var gifFrameRate = 10 { didSet { save(gifFrameRate, forKey: HostPreferences.gifMaxFramerate) } }
+    package var newSimulatorFamily: Int? {
         didSet {
             guard !isReloading else { return }
             if let newSimulatorFamily { creationDefaults?.set(newSimulatorFamily, forKey: Self.familyKey) }
@@ -32,18 +34,18 @@ final class SimulatorPreferences {
         }
     }
 
-    func newSimulatorDeviceType(for family: Int) -> String? {
+    package func newSimulatorDeviceType(for family: Int) -> String? {
         creationDefaults?.string(forKey: "NewSimulatorDeviceType.\(family)")
     }
-    func newSimulatorRuntime(for family: Int) -> String? {
+    package func newSimulatorRuntime(for family: Int) -> String? {
         creationDefaults?.string(forKey: "NewSimulatorRuntime.\(family)")
     }
-    func setNewSimulatorSelection(deviceType: String?, runtime: String?, for family: Int) {
+    package func setNewSimulatorSelection(deviceType: String?, runtime: String?, for family: Int) {
         creationDefaults?.set(deviceType, forKey: "NewSimulatorDeviceType.\(family)")
         creationDefaults?.set(runtime, forKey: "NewSimulatorRuntime.\(family)")
     }
 
-    init(defaults: UserDefaults = HostPreferences.defaults,
+    package init(defaults: UserDefaults = HostPreferences.defaults,
          creationDefaults: UserDefaults? = HostPreferences.deviceSettingsDefaults) {
         self.defaults = defaults
         self.creationDefaults = creationDefaults
@@ -85,7 +87,7 @@ final class SimulatorPreferences {
         newSimulatorFamily = creationDefaults?.object(forKey: Self.familyKey) as? Int
     }
 
-    nonisolated static func migrateStandalonePreferences(defaults: UserDefaults = .standard,
+    package nonisolated static func migrateStandalonePreferences(defaults: UserDefaults = .standard,
                                              sourceDomain: String = "dev.lynnswap.NeoSimulator",
                                              targetDomain: String = "dev.lynnswap.NeoSimulator.Renderer") {
         let marker = "MigratedStandalonePreferences"

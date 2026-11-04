@@ -4,30 +4,30 @@ import Observation
 
 /// The embedded viewport's scale is independent from compact-window geometry.
 @Observable @MainActor
-final class CanvasZoom {
-    enum Mode: Equatable {
+package final class CanvasZoom {
+    package enum Mode: Equatable {
         case fit, physicalSize, fixed(CGFloat)
     }
 
-    enum Action: String, CaseIterable {
+    package enum Action: String, CaseIterable {
         case zoomOut, fit, physicalSize, zoomIn
     }
 
-    var mode = Mode.fit
+    package var mode = Mode.fit
     /// Target visual magnification of the embedded scroll view.
-    var scale: CGFloat = 1
-    var fitScale: CGFloat = 1
+    package var scale: CGFloat = 1
+    package var fitScale: CGFloat = 1
 }
 
 /// Window scaling modes; they resize the presentation without changing the guest screen.
-enum WindowScaleMode: String {
+package enum WindowScaleMode: String {
     case physicalSize, pointAccurate, pixelAccurate, fitScreen
 }
 
 /// A window whose display the Window menu's scale commands scale: a device
 /// window, or the window of its external display.
 @MainActor
-protocol DisplayScaling: AnyObject {
+package protocol DisplayScaling: AnyObject {
     /// Whether the command can run, as Simulator.app validates it.
     func canSetScale(_ mode: WindowScaleMode) -> Bool
     /// The command's checkmark, or nil to leave it as it is.
@@ -36,21 +36,21 @@ protocol DisplayScaling: AnyObject {
 }
 
 /// Simulator.app's arithmetic for the window scale modes.
-enum WindowScale {
+package enum WindowScale {
     /// The points per inch Physical Size assumes for a Mac screen and for a
     /// device when macOS or CoreSimulator does not report them.
-    static let defaultHostDensity: CGFloat = 110
-    static let defaultDeviceDensity: CGFloat = 163
+    package static let defaultHostDensity: CGFloat = 110
+    package static let defaultDeviceDensity: CGFloat = 163
 
     /// Host points per inch divided by device points per inch.
     /// Missing, zero, or invalid densities use defaults.
-    static func physicalSize(hostDensity: CGFloat?, deviceDensity: CGFloat?) -> CGFloat {
+    package static func physicalSize(hostDensity: CGFloat?, deviceDensity: CGFloat?) -> CGFloat {
         (usable(hostDensity) ?? defaultHostDensity) / (usable(deviceDensity) ?? defaultDeviceDensity)
     }
 
     /// A Mac screen's points per inch: its width in points over its physical
     /// width, or nil when macOS does not report them.
-    static func density(of screen: NSScreen) -> CGFloat? {
+    package static func density(of screen: NSScreen) -> CGFloat? {
         let description = screen.deviceDescription
         guard let display = description[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
               let size = (description[.size] as? NSValue)?.sizeValue else { return nil }
@@ -59,13 +59,13 @@ enum WindowScale {
 
     /// Pixel Accurate: one pixel of the device's screen per pixel of the
     /// Mac's. A missing value counts as 1.
-    static func pixelAccurate(screenScale: CGFloat?, backingScaleFactor: CGFloat?) -> CGFloat {
+    package static func pixelAccurate(screenScale: CGFloat?, backingScaleFactor: CGFloat?) -> CGFloat {
         (screenScale ?? 1) / (backingScaleFactor ?? 1)
     }
 
     /// Simulator.app minimum scales: 0.4 iPhone, 0.25 iPad, 0.6 watch;
     /// other displays must fit within 240×240 points at minimum.
-    static func minimum(family: DeviceCapabilities.Family?, displayClass: UInt16?,
+    package static func minimum(family: DeviceCapabilities.Family?, displayClass: UInt16?,
                         fitting240 fitting: @autoclosure () -> CGFloat) -> CGFloat {
         switch family {
         case .iPhone where displayClass == 0: 0.4
@@ -76,19 +76,19 @@ enum WindowScale {
     }
 
     /// Unscaled gap above the display: 10 points minus bezel top padding, or zero without a bezel.
-    static func displayGap(bezelPadding: NSSize?) -> CGFloat { bezelPadding.map { 10 - $0.height } ?? 0 }
+    package static func displayGap(bezelPadding: NSSize?) -> CGFloat { bezelPadding.map { 10 - $0.height } ?? 0 }
 
     /// Whether the display is at `target`, as Simulator.app compares scales.
-    static func matches(_ scale: CGFloat, _ target: CGFloat) -> Bool { abs(scale - target) < 0.001 }
+    package static func matches(_ scale: CGFloat, _ target: CGFloat) -> Bool { abs(scale - target) < 0.001 }
 
     /// `value` when it is a positive finite number.
-    static func usable(_ value: CGFloat?) -> CGFloat? {
+    package static func usable(_ value: CGFloat?) -> CGFloat? {
         guard let value, value.isFinite, value > 0 else { return nil }
         return value
     }
 
     /// Moves overflowing axes into the visible frame; oversized windows align to the opposite edge.
-    static func origin(of frame: NSRect, within visible: NSRect) -> NSPoint {
+    package static func origin(of frame: NSRect, within visible: NSRect) -> NSPoint {
         func position(_ origin: CGFloat, _ length: CGFloat, _ lower: CGFloat, _ upper: CGFloat) -> CGFloat {
             if origin < lower { return min(upper - length, lower) }
             if origin + length > upper { return max(lower, upper - length) }
@@ -99,7 +99,7 @@ enum WindowScale {
     }
 
     /// Keeps the bezel below the screen's visible top while allowing its padding and other edges beyond it.
-    static func frame(_ frame: NSRect, constrainedBelow visible: NSRect, topInset inset: CGFloat) -> NSRect {
+    package static func frame(_ frame: NSRect, constrainedBelow visible: NSRect, topInset inset: CGFloat) -> NSRect {
         let height = frame.height - inset
         guard visible.maxY < frame.minY + height else { return frame }
         var constrained = frame
@@ -108,20 +108,20 @@ enum WindowScale {
     }
 }
 
-enum DisplayResizeCorner: String {
+package enum DisplayResizeCorner: String {
     case lowerLeft, lowerRight, upperRight, upperLeft
 
-    var isLeft: Bool { self == .lowerLeft || self == .upperLeft }
-    var isLower: Bool { self == .lowerLeft || self == .lowerRight }
+    package var isLeft: Bool { self == .lowerLeft || self == .upperLeft }
+    package var isLower: Bool { self == .lowerLeft || self == .lowerRight }
 }
 
 /// Converts a corner drag into a uniform display size.
-struct CanvasResize {
-    let corner: DisplayResizeCorner
-    let size: NSSize
-    let pointer: NSPoint
+package struct CanvasResize {
+    package let corner: DisplayResizeCorner
+    package let size: NSSize
+    package let pointer: NSPoint
 
-    func requestedSize(pointerAt location: NSPoint) -> NSSize {
+    package func requestedSize(pointerAt location: NSPoint) -> NSSize {
         let dx = (location.x - pointer.x) * (corner.isLeft ? -1 : 1)
         let dy = (location.y - pointer.y) * (corner.isLower ? -1 : 1)
         // Project the drag onto the corner's diagonal so either axis can scale the device.
@@ -132,7 +132,7 @@ struct CanvasResize {
 }
 
 /// Where preferences are kept: the app's user defaults, or a test's own store.
-protocol PreferenceStore: AnyObject {
+package protocol PreferenceStore: AnyObject {
     func object(forKey defaultName: String) -> Any?
     /// The value as `UserDefaults.bool(forKey:)` reads it.
     func bool(forKey defaultName: String) -> Bool
@@ -143,22 +143,22 @@ extension UserDefaults: PreferenceStore {}
 
 extension PreferenceStore {
     /// ShowChrome defaults on and uses UserDefaults Boolean coercion.
-    var showsDeviceBezels: Bool {
+    package var showsDeviceBezels: Bool {
         object(forKey: HostPreferences.showChrome) == nil || bool(forKey: HostPreferences.showChrome)
     }
 
     /// `UseMonobar`, which lets a device window's toolbar take the unified
     /// style. It is on unless it was turned off, as its registered default says.
-    var usesMonobar: Bool {
+    package var usesMonobar: Bool {
         object(forKey: HostPreferences.useMonobar) == nil || bool(forKey: HostPreferences.useMonobar)
     }
 
     /// `UseCompactTitleBar`, which gives every device window's toolbar the
     /// compact unified style. It is off unless it was turned on.
-    var usesCompactTitleBar: Bool { bool(forKey: HostPreferences.useCompactTitleBar) }
+    package var usesCompactTitleBar: Bool { bool(forKey: HostPreferences.useCompactTitleBar) }
 
     /// AllowsMoveByDragOnWindowChrome defaults on and is read for each press.
-    var movesWindowByDraggingBezel: Bool {
+    package var movesWindowByDraggingBezel: Bool {
         object(forKey: HostPreferences.allowsMoveByDragOnWindowChrome) == nil
             || bool(forKey: HostPreferences.allowsMoveByDragOnWindowChrome)
     }
@@ -168,7 +168,7 @@ private let windowScaleKey = "WindowScale"
 private let windowCenterKey = "WindowCenter"
 
 /// Separate geometry storage for primary and external-display windows.
-enum WindowGeometryKind {
+package enum WindowGeometryKind {
     case device, externalDisplay
 
     fileprivate var key: String { self == .device ? "SimulatorWindowGeometry" : "ExternalWindowGeometry" }
@@ -178,7 +178,7 @@ enum WindowGeometryKind {
 extension PreferenceStore {
     /// Reads the saved center and scale for this screen arrangement.
     /// Zero/unreadable centers and nonpositive scales are absent.
-    func windowGeometry(forDevice identifier: String, screens: [NSRect],
+    package func windowGeometry(forDevice identifier: String, screens: [NSRect],
                         kind: WindowGeometryKind = .device) -> (center: NSPoint?, scale: CGFloat?) {
         let configuration = screenConfiguration(for: screens)
         let geometry = (preferences(forDevice: identifier)?[kind.key] as? [String: Any])?[configuration]
@@ -189,7 +189,7 @@ extension PreferenceStore {
     }
 
     /// Replaces geometry for this arrangement, preserving other arrangements and preferences.
-    func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String, screens: [NSRect],
+    package func setWindowGeometry(center: NSPoint, scale: CGFloat?, forDevice identifier: String, screens: [NSRect],
                            kind: WindowGeometryKind = .device) {
         let configuration = screenConfiguration(for: screens)
         var saved: [String: Any] = [windowCenterKey: NSStringFromPoint(center)]
@@ -202,14 +202,14 @@ extension PreferenceStore {
     }
 
     /// Reads an independent record, falling back to the previous shared dictionary.
-    func preferences(forDevice identifier: String) -> [String: Any]? {
+    package func preferences(forDevice identifier: String) -> [String: Any]? {
         object(forKey: devicePreferencesKey(for: identifier)) as? [String: Any]
             ?? (object(forKey: HostPreferences.devicePreferences) as? [String: Any])?[identifier] as? [String: Any]
     }
 
     /// Each renderer owns its devices; separate keys prevent another renderer's save
     /// from replacing this device's record. The legacy dictionary remains read-only.
-    func updatePreferences(forDevice identifier: String, _ change: (inout [String: Any]) -> Void) {
+    package func updatePreferences(forDevice identifier: String, _ change: (inout [String: Any]) -> Void) {
         var device = preferences(forDevice: identifier) ?? [:]
         change(&device)
         set(device, forKey: devicePreferencesKey(for: identifier))
@@ -221,7 +221,7 @@ extension PreferenceStore {
 
     /// Keeps existing arrangement UUIDs so saved geometry remains reachable.
     /// New arrangements have a stable ID without a shared registry to race over.
-    func screenConfiguration(for screens: [NSRect]) -> String {
+    package func screenConfiguration(for screens: [NSRect]) -> String {
         let configurations = object(forKey: HostPreferences.screenConfigurations) as? [String: Any] ?? [:]
         let frames = screens.map(NSStringFromRect).sorted()
         for name in configurations.keys.sorted() {

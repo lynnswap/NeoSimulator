@@ -1,8 +1,10 @@
+import NeoSimulatorKit
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 
 /// Builds the main menu and routes device commands to the key window.
 @MainActor
-final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
+package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     private weak var application: HostApplication?
     /// File ▸ GPU Selection's policy, or nil when it is unavailable.
     private let gpuPolicy: GPUPolicy?
@@ -15,11 +17,11 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     /// Items whose shortcut depends on the key device.
     private var keyedItems: [NSMenuItem] = []
     private var keyWindowObserver: (any NSObjectProtocol)?
-    var toggleTestingDevices: (() -> Void)?
-    var toggleDeviceBezels: (() -> Void)?
+    package var toggleTestingDevices: (() -> Void)?
+    package var toggleDeviceBezels: (() -> Void)?
     private var activeWindow: DeviceWindowController? { DeviceWindowController.keyDeviceWindow }
 
-    init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil, pasteboardSync: PasteboardSync? = nil) {
+    package init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil, pasteboardSync: PasteboardSync? = nil) {
         self.application = application
         self.gpuPolicy = gpuPolicy
         self.pasteboardSync = pasteboardSync
@@ -30,7 +32,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         if let keyWindowObserver { NotificationCenter.default.removeObserver(keyWindowObserver) }
     }
 
-    func install() {
+    package func install() {
         let main = NSMenu()
         let app = menu("NeoSimulator", in: main)
         item("About NeoSimulator", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), in: app, target: NSApp)
@@ -99,7 +101,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
 
     /// Adds simulator controls without replacing the manager's app and browser menus, and returns the Device menu.
     @discardableResult
-    func addDeviceMenus(to main: NSMenu, managementMenu: NSMenu? = nil) -> NSMenu {
+    package func addDeviceMenus(to main: NSMenu, managementMenu: NSMenu? = nil) -> NSMenu {
         let device = menu("Device", in: main)
         if let managementMenu {
             let item = NSMenuItem(title: "Manage Selected Devices", action: nil, keyEquivalent: "")
@@ -189,7 +191,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         return device
     }
 
-    func addScreenCommands(file: NSMenu, edit: NSMenu, view: NSMenu) {
+    package func addScreenCommands(file: NSMenu, edit: NSMenu, view: NSMenu) {
         file.addItem(.separator())
         addGPUSelection(to: file)
         file.addItem(.separator())
@@ -203,13 +205,13 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         addPresentationCommands(to: view)
     }
 
-    func addCloseWindowCommands(to file: NSMenu) {
+    package func addCloseWindowCommands(to file: NSMenu) {
         item("Close Window", action: #selector(closeWindow(_:)), key: "w", in: file)
         item("Close Window…", action: #selector(closeAsking(_:)), key: "w", modifiers: [.command, .control],
              in: file).isAlternate = true
     }
 
-    func addScreenshotDestinationCommand(to file: NSMenu) {
+    package func addScreenshotDestinationCommand(to file: NSMenu) {
         commands([.saveScreenAs], in: file)
     }
 
@@ -242,7 +244,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
 
     /// Assigns shared shortcuts to the key device. Hidden items must lose their shortcuts
     /// because AppKit still matches them.
-    func updateKeyEquivalents(for capabilities: DeviceCapabilities?) {
+    package func updateKeyEquivalents(for capabilities: DeviceCapabilities?) {
         for item in keyedItems {
             guard let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) else { continue }
             let command = DeviceCommand.command(id)
@@ -291,17 +293,17 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
     }
 
     // Without a device window, commands remain visible but disabled.
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    package func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === ioMenu { updateAudioMenus(for: activeWindow) }
         updateVisibility(in: menu, for: activeWindow?.session.capabilities)
     }
 
     /// Attaches audio menus to the key device.
-    func updateAudioMenus(for window: DeviceWindowController?) {
+    package func updateAudioMenus(for window: DeviceWindowController?) {
         for audio in audioMenus { audio.attach(to: window) }
     }
 
-    func updateVisibility(in menu: NSMenu, for capabilities: DeviceCapabilities?) {
+    package func updateVisibility(in menu: NSMenu, for capabilities: DeviceCapabilities?) {
         var previousVisible: NSMenuItem?
         for item in menu.items {
             if let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) {
@@ -324,7 +326,7 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
         if previousVisible?.isSeparatorItem == true { previousVisible?.isHidden = true }
     }
 
-    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    package func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if let action = item.action,
            [#selector(showBrowser(_:)), #selector(showNewSimulator(_:)), #selector(showHelp(_:))].contains(action) {
             return true
@@ -404,12 +406,12 @@ final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelegate {
 /// File ▸ Open Simulator, rebuilt each time it opens. Choosing a device boots
 /// it when needed and shows its window.
 @MainActor
-final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
+package final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
     private weak var application: HostApplication?
 
-    init(application: HostApplication?) { self.application = application }
+    package init(application: HostApplication?) { self.application = application }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    package func menuNeedsUpdate(_ menu: NSMenu) {
         guard let application else { return }
         do {
             let devices = try application.availableSimulatorDevices()
@@ -422,7 +424,7 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
     }
 
     /// Groups by runtime in catalog order; Option shows descriptive device names.
-    static func items(for devices: [AvailableDevice], hasWindow: (SimulatorDeviceIdentifier) -> Bool,
+    package static func items(for devices: [AvailableDevice], hasWindow: (SimulatorDeviceIdentifier) -> Bool,
                       action: Selector, target: AnyObject?) -> [NSMenuItem] {
         SimulatorDeviceMenu.items(for: devices.map {
             SimulatorMenuDevice(identifier: $0.identity, name: $0.name, descriptiveName: $0.descriptiveName,
@@ -442,14 +444,14 @@ final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
 
 /// Rebuilds locations from the key device's own runtime when opened.
 @MainActor
-final class LocationMenu: NSObject, NSMenuDelegate {
-    func menuNeedsUpdate(_ menu: NSMenu) {
+package final class LocationMenu: NSObject, NSMenuDelegate {
+    package func menuNeedsUpdate(_ menu: NSMenu) {
         update(menu, for: DeviceWindowController.keyDeviceWindow)
     }
 
     /// Lists `window`'s choices, checking its selection. They are enabled
     /// while its device is connected and booted.
-    func update(_ menu: NSMenu, for window: DeviceWindowController?) {
+    package func update(_ menu: NSMenu, for window: DeviceWindowController?) {
         let session = window?.session
         let choices = [("None", LocationSelection.none), ("Custom Location…", .custom)]
             + (session?.locationScenarios ?? []).map { ($0.localizedName, .scenario($0.name)) }
@@ -473,13 +475,13 @@ final class LocationMenu: NSObject, NSMenuDelegate {
 /// Lists the key device's audio routes and the system default.
 /// Selections are saved app-wide and apply to every device window.
 @MainActor
-final class AudioRouteMenu: NSObject, NSMenuDelegate {
-    let scope: AudioScope
+package final class AudioRouteMenu: NSObject, NSMenuDelegate {
+    package let scope: AudioScope
     /// The I/O menu's item.
-    let item: NSMenuItem
+    package let item: NSMenuItem
     private let menu: NSMenu
 
-    init(scope: AudioScope) {
+    package init(scope: AudioScope) {
         self.scope = scope
         let title = scope == .input ? "Audio Input" : "Audio Output"
         item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -489,20 +491,20 @@ final class AudioRouteMenu: NSObject, NSMenuDelegate {
     }
 
     /// Attaches audio submenus only for devices with SimFeatureRoutableAudio.
-    func attach(to window: DeviceWindowController?) {
+    package func attach(to window: DeviceWindowController?) {
         let routes = window?.session.routesAudio == true
         // AppKit leaves the enabling of an item with a submenu to the item.
         item.isEnabled = routes
         item.submenu = routes ? menu : nil
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    package func menuNeedsUpdate(_ menu: NSMenu) {
         update(menu, for: DeviceWindowController.keyDeviceWindow)
     }
 
     /// Keeps choices available during restart for application on reconnection.
     /// Before the audio port reports, only an unchecked System item is shown.
-    func update(_ menu: NSMenu, for window: DeviceWindowController?) {
+    package func update(_ menu: NSMenu, for window: DeviceWindowController?) {
         let session = window?.session
         let state = session?.audioRoutes
         let usesSystemDefault = state?.usesSystemDefault(in: scope) == true
@@ -529,8 +531,8 @@ final class AudioRouteMenu: NSObject, NSMenuDelegate {
 
 // AppKit consumes a matching key equivalent even when its item is disabled, so
 // leave the standard editing shortcuts to the simulator while it has keyboard focus.
-final class EditMenu: NSMenu {
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+package final class EditMenu: NSMenu {
+    package override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let window = event.window
         let simulatorHasFocus = MainActor.assumeIsolated {
             if let controller = window?.windowController as? ExternalDisplayWindowController {

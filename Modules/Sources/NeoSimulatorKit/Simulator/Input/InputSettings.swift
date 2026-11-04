@@ -6,31 +6,31 @@ import IOKit.hidsystem
 /// Simulator-compatible keyboard and touch-pressure preferences; defaults are on.
 extension PreferenceStore {
     /// Use the Same Keyboard Language as macOS: the app-wide `EnableKeyboardSync`.
-    var syncsKeyboardLanguage: Bool { isOn(HostPreferences.enableKeyboardSync) }
+    package var syncsKeyboardLanguage: Bool { isOn(HostPreferences.enableKeyboardSync) }
 
     /// Per-device Boolean choice, falling back to the app-wide preference.
-    func connectsHardwareKeyboard(forDevice identifier: String) -> Bool {
+    package func connectsHardwareKeyboard(forDevice identifier: String) -> Bool {
         preferences(forDevice: identifier)?[HostPreferences.connectHardwareKeyboard] as? Bool
             ?? isOn(HostPreferences.connectHardwareKeyboard)
     }
 
-    func setConnectsHardwareKeyboard(_ connects: Bool, forDevice identifier: String) {
+    package func setConnectsHardwareKeyboard(_ connects: Bool, forDevice identifier: String) {
         updatePreferences(forDevice: identifier) { $0[HostPreferences.connectHardwareKeyboard] = connects }
     }
 
     /// Use Trackpad Force's app-wide `UseTrackpadForce`, which applies only
     /// with a Force Touch trackpad.
-    var prefersTrackpadForce: Bool { isOn(HostPreferences.useTrackpadForce) }
+    package var prefersTrackpadForce: Bool { isOn(HostPreferences.useTrackpadForce) }
 
     private func isOn(_ key: String) -> Bool { object(forKey: key) == nil || bool(forKey: key) }
 }
 
 /// The Mac's keyboard, as Simulator.app reads it for the guest's keyboard.
-enum HostKeyboard {
+package enum HostKeyboard {
     /// The first language of the current keyboard input source, such as `en`
     /// for ABC or `ja` for Japanese, or nil when it lists none.
     @MainActor
-    static func language() -> String? {
+    package static func language() -> String? {
         guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
               let languages = TISGetInputSourceProperty(source, kTISPropertyInputSourceLanguages)
         else { return nil }
@@ -39,9 +39,9 @@ enum HostKeyboard {
 }
 
 /// The Mac's Force Touch trackpad, which Use Trackpad Force needs.
-enum ForceTouchTrackpad {
+package enum ForceTouchTrackpad {
     /// Finds a multi-point HID digitizer whose registry entry has ForceSupported.
-    static func isAvailable() -> Bool {
+    package static func isAvailable() -> Bool {
         let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
         let services = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] ?? []
         return services.contains { service in
@@ -62,7 +62,7 @@ enum ForceTouchTrackpad {
 extension ForceTouchTrackpad {
     /// Calls `changed` on the main thread after a HID event service, such as
     /// a trackpad, appears or goes away, until the returned object is released.
-    static func observeChanges(_ changed: @escaping @MainActor () -> Void) -> AnyObject? {
+    package static func observeChanges(_ changed: @escaping @MainActor () -> Void) -> AnyObject? {
         HIDEventServiceObserver(changed)
     }
 }
@@ -113,10 +113,10 @@ private final class HIDEventServiceObserver {
 
 /// App-wide touch-pressure settings, applied on connection and change notifications.
 @MainActor
-final class TouchPressure {
+package final class TouchPressure {
     /// Posted with the settings as its object after Use Trackpad Force or
     /// the touch mode changes.
-    static let didChangeNotification = Notification.Name("dev.lynnswap.NeoSimulator.TouchPressureDidChange")
+    package static let didChangeNotification = Notification.Name("dev.lynnswap.NeoSimulator.TouchPressureDidChange")
 
     private let preferences: any PreferenceStore
     private let findsForceTouchTrackpad: () -> Bool
@@ -125,10 +125,10 @@ final class TouchPressure {
     private var hadForceTouchTrackpad = false
     /// Shallow Press or Deep Press. Like Simulator.app, the app keeps it
     /// only while it runs, starting with Shallow Press.
-    private(set) var mode = SimulatedTouchMode.shallow
+    package private(set) var mode = SimulatedTouchMode.shallow
 
     /// Rechecks trackpad availability and reapplies settings after hot-plug changes.
-    init(preferences: any PreferenceStore = HostPreferences.defaults,
+    package init(preferences: any PreferenceStore = HostPreferences.defaults,
          forceTouchTrackpad: @escaping () -> Bool = ForceTouchTrackpad.isAvailable,
          observeTrackpads: (@escaping @MainActor () -> Void) -> AnyObject? = ForceTouchTrackpad.observeChanges) {
         self.preferences = preferences
@@ -144,21 +144,21 @@ final class TouchPressure {
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
-    var hasForceTouchTrackpad: Bool { findsForceTouchTrackpad() }
+    package var hasForceTouchTrackpad: Bool { findsForceTouchTrackpad() }
 
     /// Use Trackpad Force's checkmark and the value windows apply: the
     /// preference, with a Force Touch trackpad.
-    var usesTrackpadForce: Bool { preferences.prefersTrackpadForce && hasForceTouchTrackpad }
+    package var usesTrackpadForce: Bool { preferences.prefersTrackpadForce && hasForceTouchTrackpad }
 
     /// Use Trackpad Force: like Simulator.app, saves the opposite of what the
     /// checkmark shows.
-    func toggleTrackpadForce() {
+    package func toggleTrackpadForce() {
         preferences.set(!usesTrackpadForce, forKey: HostPreferences.useTrackpadForce)
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
 
     /// Shallow Press or Deep Press.
-    func setMode(_ mode: SimulatedTouchMode) {
+    package func setMode(_ mode: SimulatedTouchMode) {
         self.mode = mode
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
@@ -166,7 +166,7 @@ final class TouchPressure {
 
 /// SimulatorKit touch-indicator options backed by Simulator.app preferences.
 /// Pinch pivot and edge indicators remain configurable through defaults write.
-enum TouchIndicator: CaseIterable {
+package enum TouchIndicator: CaseIterable {
     /// `.normalTouch`: where the pointer touches the screen.
     case singleTouches
     /// `.pinchTouches`: the two touches of an Option-drag pinch.
@@ -176,7 +176,7 @@ enum TouchIndicator: CaseIterable {
     /// `.edgeGestures`: Highlight Edge Gestures.
     case edgeGestures
 
-    var preferenceKey: String {
+    package var preferenceKey: String {
         switch self {
         case .singleTouches: HostPreferences.showSingleTouches
         case .pinches: HostPreferences.showPinches
@@ -187,12 +187,12 @@ enum TouchIndicator: CaseIterable {
 
     /// Posted, with the preference store as its object, after a touch
     /// indicator's preference changes.
-    static let didChangeNotification = Notification.Name("dev.lynnswap.NeoSimulator.TouchIndicatorsDidChange")
+    package static let didChangeNotification = Notification.Name("dev.lynnswap.NeoSimulator.TouchIndicatorsDidChange")
 }
 
 extension PreferenceStore {
     /// Pinch indicators default on; others default off. Uses UserDefaults Boolean coercion.
-    func showsTouchIndicator(_ indicator: TouchIndicator) -> Bool {
+    package func showsTouchIndicator(_ indicator: TouchIndicator) -> Bool {
         let key = indicator.preferenceKey
         return indicator == .pinches ? isOn(key) : bool(forKey: key)
     }
@@ -200,12 +200,12 @@ extension PreferenceStore {
 
 /// Observes keys on the main actor until released. KVO includes external defaults writes
 /// that UserDefaults.didChangeNotification omits.
-final class DefaultsObservation: NSObject {
+package final class DefaultsObservation: NSObject {
     private let defaults: UserDefaults
     private let keys: [String]
     private let changed: @MainActor () -> Void
 
-    init(_ defaults: UserDefaults, keys: [String], changed: @escaping @MainActor () -> Void) {
+    package init(_ defaults: UserDefaults, keys: [String], changed: @escaping @MainActor () -> Void) {
         self.defaults = defaults
         self.keys = keys
         self.changed = changed
@@ -219,7 +219,7 @@ final class DefaultsObservation: NSObject {
 
     // A change in this process arrives on the thread that made it, and one
     // from another process on a thread of its own.
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
+    package override func observeValue(forKeyPath keyPath: String?, of object: Any?,
                                change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
         let changed = changed
         if Thread.isMainThread {

@@ -1,9 +1,11 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+@_spi(NeoSimulator) import XcodeSimulatorHost
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import Observation
 import ObservationBridge
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 @MainActor
 final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
