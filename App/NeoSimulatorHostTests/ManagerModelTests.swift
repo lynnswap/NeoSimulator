@@ -594,6 +594,32 @@ struct ManagerModelTests {
         #expect(!viewScreen.isEnabled)
         let row = try #require(controller.outlineView(outline, viewFor: outline.tableColumns.first, item: selectedRow))
         #expect(row.accessibilityLabel()?.hasSuffix(", Available") == true)
+
+        try choose("All Availability")
+        try choose("Recent")
+        await source.setDevices(try devices())
+        await model.refresh()
+        controller.update()
+        controller.selectDevice(.coreDevice("A"))
+        let roots = (0..<controller.outlineView(outline, numberOfChildrenOfItem: nil)).map {
+            controller.outlineView(outline, child: $0, ofItem: nil)
+        }
+        for root in roots { outline.collapseItem(root) }
+        let revision = controller.presentationIntent.revision
+        // Moving A into B's collapsed day replaces that parent's cached children.
+        await source.setDevices(try devices(firstDate: 200_000))
+        await model.inventoryDidChange()
+        try await wait {
+            controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1
+        }
+        let merged = try #require(outline.item(atRow: 0))
+        #expect(!outline.isItemExpanded(merged))
+        outline.expandItem(merged)
+        #expect(deviceNames() == ["Alpha", "Beta"])
+        #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
+        #expect(outline.parent(forItem: selectedRow) as? NSObject === merged as? NSObject)
+        #expect(controller.selectedIdentifiers == [.coreDevice("A")])
+        #expect(controller.presentationIntent.revision == revision)
     }
 
     @Test func previewViewScreenOpensTheSelectedDevice() async throws {
