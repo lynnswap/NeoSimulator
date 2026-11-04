@@ -544,3 +544,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 }
+
+struct CoreDeviceRecoveryView: View {
+    static let recoveryCommand = "killall CoreDeviceService"
+    let copyCommand: () -> Void
+    let keepWaiting: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("The device service is taking longer than expected.")
+                .font(.headline)
+            Text("NeoSimulator will keep waiting. To restart CoreDeviceService, run this command in Terminal. This briefly interrupts Xcode’s device connections.")
+                .fixedSize(horizontal: false, vertical: true)
+            Text(verbatim: Self.recoveryCommand)
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            HStack {
+                Spacer()
+                Button("Keep Waiting", action: keepWaiting)
+                    .keyboardShortcut(.cancelAction)
+                Button("Copy Command", action: copyCommand)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+    }
+}

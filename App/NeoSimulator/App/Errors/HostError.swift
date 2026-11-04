@@ -14,7 +14,7 @@ enum HostError: LocalizedError {
     }
 
     var recoverySuggestion: String? {
-        if case .conflict = self { "Close the other display app, then choose View Screen again." }
+        if case .conflict = self { "Close the other display app, then try again." }
         else { nil }
     }
 

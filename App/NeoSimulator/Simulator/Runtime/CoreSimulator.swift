@@ -2,6 +2,74 @@ import ABIBridge
 import Foundation
 import ObjectiveC
 
+/// A simulator belongs to one device set; a UDID alone is not a session key.
+struct SimulatorDeviceIdentifier: Hashable, Codable, Sendable, Comparable {
+    let identifier: String
+    let deviceSetPath: String?
+    init(_ identifier: String, deviceSetPath: String? = nil) {
+        self.identifier = identifier
+        self.deviceSetPath = deviceSetPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }
+    }
+    var queryItems: [URLQueryItem] {
+        [URLQueryItem(name: "udid", value: identifier)]
+            + (deviceSetPath.map { [URLQueryItem(name: "deviceSetPath", value: $0)] } ?? [])
+    }
+    var preferenceIdentifier: String {
+        guard let path = deviceSetPath else { return identifier }
+        return "set:\(path.utf8.count):\(path):\(identifier)"
+    }
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.preferenceIdentifier < rhs.preferenceIdentifier }
+}
+
+struct AvailableDevice: Identifiable {
+    let identifier: String
+    let deviceSetPath: String?
+    var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
+    let name: String
+    let descriptiveName: String
+    let runtimeIdentifier: String
+    let runtimeName: String
+    /// `SimDeviceType.productFamilyID`, as in `SimulatorDevice.productFamily`.
+    let productFamily: Int
+    let deviceTypeName: String
+    var state: UInt
+    var id: String { identifier }
+    var isBooted: Bool { state == 3 }
+    /// The SF Symbol of the device's product family.
+    var symbolName: String {
+        switch DeviceCapabilities.Family(rawValue: productFamily) {
+        case .iPad: "ipad"
+        case .tv: "appletv"
+        case .watch: "applewatch"
+        case .vision: "visionpro"
+        case .iPhone, nil: "iphone"
+        }
+    }
+    var canOpen: Bool { state == 1 || state == 3 }
+    var stateLabel: String {
+        switch state {
+        case 1: "Shut Down"
+        case 2: "Starting…"
+        case 3: "Running"
+        case 4: "Shutting Down…"
+        default: "Unavailable"
+        }
+    }
+
+    init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String,
+         runtimeName: String, productFamily: Int, deviceTypeName: String, state: UInt, deviceSetPath: String? = nil) {
+        self.identifier = identifier
+        self.deviceSetPath = deviceSetPath
+        self.name = name
+        self.descriptiveName = descriptiveName
+        self.runtimeIdentifier = runtimeIdentifier
+        self.runtimeName = runtimeName
+        self.productFamily = productFamily
+        self.deviceTypeName = deviceTypeName
+        self.state = state
+    }
+}
+
 /// Prepared CoreSimulator messages. NSError-out failures and Objective-C exceptions
 /// are surfaced as Swift errors.
 @MainActor
