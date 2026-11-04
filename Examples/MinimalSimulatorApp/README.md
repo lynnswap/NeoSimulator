@@ -29,6 +29,3 @@ callback stops the guest. It also requires a shut-down simulator.
 
 `--exercise-external-shutdown` stops the guest with `simctl` and checks that the
 screen reports `deviceStopping` or `deviceStopped` consistently with its state.
-
-The package intentionally does not import `XcodeSimulatorHost`, use an SPI import,
-or depend on NeoSimulator's renderer executable.

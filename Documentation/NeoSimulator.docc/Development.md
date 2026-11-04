@@ -4,25 +4,27 @@ Build NeoSimulator.app and its embedded renderer with Xcode.
 
 ## Workspace and builds
 
-Use Xcode 27+ and Swift 6.4+. Open `NeoSimulator.xcworkspace`, which contains the
-app project and its local Swift package dependency. The application project is
-`App/NeoSimulator.xcodeproj`; its code, host tests, and `AppIcon.icon` are also in
-`App/`. The root `Package.swift` defines **NeoSimulatorKit**, with library code in
-`Sources/XcodeSimulatorHost` and package tests in `Tests/XcodeSimulatorHostTests`.
-Its library product remains `XcodeSimulatorHost`.
+Use Xcode 27+ and Swift 6.4+. Open `NeoSimulator.xcworkspace`, which contains
+`App/NeoSimulator.xcodeproj` and the local Swift package.
 
-`App/NeoSimulator` groups app code by domain: `DeviceBrowser`, `DeviceSettings`,
-`DeviceInspector`, `RemoteDevice`, `Settings`, and `Simulator`. Most views, view
-controllers, and models have separate files named for their types within each
-domain. Related helper types can remain in the same file. Application launch, menus, and error presentation live in its `App/`
-folder. Keyboard input, display layout, and device symbols belong to
-`DeviceInput`, `DeviceDisplay`, and `DeviceAppearance`, respectively.
+Implementation lives under `Modules/Sources`:
 
-The `NeoSimulator` target builds the manager app. `NeoSimulatorRenderer` builds
-the embedded renderer, whose entry point lives in
-`App/NeoSimulatorRenderer/App/Launch`. Both targets compile the simulator
-implementation needed by their process; each has its own application entry
-point. Domain folders organize sources within these target boundaries.
+| Module | Responsibility |
+| --- | --- |
+| `NeoSimulatorKit` | Public simulator API, display and input sessions, and native runtime bindings. |
+| `NeoSimulatorHostSupport` | Package-only host selection, settings transactions, inventory, renderer ownership, and shared menus. |
+| `NeoSimulatorApp` | Manager UI, device operations, inspectors, and application lifecycle. |
+| `NeoSimulatorService` | Embedded renderer startup, arguments, and owner monitoring. |
+
+The package exposes Kit, App, and Service as library products. The host-support
+module is shared only within the package. Tests in `Modules/Tests` import these
+modules rather than compiling their implementation again.
+
+The Xcode application targets contain their entry points and bundle resources.
+The manager also contains the LicenseList-backed Licenses pane, passed to the
+app module as a view-controller factory. The Objective-C guest-settings helper
+remains an Xcode target. Application identifiers and the embedded bundle layout
+are defined in the app project.
 
 The project uses Xcode's JSON `project.xcproj` format. Select **NeoSimulator** to
 build the distributable app.
@@ -118,19 +120,21 @@ bundled `Credits.rtf`, since its code is ported rather than linked as a package.
 ## Tests
 
 ```bash
-xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme XcodeSimulatorHost -destination 'platform=macOS,arch=arm64'
-scripts/test-input-focus.sh
+xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme NeoSimulatorKit -destination 'platform=macOS,arch=arm64'
+scripts/test-app-bundle.sh
 python3 -m unittest discover -s scripts/tests -v
 ```
 
 Package tests cover host switching, preference transactions, recovery,
-installation inspection, and signatures using isolated fixtures.
-The host script runs `xcodebuild test` with the NeoSimulator scheme and covers
-native input focus, runtime lookups, device-browser behavior, cancellation,
-capture/import failures, and other renderer contracts without booting devices.
-Its `NeoSimulatorHostTests` target compiles the sources under test without either
-application entry point. It runs without an app host so tests control defaults
-registration and process state independently of app startup.
+installation inspection, signatures, native input focus, runtime lookups,
+device-browser behavior, cancellation, capture/import failures, and renderer
+contracts using isolated fixtures. They run without an app host, so the fixtures
+control defaults and process state independently of app startup.
+
+The app-bundle script builds the NeoSimulator scheme and runs
+`NeoSimulatorLicenseTests`. This separate target checks the LicenseList-generated
+notices and bundled `Credits.rtf`.
+
 Release-script tests cover the embedded renderer's release metadata and the
 signing order and entitlements of the helper, renderer, and manager.
 These suites do not replace a live check of an affected private API and guest

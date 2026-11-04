@@ -1,0 +1,2408 @@
+import AppKit
+import UniformTypeIdentifiers
+
+@MainActor
+package final class DeviceWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, DisplayScaling {
+    /// The device's current connection. A restart replaces it after the
+    /// device boots again, keeping this window.
+    package private(set) var session: DeviceSession
+    package var onSessionChange: (() -> Void)?
+    private var closed = false
+    /// Suppresses geometry saving from restart until the next device connection.
+    private var isRestarting = false
+    private enum OrientationRead { case notStarted, pending, finished }
+    private var orientationRead = OrientationRead.notStarted
+    /// Distinguishes a previously presented compact frame from its unplaced initial frame.
+    private var hasPresentedCompactWindow = false
+    private let onClose: (DeviceWindowController, DeviceLifetimeChoice?) -> Void
+    /// The choice File ▸ Close Window… made for this close, which takes
+    /// precedence over the default close action.
+    private var closeChoice: DeviceLifetimeChoice?
+    private let onRestart: (DeviceWindowController, _ erasing: Bool) -> Void
+    private let onShutDown: ((DeviceWindowController) -> Void)?
+    private var content: DeviceContentView
+    /// AppKit keeps the compact window's decoration hierarchy while its canvas moves between presentations.
+    private let compactContainer = NSView()
+    private let fitting: DisplayFitting
+    package let canvasZoom = CanvasZoom()
+    private let keyboard: DisplayKeyboardInput
+    private let makeKeyboardCaptureTap: @MainActor () -> any KeyboardEventTap
+    private let makeExternalDisplayWindow: @MainActor (NSRect) -> NSWindow
+    private let applicationIsActive: () -> Bool
+    private var deviceToolbar: DeviceToolbar?
+    package var canvasControls: DeviceCanvasControls? {
+        didSet {
+            content.canvasControls = canvasControls
+            canvasControls?.onLayoutChange = { [weak self] in
+                guard let self else { return }
+                self.content.needsLayout = true
+                self.content.needsUpdateConstraints = true
+                self.updateContentMinimumSize()
+                self.fitCanvasControls()
+                if !self.isEmbedded, !self.session.display.usesNativeCanvas,
+                   !self.session.isResizingApp, !self.isSizingWindow {
+                    self.content.layoutSubtreeIfNeeded()
+                    self.displayGeometryChanged()
+                }
+            }
+            deviceToolbar?.setUsesCanvasControls(canvasControls != nil)
+            bezelChanged()
+        }
+    }
+    private var customLocation: CustomLocationWindowController?
+    /// Keeps where each device's window closes and its display scale.
+    private let preferences: any PreferenceStore
+    /// Where the device's window last closed in the current arrangement of
+    /// screens, which a new window is centered at.
+    private let savedCenter: NSPoint?
+    /// The last compact-window scale in the current arrangement of screens.
+    private var savedScale: CGFloat?
+    /// Initial placement and the frame it produced, until the first orientation reading.
+    private var initialPlacement: (place: ((NSWindow) -> Void)?, frame: NSRect)?
+    /// The compact window's full-screen presentation, including transitions.
+    private var isFullScreen: Bool { fitting.isFullScreen }
+    /// A corner drag changes only the embedded canvas's display scale.
+    private var canvasResize: CanvasResize?
+    /// Injectable window-server drag operation.
+    private let captureOwner: UUID?
+    private let reportDetachedCapture: (Error) -> Void
+    private let offersLifetimeChoice: Bool
+    private let performWindowDrag: (NSWindow, NSEvent) -> Void
+    private let presentCompactWindow: (NSWindow) -> Void
+    private var screenParametersObserver: (any NSObjectProtocol)?
+    /// Set while the window takes the size of a chosen display scale, which
+    /// the resize must not change.
+    private var isSizingWindow = false
+    /// The title bar's height for each toolbar style, as the window last laid
+    /// it out, and macOS 26's heights for the styles it has not taken yet.
+    private var titleBarHeights: [NSWindow.ToolbarStyle: CGFloat] = [.unified: 52, .expanded: 76, .unifiedCompact: 40]
+    /// I/O ▸ Touch Pressure's app-wide settings, which every window shares.
+    package let touchPressure: TouchPressure
+    /// Window ▸ Show Apple TV Remote's panel, which every window shares.
+    package let tvRemote: TVRemoteController
+    private var touchPressureObserver: (any NSObjectProtocol)?
+    private var touchIndicatorObserver: (any NSObjectProtocol)?
+    private var keyboardSelectionObserver: (any NSObjectProtocol)?
+    private var audioRouteObserver: (any NSObjectProtocol)?
+    /// Only the key window receives host keyboard input and input-source changes.
+    private var isKey = false
+    private weak var embeddedContainer: NSView?
+    private weak var embeddedParent: NSViewController?
+    package private(set) lazy var presentationViewController: NSViewController = {
+        let controller = SimulatorPresentationViewController(owner: self)
+        controller.view = content
+        return controller
+    }()
+    private var presentationObservers: [NSObjectProtocol] = []
+    private static weak var embeddedController: DeviceWindowController?
+    package var isEmbedded: Bool { embeddedContainer != nil }
+    package var presentationWindow: NSWindow? { isEmbedded ? content.window : window }
+    package var onShowInMainWindow: (() -> Void)? {
+        didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
+    }
+    private var permitsPresentationMove: Bool {
+        guard !closed, !isFullScreen else { return false }
+        guard let window = presentationWindow else { return true }
+        return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
+    }
+    package var canMovePresentation: Bool { presentationWindow != nil && permitsPresentationMove }
+
+    package func validatePresentationMove() throws {
+        guard permitsPresentationMove else {
+            throw SimulatorError.operation("Close the device's dialog or leave full screen before moving its screen.")
+        }
+    }
+    private var canShowInMainWindow: Bool { canMovePresentation && onShowInMainWindow != nil }
+    @objc package func showInMainWindow(_ sender: Any?) {
+        guard canShowInMainWindow else { return }
+        onShowInMainWindow?()
+    }
+    package func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        item.action != #selector(showInMainWindow(_:)) || canShowInMainWindow
+    }
+    /// The window of the device's external display while the display is on.
+    package private(set) var externalDisplayWindow: ExternalDisplayWindowController?
+    private var externalDisplayOpening: Task<Void, Never>?
+    /// How often and how long the window looks for its display's
+    /// user-interface plugin.
+    private let userInterfacePluginLookUp: (attempts: Int, interval: Duration)
+    package var staysOnTop: Bool { window?.level == .floating }
+    private var activeKeyboardInput: DisplayKeyboardInput {
+        if let externalDisplayWindow, externalDisplayWindow.isKey { return externalDisplayWindow.keyboard }
+        return keyboard
+    }
+    package var capturesKeyboard: Bool { activeKeyboardInput.capture.isCapturing }
+
+    /// The device window of the key window, whose device the menus act on:
+    /// see `deviceWindow(for:)`.
+    package static var keyDeviceWindow: DeviceWindowController? { deviceWindow(for: NSApp.keyWindow) }
+
+    /// Finds the owning device window, including for an external display window.
+    package static func deviceWindow(for window: NSWindow?) -> DeviceWindowController? {
+        if let embeddedController, let window, embeddedController.presentationWindow === window {
+            return embeddedController
+        }
+        return switch window?.windowController {
+        case let controller as DeviceWindowController: controller
+        case let controller as ExternalDisplayWindowController: controller.deviceWindow
+        default: nil
+        }
+    }
+
+    package init(session: DeviceSession, preferences: any PreferenceStore = HostPreferences.defaults,
+         touchPressure: TouchPressure, tvRemote: TVRemoteController,
+         offersLifetimeChoice: Bool = true,
+         captureOwner: UUID? = nil,
+         reportDetachedCapture: @escaping (Error) -> Void = { CaptureThumbnail.reportDetached($0) },
+         performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
+         presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
+         makeKeyboardCaptureTap: @escaping @MainActor () -> any KeyboardEventTap = { SystemKeyboardEventTap() },
+         applicationIsActive: @escaping () -> Bool = { NSApp.isActive },
+         makeExternalDisplayWindow: @escaping @MainActor (NSRect) -> NSWindow = ExternalDisplayWindowController.makeWindow,
+         userInterfacePluginLookUp: (attempts: Int, interval: Duration) = (40, .milliseconds(250)),
+         onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void,
+         onRestart: @escaping (DeviceWindowController, _ erasing: Bool) -> Void = { _, _ in },
+         onShutDown: ((DeviceWindowController) -> Void)? = nil) throws {
+        self.session = session
+        self.userInterfacePluginLookUp = userInterfacePluginLookUp
+        self.preferences = preferences
+        self.offersLifetimeChoice = offersLifetimeChoice
+        self.captureOwner = captureOwner
+        self.reportDetachedCapture = reportDetachedCapture
+        self.touchPressure = touchPressure
+        self.tvRemote = tvRemote
+        self.performWindowDrag = performWindowDrag
+        self.presentCompactWindow = presentCompactWindow
+        self.makeKeyboardCaptureTap = makeKeyboardCaptureTap
+        self.makeExternalDisplayWindow = makeExternalDisplayWindow
+        self.applicationIsActive = applicationIsActive
+        // Read geometry once per connection for the current screen arrangement.
+        let saved = preferences.windowGeometry(forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
+        savedCenter = saved.center
+        savedScale = saved.scale
+        self.onClose = onClose
+        self.onRestart = onRestart
+        self.onShutDown = onShutDown
+        content = DeviceContentView(display: session.display.view, usesNativeCanvas: session.display.usesNativeCanvas)
+        let natural = session.display.size(for: 1)
+        guard natural.width > 0, natural.height > 0 else {
+            session.disconnect()
+            throw SimulatorError.unavailable("Simulator display has no usable size")
+        }
+        // Initial width determines toolbar style before display scaling.
+        let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        fitting = DisplayFitting(display: session.display, content: content)
+        keyboard = DisplayKeyboardInput(window: window, display: session.display,
+                                        captureTap: makeKeyboardCaptureTap(), applicationIsActive: applicationIsActive)
+        super.init(window: window)
+        keyboard.capture.failure = { [weak self] in self?.present($0) }
+        (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
+        window.appearance = NSAppearance(named: .darkAqua)
+        // AppKit draws the opaque title bar; see `updateHeaderShape()`.
+        window.titlebarSeparatorStyle = .none
+        window.tabbingMode = .disallowed
+        window.backgroundColor = session.display.usesNativeCanvas ? .windowBackgroundColor : .clear
+        window.isOpaque = session.display.usesNativeCanvas
+        window.hasShadow = true
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
+        window.delegate = self
+        window.contentView = compactContainer
+        window.displayScale = { [weak self] in self?.session.display.renderScale ?? 1 }
+        window.handleMouseEvent = { [weak self] in self?.handleBezelDrag($0) ?? false }
+        attachSession()
+        // Apply the bezel before computing display scale.
+        session.display.setChromeVisible(preferences.showsDeviceBezels)
+        bezelChanged()
+        updateToolbarStyle(forWidth: window.frame.width)
+        // The smallest size a manual resize leaves the window at.
+        updateContentMinimumSize()
+        // Keep the window on screen after display or Dock geometry changes.
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.updateContentMinimumSize()
+                if self.isEmbedded { self.updateEmbeddedScale() }
+                else {
+                    if !self.fitting.scalesDisplay { self.updateWindowSize() }
+                    self.moveWindowOntoScreen()
+                }
+            }
+        }
+        touchPressureObserver = NotificationCenter.default.addObserver(
+            forName: TouchPressure.didChangeNotification, object: touchPressure, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.touchPressureChanged() }
+        }
+        touchIndicatorObserver = NotificationCenter.default.addObserver(
+            forName: TouchIndicator.didChangeNotification, object: preferences, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showTouchIndicators() }
+        }
+        keyboardSelectionObserver = NotificationCenter.default.addObserver(
+            forName: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.keyboardSelectionChanged() }
+        }
+        // Audio-route preferences apply across windows.
+        audioRouteObserver = NotificationCenter.default.addObserver(
+            forName: AudioRouting.didChangeNotification, object: preferences, queue: .main) { [weak self] notification in
+            let scope = (notification.userInfo?[AudioRouting.scopeKey] as? UInt64).flatMap(AudioScope.init(rawValue:))
+            MainActor.assumeIsolated { if let scope { self?.audioRouteChosen(in: scope) } }
+        }
+        showInitialDisplay()
+    }
+
+    private var initialScale: CGFloat {
+        min(scale(for: .fitScreen) ?? .infinity, savedScale ?? 1)
+    }
+
+    private func showInitialDisplay() {
+        // DeviceKit initially lays out its loading indicator. Preserve the
+        // window's viewport while the device composition becomes available.
+        if session.display.usesNativeCanvas { resizeDisplay(); return }
+        showDisplay(fitting: { self.initialScale })
+    }
+
+    /// Recomputes fit if a narrower window switches to the taller expanded title bar.
+    private func showDisplay(fitting scale: () -> CGFloat?) {
+        guard let first = scale() else { return }
+        showDisplay(at: first)
+        if let second = scale(), second < first { showDisplay(at: second) }
+    }
+
+    /// Recomputes initial placement if scaling changes the title-bar height.
+    private func placeAtInitialScale(_ place: ((NSWindow) -> Void)?) {
+        if session.display.usesNativeCanvas { displayGeometryChanged(placing: place); return }
+        let scale = initialScale
+        fitting.setScale(scale)
+        displayGeometryChanged(placing: place)
+        let refit = initialScale
+        guard refit < scale else { return }
+        fitting.setScale(refit)
+        displayGeometryChanged(placing: place)
+    }
+
+    /// The frames of the Mac's screens, whose arrangement keys the saved
+    /// window geometry.
+    private static var screenFrames: [NSRect] { NSScreen.screens.map(\.frame) }
+
+    /// Restores the saved center or cascades a new window, keeping it on screen.
+    /// The first orientation reading may resize and recenter it unless the user has moved or resized it.
+    /// Cascaded windows retain their top-left corner.
+    package func showNewWindow(cascadingFrom cascadePoint: inout NSPoint) {
+        guard let window else { return }
+        let place: ((NSWindow) -> Void)?
+        if let center = savedCenter {
+            place = { $0.setFrameOrigin(NSPoint(x: center.x - $0.frame.width * 0.5, y: center.y - $0.frame.height * 0.5)) }
+            place?(window)
+        } else {
+            place = cascadePoint == .zero ? { $0.center() } : nil
+            place?(window)
+            cascadePoint = window.cascadeTopLeft(from: cascadePoint)
+        }
+        showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+        // The window opened at the scale for the main screen; it takes the
+        // scale for the screen it is placed on.
+        placeAtInitialScale(place)
+        initialPlacement = orientationRead == .finished ? nil : (place, window.frame)
+        readInitialOrientation()
+    }
+
+    package required init?(coder: NSCoder) { nil }
+
+    package override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        hasPresentedCompactWindow = true
+    }
+
+    /// Changes only the presentation; the owner retains the session and its operations.
+    package func embed(in parent: NSViewController) {
+        guard !closed else { return }
+        let container = parent.view
+        saveWindowGeometry()
+        releasePresentationFocus()
+        window?.orderOut(nil)
+        content.removeFromSuperview()
+        presentationViewController.removeFromParent()
+        parent.addChild(presentationViewController)
+        embeddedParent = parent
+        embeddedContainer = container
+        Self.embeddedController = self
+        content.isEmbedded = true
+        deviceToolbar?.updateNativeRotation()
+        content.isSizedToDisplay = false
+        content.displayGap = 0
+        attachEmbeddedContent(to: container)
+        keyboard.attach(to: content.window)
+        observePresentationWindow()
+        updateEmbeddedScale()
+        if content.window?.isKeyWindow == true { activateDisplay() }
+        readInitialOrientation()
+    }
+
+    private func attachCompactContent() {
+        content.translatesAutoresizingMaskIntoConstraints = true
+        content.frame = compactContainer.bounds
+        content.autoresizingMask = [.width, .height]
+        compactContainer.addSubview(content)
+    }
+
+    /// Keeps the content in the container's safe area, which moves with the main window's toolbar,
+    /// bottom accessory and footer. The canvas still draws across the whole container.
+    private func attachEmbeddedContent(to container: NSView) {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.frame = container.safeAreaRect
+        container.addSubview(content)
+        let area = container.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: area.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: area.trailingAnchor),
+            content.topAnchor.constraint(equalTo: area.topAnchor),
+            content.bottomAnchor.constraint(equalTo: area.bottomAnchor),
+        ])
+    }
+
+    /// Presents the same native display in its standalone window.
+    package func showCompactWindow() {
+        guard !closed else { return }
+        let needsInitialPlacement = !hasPresentedCompactWindow
+        releasePresentationFocus()
+        content.removeFromSuperview()
+        presentationViewController.removeFromParent()
+        embeddedParent = nil
+        embeddedContainer = nil
+        if Self.embeddedController === self { Self.embeddedController = nil }
+        content.isEmbedded = false
+        content.attachCanvasControls()
+        deviceToolbar?.updateNativeRotation()
+        attachCompactContent()
+        keyboard.attach(to: window)
+        observePresentationWindow()
+        bezelChanged()
+        showInitialDisplay()
+        if let window {
+            let place: ((NSWindow) -> Void)?
+            if needsInitialPlacement {
+                if let center = savedCenter {
+                    place = { $0.setFrameOrigin(NSPoint(x: center.x - $0.frame.width * 0.5, y: center.y - $0.frame.height * 0.5)) }
+                } else { place = { $0.center() } }
+                place?(window)
+            } else { place = nil }
+            presentCompactWindow(window)
+            hasPresentedCompactWindow = true
+            if needsInitialPlacement {
+                placeAtInitialScale(place)
+                initialPlacement = orientationRead == .finished ? nil : (place, window.frame)
+            }
+        }
+        readInitialOrientation()
+    }
+
+    /// Removes a scene without ending its device connection.
+    package func detachPresentation() {
+        session.stopAppResize()
+        releasePresentationFocus()
+        window?.orderOut(nil)
+        content.removeFromSuperview()
+        presentationViewController.removeFromParent()
+        embeddedParent = nil
+        embeddedContainer = nil
+        if Self.embeddedController === self { Self.embeddedController = nil }
+        keyboard.attach(to: nil)
+        observePresentationWindow()
+    }
+
+    private func releasePresentationFocus() {
+        endCanvasResize()
+        if let view = presentationWindow?.firstResponder as? NSView, view.isDescendant(of: content) {
+            presentationWindow?.makeFirstResponder(nil)
+        }
+        isKey = false
+        keyboard.setEnabled(false)
+        updateTrackpadInput()
+    }
+
+    private func observePresentationWindow() {
+        for observer in presentationObservers { NotificationCenter.default.removeObserver(observer) }
+        presentationObservers.removeAll()
+        guard let presented = presentationWindow else { return }
+        if isEmbedded {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                presentationObservers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: presented, queue: .main) { [weak self] notification in
+                        let becameKey = notification.name == NSWindow.didBecomeKeyNotification
+                        MainActor.assumeIsolated {
+                            guard let self else { return }
+                            if becameKey {
+                                self.activateDisplay(focusingInput: presented.firstResponder === self.session.display.inputView)
+                            }
+                            else { self.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification)) }
+                        }
+                    })
+            }
+        }
+        for name in [NSWindow.didChangeScreenNotification, NSWindow.didChangeBackingPropertiesNotification] {
+            presentationObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: presented, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.updateContentMinimumSize()
+                        if self.isEmbedded { self.updateEmbeddedScale() }
+                        else if !self.fitting.scalesDisplay { self.updateWindowSize() }
+                    }
+                })
+        }
+    }
+
+    /// Connects the window's toolbar, content, and display events to `session`.
+    private func attachSession() {
+        guard let window else { return }
+        let toolbar = DeviceToolbar(controller: self)
+        deviceToolbar = toolbar
+        toolbar.attach(to: window)
+        toolbar.setShowsMainWindowAction(onShowInMainWindow != nil)
+        toolbar.setUsesCanvasControls(canvasControls != nil)
+        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        session.onDisplayRotation = { [weak self, weak session] angle, update in
+            guard let self, let session, self.session === session else { update(); return }
+            let previous = self.content.rotationSnapshot
+            let rotation = angle - session.displayAngle
+            let untouched = self.initialPlacement.map { self.window?.frame == $0.frame } ?? false
+            // AppKit may flush during display layout or magnification. Commit the rotated
+            // content and its compensating animation together so the final pose cannot flash first.
+            NSAnimationContext.runAnimationGroup { _ in
+                update()
+                self.displayGeometryChanged()
+                // Rotation is not a user move; keep the pending initial placement eligible for restoration.
+                if untouched, let frame = self.window?.frame { self.initialPlacement?.frame = frame }
+                if self.isEmbedded && rotation != 0 && !session.display.usesNativeCanvas {
+                    self.content.animateRotation(from: previous, by: rotation)
+                }
+            }
+        }
+        session.display.nativePoseControls?.onError = { [weak self] in self?.present($0) }
+        session.onAppResizeError = { [weak self] in self?.present($0) }
+        session.onDisplayWillChange = { [weak self] in
+            guard let self else { return }
+            self.endCanvasResize()
+            if !self.isFullScreen { self.saveWindowGeometry() }
+            self.keyboard.setEnabled(false)
+            self.session.display.setTrackpadEnabled(false)
+            self.session.display.onPropertiesChange = nil
+        }
+        session.onDisplayChange = { [weak self] in self?.appDisplayChanged() }
+        session.onAppResizeGeometryChange = { [weak self] in self?.appGeometryChanged() }
+        session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
+        content.canvasZoom = canvasZoom
+        content.deviceFrame = { [weak self] in self?.session.display.deviceFrame ?? .zero }
+        content.displayResizeRects = { [weak self] in self?.session.display.resizeRects ?? [] }
+        content.onCanvasResize = { [weak self] in self?.resizeCanvas(from: $0, with: $1) }
+        content.onNativeCanvasMagnification = { [weak self] in self?.session.display.setCanvasMagnification($0) }
+        content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
+        content.importFiles = { [weak self] in self?.importFiles($0) }
+        content.onDisplaySizeChange = { [weak self] in
+            guard let self else { return }
+            if self.session.isResizingApp { self.session.resizeApp(to: self.content.availableDisplaySize) }
+            else if self.isEmbedded { self.updateEmbeddedScale(layout: false) }
+            else if self.session.display.usesNativeCanvas, !self.isSizingWindow { self.displayGeometryChanged() }
+        }
+        fitting.onNaturalSizeChange = { [weak self] in
+            guard let self, self.isEmbedded else { return }
+            self.updateEmbeddedScale()
+        }
+        content.canvasControls = canvasControls
+        presentationViewController.view = content
+        content.onWindowChange = { [weak self] in
+            guard let self else { return }
+            self.keyboard.attach(to: self.presentationWindow)
+            self.observePresentationWindow()
+            if let window = self.presentationWindow, window.isKeyWindow {
+                self.activateDisplay(focusingInput: !self.isEmbedded || window.firstResponder === self.session.display.inputView)
+            }
+        }
+        if let embeddedContainer {
+            content.isEmbedded = true
+            attachEmbeddedContent(to: embeddedContainer)
+        } else { attachCompactContent() }
+        keyboard.attach(to: presentationWindow)
+        observePresentationWindow()
+        disableBezelResizeCursors()
+        connectTouchPressure()
+        showTouchIndicators()
+        session.followBacklight()
+        attachUserInterfacePlugin()
+    }
+
+    package func toggleAppResize() {
+        session.toggleAppResize(size: content.availableDisplaySize)
+    }
+
+    private func appDisplayChanged() {
+        guard !closed else { return }
+        let restoreInputFocus = (presentationWindow?.firstResponder as? NSView)?.isDescendant(of: content.display) == true
+        content.setDisplay(session.display.view, usesNativeCanvas: session.display.usesNativeCanvas)
+        content.scrollsDisplay = session.isResizingApp
+        fitting.scalesDisplay = !session.isResizingApp
+        fitting.attach(session.display, content: content)
+        content.isSizedToDisplay = false
+        keyboard.display = session.display
+        session.display.onPropertiesChange = { [weak self] in self?.displayPropertiesChanged() }
+        session.display.nativePoseControls?.onError = { [weak self] in self?.present($0) }
+        if !session.isResizingApp { session.display.setChromeVisible(preferences.showsDeviceBezels) }
+        bezelChanged()
+        connectTouchPressure()
+        showTouchIndicators()
+        updateContentMinimumSize()
+        if isEmbedded { updateEmbeddedScale() }
+        else if session.isResizingApp || session.display.usesNativeCanvas { resizeDisplay() }
+        else { updateWindowSize() }
+        if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
+    }
+
+    private func appGeometryChanged() {
+        guard session.isResizingApp else { return }
+        session.display.view.invalidateIntrinsicContentSize()
+        updateContentMinimumSize()
+        content.needsLayout = true
+    }
+
+    // MARK: User-interface plugin
+
+    private var pluginLookUp: Task<Void, Never>?
+
+    /// Attaches the loaded plugin's toolbar. SimulatorKit owns its overlay and input focus.
+    /// A failed plugin leaves the screen usable without its controls and reports the error.
+    private func attachUserInterfacePlugin() {
+        pluginLookUp?.cancel()
+        pluginLookUp = nil
+        guard session.capabilities.hasUserInterfacePlugin else { return }
+        let session = self.session
+        let schedule = userInterfacePluginLookUp
+        pluginLookUp = Task.immediate { [weak self] in
+            for attempt in 1...schedule.attempts {
+                guard let self, !self.closed, self.session === session, session.isConnected else { return }
+                do {
+                    if let plugin = try session.display.userInterfacePlugin() {
+                        self.showUserInterfacePlugin(plugin)
+                        return
+                    }
+                } catch {
+                    self.present(SimulatorError.operation(
+                        "The controls of \(session.device.name) are unavailable: \(error.localizedDescription)"))
+                    return
+                }
+                if attempt < schedule.attempts { try? await Task.sleep(for: schedule.interval) }
+            }
+            guard let self, !self.closed, self.session === session, session.isConnected else { return }
+            self.present(SimulatorError.unavailable(
+                "The controls of \(session.device.name) are unavailable: SimulatorKit did not load its user interface plugin."))
+        }
+    }
+
+    private func showUserInterfacePlugin(_ plugin: SimulatorUserInterfacePlugin) {
+        guard let window else { return }
+        if let toolbar = plugin.toolbar {
+            deviceToolbar?.attachPluginToolbar(toolbar, to: window)
+            // The plugin's toolbar takes the window's toolbar style.
+            deviceToolbar?.apply(window.toolbarStyle, to: window)
+        }
+        // The overlay is the display's input view now.
+        if let presented = presentationWindow, presented.isKeyWindow,
+           !isEmbedded || (presented.firstResponder as? NSView)?.isDescendant(of: content) == true { focusInput() }
+    }
+
+    /// Plugin-toolbar Home action.
+    @objc package func homeButtonPressed(_ sender: Any?) { perform(.home) }
+
+    /// Plugin-toolbar Save Screen action.
+    @objc package func saveFramebufferImage(_ sender: Any?) { perform(.saveScreen) }
+
+    /// Plugin-toolbar recording action, including Option-click on Save Screen.
+    @objc package func toggleVideoRecording(_ sender: Any?) {
+        perform(session.recording == nil ? .recordScreen : .stopRecording)
+    }
+
+    // MARK: Restart
+
+    /// Finishes an active recording, then disconnects from the device so that
+    /// it can shut down. The window stays open for `reconnect(_:)`.
+    package func prepareForRestart() async {
+        isRestarting = true
+        if let window = presentationWindow, let sheet = window.attachedSheet {
+            window.endSheet(sheet, returnCode: .cancel)
+        }
+        await session.finishRecording()
+        guard !closed else { return }
+        customLocation?.close()
+        closeExternalDisplayWindow()
+        keyboard.capture.stop()
+        session.disconnect()
+        fitting.invalidate()
+        window?.subtitle = "Restarting…"
+    }
+
+    /// Shows the device again after a restart, through its new connection.
+    package func reconnect(_ session: DeviceSession, present: Bool = true) {
+        guard !closed else {
+            session.disconnect()
+            return
+        }
+        // Preserve scale across reconnection, then fit the new display shape below the window's top edge.
+        let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
+        let restoreInputFocus = !isEmbedded || presentationWindow?.firstResponder === self.session.display.inputView
+        isRestarting = false
+        self.session = session
+        content.canvasControls = nil
+        content.removeFromSuperview()
+        content = DeviceContentView(display: session.display.view, usesNativeCanvas: session.display.usesNativeCanvas)
+        fitting.attach(session.display, content: content)
+        fitting.scalesDisplay = !session.isResizingApp
+        keyboard.display = session.display
+        attachSession()
+        if let window {
+            (window.title, window.subtitle) = deviceWindowTitles(
+                name: session.device.name, runtimeName: session.device.runtimeName)
+        }
+        session.display.setChromeVisible(preferences.showsDeviceBezels)
+        bezelChanged()
+        orientationRead = .notStarted
+        initialPlacement = nil
+        fitting.setScale(scale)
+        displayGeometryChanged()
+        if present { showAndActivate() } else { readInitialOrientation() }
+        // A window that stayed key gets no new key notification.
+        if presentationWindow?.isKeyWindow == true { activateDisplay(focusingInput: restoreInputFocus) }
+        onSessionChange?()
+    }
+
+    package func showAndActivate() {
+        if !isEmbedded { showWindow(nil) }
+        presentationWindow?.makeKeyAndOrderFront(nil)
+        readInitialOrientation()
+    }
+
+    /// Reads orientation once per connection and updates untouched initial placement.
+    /// Devices without rotation keep their upright display.
+    private func readInitialOrientation() {
+        guard session.capabilities.rotates else {
+            initialPlacement = nil
+            return
+        }
+        // A reading in progress keeps the placement for its result.
+        guard orientationRead == .notStarted else { return }
+        let session = self.session
+        guard session.canPerformToolOperation else { return }
+        orientationRead = .pending
+        session.run({ [weak self] in
+            guard let self, self.session === session else { return }
+            defer {
+                if self.session === session {
+                    self.orientationRead = .finished
+                    self.initialPlacement = nil
+                }
+            }
+            try await session.readOrientation()
+            guard self.session === session else { return }
+            if !self.isEmbedded, let placement = self.initialPlacement, self.window?.frame == placement.frame {
+                self.placeAtInitialScale(placement.place)
+            } else {
+                self.displayGeometryChanged()
+            }
+        }, failure: { [weak self] in
+            guard let self, self.session === session else { return }
+            self.initialPlacement = nil
+            hostLog($0.localizedDescription)
+        })
+    }
+
+    // MARK: Commands
+
+    @objc package func saveScreenshot(_ sender: Any?) { perform(.saveScreen) }
+    @objc package func recordScreen(_ sender: Any?) { perform(.recordScreen) }
+    @objc package func recordScreenTo(_ sender: Any?) { perform(.recordScreenAs) }
+    @objc package func stopScreenRecording(_ sender: Any?) { perform(.stopRecording) }
+
+    package func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let command: DeviceCommand.ID?
+        switch item.action {
+        case #selector(saveScreenshot(_:)): command = .saveScreen
+        case #selector(recordScreen(_:)): command = .recordScreen
+        case #selector(recordScreenTo(_:)): command = .recordScreenAs
+        case #selector(stopScreenRecording(_:)): command = .stopRecording
+        case #selector(showInMainWindow(_:)): return canShowInMainWindow
+        default: return !closed && session.canPerformCommands
+        }
+        guard let command, !closed else { return false }
+        let description = DeviceCommand.command(command)
+        return description.isSupported(session.capabilities) && description.isEnabled(self)
+    }
+
+    package func perform(_ id: DeviceCommand.ID) {
+        let command = DeviceCommand.command(id)
+        guard !closed, command.isSupported(session.capabilities), command.isEnabled(self) else { return }
+        command.perform(self)
+        if let externalDisplayWindow, externalDisplayWindow.isKey {
+            externalDisplayWindow.focusInput()
+        } else {
+            focusInput()
+        }
+    }
+
+    package func send(_ input: HardwareInput) { session.send(input) { [weak self] in self?.present($0) } }
+
+    /// Runs an immediate device action and presents its failure on this window.
+    package func run(_ action: () throws -> Void) {
+        do { try action() } catch { present(error) }
+    }
+
+    /// Runs a guest command without blocking the main thread.
+    package func runAsync(_ action: @escaping @MainActor () async throws -> Void) {
+        session.run(action, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// Debug ▸ Open System Log…. Opening Console is not a device operation, so
+    /// it does not take the device-operation slot.
+    package func openSystemLog() {
+        Task { [weak self, session] in
+            do { try await session.openSystemLog() } catch { self?.present(error) }
+        }
+    }
+
+    package func rotate(left: Bool) {
+        session.run({ [session] in
+            try await session.rotate(left: left)
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    package func setOrientation(_ orientation: DeviceOrientation) {
+        session.run({ [session] in
+            try await session.setOrientation(orientation)
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    package func shutDown() {
+        if let onShutDown { onShutDown(self); return }
+        session.run({ [session] in try await session.shutDown() }, failure: { [weak self] in self?.present($0) })
+    }
+
+    package func restart() { onRestart(self, false) }
+
+    package func eraseAllContentAndSettings() {
+        guard let window = presentationWindow, session.reserve() else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Erase all content and settings on \(session.device.name)?"
+        alert.informativeText = "The device restarts, and all of its apps, data, and settings are removed."
+        alert.addButton(withTitle: "Erase").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.session.release()
+            guard response == .alertFirstButtonReturn, !self.closed else { return }
+            self.onRestart(self, true)
+        }
+    }
+
+    /// Changes the bezel while preserving display scale.
+    package func setDeviceBezelVisible(_ visible: Bool) {
+        session.display.setChromeVisible(visible)
+        bezelChanged()
+        if isEmbedded { updateEmbeddedScale() }
+        else if session.display.usesNativeCanvas { resizeDisplay() }
+        else { updateWindowSize() }
+    }
+
+    /// Applies bezel padding, background, and header shape without changing window resizing.
+    private func bezelChanged() {
+        guard let window = window as? DeviceWindow else { return }
+        let padding = session.display.chromePadding
+        // Scrolling controls a crown or dial; without a bezel, SimulatorKit filters unsupported devices.
+        session.display.setSupportsScrolling(padding == nil || session.capabilities.hasCrownOrDial)
+        // With a bezel, guest edge gestures must start on it.
+        session.display.setWantsEdgeSwipes(padding != nil)
+        content.displayGap = isEmbedded ? 0 : WindowScale.displayGap(bezelPadding: padding)
+        window.chromeTopPadding = padding?.height
+        updateHeaderShape()
+        if canvasControls != nil || session.display.usesNativeCanvas { window.backgroundColor = .windowBackgroundColor }
+        else if padding != nil { window.backgroundColor = .clear }
+        else if !isFullScreen { window.backgroundColor = .black }
+        updateContentMinimumSize()
+    }
+
+    /// Lays out the toolbar immediately so size calculations use its final header height.
+    private func updateToolbarStyle(forWidth width: CGFloat) {
+        guard let window, let deviceToolbar else { return }
+        let titles = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
+        deviceToolbar.apply(deviceToolbar.style(forWidth: width, title: titles.title, subtitle: titles.subtitle,
+                                                preferences: preferences), to: window)
+        window.layoutIfNeeded()
+        titleBarHeights[window.toolbarStyle] = content.headerHeight
+        updateContentMinimumSize()
+        updateHeaderShape()
+    }
+
+    private func updateContentMinimumSize() {
+        guard let window else { return }
+        guard let geometry = session.appResizeGeometry else {
+            window.contentMinSize = NSSize(width: max(320, content.canvasControlsWidth), height: 300)
+            return
+        }
+        var minimum = NSSize(width: max(geometry.minimumSize.width, content.canvasControlsWidth),
+                             height: geometry.minimumSize.height + content.heightAboveDisplay)
+        // Oversized guest minima remain reachable through the canvas viewport.
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
+            let maximum = window.contentRect(forFrameRect: visible).size
+            minimum.width = min(minimum.width, maximum.width)
+            minimum.height = min(minimum.height, maximum.height)
+        }
+        window.contentMinSize = minimum
+    }
+
+    private func fitCanvasControls() {
+        guard !isEmbedded, !isFullScreen, let window,
+              let currentSize = window.contentView?.bounds.size,
+              currentSize.width < content.canvasControlsWidth else { return }
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero,
+            size: NSSize(width: content.canvasControlsWidth, height: currentSize.height)))
+        frame.origin = window.frame.origin
+        setFrame(around: frame)
+        if session.display.usesNativeCanvas { displayGeometryChanged() }
+    }
+
+    /// Rounds the header below a visible bezel outside full screen.
+    private func updateHeaderShape() {
+        (window as? DeviceWindow)?.roundHeader(session.display.chromePadding != nil && !isFullScreen)
+    }
+
+    package func toggleStayOnTop() {
+        window?.level = staysOnTop ? .normal : .floating
+        customLocation?.window?.level = window?.level ?? .normal
+    }
+
+    // MARK: Keyboard and touch pressure
+
+    package func toggleKeyboardCapture() {
+        let keyboard = activeKeyboardInput
+        if keyboard.capture.stop() { return }
+        keyboard.focus()
+        do { try keyboard.capture.start() } catch { present(error) }
+    }
+
+    /// Updates host keyboard input immediately; applies the saved choice to the guest asynchronously.
+    package func toggleHardwareKeyboard() {
+        Task.immediate { [weak self, session] in
+            do { try await session.toggleHardwareKeyboard() } catch { self?.present(error) }
+        }
+        updateKeyboardInput()
+        externalDisplayWindow?.updateKeyboardInput()
+    }
+
+    /// The key window receives keyboard input only when the device's hardware keyboard is connected.
+    private func updateKeyboardInput() {
+        keyboard.setEnabled(isKey && session.connectsHardwareKeyboard)
+    }
+
+    /// The key window's screen takes trackpad gestures whether or not the hardware keyboard is connected.
+    private func updateTrackpadInput() {
+        session.display.setTrackpadEnabled(isKey)
+    }
+
+    /// Starts changes before returning to preserve input-source order. Failures are logged.
+    private func keyboardSelectionChanged() {
+        guard !closed, isKey || externalDisplayWindow?.isKey == true else { return }
+        Task.immediate { [session] in
+            do { try await session.syncKeyboardLanguage() } catch {
+                hostLog("Could not set the keyboard language of \(session.device.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Applies the app's current touch mode and trackpad-force setting on each connection.
+    private func connectTouchPressure() {
+        let display = session.display
+        display.setSupportsTouchPressure(
+            display.displayClass == 0 && session.capabilities.supportsFeature(DeviceCapabilities.touchPressure))
+        applyTouchPressure()
+    }
+
+    private func touchPressureChanged() {
+        guard !closed, session.capabilities.supportsFeature(DeviceCapabilities.touchPressure) else { return }
+        applyTouchPressure()
+    }
+
+    private func applyTouchPressure() {
+        session.display.setUsesTrackpadForce(touchPressure.usesTrackpadForce)
+        session.display.setSimulatedTouchMode(touchPressure.mode)
+    }
+
+    /// Applies indicator preferences on connection and whenever they change.
+    private func showTouchIndicators() {
+        for indicator in TouchIndicator.allCases {
+            session.display.setTouchIndicator(indicator, shown: preferences.showsTouchIndicator(indicator))
+        }
+    }
+
+    /// Features ▸ Location: Custom Location… asks for a coordinate first.
+    package func selectLocation(_ selection: LocationSelection) {
+        guard !closed, session.canPerformCommands else { return }
+        guard selection == .custom else {
+            changeLocation { [session] in try await session.selectLocation(selection) }
+            focusInput()
+            return
+        }
+        let customLocation = customLocation ?? CustomLocationWindowController { [weak self] latitude, longitude in
+            guard let self else { return }
+            changeLocation { [session] in try await session.setCustomLocation(latitude: latitude, longitude: longitude) }
+        }
+        self.customLocation = customLocation
+        // The window takes its device window's level, also when Stay on Top
+        // changes, so that the device window cannot hide it.
+        customLocation.window?.level = window?.level ?? .normal
+        let defaults = HostPreferences.defaults
+        do {
+            let coordinate = try DeviceLocationPreset.load(for: session.device.identity.preferenceIdentifier, among: session.locationScenarios)?.coordinate
+            customLocation.show(latitude: coordinate?.latitude ?? defaults.double(forKey: HostPreferences.locationLatitude),
+                                longitude: coordinate?.longitude ?? defaults.double(forKey: HostPreferences.locationLongitude))
+        } catch { present(error) }
+    }
+
+    /// I/O ▸ Audio Input or Audio Output: saves `route` as the app's most
+    /// recent route for `scope`, which every device window then applies.
+    package func selectAudioRoute(_ route: String, in scope: AudioScope) {
+        guard !closed else { return }
+        preferences.chooseAudioRoute(route, in: scope)
+        focusInput()
+    }
+
+    /// Routes the device to the app's new choice, presenting a failure on this window.
+    private func audioRouteChosen(in scope: AudioScope) {
+        guard !closed else { return }
+        session.applyChosenAudioRoute(in: scope) { [weak self] in self?.present($0) }
+    }
+
+    /// Starts a location change before returning, so that changes reach the
+    /// device in the order they are chosen, and presents its failure on this window.
+    private func changeLocation(_ change: @escaping @MainActor () async throws -> Void) {
+        Task.immediate { [weak self] in
+            do { try await change() } catch { self?.present(error) }
+        }
+    }
+
+    /// Whether captures apply the device's mask by default: the device has
+    /// one and `ScreenShotUseMask` is on.
+    private var usesDeviceMask: Bool {
+        !session.isResizingApp && session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
+    }
+
+    /// File ▸ Save Screen: captures the screen without asking and shows its
+    /// thumbnail, which saves it to the screenshot folder when dismissed.
+    package func saveScreen() {
+        let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
+        let folder = CaptureFile.screenshotFolder()
+        let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
+        session.run({ [weak self, session] in
+            let file = try await session.screenshot(mask: mask)
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: self?.captureOwner)
+            guard let self else {
+                try capture.saveToDefaultLocation()
+                return
+            }
+            try self.showThumbnail(of: capture, image: NSImage(contentsOf: file))
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// Shows a capture's thumbnail beside this window, or saves the capture
+    /// when the window has closed.
+    private func showThumbnail(of capture: CapturedContent, image: NSImage?) throws {
+        guard !closed, let window = presentationWindow, window.isVisible, !CaptureThumbnail.savesImmediately else {
+            try capture.saveToDefaultLocation()
+            return
+        }
+        let display = session.display.view, screen = session.display.inputView
+        // The thumbnail shrinks from the device screen, without the bezel.
+        let source = window.convertToScreen(screen.convert(screen.bounds, to: nil))
+        let displayFrame = window.convertToScreen(display.convert(display.bounds, to: nil))
+        // Thumbnail spacing follows scale, doubling for landscape, TV, and watch displays.
+        let scale = isEmbedded ? content.canvasMagnification : session.display.renderScale
+        let landscape = abs(session.displayAngle.truncatingRemainder(dividingBy: 180)) == 90
+        let family = session.capabilities.family
+        let base: CGFloat = landscape || family == .tv || family == .watch ? 20 : 10
+        let horizontal = window.styleMask.contains(.fullScreen) ? displayFrame.maxX - source.maxX + 10 : 10
+        let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
+                                         rotation: session.isResizingApp ? 0 : session.displayAngle,
+                                         cornerRadius: (session.appResizeGeometry?.cornerRadius ?? CGFloat(session.capabilities.screenCornerRadius)) * scale,
+                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self, reportDetachedCapture] error in
+            if let self, !self.closed { self.present(error) } else { reportDetachedCapture(error) }
+        }
+        thumbnail.show()
+    }
+
+    /// File ▸ Save Screen…: asks where to save, starting in the screenshot
+    /// folder, and whether to apply the device's mask. Saving remembers both.
+    package func chooseScreenshotDestination() {
+        guard let window = presentationWindow, session.reserve() else { return }
+        let hasMask = session.capabilities.hasFramebufferMask
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.directoryURL = CaptureFile.screenshotFolder()
+        panel.nameFieldStringValue = CaptureFile.screenshotName(device: session.device.name, date: Date())
+        let applyMask = NSButton(checkboxWithTitle: "Apply device mask to screenshot", target: nil, action: nil)
+        applyMask.toolTip = "Apply device mask to non-rectangular screens when taking screenshots."
+        applyMask.state = HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask) ? .on : .off
+        if hasMask { panel.accessoryView = Self.accessory(applyMask) }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.session.release()
+            guard response == .OK, let destination = panel.url, !self.closed else { return }
+            let useMask = hasMask && applyMask.state == .on
+            HostPreferences.defaults.set(destination.deletingLastPathComponent().path,
+                                      forKey: HostPreferences.screenShotSaveLocation)
+            if hasMask { HostPreferences.defaults.set(useMask, forKey: HostPreferences.screenShotUseMask) }
+            self.session.run({ [session] in try await session.saveScreenshot(to: destination, mask: useMask ? .alpha : .ignored) },
+                             failure: { [weak self] in self?.present($0) })
+        }
+    }
+
+    /// Edit ▸ Copy Screen: puts a PNG of the screen on the Mac pasteboard,
+    /// leaving the simulator's pasteboard alone.
+    package func copyScreen() {
+        session.run({ [session] in
+            let png = try await session.screenPNG()
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(png, forType: .png)
+        }, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// Edit ▸ Get Pasteboard or Send Pasteboard. A failure that the device
+    /// reports later is also presented on this window.
+    package func transferPasteboard(_ transfer: PasteboardTransfer) {
+        session.transferPasteboard(transfer) { [weak self] in self?.present($0) }
+    }
+
+    /// Records immediately; stopping creates a thumbnail that saves on dismissal.
+    package func recordScreen() {
+        guard let desktop = CaptureFile.desktop else {
+            present(SimulatorError.operation("Could not find the Desktop folder to save the recording in."))
+            return
+        }
+        let device = session.device.name
+        let isReserved = session.isRecordingDestination
+        run {
+            try session.startRecording(to: .capture { [weak self] file in
+                let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
+                                              defaultFolder: desktop, owner: self?.captureOwner, isReserved: isReserved)
+                if let self { try self.showThumbnail(of: capture, image: nil) } else { try capture.saveToDefaultLocation() }
+            }, mask: usesDeviceMask ? .black : .ignored)
+        }
+    }
+
+    /// File ▸ Record Screen…: asks where to save the movie and whether to
+    /// apply the device's mask, then starts recording.
+    package func chooseRecordingDestination() {
+        guard let window = presentationWindow, session.reserve() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.quickTimeMovie]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = CaptureFile.recordingName(device: session.device.name, date: Date())
+        // This option defaults on and is not persisted.
+        let applyMask = NSButton(checkboxWithTitle: "Apply device mask to recording", target: nil, action: nil)
+        applyMask.state = .on
+        panel.accessoryView = Self.accessory(applyMask)
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.session.release()
+            guard response == .OK, let destination = panel.url, !self.closed else { return }
+            self.run { try self.session.startRecording(to: .file(destination), mask: applyMask.state == .on ? .black : .ignored) }
+        }
+    }
+
+    private static func accessory(_ option: NSButton) -> NSView {
+        let view = NSView()
+        option.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(option)
+        NSLayoutConstraint.activate([
+            option.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            option.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 20),
+            option.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            option.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+        ])
+        return view
+    }
+
+    package func chooseFilesToImport() {
+        guard let window = presentationWindow, session.reserve() else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Install App or Import Media"
+        panel.prompt = "Import"
+        panel.allowedContentTypes = SimulatorFileImport.applicationTypes + [.image, .movie, .vCard]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.session.release()
+            if response == .OK, !self.closed { self.importFiles(panel.urls) }
+        }
+    }
+
+    private func importFiles(_ urls: [URL]) {
+        session.run({ [session] in try await session.importFiles(urls) }, failure: { [weak self] in self?.present($0) })
+    }
+
+    package func chooseURLToOpen() {
+        guard let window = presentationWindow, session.reserve() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Open URL in Simulator"
+        alert.informativeText = "Enter a web address or an app's URL scheme."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        field.placeholderString = "https://example.com"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            self.session.release()
+            guard response == .alertFirstButtonReturn, !self.closed else { return }
+            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: text), url.scheme != nil else {
+                self.present(SimulatorError.operation("Enter a URL with a scheme, such as https://example.com"))
+                return
+            }
+            self.session.run({ [session] in try await session.openURL(url) }, failure: { [weak self] in self?.present($0) })
+        }
+    }
+
+    // MARK: External display
+
+    /// I/O ▸ External Displays. A failure, also one that CoreSimulator
+    /// reports later, is presented on this window.
+    package func chooseExternalDisplay(_ mode: ExternalDisplayMode) {
+        guard !closed else { return }
+        session.chooseExternalDisplay(mode) { [weak self] in self?.present($0) }
+    }
+
+    /// The window that the Window menu's scale commands scale: the external
+    /// display's window while it is key, otherwise this one.
+    package var scaledWindow: any DisplayScaling {
+        guard let externalDisplayWindow, externalDisplayWindow.isKey else { return self }
+        return externalDisplayWindow
+    }
+
+    /// Follows actual external-display power and size, including changes from other tools.
+    private func syncExternalDisplayWindow() {
+        guard !closed else { return }
+        guard let state = session.externalScreen, state.isPoweredOn else { return closeExternalDisplayWindow() }
+        if let externalDisplayWindow { return externalDisplayWindow.screenChanged(state) }
+        guard externalDisplayOpening == nil else { return }
+        var completed = false
+        let opening = Task.immediate { [weak self, session] in
+            defer { completed = true }
+            guard let self else { return }
+            var retry = false
+            defer {
+                externalDisplayOpening = nil
+                if retry { syncExternalDisplayWindow() }
+            }
+            do {
+                let display = try await session.makeExternalDisplay()
+                guard !Task.isCancelled, !closed, self.session === session,
+                      let state = session.externalScreen, state.isPoweredOn else {
+                    retry = true
+                    try await display.stop()
+                    return
+                }
+                let controller = try ExternalDisplayWindowController(
+                    session: session, display: display, state: state, deviceWindow: self,
+                    preferences: preferences, keyboardCaptureTap: makeKeyboardCaptureTap(),
+                    applicationIsActive: applicationIsActive, makeWindow: makeExternalDisplayWindow) { [weak self] in
+                        self?.externalDisplayWindowClosed()
+                    }
+                controller.keyboard.capture.failure = { [weak self] in self?.present($0) }
+                externalDisplayWindow = controller
+                controller.showNewWindow(cascadingFrom: window)
+            } catch is CancellationError {
+                retry = Task.isCancelled
+            } catch {
+                present(SimulatorError.operation(
+                    "Could not show the external display of \(session.device.name): \(error.localizedDescription)"))
+            }
+        }
+        if !completed { externalDisplayOpening = opening }
+    }
+
+    private func closeExternalDisplayWindow() {
+        externalDisplayOpening?.cancel()
+        externalDisplayWindow?.invalidate()
+        externalDisplayWindow = nil
+    }
+
+    /// Closing selects Disabled. A failed power-off reopens the window.
+    private func externalDisplayWindowClosed() {
+        externalDisplayWindow = nil
+        session.chooseExternalDisplay(.disabled) { [weak self] error in
+            self?.present(error)
+            self?.syncExternalDisplayWindow()
+        }
+    }
+
+    // MARK: Presentation
+
+    // Only orientation changes resize the window; other properties preserve its frame.
+    private func displayPropertiesChanged() {
+        guard !closed else { return }
+        if session.display.usesNativeCanvas { displayGeometryChanged(); return }
+        if session.isResizingApp { appGeometryChanged(); return }
+        session.followBacklight()
+        let enabled = HostPreferences.defaults.bool(forKey: HostPreferences.rotateWindowWhenSignaledByGuest)
+        _ = session.followGuestInterfaceOrientation(enabled: enabled)
+    }
+
+    /// Native compositions fit their existing viewport as readiness and posture change.
+    /// Legacy displays preserve scale and the window's top edge during rotation.
+    private func displayGeometryChanged(placing place: ((NSWindow) -> Void)? = nil) {
+        guard !closed else { return }
+        if isEmbedded { updateEmbeddedScale(); return }
+        guard let window else { return }
+        if session.display.usesNativeCanvas || fitting.fitsWindow {
+            resizeDisplay()
+            place?(window)
+            return
+        }
+        let previous = window.frame
+        updateWindowSize()
+        if let place {
+            place(window)
+        } else {
+            let height = window.frame.height
+            var y = previous.maxY - height
+            if let visible = window.screen?.visibleFrame, visible.maxY < height + y { y -= height + y - visible.maxY }
+            window.setFrameOrigin(NSPoint(x: previous.minX.rounded(.toNearestOrEven), y: y.rounded(.toNearestOrEven)))
+        }
+        moveWindowOntoScreen()
+    }
+
+    // MARK: Window scale
+
+    private var presentationScale: CGFloat { isEmbedded ? canvasZoom.scale : session.display.renderScale }
+
+    private var canvasFitScale: CGFloat { session.display.scale(for: content.availableDisplaySize) }
+
+    private var canvasScaleRange: ClosedRange<CGFloat> {
+        min(canvasZoom.fitScale, minimumScale)...max(canvasZoom.fitScale, 4)
+    }
+
+    package func canPerformCanvasZoom(_ action: CanvasZoom.Action) -> Bool {
+        guard isEmbedded, fitting.scalesDisplay, session.canPerformCommands else { return false }
+        switch action {
+        case .fit: return true
+        case .physicalSize: return session.display.displayClass == 0
+        case .zoomOut: return canvasZoom.scale > canvasScaleRange.lowerBound + 0.001
+        case .zoomIn: return canvasZoom.scale < canvasScaleRange.upperBound - 0.001
+        }
+    }
+
+    package func canvasZoomIsSelected(_ action: CanvasZoom.Action) -> Bool {
+        switch (action, canvasZoom.mode) {
+        case (.fit, .fit), (.physicalSize, .physicalSize): true
+        default: false
+        }
+    }
+
+    package func performCanvasZoom(_ action: CanvasZoom.Action) {
+        guard canPerformCanvasZoom(action) else { return }
+        switch action {
+        case .fit:
+            canvasZoom.mode = .fit
+            content.centerCanvas()
+        case .physicalSize: canvasZoom.mode = .physicalSize
+        case .zoomOut:
+            canvasZoom.mode = .fixed(max(canvasScaleRange.lowerBound, canvasZoom.scale / 1.25))
+        case .zoomIn:
+            canvasZoom.mode = .fixed(min(canvasScaleRange.upperBound, canvasZoom.scale * 1.25))
+        }
+        updateEmbeddedScale()
+    }
+
+    private func updateEmbeddedScale(layout: Bool = true) {
+        guard isEmbedded, !closed else { return }
+        let available = content.availableDisplaySize
+        guard available.width > 0, available.height > 0 else { return }
+        canvasZoom.fitScale = session.display.scale(for: available)
+        if fitting.scalesDisplay {
+            switch canvasZoom.mode {
+            case .fit: canvasZoom.scale = canvasZoom.fitScale
+            case .physicalSize:
+                if let scale = scale(for: .physicalSize) { canvasZoom.scale = scale }
+            case .fixed(let scale): canvasZoom.scale = scale
+            }
+        } else { canvasZoom.scale = 1 }
+        if session.display.renderScale != 1 { fitting.setScale(1) }
+        content.applyCanvasMagnification(range: canvasScaleRange, layout: layout)
+    }
+
+    /// Returns nil for Fit Screen when no host screen is available.
+    package func scale(for mode: WindowScaleMode) -> CGFloat? {
+        let screen = presentationWindow?.screen
+        switch mode {
+        case .physicalSize:
+            return WindowScale.physicalSize(hostDensity: screen.flatMap(WindowScale.density(of:)),
+                                            deviceDensity: session.capabilities.screenPointsPerInch.map { CGFloat($0) })
+        case .pointAccurate:
+            return 1
+        case .pixelAccurate:
+            return WindowScale.pixelAccurate(screenScale: session.display.screenScale,
+                                             backingScaleFactor: screen?.backingScaleFactor)
+        case .fitScreen:
+            if isEmbedded { return canvasFitScale }
+            // The window keeps 10 points from each edge of the screen.
+            guard let space = displaySpace(on: screen ?? NSScreen.main) else { return nil }
+            return session.display.scale(for: NSSize(width: space.width - 20, height: space.height - 20))
+        }
+    }
+
+    /// Available display space below the header and display gap.
+    private func displaySpace(on screen: NSScreen?) -> NSSize? {
+        guard let visible = screen?.visibleFrame else { return nil }
+        return content.displayRect(in: visible).size
+    }
+
+    /// Minimum scale for fixed scaling and bezel resizing.
+    private var minimumScale: CGFloat {
+        WindowScale.minimum(family: session.capabilities.family, displayClass: session.display.displayClass,
+                            fitting240: session.display.scale(for: NSSize(width: 240, height: 240)))
+    }
+
+    /// Checks prerequisites without changing unavailable commands' checkmarks.
+    private func validatesScale(_ mode: WindowScaleMode) -> Bool {
+        session.canPerformCommands && fitting.scalesDisplay && (isEmbedded || !isFullScreen)
+            && (mode != .physicalSize || session.display.displayClass == 0)
+    }
+
+    /// Checks minimum scale and screen fit; a window with a bezel may extend beyond the screen.
+    package func canSetScale(_ mode: WindowScaleMode) -> Bool {
+        guard validatesScale(mode), let window else { return false }
+        if isEmbedded { return true }
+        guard mode != .fitScreen else { return true }
+        guard let scale = scale(for: mode), scale >= minimumScale else { return false }
+        guard session.display.chromePadding == nil, let visible = window.screen?.visibleFrame else { return true }
+        let size = session.display.size(for: scale)
+        let width = max(size.width + content.horizontalDisplayPadding, content.canvasControlsWidth)
+        let header = titleBarHeight(forDisplayWidth: width)
+        let height = size.height + content.heightAboveDisplay + header - content.headerHeight
+        return width <= visible.width && height <= visible.height
+    }
+
+    /// Measures the title bar at the requested width, since scaling may change toolbar style.
+    private func titleBarHeight(forDisplayWidth width: CGFloat) -> CGFloat {
+        guard let deviceToolbar else { return content.headerHeight }
+        let titles = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
+        let style = deviceToolbar.style(forWidth: width, title: titles.title, subtitle: titles.subtitle,
+                                        preferences: preferences)
+        return titleBarHeights[style] ?? content.headerHeight
+    }
+
+    /// Checks actual scale even when the command is unavailable.
+    /// Returns nil when prerequisite validation requires preserving the previous checkmark.
+    package func scaleState(_ mode: WindowScaleMode) -> NSControl.StateValue? {
+        guard validatesScale(mode), let scale = scale(for: mode) else { return nil }
+        return WindowScale.matches(presentationScale, scale) ? .on : .off
+    }
+
+    /// Resizes below the top edge. Fit Screen centers; fixed scales keep the window on screen.
+    package func setScale(_ mode: WindowScaleMode) {
+        if isEmbedded {
+            guard canSetScale(mode), let scale = scale(for: mode) else { return }
+            switch mode {
+            case .fitScreen: performCanvasZoom(.fit)
+            case .physicalSize: performCanvasZoom(.physicalSize)
+            case .pointAccurate, .pixelAccurate:
+                canvasZoom.mode = .fixed(scale)
+                updateEmbeddedScale()
+            }
+            return
+        }
+        guard let window, let scale = scale(for: mode) else { return }
+        let previous = window.frame
+        if mode == .fitScreen {
+            showDisplay(fitting: { self.scale(for: .fitScreen) })
+        } else {
+            showDisplay(at: scale)
+        }
+        window.setFrameOrigin(NSPoint(x: previous.minX, y: previous.maxY - window.frame.height))
+        guard mode == .fitScreen else {
+            moveWindowOntoScreen()
+            return
+        }
+        guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let frame = window.frame
+        window.setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2))
+    }
+
+    /// Moves overflowing window edges inside the visible screen outside full screen.
+    private func moveWindowOntoScreen() {
+        guard let window, !window.styleMask.contains(.fullScreen),
+              let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let origin = WindowScale.origin(of: window.frame, within: visible)
+        if origin != window.frame.origin { window.setFrameOrigin(origin) }
+    }
+
+    /// Shows the display at `scale` and sizes the window to it.
+    private func showDisplay(at scale: CGFloat) {
+        guard !closed else { return }
+        fitting.setScale(scale)
+        updateWindowSize()
+    }
+
+    /// Sizes the window to the scaled display, gap, and final toolbar height.
+    /// Keeps its bottom-left origin and rounds outward to an integral frame.
+    /// Full screen and live resize fit the display into the window instead.
+    private func updateWindowSize() {
+        guard !closed, let window, !fitting.fitsWindow else {
+            resizeDisplay()
+            return
+        }
+        let size = session.display.size(for: session.display.renderScale)
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+        let displayWidth = size.width + content.horizontalDisplayPadding
+        let width = max(content.canvasControlsWidth,
+            fitting.scalesDisplay ? displayWidth : min(displayWidth, visible?.width ?? displayWidth))
+        updateToolbarStyle(forWidth: width)
+        var sized = window.frameRect(forContentRect: NSRect(x: 0, y: 0,
+            width: max(displayWidth, content.canvasControlsWidth), height: size.height + content.heightAboveDisplay))
+        if !fitting.scalesDisplay, let visible {
+            sized.size.width = min(sized.width, visible.width)
+            sized.size.height = min(sized.height, visible.height)
+        }
+        content.isSizedToDisplay = true
+        setFrame(around: NSRect(origin: window.frame.origin, size: sized.size))
+        fitting.layout()
+    }
+
+    /// Rounds the frame outward and constrains its top edge.
+    private func setFrame(around frame: NSRect) {
+        setFrame(NSIntegralRect(frame))
+    }
+
+    /// Applies the same top-edge constraint when resizing and repositioning.
+    private func setFrame(_ proposed: NSRect) {
+        guard let window else { return }
+        var frame = proposed
+        if let visible = window.screen?.visibleFrame, visible.maxY < frame.maxY {
+            frame.origin.y = visible.maxY - frame.height
+        }
+        isSizingWindow = true
+        window.setFrame(frame, display: true)
+        isSizingWindow = false
+    }
+
+    // MARK: Bezel dragging
+
+    /// Unhandled bezel presses move compact windows; their frames own resizing.
+    private func handleBezelDrag(_ event: NSEvent) -> Bool {
+        guard !isEmbedded, event.type == .leftMouseDown else { return false }
+        return moveWindow(with: event)
+    }
+
+    /// SimulatorKit forwards unconsumed bezel presses while retaining screen input.
+    /// AppKit may also forward presses outside the display.
+    private func moveWindow(with event: NSEvent) -> Bool {
+        guard !closed, !isFullScreen, preferences.movesWindowByDraggingBezel, let window else { return false }
+        performWindowDrag(window, event)
+        return true
+    }
+
+    private func resizeCanvas(from corner: DisplayResizeCorner, with event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            guard !closed, isEmbedded, fitting.scalesDisplay, session.canPerformCommands,
+                  let window = presentationWindow else { return }
+            let frame = session.display.view.convert(session.display.view.bounds, to: nil)
+            guard frame.width > 0, frame.height > 0 else { return }
+            canvasResize = CanvasResize(corner: corner, size: frame.size,
+                                        pointer: Self.screenLocation(of: event, in: window))
+            session.display.beginResize()
+        case .leftMouseDragged:
+            guard let canvasResize, let window = presentationWindow else { return }
+            let requested = canvasResize.requestedSize(pointerAt: Self.screenLocation(of: event, in: window))
+            let scale = session.display.scale(for: requested)
+            canvasZoom.mode = .fixed(min(canvasScaleRange.upperBound, max(canvasScaleRange.lowerBound, scale)))
+            updateEmbeddedScale()
+        case .leftMouseUp:
+            endCanvasResize()
+        default:
+            break
+        }
+    }
+
+    private func endCanvasResize() {
+        guard canvasResize != nil else { return }
+        canvasResize = nil
+        session.display.endResize()
+    }
+
+    /// Uses the event's screen coordinates; window-local coordinates can become stale during dragging.
+    private static func screenLocation(of event: NSEvent, in window: NSWindow) -> NSPoint {
+        event.cgEvent?.unflippedLocation ?? window.convertPoint(toScreen: event.locationInWindow)
+    }
+
+    private func disableBezelResizeCursors() {
+        session.display.setShowsResizeCursors(false)
+        presentationWindow?.invalidateCursorRects(for: session.display.view)
+    }
+
+    private func resizeDisplay() {
+        guard !closed else { return }
+        if session.isResizingApp { session.resizeApp(to: content.availableDisplaySize) }
+        fitting.fit()
+    }
+
+    package func focusInput() {
+        guard session.canPerformCommands, presentationWindow != nil else { return }
+        if !keyboard.focus() { hostLog("Could not focus simulator input for \(session.device.id)") }
+    }
+
+    package func present(_ error: Error) {
+        guard !closed, let window = presentationWindow else { return }
+        let alert = NSAlert(presenting: error)
+        alert.beginSheetModal(for: window)
+    }
+
+    package func windowDidBecomeKey(_ notification: Notification) { activateDisplay() }
+
+    private func activateDisplay(focusingInput: Bool = true) {
+        guard !closed else { return }
+        isKey = true
+        updateKeyboardInput()
+        updateTrackpadInput()
+        if focusingInput { focusInput() }
+    }
+    package func windowDidResignKey(_ notification: Notification) {
+        guard !closed else { return }
+        isKey = false
+        updateKeyboardInput()
+        updateTrackpadInput()
+    }
+    package func windowWillStartLiveResize(_ notification: Notification) { if !closed { fitting.willStartLiveResize() } }
+    /// A manual resize updates toolbar style while preserving content height, then fits the display.
+    package func windowDidResize(_ notification: Notification) {
+        guard !isSizingWindow else { return }
+        if !closed, !isFullScreen, let window {
+            let below = window.frame.height - content.headerHeight
+            updateToolbarStyle(forWidth: window.frame.width)
+            let height = below + content.headerHeight
+            if height != window.frame.height {
+                setFrame(around: NSRect(origin: window.frame.origin, size: NSSize(width: window.frame.width, height: height)))
+            }
+        }
+        resizeDisplay()
+    }
+    package func windowWillEnterFullScreen(_ notification: Notification) {
+        saveWindowGeometry()
+        fitting.willEnterFullScreen()
+        disableBezelResizeCursors()
+        updateHeaderShape()
+    }
+    package func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        fitting.didFailToEnterFullScreen()
+        disableBezelResizeCursors()
+        updateHeaderShape()
+        bezelChanged()
+    }
+    /// Restores scale and origin explicitly; AppKit loses the origin of windows taller than the screen.
+    package func windowDidExitFullScreen(_ notification: Notification) {
+        let geometry = fitting.didExitFullScreen(defaultScale: session.primaryDisplay.renderScale)
+        disableBezelResizeCursors()
+        updateHeaderShape()
+        bezelChanged()
+        guard let geometry else { return }
+        if session.isResizingApp {
+            session.primaryDisplay.setRenderScale(geometry.scale)
+            resizeDisplay()
+        }
+        else { showDisplay(at: geometry.scale) }
+        window?.setFrameOrigin(geometry.origin)
+        // The screen the window was on may be gone, and the screen changes
+        // that happened meanwhile did not move it.
+        moveWindowOntoScreen()
+    }
+    package func windowDidEndLiveResize(_ notification: Notification) {
+        if !closed { fitting.didEndLiveResize() }
+    }
+    /// File ▸ Close Window…: asks whether to shut the device down, and closes
+    /// the window unless the choice is Cancel.
+    package func closeAsking() {
+        guard offersLifetimeChoice else { window?.close(); return }
+        guard let window, window.attachedSheet == nil, !closed else { return }
+        let alert = DeviceLifetimeChoice.alert(
+            quitting: false, keepsRunningByDefault: HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, let choice = DeviceLifetimeChoice.choice(
+                for: response, of: alert, rememberingAs: HostPreferences.detachOnWindowClose) else { return }
+            self.closeChoice = choice
+            self.window?.close()
+        }
+    }
+
+    // Control-close asks which device lifetime to use.
+    package func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard offersLifetimeChoice, NSEvent.modifierFlags.contains(.control) else { return true }
+        closeAsking()
+        return false
+    }
+
+    package func windowWillClose(_ notification: Notification) {
+        guard !closed else { return }
+        saveWindowGeometry()
+        disconnect()
+        onClose(self, closeChoice)
+    }
+    package func invalidate() {
+        saveWindowGeometry()
+        disconnect()
+        window?.delegate = nil
+        window?.close()
+    }
+    /// Saves the primary device's compact geometry per screen arrangement.
+    private func saveWindowGeometry() {
+        guard !closed, !isRestarting, !isEmbedded, !session.isResizingApp, hasPresentedCompactWindow,
+              let window, content.superview === compactContainer else { return }
+        savedScale = WindowScale.usable(session.display.renderScale)
+        preferences.setWindowGeometry(center: NSPoint(x: window.frame.midX, y: window.frame.midY),
+                                      scale: savedScale,
+                                      forDevice: session.device.identity.preferenceIdentifier, screens: Self.screenFrames)
+    }
+    private func disconnect() {
+        endCanvasResize()
+        guard !closed else { return }
+        closed = true
+        if let window = presentationWindow, let sheet = window.attachedSheet {
+            window.endSheet(sheet, returnCode: .cancel)
+        }
+        pluginLookUp?.cancel()
+        pluginLookUp = nil
+        keyboard.invalidate()
+        for observer in presentationObservers { NotificationCenter.default.removeObserver(observer) }
+        presentationObservers.removeAll()
+        content.removeFromSuperview()
+        embeddedContainer = nil
+        presentationViewController.removeFromParent()
+        embeddedParent = nil
+        if Self.embeddedController === self { Self.embeddedController = nil }
+        fitting.invalidate()
+        for observer in [screenParametersObserver, touchPressureObserver, touchIndicatorObserver,
+                         keyboardSelectionObserver, audioRouteObserver].compactMap(\.self) {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        screenParametersObserver = nil
+        touchPressureObserver = nil
+        touchIndicatorObserver = nil
+        keyboardSelectionObserver = nil
+        audioRouteObserver = nil
+        customLocation?.close()
+        closeExternalDisplayWindow()
+        session.disconnect()
+    }
+    /// An unshown controller discarded during a host conflict disconnects without saving geometry.
+    isolated deinit { disconnect() }
+}
+
+@MainActor
+private final class SimulatorPresentationViewController: NSViewController {
+    private weak var owner: DeviceWindowController?
+    init(owner: DeviceWindowController) {
+        self.owner = owner
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        if let owner, owner.responds(to: action) { return owner }
+        return super.supplementalTarget(forAction: action, sender: sender)
+    }
+}
+
+/// Allows bezel padding beyond the screen and handles unconsumed bezel drags.
+@MainActor
+package final class DeviceWindow: NSWindow {
+    /// The top padding of the display's bezel at scale 1; nil without a bezel.
+    package var chromeTopPadding: CGFloat?
+    /// The display's scale, which the padding scales with.
+    package var displayScale: () -> CGFloat = { 1 }
+    /// Handles mouse events left unconsumed by the window's views.
+    package var handleMouseEvent: (NSEvent) -> Bool = { _ in false }
+
+    package override func mouseDown(with event: NSEvent) {
+        if !handleMouseEvent(event) { super.mouseDown(with: event) }
+    }
+
+    package override func mouseDragged(with event: NSEvent) {
+        if !handleMouseEvent(event) { super.mouseDragged(with: event) }
+    }
+
+    package override func mouseUp(with event: NSEvent) {
+        if !handleMouseEvent(event) { super.mouseUp(with: event) }
+    }
+
+    /// Allows top bezel padding beyond the screen; otherwise uses AppKit's frame constraint.
+    package override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        guard let target = screen ?? self.screen, let chromeTopPadding else {
+            return super.constrainFrameRect(frameRect, to: screen)
+        }
+        return WindowScale.frame(frameRect, constrainedBelow: target.visibleFrame,
+                                 topInset: chromeTopPadding * displayScale())
+    }
+
+    /// Uses private `NSWindow._cornerRadius`, falling back to macOS 26 style radii.
+    private var cornerRadius: CGFloat {
+        let selector = NSSelectorFromString("_cornerRadius")
+        if responds(to: selector) {
+            typealias Getter = @convention(c) (NSWindow, Selector) -> CGFloat
+            return unsafe unsafeBitCast(method(for: selector), to: Getter.self)(self, selector)
+        }
+        switch toolbarStyle {
+        case .unified: return 26
+        case .unifiedCompact: return 20
+        default: return 16
+        }
+    }
+
+    /// Finds the close button's title-bar ancestor; nil when full screen moves it to another window.
+    private var titlebarContainer: NSView? {
+        guard let frameView = contentView?.superview else { return nil }
+        var view: NSView? = standardWindowButton(.closeButton)
+        while let current = view, current.superview !== frameView { view = current.superview }
+        return view
+    }
+
+    /// Matches the header's lower corners to the window or makes them square.
+    package func roundHeader(_ rounded: Bool) {
+        guard let layer = titlebarContainer?.layer else { return }
+        guard rounded else {
+            layer.cornerRadius = 0
+            return
+        }
+        layer.cornerRadius = cornerRadius
+        layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        layer.masksToBounds = true
+    }
+}
+
+@MainActor
+private final class DeviceContentView: NSView, DisplayContentView {
+    private(set) var display: NSView
+    private var usesNativeCanvas: Bool
+    private let displayPresentation = DisplayPresentationView(frame: .zero)
+    var canvasControls: DeviceCanvasControls? {
+        didSet {
+            NSLayoutConstraint.deactivate(canvasConstraints)
+            canvasConstraints.removeAll()
+            if oldValue !== canvasControls, oldValue?.superview === self {
+                oldValue?.removeFromSuperview()
+            }
+            if let canvasControls, canvasControls.superview == nil {
+                attachCanvasControls()
+            }
+            needsUpdateConstraints = true
+            needsLayout = true
+        }
+    }
+    func attachCanvasControls() {
+        if let canvasControls, canvasControls.superview !== self {
+            canvasControls.removeFromSuperview()
+            canvasControls.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(canvasControls)
+        }
+        needsUpdateConstraints = true
+        needsLayout = true
+    }
+    override func willRemoveSubview(_ subview: NSView) {
+        super.willRemoveSubview(subview)
+        if subview === canvasControls {
+            needsUpdateConstraints = true
+            needsLayout = true
+        }
+    }
+    private let viewport = NSLayoutGuide()
+    private var canvasConstraints: [NSLayoutConstraint] = []
+    // App resize owns an unscaled guest viewport; only Device Hub presentations inset their canvas.
+    private var usesDeviceCanvasLayout: Bool {
+        !scrollsDisplay && (isEmbedded || canvasControls != nil)
+    }
+    private var canvasInset: CGFloat { usesDeviceCanvasLayout ? 8 : 0 }
+    var horizontalDisplayPadding: CGFloat { bounds.width - availableDisplayRect.width }
+    var canvasControlsWidth: CGFloat {
+        canvasControls.flatMap { $0.isHidden ? nil : $0.fittingSize.width + 16 } ?? 0
+    }
+    func setDisplay(_ display: NSView, usesNativeCanvas: Bool) {
+        self.usesNativeCanvas = usesNativeCanvas
+        self.display = display
+        displayPresentation.setDisplay(display)
+        previousDisplaySize = nil
+        if usesViewport { displayContainer.addSubview(displayPresentation) }
+        else { addSubview(displayPresentation, positioned: .below, relativeTo: canvasControls) }
+        needsLayout = true
+    }
+    var canvasZoom: CanvasZoom?
+    var deviceFrame: (() -> NSRect)?
+    var displayResizeRects: (() -> [DisplayResizeRect])?
+    var onCanvasResize: (DisplayResizeCorner, NSEvent) -> Void = { _, _ in }
+    private lazy var resizeHandles = [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map { corner in
+        DeviceCanvasResizeHandle(corner: corner) { [weak self] in self?.onCanvasResize(corner, $0) }
+    }
+    var canvasMagnification: CGFloat { canvasScrollView.magnification }
+    /// Renders the current magnification inside a native composition presented in `canvasOverlay`,
+    /// or nil when the composition is presented at its own size.
+    var onNativeCanvasMagnification: (CGFloat?) -> Void = { _ in }
+    private let canvasScrollView = NSScrollView()
+    private let canvasDocumentView = NSView()
+    /// Native compositions follow the magnified document from above the clip view. Magnifying their
+    /// ancestors would change how DeviceKit's AppKit-backed content measures its natural size.
+    private let canvasOverlay = CanvasOverlayView()
+    private var clipBoundsObserver: (any NSObjectProtocol)?
+    private var canvasDisplayFrame = NSRect.zero
+    private var retainedCanvasCenter: NSPoint?
+    private struct CanvasMagnificationRequest {
+        enum Preparation {
+            case canvas(range: ClosedRange<CGFloat>, layout: Bool)
+            case reset
+        }
+
+        let id = UUID()
+        let preparation: Preparation
+    }
+    private struct CanvasMagnificationOperation {
+        var latest: CanvasMagnificationRequest
+        // Retargeting must preserve the intended anchor, not resample pixel-rounded animation geometry.
+        var center: NSPoint
+    }
+    private var canvasMagnificationOperation: CanvasMagnificationOperation?
+    private var scrollMonitor: Any?
+    private var liveScrollObserver: (any NSObjectProtocol)?
+    private(set) var isLayingOutCanvas = false
+    var canImport: () -> Bool = { false }
+    var importFiles: ([URL]) -> Void = { _ in }
+    var isEmbedded = false { didSet { if isEmbedded != oldValue { updateViewport() } } }
+    var scrollsDisplay = false { didSet { if scrollsDisplay != oldValue { updateViewport() } } }
+    private var usesViewport: Bool { isEmbedded || scrollsDisplay }
+    private var displayContainer: NSView {
+        guard usesViewport else { return self }
+        return usesNativeCanvas ? canvasOverlay : canvasDocumentView
+    }
+    private func updateViewport() {
+        retainedCanvasCenter = canvasCenter
+        if !isEmbedded || scrollsDisplay {
+            requestCanvasMagnification(.init(preparation: .reset))
+        }
+        let parent = displayContainer
+        if displayPresentation.superview !== parent {
+            displayPresentation.removeFromSuperview()
+            if usesViewport { parent.addSubview(displayPresentation) }
+            else { addSubview(displayPresentation, positioned: .below, relativeTo: canvasControls) }
+        }
+        canvasScrollView.isHidden = !usesViewport
+        updateScrollMonitor()
+        needsUpdateConstraints = true
+        needsLayout = true
+    }
+    var onDisplaySizeChange: () -> Void = {}
+    var onWindowChange: () -> Void = {}
+    private var previousDisplaySize: NSSize?
+    /// The space between the header and the display, which follows the bezel.
+    var displayGap = WindowScale.displayGap(bezelPadding: nil) {
+        didSet { needsUpdateConstraints = true; needsLayout = true }
+    }
+    /// Fills integral-frame rounding gaps when sized to the display.
+    /// Otherwise centers the display at its own size, including after manual resizing.
+    var isSizedToDisplay = false {
+        didSet { needsLayout = true }
+    }
+    /// The title bar's height, which follows the toolbar's style: 52 points
+    /// unified, 76 expanded, and 40 compact on macOS 26.
+    var headerHeight: CGFloat {
+        if isEmbedded { return 0 }
+        guard let window else { return 52 }
+        return max(0, bounds.height - window.contentLayoutRect.height)
+    }
+    /// The window space around the display, excluding its scaled size.
+    var heightAboveDisplay: CGFloat { bounds.height - availableDisplayRect.height }
+    init(display: NSView, usesNativeCanvas: Bool) {
+        self.usesNativeCanvas = usesNativeCanvas
+        self.display = display
+        super.init(frame: .zero)
+        wantsLayer = true
+        viewport.identifier = NSUserInterfaceItemIdentifier("DeviceCanvasViewport")
+        addLayoutGuide(viewport)
+        canvasScrollView.drawsBackground = false
+        canvasScrollView.contentView.drawsBackground = false
+        canvasScrollView.hasHorizontalScroller = true
+        canvasScrollView.hasVerticalScroller = true
+        canvasScrollView.autohidesScrollers = true
+        canvasScrollView.scrollerStyle = .overlay
+        canvasScrollView.horizontalScrollElasticity = .none
+        canvasScrollView.verticalScrollElasticity = .none
+        canvasScrollView.usesPredominantAxisScrolling = false
+        canvasScrollView.automaticallyAdjustsContentInsets = false
+        canvasScrollView.documentView = canvasDocumentView
+        liveScrollObserver = NotificationCenter.default.addObserver(
+            forName: NSScrollView.didLiveScrollNotification, object: canvasScrollView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let center = self.canvasCenter { self.canvasMagnificationOperation?.center = center }
+                    self.retainedCanvasCenter = nil
+                }
+            }
+        canvasScrollView.isHidden = true
+        // Above the clip view and below its scrollers.
+        canvasOverlay.clipsToBounds = true
+        canvasScrollView.addSubview(canvasOverlay, positioned: .above, relativeTo: canvasScrollView.contentView)
+        // Scrolling and every magnification step, including animated ones, change the clip's bounds.
+        canvasScrollView.contentView.postsBoundsChangedNotifications = true
+        clipBoundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: canvasScrollView.contentView, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.placeNativeCanvas()
+                    self?.layoutResizeHandles()
+                }
+            }
+        addSubview(canvasScrollView)
+        needsUpdateConstraints = true
+        displayPresentation.setDisplay(display)
+        addSubview(displayPresentation)
+        for handle in resizeHandles { addSubview(handle) }
+        registerForDraggedTypes([.fileURL])
+    }
+    isolated deinit {
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+        if let liveScrollObserver { NotificationCenter.default.removeObserver(liveScrollObserver) }
+        if let clipBoundsObserver { NotificationCenter.default.removeObserver(clipBoundsObserver) }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsUpdateConstraints = true
+        updateScrollMonitor()
+        onWindowChange()
+    }
+    private func updateScrollMonitor() {
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+        scrollMonitor = nil
+        guard usesViewport, window != nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            // The canvas extends behind toolbars and accessories, which keep their own events.
+            guard let self, event.modifierFlags.contains(.option), let window = self.window, event.window === window,
+                  window.contentView?.superview?.hitTest(event.locationInWindow)?.isDescendant(of: self) == true
+            else { return event }
+            self.canvasScrollView.scrollWheel(with: event)
+            return nil
+        }
+    }
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        canImport() ? .copy : []
+    }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard canImport(), let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return false }
+        importFiles(urls)
+        return true
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func updateConstraints() {
+        NSLayoutConstraint.deactivate(canvasConstraints)
+        let top: Any = isEmbedded ? self : (window?.contentLayoutGuide ?? self)
+        canvasConstraints = [
+            viewport.leadingAnchor.constraint(equalTo: leadingAnchor, constant: canvasInset),
+            viewport.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -canvasInset),
+            NSLayoutConstraint(item: viewport, attribute: .top, relatedBy: .equal,
+                               toItem: top, attribute: .top, multiplier: 1, constant: displayGap + canvasInset),
+        ]
+        if let canvasControls, canvasControls.superview === self, !canvasControls.isHidden {
+            canvasConstraints += [
+                canvasControls.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+                canvasControls.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                canvasControls.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+                viewport.bottomAnchor.constraint(equalTo: canvasControls.topAnchor),
+            ]
+        } else if let canvasControls, !canvasControls.isHidden {
+            canvasConstraints.append(viewport.bottomAnchor.constraint(equalTo: bottomAnchor))
+        } else {
+            canvasConstraints.append(viewport.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -canvasInset))
+        }
+        NSLayoutConstraint.activate(canvasConstraints)
+        super.updateConstraints()
+    }
+
+    func displayRect(in bounds: NSRect) -> NSRect {
+        let available = availableDisplayRect
+        return NSRect(x: bounds.minX + available.minX - self.bounds.minX,
+                      y: bounds.minY + available.minY - self.bounds.minY,
+                      width: max(1, bounds.width - (self.bounds.width - available.width)),
+                      height: max(1, bounds.height - (self.bounds.height - available.height)))
+    }
+    private var availableDisplayRect: NSRect {
+        if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+        return viewport.frame
+    }
+    var availableDisplaySize: NSSize { availableDisplayRect.size }
+
+    /// The fitting area as the clip view shows it, in document coordinates. Content insets extend
+    /// the clip beyond it, behind an embedded pane's bars.
+    private var canvasFitRect: NSRect {
+        let clip = canvasScrollView.contentView, insets = clip.contentInsets
+        return NSRect(x: clip.bounds.minX + insets.left, y: clip.bounds.minY + (clip.isFlipped ? insets.top : insets.bottom),
+                      width: clip.bounds.width - insets.left - insets.right,
+                      height: clip.bounds.height - insets.top - insets.bottom)
+    }
+
+    private var canvasCenter: NSPoint? {
+        guard canvasDisplayFrame.width > 0, canvasDisplayFrame.height > 0 else { return nil }
+        let visible = canvasFitRect
+        return NSPoint(x: (visible.midX - canvasDisplayFrame.minX) / canvasDisplayFrame.width,
+                       y: (visible.midY - canvasDisplayFrame.minY) / canvasDisplayFrame.height)
+    }
+
+    func centerCanvas() {
+        retainedCanvasCenter = NSPoint(x: 0.5, y: 0.5)
+        canvasMagnificationOperation?.center = NSPoint(x: 0.5, y: 0.5)
+        needsLayout = true
+    }
+
+    func applyCanvasMagnification(range: ClosedRange<CGFloat>, layout: Bool) {
+        guard isEmbedded, canvasZoom != nil else { return }
+        requestCanvasMagnification(.init(preparation: .canvas(range: range, layout: layout)))
+    }
+
+    private func requestCanvasMagnification(_ request: CanvasMagnificationRequest) {
+        if canvasMagnificationOperation == nil {
+            canvasMagnificationOperation = .init(latest: request,
+                center: retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5))
+        } else {
+            canvasMagnificationOperation?.latest = request
+        }
+        guard let prepared = prepareCanvasMagnification(request),
+              canvasMagnificationOperation?.latest.id == request.id else { return }
+        canvasScrollView.setMagnification(prepared.scale, centeredAt: prepared.point)
+        needsLayout = true
+        if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+        if canvasMagnificationOperation?.latest.id == request.id { canvasMagnificationOperation = nil }
+    }
+
+    private func prepareCanvasMagnification(_ request: CanvasMagnificationRequest) -> (scale: CGFloat, point: NSPoint)? {
+        guard let operation = canvasMagnificationOperation, operation.latest.id == request.id else { return nil }
+        switch request.preparation {
+        case .reset:
+            let clip = canvasScrollView.contentView
+            return (1, NSPoint(x: clip.bounds.midX, y: clip.bounds.midY))
+        case .canvas(let range, let layout):
+            guard isEmbedded, let canvasZoom else { return nil }
+            let center = operation.center
+            retainedCanvasCenter = center
+            needsLayout = true
+            if layout, !isLayingOutCanvas { layoutSubtreeIfNeeded() }
+            guard canvasMagnificationOperation?.latest.id == request.id else { return nil }
+            canvasScrollView.minMagnification = min(range.lowerBound, canvasZoom.scale, canvasScrollView.magnification, 1)
+            canvasScrollView.maxMagnification = max(range.upperBound, canvasZoom.scale, canvasScrollView.magnification, 1)
+            let documentPoint = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
+                                        y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
+            return (canvasZoom.scale, canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView))
+        }
+    }
+
+    var rotationSnapshot: DisplayPresentationView.Snapshot? { displayPresentation.snapshot }
+
+    func animateRotation(from snapshot: DisplayPresentationView.Snapshot?, by degrees: Double) {
+        layoutSubtreeIfNeeded()
+        displayPresentation.animateRotation(from: snapshot, by: degrees)
+    }
+
+    /// Presents a native composition at the magnified document's display rect.
+    private func placeNativeCanvas() {
+        guard usesViewport, usesNativeCanvas, canvasDisplayFrame.width > 0 else { return }
+        canvasOverlay.frame = canvasScrollView.contentView.frame
+        let frame = canvasOverlay.convert(canvasDisplayFrame, from: canvasDocumentView)
+        displayPresentation.setDisplayFrame(frame)
+        onNativeCanvasMagnification(frame.width / canvasDisplayFrame.width)
+    }
+
+    private func layoutResizeHandles() {
+        guard isEmbedded, !scrollsDisplay else {
+            for handle in resizeHandles {
+                handle.isHidden = true
+                window?.invalidateCursorRects(for: handle)
+            }
+            return
+        }
+        let frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
+        let bezelRects = displayResizeRects?() ?? []
+        for handle in resizeHandles {
+            handle.isHidden = false
+            if let area = bezelRects.first(where: { $0.corner == handle.corner }) {
+                let bezel = display.convert(area.rect, to: self)
+                let size = NSSize(width: max(44, bezel.width + 24), height: max(44, bezel.height + 24))
+                // Keep the bezel's inner boundary so the larger target does not take guest input.
+                handle.frame = NSRect(x: handle.corner.isLeft ? bezel.maxX - size.width : bezel.minX,
+                                      y: handle.corner.isLower ? bezel.maxY - size.height : bezel.minY,
+                                      width: size.width, height: size.height)
+                handle.resizeRects = [handle.bounds]
+            } else {
+                let radius: CGFloat = 24
+                handle.frame = NSRect(x: (handle.corner.isLeft ? frame.minX : frame.maxX) - radius,
+                                      y: (handle.corner.isLower ? frame.minY : frame.maxY) - radius,
+                                      width: radius * 2, height: radius * 2)
+                // Displays without bezel resize areas leave the guest's corners available for input.
+                handle.resizeRects = [
+                    NSRect(x: handle.corner.isLeft ? 0 : radius, y: 0, width: radius, height: radius * 2),
+                    NSRect(x: handle.corner.isLeft ? radius : 0, y: handle.corner.isLower ? 0 : radius,
+                           width: radius, height: radius),
+                ]
+            }
+            window?.invalidateCursorRects(for: handle)
+        }
+    }
+
+    override func layout() {
+        guard !isLayingOutCanvas else { return }
+        isLayingOutCanvas = true
+        defer {
+            layoutResizeHandles()
+            isLayingOutCanvas = false
+        }
+        super.layout()
+        if previousDisplaySize != availableDisplaySize {
+            previousDisplaySize = availableDisplaySize
+            onDisplaySizeChange()
+        }
+        let available = availableDisplayRect
+        if usesViewport {
+            let center = canvasMagnificationOperation?.center ?? retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5)
+            retainedCanvasCenter = nil
+            // An embedded canvas occupies its container's safe area but draws across the whole container.
+            // The content insets leave the document resting in the fitting area while letting it scroll
+            // and magnify behind the container's bars.
+            let drawing = isEmbedded ? superview.map { convert($0.bounds, from: $0) } ?? bounds : available
+            let insets = NSEdgeInsets(top: drawing.maxY - available.maxY, left: available.minX - drawing.minX,
+                                      bottom: available.minY - drawing.minY, right: drawing.maxX - available.maxX)
+            if !NSEdgeInsetsEqual(canvasScrollView.contentInsets, insets) {
+                canvasScrollView.contentInsets = insets
+                // AppKit can defer retiling for new insets; the fitting rect below needs the clip's geometry.
+                canvasScrollView.tile()
+            }
+            canvasScrollView.frame = drawing
+            let intrinsic = display.intrinsicContentSize
+            let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
+            // Layout prepares space for both the current and requested magnification.
+            let magnification = isEmbedded && !scrollsDisplay
+                ? min(canvasZoom?.scale ?? 1, canvasScrollView.magnification) : 1
+            let viewport = NSSize(width: available.width / magnification, height: available.height / magnification)
+            let documentSize = NSSize(width: max(viewport.width, size.width), height: max(viewport.height, size.height))
+            canvasDocumentView.setFrameSize(documentSize)
+            canvasDisplayFrame = NSRect(x: (documentSize.width - size.width) / 2,
+                                       y: (documentSize.height - size.height) / 2,
+                                       width: size.width, height: size.height)
+            if !usesNativeCanvas { displayPresentation.setDisplayFrame(canvasDisplayFrame) }
+            let clip = canvasScrollView.contentView
+            let fit = canvasFitRect
+            let proposed = NSRect(x: clip.bounds.minX + canvasDisplayFrame.minX + size.width * center.x - fit.midX,
+                                  y: clip.bounds.minY + canvasDisplayFrame.minY + size.height * center.y - fit.midY,
+                                  width: clip.bounds.width, height: clip.bounds.height)
+            clip.scroll(to: clip.constrainBoundsRect(proposed).origin)
+            canvasScrollView.reflectScrolledClipView(clip)
+            placeNativeCanvas()
+            return
+        }
+        if usesNativeCanvas { onNativeCanvasMagnification(nil) }
+        if usesNativeCanvas || (isSizedToDisplay && canvasControls == nil) {
+            displayPresentation.setDisplayFrame(available)
+        } else {
+            let intrinsic = display.intrinsicContentSize
+            let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
+            displayPresentation.setDisplayFrame(NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2,
+                                                       width: size.width, height: size.height))
+        }
+    }
+}
+
+/// Bezel hit targets scale the embedded device without resizing its window.
+@MainActor
+private final class DeviceCanvasResizeHandle: NSView {
+    let corner: DisplayResizeCorner
+    private let handleEvent: (NSEvent) -> Void
+
+    init(corner: DisplayResizeCorner, handleEvent: @escaping (NSEvent) -> Void) {
+        self.corner = corner
+        self.handleEvent = handleEvent
+        super.init(frame: .zero)
+        identifier = NSUserInterfaceItemIdentifier("DeviceCanvasResize.\(corner.rawValue)")
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    var resizeRects: [NSRect] = []
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard resizeRects.contains(where: { $0.contains(convert(point, from: superview)) }) else { return nil }
+        return super.hitTest(point)
+    }
+
+    override func resetCursorRects() {
+        let position: NSCursor.FrameResizePosition = switch corner {
+        case .lowerLeft: .bottomLeft
+        case .lowerRight: .bottomRight
+        case .upperRight: .topRight
+        case .upperLeft: .topLeft
+        }
+        let cursor = NSCursor.frameResize(position: position, directions: .all)
+        for rect in resizeRects { addCursorRect(rect, cursor: cursor) }
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { handleEvent(event) }
+    override func mouseDragged(with event: NSEvent) { handleEvent(event) }
+    override func mouseUp(with event: NSEvent) { handleEvent(event) }
+}
+
+/// Leaves events outside its presented composition to the canvas beneath.
+private final class CanvasOverlayView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let view = super.hitTest(point)
+        return view === self ? nil : view
+    }
+}
+
+package enum CaptureFile {
+    /// Screenshot filename in local time.
+    package static func screenshotName(device: String, date: Date) -> String {
+        name("Simulator Screenshot", device: device, date: date, extension: "png")
+    }
+
+    /// Recording filename in local time.
+    package static func recordingName(device: String, date: Date) -> String {
+        name("Simulator Screen Recording", device: device, date: date, extension: "mov")
+    }
+
+    // `:` and `/` become `.`, so a date reads `2026-10-21 at 23.17.05`.
+    private static func name(_ kind: String, device: String, date: Date, extension suffix: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH:mm:ss"
+        return "\(kind) - \(device) - \(formatter.string(from: date)).\(suffix)"
+            .replacingOccurrences(of: ":", with: ".")
+            .replacingOccurrences(of: "/", with: ".")
+    }
+
+    package static var desktop: URL? { FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first }
+
+    /// Uses an existing ScreenShotSaveLocation, then Desktop, then /private/tmp.
+    package static func screenshotFolder() -> URL {
+        if let location = HostPreferences.defaults.string(forKey: HostPreferences.screenShotSaveLocation) {
+            let path = NSString(string: location).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            if !path.isEmpty, FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+        }
+        return desktop ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+    }
+
+    /// The first of `name`, "name #2" through "name #99" that is free in
+    /// `folder` and not reserved.
+    package static func unusedFile(in folder: URL, named name: String, isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
+        let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
+        for number in 1...99 {
+            let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
+            if !FileManager.default.fileExists(atPath: candidate.path), !isReserved(candidate) { return candidate }
+        }
+        throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
+    }
+
+    /// Moves the capture without overwriting, trying suffixes #2 through #99.
+    /// A failure preserves the original file and reports its location.
+    package static func move(_ capture: URL, into folder: URL, named name: String,
+                     isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
+        let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
+        for number in 1...99 {
+            let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
+            if isReserved(candidate) { continue }
+            do {
+                try FileManager.default.moveItem(at: capture, to: candidate)
+                return candidate
+            } catch CocoaError.fileWriteFileExists {
+                continue
+            } catch {
+                throw SimulatorError.operation("Could not save \(name) in \(folder.path): \(error.localizedDescription) The capture is at \(capture.path).")
+            }
+        }
+        throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99. The capture is at \(capture.path).")
+    }
+
+    @MainActor
+    package static func write(to destination: URL, extension suffix: String,
+                      produce: (URL) async throws -> Void) async throws {
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(".neo-simulator-\(UUID().uuidString).\(suffix)")
+        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        close(descriptor)
+        do {
+            try await produce(temporary)
+            try Task.checkCancellation()
+            guard rename(temporary.path, destination.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
+            if FileManager.default.fileExists(atPath: temporary.path) {
+                do { try FileManager.default.removeItem(at: temporary) }
+                catch let cleanup {
+                    throw SimulatorError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
+                }
+            }
+            throw error
+        }
+    }
+}
+
+/// Device lifetime selected when closing a window or quitting.
+package enum DeviceLifetimeChoice: Equatable {
+    case shutDown, keepRunning
+
+    /// Return chooses the default action.
+    @MainActor package static func alert(quitting: Bool, keepsRunningByDefault: Bool) -> NSAlert {
+        let alert = NSAlert()
+        if quitting {
+            alert.messageText = "Do you want to shut down the simulated devices?"
+            alert.informativeText = "You may choose to shut down all running simulated devices or keep them running."
+            alert.alertStyle = .informational
+        } else {
+            alert.messageText = "Do you want to shutdown the simulated device?"
+            alert.informativeText = "When closing a window, you can either shut down the device or keep it running."
+        }
+        alert.addButton(withTitle: quitting ? "Shut Down" : "Shut down")
+        alert.addButton(withTitle: "Keep Running")
+        alert.addButton(withTitle: "Cancel")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title =
+            quitting ? "Remember as the default quit action." : "Remember as the default close action."
+        if keepsRunningByDefault {
+            alert.buttons[0].keyEquivalent = ""
+            alert.buttons[1].keyEquivalent = "\r"
+        }
+        return alert
+    }
+
+    /// The choice an alert response names, saved as the default under `key`
+    /// when the suppression box is checked. Cancel names none.
+    @MainActor package static func choice(for response: NSApplication.ModalResponse, of alert: NSAlert,
+                       rememberingAs key: String) -> Self? {
+        let choice: Self
+        switch response {
+        case .alertFirstButtonReturn: choice = .shutDown
+        case .alertSecondButtonReturn: choice = .keepRunning
+        default: return nil
+        }
+        if alert.suppressionButton?.state == .on { HostPreferences.defaults.set(choice == .keepRunning, forKey: key) }
+        return choice
+    }
+}

@@ -1,5 +1,4 @@
 import AppKit
-@_spi(NeoSimulator) import XcodeSimulatorHost
 
 /// A snapshot of a simulator in its Xcode device set.
 public struct SimulatorDeviceSnapshot: Identifiable, Sendable {
@@ -11,7 +10,7 @@ public struct SimulatorDeviceSnapshot: Identifiable, Sendable {
     public let family: SimulatorDeviceFamily
     public let state: SimulatorDeviceState
 
-    init(_ device: AvailableDevice) {
+    package init(_ device: AvailableDevice) {
         id = device.identity
         name = device.name
         runtimeName = device.runtimeName
@@ -51,7 +50,7 @@ public enum SimulatorScreenEnd: Sendable {
 public enum SimulatorButton: Sendable {
     case home, lock, side, siri, volumeUp, volumeDown
 
-    @MainActor var command: DeviceCommand.ID {
+    @MainActor package var command: DeviceCommand.ID {
         switch self {
         case .home: .home
         case .lock: .lock
@@ -62,7 +61,7 @@ public enum SimulatorButton: Sendable {
         }
     }
 
-    var input: HardwareInput {
+    package var input: HardwareInput {
         switch self {
         case .home: .press(.button(.home))
         case .lock: .press(.button(.lock))
@@ -74,6 +73,33 @@ public enum SimulatorButton: Sendable {
     }
 }
 
+@MainActor
+package struct SimulatorContextConfiguration {
+    package var pasteboardSync: PasteboardSync?
+    package var offersLifetimeChoice = false
+    package var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
+    package var onError: ((any Error) -> Void)?
+    package var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
+    package var guestLifetime: ManagedGuestLifetime?
+
+    package init() {}
+}
+
+@MainActor
+package struct ManagedGuestLifetime {
+    package let windowClosed: (SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void
+    package let restart: (SimulatorDeviceIdentifier, Bool) -> Void
+    package let shutDown: (SimulatorDeviceIdentifier) -> Void
+
+    package init(windowClosed: @escaping (SimulatorDeviceIdentifier, DeviceLifetimeChoice?, Task<Void, any Error>) -> Void,
+                 restart: @escaping (SimulatorDeviceIdentifier, Bool) -> Void,
+                 shutDown: @escaping (SimulatorDeviceIdentifier) -> Void) {
+        self.windowClosed = windowClosed
+        self.restart = restart
+        self.shutDown = shutDown
+    }
+}
+
 /// Owns simulator connections for one Xcode installation.
 ///
 /// Keep the context alive while using its screens. Call `invalidate()` to finish
@@ -81,6 +107,7 @@ public enum SimulatorButton: Sendable {
 @MainActor
 public final class SimulatorContext {
     private let engine: SimulatorScreenHost
+    private let guestLifetime: ManagedGuestLifetime?
     private var screens: [SimulatorDeviceIdentifier: SimulatorScreen] = [:]
     private var boots: [SimulatorDeviceIdentifier: Task<SimulatorBootOutcome, any Error>] = [:]
     private var invalidation: Task<Void, any Error>?
@@ -107,30 +134,44 @@ public final class SimulatorContext {
     /// Loads the selected Xcode's runtime, or the process's selected display Xcode when omitted.
     /// Loading does not boot devices or open windows.
     public static func load(xcodeURL: URL? = nil) async throws -> SimulatorContext {
+        try await load(xcodeURL: xcodeURL, configuration: SimulatorContextConfiguration())
+    }
+
+    package static func load(xcodeURL: URL?, configuration: SimulatorContextConfiguration) async throws -> SimulatorContext {
         let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
         let runtime = try await SimulatorRuntime.load(xcodeURL: xcodeURL ?? displayURL, uiXcodeURL: displayURL)
         try Task.checkCancellation()
         let engine = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true,
-                                             offersLifetimeChoice: false)
-        let context = SimulatorContext(engine: engine)
+                                             pasteboardSync: configuration.pasteboardSync,
+                                             offersLifetimeChoice: configuration.offersLifetimeChoice)
+        let context = SimulatorContext(engine: engine, configuration: configuration)
         try engine.start(attachingBootedDevices: false)
         return context
     }
 
-    private init(engine: SimulatorScreenHost) {
+    private init(engine: SimulatorScreenHost, configuration: SimulatorContextConfiguration) {
         self.engine = engine
+        guestLifetime = configuration.guestLifetime
+        onError = configuration.onError
+        engine.onOpen = configuration.onOpen
+        engine.onApplicationsChange = configuration.onApplicationsChange
         engine.onChange = { [weak self] in self?.reconcileScreens() }
-        engine.onClose = { [weak self] id, _, finishing in
+        engine.onClose = { [weak self] id, choice, finishing in
             guard let self else { return }
             if self.isInvalidating {
                 self.finishScreen(id, reason: .contextInvalidated)
+                self.guestLifetime?.windowClosed(id, choice, finishing)
                 return
             }
             let task = self.beginRelease(id, shutsDownGuest: false, finishing: finishing)
             self.finishScreen(id, reason: .closed)
-            Task {
-                do { try await task.value }
-                catch { self.report(error) }
+            if let guestLifetime = self.guestLifetime {
+                guestLifetime.windowClosed(id, choice, task)
+            } else {
+                Task {
+                    do { try await task.value }
+                    catch { self.report(error) }
+                }
             }
         }
         engine.onError = { [weak self] error in self?.report(error) }
@@ -141,15 +182,52 @@ public final class SimulatorContext {
             self.report(SimulatorError.conflict("\(name) is now displaying the simulators.\(detail)"))
         }
         engine.onRestart = { [weak self] id, erasing in
-            guard let self, let controller = self.engine.controller(for: id) else { return }
+            guard let self else { return }
+            if let guestLifetime = self.guestLifetime {
+                guestLifetime.restart(id, erasing)
+                return
+            }
+            guard let controller = self.engine.controller(for: id) else { return }
             self.engine.restartDevice(controller, erasing: erasing)
         }
         engine.onShutDown = { [weak self] id in
+            guard let self else { return }
+            if let guestLifetime = self.guestLifetime {
+                guestLifetime.shutDown(id)
+                return
+            }
             Task {
-                do { try await self?.shutDown(id) }
-                catch { self?.report(error) }
+                do { try await self.shutDown(id) }
+                catch { self.report(error) }
             }
         }
+    }
+
+    package var isStopped: Bool { isInvalidating || engine.isStopped || engine.isTerminating }
+    package var openScreens: [SimulatorScreen] { Array(screens.values) }
+
+    package func screen(for id: SimulatorDeviceIdentifier) -> SimulatorScreen? { screens[id] }
+
+    package func releaseScreen(_ id: SimulatorDeviceIdentifier) async throws {
+        try await beginRelease(id, shutsDownGuest: false).value
+    }
+
+    package func prepareForManagedRestart(_ id: SimulatorDeviceIdentifier) async throws {
+        guard !isStopped else { throw CancellationError() }
+        while let release = releases[id] {
+            try await CoreDeviceRuntime.preparedValue(of: release.task)
+            guard !isStopped else { throw CancellationError() }
+        }
+        try await engine.preparePresentationForRestart(for: id)
+    }
+
+    package func finishManagedRestart(_ id: SimulatorDeviceIdentifier) async throws {
+        guard !isStopped else { throw CancellationError() }
+        while let release = releases[id] {
+            try await CoreDeviceRuntime.preparedValue(of: release.task)
+            guard !isStopped else { throw CancellationError() }
+        }
+        try await engine.finishPresentationRestart(for: id)
     }
 
     /// Reads the devices currently available in this context.
@@ -201,14 +279,17 @@ public final class SimulatorContext {
             try checkActive()
         }
         try Task.checkCancellation()
-        if let screen = screens[id] { return screen }
-        if let opening = openings[id] { return try await waitForScreen(opening) }
+        if let opening = openings[id] {
+            engine.didSelectDevice(id)
+            return try await waitForScreen(opening)
+        }
         let task = Task {
             defer { self.openings[id] = nil }
             if self.engine.hasUnfinishedCleanup(for: id) { try await self.engine.releasePresentation(for: id) }
             let device = SimulatorDeviceSnapshot(try self.device(id))
             let controller = try await self.engine.openPresentation(for: id)
             try self.checkActive()
+            if let screen = self.screens[id] { return screen }
             let screen = SimulatorScreen(device: device, controller: controller, context: self)
             self.screens[id] = screen
             return screen
@@ -332,7 +413,7 @@ public final class SimulatorContext {
     }
 
     private func checkActive() throws {
-        guard !isInvalidating, !engine.isStopped else {
+        guard !isStopped else {
             throw SimulatorError.operation("The simulator context has been invalidated.")
         }
     }
@@ -384,7 +465,7 @@ public final class SimulatorScreen {
     public private(set) var isClosed = false
     /// Called once after the screen ends. Closing a screen leaves its guest running.
     public var onEnd: ((SimulatorScreenEnd) -> Void)?
-    private let controller: DeviceWindowController
+    package let controller: DeviceWindowController
     private weak var context: SimulatorContext?
 
     fileprivate init(device: SimulatorDeviceSnapshot, controller: DeviceWindowController, context: SimulatorContext) {

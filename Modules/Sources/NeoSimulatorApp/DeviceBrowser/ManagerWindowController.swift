@@ -1,0 +1,1542 @@
+import NeoSimulatorKit
+import NeoSimulatorHostSupport
+import AppKit
+import SwiftUI
+import Observation
+import ObservationBridge
+
+@MainActor
+final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,
+                                     NSSearchFieldDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
+    private let model: SimulatorManagerModel
+    private let screens: DeviceScreens
+    /// Device commands' shared shortcuts follow the live screen.
+    private let menus: MenuController
+    private let splitController = NSSplitViewController()
+    private let table = NSOutlineView()
+    private let search = NSSearchField()
+    private let artworkCache = DeviceArtworkCache()
+    private(set) lazy var deviceScreenViewController: DeviceScreenViewController = {
+        let pane = DeviceScreenViewController(model: model, screens: screens)
+        pane.onViewScreen = { [weak self] in self?.openSelectedDevice(nil) }
+        pane.onLiveScreenChange = { [weak self] in
+            self?.updateLiveScreenToolbarItems()
+            self?.observeLiveScreenToolbar()
+        }
+        return pane
+    }()
+    var onNewCompanion: ((SimulatorHostDevice) -> Void)?
+    var onShowServiceProfile: ((UUID) -> Void)?
+    /// Reports a failed screen move that no caller awaits.
+    var onError: ((any Error) -> Void)?
+    /// The user's latest placement choice for the selected device's screen. Each choice advances the revision, so
+    /// moves accepted for an earlier choice stop.
+    private(set) var presentationIntent: (revision: Int, placement: SimulatorScreenRestoration.Presentation) = (0, .main)
+    private var inventoryObservation: PortableObservationTracking.Token?
+    private var managementObservation: PortableObservationTracking.Token?
+    private var screensObservation: PortableObservationTracking.Token?
+    private var liveScreenToolbarObservation: PortableObservationTracking.Token?
+    private var displayedScreenIDs: Set<DeviceInventoryID> = []
+    private var displayedArtworkXcodeURL: URL?
+    private var selectionIdentifier: DeviceInventoryID?
+    private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
+    private let resizeAppIdentifier = NSToolbarItem.Identifier("resizeApp")
+    private let captureKeyboardIdentifier = NSToolbarItem.Identifier("captureKeyboard")
+    private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
+    private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
+    private var moreItem: NSMenuToolbarItem?
+    private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
+    private var backgroundServicesHost: BackgroundServicesViewController?
+    private var backgroundServicesAccessory: BackgroundServicesAccessoryViewController?
+    private let inspectorContainer = NSViewController()
+    private weak var inspectorContent: NSViewController?
+    private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
+        let inspector = ManagerDeviceInspectorController(model: model)
+        inspector.inspection.select(presentationState.inspectorContent)
+        inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
+        inspector.onDeviceMenu = { [weak self] device in
+            let menu = NSMenu(title: "Device Actions")
+            self?.populateDeviceMenu(menu, devices: [.simulator(device)])
+            return menu
+        }
+        return inspector
+    }()
+    private var inspectorMode: Int {
+        get { presentationState.inspectorTab }
+        set { presentationState.inspectorTab = newValue }
+    }
+    private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
+    private var updatingSelection = false
+    private var rows: [DeviceRow] = []
+    private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
+    private var devicesByID: [DeviceInventoryID: InventoryDevice] = [:]
+    /// The values that ordered the rows; their artwork reads the same values.
+    private var displayedActiveStates = DeviceActiveStates()
+    private var groups: [DeviceGroup] = []
+    private var groupsByID: [String: DeviceGroup] = [:]
+    private var displayedManagingIDs: Set<DeviceInventoryID> = []
+    private(set) var selectedIdentifiers: Set<DeviceInventoryID> {
+        get { presentationState.selectedDeviceIDs.intersection(model.inventory.map(\.id)) }
+        set { presentationState.selectedDeviceIDs = newValue }
+    }
+    private let defaults: UserDefaults
+    private let presentationState: DeviceBrowserState
+    private var inspectorSelectionObservation: PortableObservationTracking.Token?
+    private var collapsedGroups: Set<String>
+    private var options: DeviceBrowserPresentation.Options
+    private var loadedRows = false
+    private var displayedGrouping = false
+    private let deviceMenu = NSMenu(title: "Device Actions")
+    private var sidebarObservation: NSKeyValueObservation?
+    private var inspectorObservation: NSKeyValueObservation?
+    private var toolbarAppearanceObservation: NSKeyValueObservation?
+    private let settingsIdentifier = NSToolbarItem.Identifier("Settings")
+    private let filterIdentifier = NSToolbarItem.Identifier("FilterSimulators")
+    private var filterItem: NSToolbarItem?
+    private let filterMenu = NSMenu(title: "Filter and Sort Devices")
+    private var kindFilter = DeviceKindFilter.all
+    private var availabilityFilter = DeviceAvailabilityFilter.all
+    private var familyFilter: String?
+    private typealias DeviceSortOrder = DeviceBrowserPresentation.SortOrder
+
+    private final class DeviceRow: NSObject {
+        let id: DeviceInventoryID
+        init(id: DeviceInventoryID) { self.id = id }
+    }
+
+    private final class DeviceGroup: NSObject {
+        let id: String
+        var title: String
+        var rows: [DeviceRow] = []
+        init(id: String, title: String) { self.id = id; self.title = title }
+    }
+
+    private enum DeviceKindFilter: Int, CaseIterable {
+        case all, simulators, physical, virtualMachines
+
+        var title: String {
+            switch self {
+            case .all: "All Devices"
+            case .simulators: "Simulators"
+            case .physical: "Physical Devices"
+            case .virtualMachines: "Virtual Machines"
+            }
+        }
+
+        func includes(_ device: InventoryDevice) -> Bool {
+            switch self {
+            case .all: true
+            case .simulators: device.kind == .simulator
+            case .physical: device.kind == .physical
+            case .virtualMachines: device.kind == .virtualMachine
+            }
+        }
+    }
+
+    private enum DeviceAvailabilityFilter: Int, CaseIterable {
+        case all, available, unavailable
+
+        var title: String {
+            switch self {
+            case .all: "All Availability"
+            case .available: "Available"
+            case .unavailable: "Unavailable"
+            }
+        }
+
+        func includes(_ device: InventoryDevice) -> Bool {
+            switch self {
+            case .all: true
+            case .available: DeviceBrowserPresentation.isAvailable(device)
+            case .unavailable: !DeviceBrowserPresentation.isAvailable(device)
+            }
+        }
+    }
+
+    init(model: SimulatorManagerModel, screens: DeviceScreens, menus: MenuController, defaults: UserDefaults = .standard,
+         splitViewAutosaveName: NSSplitView.AutosaveName? = nil) {
+        self.model = model
+        self.screens = screens
+        self.menus = menus
+        self.defaults = defaults
+        presentationState = DeviceBrowserState(defaults: defaults)
+        options = DeviceBrowserPresentation.Options(defaults: defaults)
+        collapsedGroups = Set(defaults.stringArray(forKey: "SidebarCollapsedSectionIDs") ?? [])
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.title = "NeoSimulator"
+        window.isReleasedWhenClosed = false
+        window.tabbingMode = .disallowed
+        window.toolbarStyle = .unified
+        super.init(window: window)
+        buildSidebar()
+        buildDevicePane()
+        buildInspector()
+        splitController.splitView.autosaveName = splitViewAutosaveName
+        splitController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
+        window.contentViewController = splitController
+        let toolbar = NSToolbar(identifier: "NeoSimulatorDevices")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        toolbarAppearanceObservation = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateToolbarAppearance() }
+        }
+        sidebarObservation = splitController.splitViewItems[0].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.updateSidebarToolbarItems()
+            }
+        }
+        inspectorObservation = splitController.splitViewItems[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.updateInspectorSelection()
+                self.updateDeviceSettings()
+            }
+        }
+        inspectorSelectionObservation = withPortableContinuousObservation { [weak self] _ in
+            guard let self else { return }
+            presentationState.inspectorContent = deviceInspector.inspection.content
+        }
+        window.center()
+        window.setFrameAutosaveName("NeoSimulatorDevices")
+        update()
+        observeInventory()
+        observeManagement()
+        observeScreens()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func update(animated: Bool = false) {
+        let previousIdentifier = selectionIdentifier
+        rememberCollapsedGroups()
+        updatingSelection = true
+        NSAnimationContext.runAnimationGroup { context in
+            let animates = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            if !animates { context.duration = 0 }
+            reloadRows(effect: animates ? .effectFade : [])
+            restoreGroupExpansion()
+        }
+        restoreVisibleSelection()
+        updatingSelection = false
+        loadedRows = true
+        updateSelection()
+        if selectionIdentifier != previousIdentifier { selectedDeviceChanged(selectionIdentifier) }
+        updateFilterItem()
+    }
+
+    private func observeInventory() {
+        inventoryObservation = withPortableContinuousObservation { [weak self, model] event in
+            _ = model.inventory
+            _ = model.activeStates
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in self?.update(animated: true) }
+        }
+    }
+
+    private func observeManagement() {
+        displayedManagingIDs = model.managingDeviceIDs
+        managementObservation = withPortableContinuousObservation { [weak self, model] event in
+            _ = model.managingDeviceIDs
+            _ = model.isBusy
+            _ = model.openingDeviceIDs
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let changed = self.displayedManagingIDs.symmetricDifference(self.model.managingDeviceIDs)
+                self.displayedManagingIDs = self.model.managingDeviceIDs
+                for identifier in changed {
+                    if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
+                }
+                self.updateSelection()
+            }
+        }
+    }
+
+    /// Reloads the rows whose screens opened or closed, or every row when artwork comes from another Xcode.
+    private func observeScreens() {
+        displayedScreenIDs = screens.identifiers
+        displayedArtworkXcodeURL = screens.displayXcodeURL
+        screensObservation = withPortableContinuousObservation { [weak self, screens] event in
+            _ = screens.identifiers
+            _ = screens.displayXcodeURL
+            guard event.kind != .initial else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.displayedArtworkXcodeURL != self.screens.displayXcodeURL {
+                    for row in self.rows { self.table.reloadItem(row) }
+                } else {
+                    for identifier in self.displayedScreenIDs.symmetricDifference(self.screens.identifiers) {
+                        if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
+                    }
+                }
+                self.displayedScreenIDs = self.screens.identifiers
+                self.displayedArtworkXcodeURL = self.screens.displayXcodeURL
+            }
+        }
+    }
+
+    private var filteredDevices: [InventoryDevice] {
+        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.inventory.filter {
+            kindFilter.includes($0) && availabilityFilter.includes($0)
+                && (familyFilter == nil || family(of: $0) == familyFilter)
+                && (query.isEmpty || $0.name.localizedStandardContains(query)
+                    || ($0.operatingSystem?.localizedStandardContains(query) ?? false)
+                    || (modelName(of: $0)?.localizedStandardContains(query) ?? false))
+        }
+    }
+
+    private func device(for row: DeviceRow) -> InventoryDevice? { devicesByID[row.id] }
+
+    private func rememberCollapsedGroups() {
+        guard options.showGroups, loadedRows else { return }
+        for group in groups where table.row(forItem: group) >= 0 {
+            if table.isItemExpanded(group) { collapsedGroups.remove(group.id) }
+            else { collapsedGroups.insert(group.id) }
+        }
+    }
+
+    private func saveCollapsedGroups() {
+        defaults.set(collapsedGroups.sorted(), forKey: "SidebarCollapsedSectionIDs")
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard !updatingSelection, let group = notification.userInfo?["NSObject"] as? DeviceGroup else { return }
+        collapsedGroups.remove(group.id)
+        saveCollapsedGroups()
+        updatingSelection = true
+        restoreVisibleSelection()
+        updatingSelection = false
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard !updatingSelection, let group = notification.userInfo?["NSObject"] as? DeviceGroup else { return }
+        collapsedGroups.insert(group.id)
+        saveCollapsedGroups()
+    }
+
+    private func reloadRows(effect: NSTableView.AnimationOptions = []) {
+        let previousDevices = devicesByID
+        let previousActiveStates = displayedActiveStates
+        let previousRoots: [NSObject] = displayedGrouping ? groups : rows
+        let previousChildren = Dictionary(uniqueKeysWithValues: groups.map { ($0, $0.rows) })
+        let expanded = Set(groups.filter { table.isItemExpanded($0) })
+        rebuildRows()
+        if loadedRows {
+            let roots: [NSObject] = options.showGroups ? groups : rows
+            // AppKit ignores child insertions and removals under a collapsed parent.
+            // Replace that parent so expanding it reads the current children.
+            let replaced = Set(groups.filter { previousChildren[$0] != nil
+                && !expanded.contains($0) && previousChildren[$0] != $0.rows })
+            table.beginUpdates()
+            updateChildren(of: nil, from: previousRoots, to: roots,
+                           replacing: Set(replaced.map { $0 as NSObject }), effect: effect)
+            if options.showGroups {
+                for group in groups where expanded.contains(group) {
+                    updateChildren(of: group, from: previousChildren[group] ?? [], to: group.rows, effect: effect)
+                }
+            }
+            table.endUpdates()
+            for row in rows {
+                guard let device = devicesByID[row.id], previousDevices[row.id] != nil else { continue }
+                if previousDevices[row.id] != device
+                    || previousActiveStates.isActive(device) != displayedActiveStates.isActive(device) {
+                    table.reloadItem(row)
+                }
+            }
+        } else {
+            table.reloadData()
+        }
+        displayedGrouping = options.showGroups
+    }
+
+    private func updateChildren(of parent: Any?, from previous: [NSObject], to current: [NSObject],
+                                replacing replaced: Set<NSObject> = [], effect: NSTableView.AnimationOptions) {
+        let retained = Set(current).subtracting(replaced)
+        let removed = IndexSet(previous.indices.filter { !retained.contains(previous[$0]) })
+        if !removed.isEmpty { table.removeItems(at: removed, inParent: parent, withAnimation: effect) }
+        var working = previous.filter { retained.contains($0) }
+        for (index, item) in current.enumerated() {
+            if let source = working.firstIndex(of: item) {
+                if source != index {
+                    table.moveItem(at: source, inParent: parent, to: index, inParent: parent)
+                    working.insert(working.remove(at: source), at: index)
+                }
+            } else {
+                table.insertItems(at: IndexSet(integer: index), inParent: parent, withAnimation: effect)
+                working.insert(item, at: index)
+            }
+        }
+    }
+
+    private func rebuildRows() {
+        devicesByID = Dictionary(model.inventory.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        rowsByID = rowsByID.filter { devicesByID[$0.key] != nil }
+        displayedActiveStates = model.activeStates
+        let presentation = DeviceBrowserPresentation(devices: filteredDevices, sortOrder: options.sortOrder,
+                                                     activeStates: displayedActiveStates)
+        rows = presentation.devices.map { device in
+            if let row = rowsByID[device.id] { return row }
+            let row = DeviceRow(id: device.id)
+            rowsByID[device.id] = row
+            return row
+        }
+        groups = presentation.sections.map { section in
+            let group = groupsByID[section.id] ?? DeviceGroup(id: section.id, title: section.title)
+            group.title = section.title
+            group.rows = section.devices.compactMap { rowsByID[$0.id] }
+            return group
+        }
+        groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+    }
+
+    private func restoreGroupExpansion() {
+        guard options.showGroups else { return }
+        for group in groups where !collapsedGroups.contains(group.id) { table.expandItem(group) }
+    }
+
+    private func restoreVisibleSelection() {
+        let selected = selectedIdentifiers
+        let indexes = IndexSet((0..<table.numberOfRows).filter { index in
+            (table.item(atRow: index) as? DeviceRow).map { selected.contains($0.id) } ?? false
+        })
+        table.selectRowIndexes(indexes, byExtendingSelection: false)
+    }
+
+    private func buildSidebar() {
+        let controller = NSViewController()
+        search.placeholderString = "Search Devices"
+        search.delegate = self
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Device"))
+        table.addTableColumn(column)
+        table.outlineTableColumn = column
+        table.headerView = nil
+        table.style = .sourceList
+        table.rowHeight = 52
+        table.intercellSpacing = NSSize(width: 0, height: 2)
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.allowsMultipleSelection = true
+        table.allowsEmptySelection = true
+        table.dataSource = self
+        table.delegate = self
+        table.target = self
+        table.doubleAction = #selector(openSelectedDevice(_:))
+        table.setAccessibilityLabel("Devices")
+        deviceMenu.delegate = self
+        deviceMenu.autoenablesItems = false
+        table.menu = deviceMenu
+        scroll.documentView = table
+        controller.view = scroll
+        let sidebar = NSSplitViewItem(sidebarWithViewController: controller)
+        sidebar.minimumThickness = 260
+        sidebar.maximumThickness = 360
+        sidebar.preferredThicknessFraction = 0.26
+        let searchAccessory = NSSplitViewItemAccessoryViewController()
+        searchAccessory.automaticallyAppliesContentInsets = false
+        searchAccessory.preferredScrollEdgeEffectStyle = .soft
+        let searchContainer = NSStackView(views: [search])
+        searchContainer.orientation = .vertical
+        searchContainer.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        search.widthAnchor.constraint(equalTo: searchContainer.widthAnchor, constant: -24).isActive = true
+        searchContainer.frame.size = NSSize(width: 260, height: search.fittingSize.height + 20)
+        searchAccessory.view = searchContainer
+        sidebar.addTopAlignedAccessoryViewController(searchAccessory)
+        splitController.addSplitViewItem(sidebar)
+    }
+
+    private func buildDevicePane() {
+        let pane = deviceScreenViewController
+        let content = NSSplitViewItem(viewController: pane)
+        content.minimumThickness = 280
+        content.holdingPriority = .defaultLow
+        pane.canvasAccessory.onMinimumWidthChange = { [weak self] in self?.updateCanvasMinimumWidth($0) }
+        content.addBottomAlignedAccessoryViewController(pane.canvasAccessory)
+        splitController.addSplitViewItem(content)
+    }
+
+    private func buildInspector() {
+        let host = NSHostingController(rootView: makeDeviceSettingsView())
+        // AppKit owns the pane size; content-derived bounds must not constrain the window.
+        host.sizingOptions = []
+        inspectorHost = host
+        let servicesModel = BackgroundServicesInspectorModel(manager: model, showProfileSettings: { [weak self] in
+            self?.onShowServiceProfile?($0)
+        })
+        let backgroundServices = BackgroundServicesViewController(model: servicesModel)
+        let servicesAccessory = BackgroundServicesAccessoryViewController(model: servicesModel)
+        backgroundServicesHost = backgroundServices
+        backgroundServicesAccessory = servicesAccessory
+        inspectorContainer.view = NSView()
+        let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)
+        inspector.minimumThickness = 280
+        inspector.maximumThickness = 440
+        inspector.canCollapse = true
+        inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
+        inspector.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
+        inspector.addTopAlignedAccessoryViewController(servicesAccessory)
+        backgroundServices.searchAccessory.isHidden = true
+        inspector.addTopAlignedAccessoryViewController(backgroundServices.searchAccessory)
+        splitController.addSplitViewItem(inspector)
+        showSelectedInspector()
+    }
+
+    private func showInspectorController(_ controller: NSViewController) {
+        guard inspectorContent !== controller else { return }
+        // Split-view accessories are also children of the container; replace only its content page.
+        inspectorContent?.view.removeFromSuperview()
+        inspectorContent?.removeFromParent()
+        inspectorContainer.addChild(controller)
+        inspectorContent = controller
+        let view = controller.view
+        view.translatesAutoresizingMaskIntoConstraints = false
+        inspectorContainer.view.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: inspectorContainer.view.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: inspectorContainer.view.trailingAnchor),
+            view.topAnchor.constraint(equalTo: inspectorContainer.view.topAnchor),
+            view.bottomAnchor.constraint(equalTo: inspectorContainer.view.bottomAnchor),
+        ])
+    }
+
+    @objc private func changeInspector(_ sender: NSSegmentedControl) {
+        let index = sender.selectedSegment
+        let inspector = splitController.splitViewItems[2]
+        if index == inspectorMode && !inspector.isCollapsed {
+            inspector.animator().isCollapsed = true
+            return
+        }
+        inspectorMode = index
+        showSelectedInspector()
+        inspector.animator().isCollapsed = false
+        updateInspectorSelection()
+        updateDeviceSettings()
+    }
+
+    private func showSelectedInspector() {
+        switch inspectorMode {
+        case 0: if let inspectorHost { showInspectorController(inspectorHost) }
+        case 3: if let backgroundServicesHost { showInspectorController(backgroundServicesHost) }
+        default:
+            deviceInspector.setPage(inspectorMode == 1 ? .reports : .info)
+            showInspectorController(deviceInspector)
+        }
+    }
+
+    func stopInspectorReads() { deviceInspector.stopReading() }
+    func finishInspectorPreviews() async throws { try await deviceInspector.finishPreviews() }
+    func resumeInspectorAfterCancelledQuit() { deviceInspector.resumeAfterCancelledQuit() }
+    func applicationsChanged(on deviceID: DeviceInventoryID) { deviceInspector.applicationsChanged(on: deviceID) }
+
+    private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
+        ManagerDeviceSettingsView(model: DeviceSettingsPanelModel(manager: model, screens: screens, preferences: SimulatorPreferences(), customLocation: { [weak self] in
+            guard let self, let identifier = self.model.settings.device?.id else { return }
+            self.presentLocationEditor(for: identifier)
+        }))
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        if let group = item as? DeviceGroup { return group.rows.count }
+        return item == nil ? (options.showGroups ? groups.count : rows.count) : 0
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let group = item as? DeviceGroup { return group.rows[index] }
+        return options.showGroups ? groups[index] as Any : rows[index] as Any
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { item is DeviceGroup }
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { item is DeviceGroup }
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { item is DeviceRow }
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+        item is DeviceGroup ? 26 : 52
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any) -> String? {
+        guard let row = item as? DeviceRow else { return nil }
+        return device(for: row)?.name
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        guard item is DeviceRow else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("DeviceSelectionRow")
+        let row = outlineView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarRowView
+            ?? SimulatorSidebarRowView()
+        row.identifier = identifier
+        return row
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        if let group = item as? DeviceGroup {
+            let identifier = NSUserInterfaceItemIdentifier("DeviceBrowserGroup")
+            let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
+            cell.identifier = identifier
+            if cell.textField == nil {
+                let label = NSTextField(labelWithString: "")
+                label.font = .systemFont(ofSize: 11, weight: .semibold)
+                label.textColor = .secondaryLabelColor
+                label.translatesAutoresizingMaskIntoConstraints = false
+                cell.addSubview(label)
+                cell.textField = label
+                NSLayoutConstraint.activate([
+                    label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                    label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
+                    label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                ])
+            }
+            cell.textField?.stringValue = group.title
+            return cell
+        }
+        guard let row = item as? DeviceRow, let device = device(for: row) else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("DeviceRow")
+        let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? SimulatorSidebarCellView
+            ?? SimulatorSidebarCellView()
+        cell.identifier = identifier
+        cell.setLabels(name: device.name, subtitle: device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? ""))
+        cell.version.stringValue = version(of: device)
+        cell.setArtwork(artwork(for: device), isActive: shouldRenderAsActive(device))
+        let managing = model.managingDeviceIDs.contains(device.id)
+        cell.progress.isHidden = !managing
+        if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
+        cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(DeviceBrowserPresentation.isAvailable(device) ? "Available" : "Unavailable")")
+        return cell
+    }
+
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !updatingSelection else { return }
+        let selection = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
+        let visibleSelection = Set(rows.filter { selectedIdentifiers.contains($0.id) && table.row(forItem: $0) >= 0 }.map(\.id))
+        guard selection != visibleSelection else { return }
+        requestPresentation(.main)
+        selectedIdentifiers = selection
+        updateSelection()
+        selectedDeviceChanged(selectionIdentifier)
+    }
+
+    func controlTextDidChange(_ notification: Notification) { update() }
+
+    private var selectedDevices: [InventoryDevice] {
+        let selected = selectedIdentifiers
+        return DeviceBrowserPresentation(devices: model.inventory.filter { selected.contains($0.id) },
+                                  sortOrder: options.sortOrder, activeStates: displayedActiveStates).devices
+    }
+
+    private var visibleSelectedDevices: [InventoryDevice] {
+        let identifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
+        return rows.compactMap { device(for: $0) }.filter { identifiers.contains($0.id) }
+    }
+
+    private func updateSelection() {
+        let selections = selectedDevices
+        let selectedDevice = selections.count == 1 ? selections.first : nil
+        window?.title = selectedDevice?.name ?? "NeoSimulator"
+        window?.subtitle = selectedDevice?.operatingSystem ?? ""
+        moreItem?.isHidden = selectedDevice == nil
+        selectionIdentifier = selectedDevice?.id
+        if let device = selectedDevice {
+            let details: String
+            if case .simulator(let simulator) = device { details = "\(simulator.runtimeName) Simulator" }
+            else {
+                details = [device.operatingSystem, modelName(of: device), kindTitle(device)]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            }
+            deviceScreenViewController.updatePreview(for: device, details: details, artwork: artwork(for: device),
+                                                     canViewScreen: canViewScreen(device))
+        } else {
+            deviceScreenViewController.updatePreview(selectionCount: selections.count)
+        }
+        updateDeviceSettings()
+        model.settings.inspect(selectedDevice, selectionCount: selections.count)
+        model.backgroundServices.inspect(selectedDevice, selectionCount: selections.count)
+    }
+
+    func selectDevice(_ identifier: DeviceInventoryID) {
+        selectedIdentifiers = [identifier]
+        updatingSelection = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            reloadRows()
+        }
+        if options.showGroups, let group = groups.first(where: { $0.rows.contains { $0.id == identifier } }) {
+            collapsedGroups.remove(group.id)
+            saveCollapsedGroups()
+        }
+        restoreGroupExpansion()
+        restoreVisibleSelection()
+        updatingSelection = false
+        updateSelection()
+        if let row = table.selectedRowIndexes.first { table.scrollRowToVisible(row) }
+    }
+
+    /// Selects the device for the main window and shows its screen there once it is open, bringing the window forward.
+    func showDevice(_ identifier: DeviceInventoryID) {
+        requestPresentation(.main)
+        selectDevice(identifier)
+        selectedDeviceChanged(identifier, preservingFocus: false)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Places a screen that just opened or reconnected. The selected device's screen follows the latest choice; another
+    /// device's screen that connected on its own keeps `presentation`, or else its current one.
+    func presentConnectedScreen(_ identifier: DeviceInventoryID, purpose: SimulatorPresentationContext.Purpose,
+                                preserving presentation: SimulatorScreenRestoration.Presentation? = nil) async throws {
+        try Task.checkCancellation()
+        guard !screens.isQuitting, let screen = screens.screen(for: identifier) else { return }
+        if presentationState.selectedDeviceIDs.isEmpty, presentationIntent.revision == 0, purpose != .requested {
+            selectDevice(identifier)
+            requestPresentation(.main)
+        }
+        let revision = presentationIntent.revision
+        let selected = selectedIdentifiers == [identifier]
+        guard selected || purpose == .automatic else { return }
+        switch selected ? presentationIntent.placement : presentation ?? screen.presentation {
+        case .main:
+            guard selected else { return }
+            try await deviceScreenViewController.embedScreen(for: identifier, preservingFocus: purpose == .automatic,
+                                                             while: { self.isCurrentPresentation(identifier, revision: revision) })
+        case .compact:
+            try await deviceScreenViewController.showCompactWindow(of: screen, unlessCompact: true, while: {
+                self.presentationIntent.revision == revision || self.selectedIdentifiers != [identifier]
+            })
+        case .hidden: break
+        }
+    }
+
+    /// Reopens a screen that was open before relaunching, in its saved presentation unless the user chooses one for
+    /// the device first.
+    func restoreScreen(_ restoration: SimulatorScreenRestoration) {
+        let identifier = restoration.deviceID
+        let revision = presentationIntent.revision
+        model.restoreScreen(restoration) { [weak self] in
+            guard let self, let screen = screens.screen(for: identifier) else { return }
+            let pane = deviceScreenViewController
+            let keepsRestoredPresentation: @MainActor () -> Bool = {
+                self.presentationIntent.revision == revision || self.selectedIdentifiers != [identifier]
+            }
+            switch restoration.presentation {
+            case .main:
+                // Opening the screen already embeds it in the main window; the restore finishes after that move.
+                await pane.waitForScreenMoves()
+            case .compact:
+                try await pane.showCompactWindow(of: screen, while: keepsRestoredPresentation)
+                if presentationIntent.revision == revision { window?.orderOut(nil) }
+            case .hidden:
+                try await pane.detachScreen(screen, while: keepsRestoredPresentation)
+            }
+        }
+    }
+
+    private func requestPresentation(_ placement: SimulatorScreenRestoration.Presentation) {
+        presentationIntent.revision += 1
+        presentationIntent.placement = placement
+    }
+
+    private func isCurrentPresentation(_ identifier: DeviceInventoryID, revision: Int) -> Bool {
+        !screens.isQuitting && presentationIntent.revision == revision && selectedIdentifiers == [identifier]
+    }
+
+    /// Embeds the selected device's open screen, or detaches the live screen when the selection has none.
+    private func selectedDeviceChanged(_ identifier: DeviceInventoryID?, preservingFocus: Bool = true) {
+        let revision = presentationIntent.revision
+        Task { [weak self] in
+            guard let self else { return }
+            let pane = deviceScreenViewController
+            do {
+                if let identifier, screens.screen(for: identifier) != nil {
+                    try await pane.embedScreen(for: identifier, preservingFocus: preservingFocus,
+                                               while: { self.isCurrentPresentation(identifier, revision: revision) })
+                } else {
+                    try await pane.detachLiveScreen(while: { self.presentationIntent.revision == revision })
+                }
+            } catch is CancellationError {}
+            catch { onError?(error) }
+        }
+    }
+
+    private func updateLiveScreenToolbarItems() {
+        if deviceScreenViewController.liveDeviceIdentifier != nil {
+            for item in window?.toolbar?.items ?? [] where item.itemIdentifier == compactIdentifier || item.itemIdentifier == moreIdentifier {
+                item.isHidden = false
+            }
+        } else {
+            for item in window?.toolbar?.items ?? [] where item.itemIdentifier == resizeAppIdentifier || item.itemIdentifier == captureKeyboardIdentifier || item.itemIdentifier == compactIdentifier || item.itemIdentifier == canvasZoomIdentifier {
+                item.isHidden = true
+            }
+        }
+    }
+
+    private func updateCanvasMinimumWidth(_ width: CGFloat) {
+        let item = splitController.splitViewItems[1]
+        let minimum = max(280, width)
+        if item.minimumThickness != minimum { item.minimumThickness = minimum }
+    }
+
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        if let target = deviceScreenViewController.liveCommandTarget {
+            switch action {
+            case #selector(RemoteDeviceWindowController.saveScreenshot(_:)),
+                 #selector(RemoteDeviceWindowController.discardScreenshot(_:)),
+                 #selector(RemoteDeviceWindowController.recordScreen(_:)),
+                 #selector(RemoteDeviceWindowController.recordScreenTo(_:)),
+                 #selector(RemoteDeviceWindowController.stopScreenRecording(_:)),
+                 #selector(RemoteDeviceWindowController.saveScreenRecording(_:)),
+                 #selector(RemoteDeviceWindowController.discardScreenRecording(_:)),
+                 #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)):
+                if target.responds(to: action) { return target }
+            default: break
+            }
+        }
+        return super.supplementalTarget(forAction: action, sender: sender)
+    }
+
+    /// Follows the live screen's state for its toolbar items and the device commands' shared shortcuts.
+    private func observeLiveScreenToolbar() {
+        liveScreenToolbarObservation?.cancel()
+        liveScreenToolbarObservation = withPortableContinuousObservation { [weak self] _ in
+            self?.updateLiveScreenToolbar()
+        }
+    }
+
+    private func updateLiveScreenToolbar() {
+        guard let screen = deviceScreenViewController.liveScreen else { return }
+        menus.updateKeyEquivalents(for: screen.simulatorCapabilities)
+        if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
+            let resizingApp = screen.resizingApp
+            let title = resizingApp ? "Stop Resize" : "Resize App"
+            item.label = title
+            item.toolTip = title
+            item.menuFormRepresentation?.title = title
+            if let button = item.view as? NSButton {
+                button.toolTip = title
+                button.setAccessibilityLabel(title)
+            }
+            item.isHidden = !screen.supports("resizeApp")
+            item.isEnabled = screen.isEnabled("resizeApp")
+            item.menuFormRepresentation?.isEnabled = item.isEnabled
+            item.menuFormRepresentation?.state = resizingApp ? .on : .off
+            if let button = item.view as? NSButton {
+                button.state = resizingApp ? .on : .off
+                button.isEnabled = item.isEnabled
+            }
+        }
+        if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
+            let capturesKeyboard = screen.capturesKeyboard
+            item.isHidden = !screen.supports("captureKeyboard")
+            item.isEnabled = screen.isEnabled("captureKeyboard")
+            item.menuFormRepresentation?.state = capturesKeyboard ? .on : .off
+            item.menuFormRepresentation?.isEnabled = item.isEnabled
+            if let button = item.view as? NSButton {
+                button.state = capturesKeyboard ? .on : .off
+                button.isEnabled = item.isEnabled
+                button.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
+            }
+        }
+        if let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup {
+            group.isHidden = !screen.supports(CanvasZoom.Action.fit.rawValue)
+            for (index, action) in CanvasZoom.Action.allCases.enumerated() {
+                group.subitems[index].isEnabled = screen.isEnabled(action.rawValue)
+            }
+            if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {
+                group.setSelected(true, at: selected)
+            } else {
+                // selectOne rejects clearing its last selection, including selectedIndex = -1.
+                group.selectionMode = .selectAny
+                for index in group.subitems.indices { group.setSelected(false, at: index) }
+                group.selectionMode = .selectOne
+            }
+        }
+    }
+
+    @objc private func resizeApp(_ sender: Any?) {
+        deviceScreenViewController.liveScreen?.perform("resizeApp")
+    }
+
+    @objc private func captureKeyboard(_ sender: Any?) { deviceScreenViewController.liveScreen?.perform("captureKeyboard") }
+
+    @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
+        guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
+        deviceScreenViewController.liveScreen?.perform(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
+    }
+
+    @objc private func showCompactDeviceWindow(_ sender: Any?) {
+        guard let identifier = deviceScreenViewController.liveDeviceIdentifier, window?.attachedSheet == nil,
+              window?.styleMask.contains(.fullScreen) == false, selectedIdentifiers == [identifier] else { return }
+        requestPresentation(.compact)
+        let revision = presentationIntent.revision
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await deviceScreenViewController.switchToCompactWindow(for: identifier, while: {
+                    self.isCurrentPresentation(identifier, revision: revision)
+                })
+                // The compact window replaces this one, unless a later choice or the screen's close stopped the move.
+                if isCurrentPresentation(identifier, revision: revision), screens.screen(for: identifier) != nil {
+                    window?.orderOut(nil)
+                }
+            } catch is CancellationError {}
+            catch { onError?(error) }
+        }
+    }
+
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        if item.itemIdentifier == moreIdentifier {
+            return deviceScreenViewController.liveDeviceIdentifier.map { id in model.inventory.contains { $0.id == id } } == true
+                && window?.attachedSheet == nil
+        }
+        if item.itemIdentifier == compactIdentifier {
+            return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
+        }
+        return true
+    }
+
+    func updateDeviceSettings() {
+        let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
+        let showsInspector = !splitController.splitViewItems[2].isCollapsed
+        deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
+                               isVisible: showsInspector && (inspectorMode == 1 || inspectorMode == 2))
+        model.backgroundServices.setVisible(showsInspector && inspectorMode == 3)
+        backgroundServicesAccessory?.isActive = showsInspector && inspectorMode == 3
+        backgroundServicesHost?.isVisible = showsInspector && inspectorMode == 3
+    }
+
+    private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Set Location"
+        alert.informativeText = "Enter a latitude and longitude for the selected device."
+        alert.addButton(withTitle: "Set Location")
+        alert.addButton(withTitle: "Cancel")
+        let latitudeField = NSTextField(string: latitude)
+        let longitudeField = NSTextField(string: longitude)
+        for field in [latitudeField, longitudeField] {
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        }
+        let grid = NSGridView(views: [
+            [NSTextField(labelWithString: "Latitude:"), latitudeField],
+            [NSTextField(labelWithString: "Longitude:"), longitudeField],
+        ])
+        grid.rowSpacing = 10
+        grid.columnSpacing = 12
+        grid.rowAlignment = .firstBaseline
+        grid.column(at: 0).xPlacement = .trailing
+        grid.frame.size = grid.fittingSize
+        alert.accessoryView = grid
+        alert.window.initialFirstResponder = latitudeField
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            guard let latitude = Double(latitudeField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let longitude = Double(longitudeField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  (-90...90).contains(latitude), (-180...180).contains(longitude) else {
+                let invalid = NSAlert()
+                invalid.messageText = "Enter valid coordinates."
+                invalid.informativeText = "Latitude must be between −90 and 90. Longitude must be between −180 and 180."
+                invalid.runModal()
+                self.presentLocationEditor(for: identifier, latitude: latitudeField.stringValue, longitude: longitudeField.stringValue)
+                return
+            }
+            self.model.setLocation(latitude: latitude, longitude: longitude, for: identifier)
+        }
+    }
+
+    private func artwork(for device: InventoryDevice) -> DeviceArtworkModel {
+        let xcodeURL: URL?
+        if let preferred = screens.displayXcodeURL { xcodeURL = preferred }
+        else if case .simulator(let simulator) = device { xcodeURL = simulator.ownerXcodeURL }
+        else { xcodeURL = nil }
+        return artworkCache.artwork(modelIdentifier: device.modelIdentifier, family: family(of: device), xcodeURL: xcodeURL,
+                                    resolveXcodeURLs: { [weak model] in await model?.artworkXcodeURLs(for: device) ?? [] })
+    }
+
+    private func shouldRenderAsActive(_ device: InventoryDevice) -> Bool {
+        if let active = displayedActiveStates.isActive(device) { return active }
+        // Without DeviceKit's value, keep Neo's own screen and transition state, which do not reorder the row.
+        if screens.screen(for: device.id) != nil { return true }
+        switch device {
+        case .simulator(let simulator):
+            return ["Booting", "Shutting Down"].contains(simulator.state)
+        case .remote(let remote):
+            return ["booting", "shuttingDown"].contains(remote.bootState ?? "")
+        }
+    }
+
+    private func modelName(of device: InventoryDevice) -> String? {
+        if case .remote(let remote) = device { return remote.modelName }
+        return nil
+    }
+
+    private func family(of device: InventoryDevice) -> String {
+        if case .simulator(let simulator) = device { return simulator.productFamily }
+        let identifier = device.modelIdentifier ?? ""
+        if identifier.hasPrefix("iPad") { return "iPad" }
+        if identifier.hasPrefix("iPhone") { return "iPhone" }
+        if identifier.hasPrefix("Watch") { return "Apple Watch" }
+        if identifier.hasPrefix("AppleTV") { return "Apple TV" }
+        if identifier.hasPrefix("Reality") { return "Apple Vision" }
+        if platform(of: device).localizedCaseInsensitiveContains("mac") { return "Mac" }
+        return platform(of: device).isEmpty ? "Other" : platform(of: device)
+    }
+
+    private func platform(of device: InventoryDevice) -> String {
+        switch device {
+        case .simulator(let simulator): simulator.runtimeName.split(separator: " ").first.map(String.init) ?? ""
+        case .remote(let remote): remote.platform ?? ""
+        }
+    }
+
+    private func version(of device: InventoryDevice) -> String {
+        switch device {
+        case .simulator(let simulator):
+            simulator.runtimeName.split(separator: " ").first { $0.first?.isNumber == true }.map(String.init) ?? ""
+        case .remote(let remote): remote.osVersion ?? ""
+        }
+    }
+
+    private func kindTitle(_ device: InventoryDevice) -> String {
+        switch device.kind {
+        case .simulator: "Simulator"
+        case .physical: "Physical"
+        case .virtualMachine: "Virtual Machine"
+        case .other: "Other"
+        }
+    }
+
+    private func canViewScreen(_ device: InventoryDevice) -> Bool {
+        if model.openingDeviceIDs.contains(device.id) { return true }
+        guard !model.managingDeviceIDs.contains(device.id) else { return false }
+        switch device {
+        case .simulator(let simulator):
+            return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
+        case .remote(let remote):
+            return !model.isBusy && remote.isAvailable && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
+        }
+    }
+
+    @objc private func openSelectedDevice(_ sender: Any?) {
+        let selection = sender is NSOutlineView ? visibleSelectedDevices : selectedDevices
+        guard selection.count == 1, let device = selection.first, canViewScreen(device) else { return }
+        if model.openingDeviceIDs.contains(device.id) { model.cancelOpening(device.id) }
+        else { model.openScreen(for: device) }
+    }
+
+    private func updateToolbarAppearance() {
+        guard let window else { return }
+        // Individual toolbar items can retain their prior template tint on macOS 26.
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            for item in window.toolbar?.items ?? [] {
+                if let image = item.image, image.isTemplate, let refreshed = image.copy() as? NSImage {
+                    item.image = refreshed
+                }
+            }
+        }
+    }
+
+    private func updateSidebarToolbarItems() {
+        let hidden = splitController.splitViewItems[0].isCollapsed
+        for item in window?.toolbar?.items ?? [] where item.itemIdentifier == settingsIdentifier || item.itemIdentifier == filterIdentifier {
+            item.isHidden = hidden
+        }
+    }
+
+    private func updateInspectorSelection() {
+        let collapsed = splitController.splitViewItems[2].isCollapsed
+        guard let tabs = window?.toolbar?.items.first(where: { $0.itemIdentifier == inspectorIdentifier })?.view as? NSSegmentedControl else { return }
+        for index in 0..<tabs.segmentCount {
+            tabs.setSelected(!collapsed && index == inspectorMode, forSegment: index)
+        }
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.toggleSidebar, .flexibleSpace, settingsIdentifier, filterIdentifier, .sidebarTrackingSeparator,
+         .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if itemIdentifier == resizeAppIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Resize App"
+            item.toolTip = "Resize App"
+            item.image = NSImage(systemSymbolName: "aspectratio", accessibilityDescription: item.label)
+            item.target = self
+            item.action = #selector(resizeApp(_:))
+            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+            menuItem.target = self
+            item.menuFormRepresentation = menuItem
+            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(resizeApp(_:)))
+            button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
+            button.bezelStyle = .toolbar
+            button.setButtonType(.pushOnPushOff)
+            button.toolTip = item.toolTip
+            button.setAccessibilityLabel(item.label)
+            item.view = button
+            item.autovalidates = false
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == captureKeyboardIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Capture Keyboard"
+            item.toolTip = "Capture Keyboard"
+            item.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Capture Keyboard")
+            item.target = self
+            item.action = #selector(captureKeyboard(_:))
+            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+            menuItem.target = self
+            item.menuFormRepresentation = menuItem
+            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(captureKeyboard(_:)))
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .toolbar
+            button.toolTip = item.toolTip
+            button.setAccessibilityLabel(item.label)
+            item.view = button
+            item.autovalidates = false
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == canvasZoomIdentifier {
+            let labels = ["Zoom Out", "Fit", "Physical Size", "Zoom In"]
+            let symbols = ["minus.magnifyingglass", "arrowtriangles.up.right.down.left.magnifyingglass", "1.magnifyingglass", "plus.magnifyingglass"]
+            let images = zip(symbols, labels).compactMap { NSImage.deviceControlSymbol(named: $0, accessibilityDescription: $1) }
+            let item: NSToolbarItemGroup
+            if images.count == labels.count {
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
+                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
+            } else {
+                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectOne,
+                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
+            }
+            item.label = "Canvas Zoom"
+            item.autovalidates = false
+            for subitem in item.subitems { subitem.autovalidates = false }
+            item.controlRepresentation = .expanded
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == moreIdentifier {
+            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "More Actions"
+            item.toolTip = "More Actions"
+            item.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More Actions")
+            item.showsIndicator = false
+            item.menu = NSMenu(title: "Device Actions")
+            item.menu.autoenablesItems = false
+            item.menu.delegate = self
+            item.isHidden = selectedDevices.count != 1
+            moreItem = item
+            return item
+        }
+        if itemIdentifier == compactIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Switch to Compact Window"
+            item.toolTip = "Switch to Compact Window"
+            item.image = NSImage(systemSymbolName: "arrow.up.forward.and.arrow.down.backward", accessibilityDescription: "Switch to Compact Window")
+            item.target = self
+            item.action = #selector(showCompactDeviceWindow(_:))
+            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
+            return item
+        }
+        if itemIdentifier == inspectorIdentifier {
+            let labels = ["Settings", "Reports", "Info", "Background Services"]
+            let images = zip(["slider.horizontal.3", "text.document", "info", "cpu"], labels).map {
+                NSImage(systemSymbolName: $0.0, accessibilityDescription: $0.1)!
+            }
+            let tabs = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(changeInspector(_:)))
+            tabs.selectedSegmentBezelColor = .unemphasizedSelectedContentBackgroundColor
+            tabs.setSelected(!splitController.splitViewItems[2].isCollapsed, forSegment: inspectorMode)
+            tabs.setAccessibilityLabel("Device Inspector")
+            for (index, label) in labels.enumerated() { tabs.setToolTip(label, forSegment: index) }
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Device Inspector"
+            item.view = tabs
+            item.visibilityPriority = .high
+            return item
+        }
+        if itemIdentifier == settingsIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Settings"
+            item.toolTip = "Settings"
+            item.image = NSImage(systemSymbolName: "gear", accessibilityDescription: "Settings")
+            item.target = NSApp.delegate
+            item.action = #selector(AppDelegate.showSettings(_:))
+            item.visibilityPriority = .high
+            return item
+        }
+        if itemIdentifier == filterIdentifier {
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Filter"
+            item.toolTip = "Filter and Sort Devices"
+            item.visibilityPriority = .high
+            let button = NSButton(image: NSImage(systemSymbolName: "line.3.horizontal.decrease",
+                                                accessibilityDescription: "Filter and Sort Devices")!,
+                                  target: self, action: #selector(showDeviceFilters(_:)))
+            button.bezelStyle = .toolbar
+            button.controlSize = .extraLarge
+            button.setButtonType(.onOff)
+            button.isBordered = true
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+            button.setAccessibilityLabel("Filter and Sort Devices")
+            item.image = button.image
+            item.view = button
+            filterMenu.delegate = self
+            let menuItem = NSMenuItem(title: "Filter and Sort Devices", action: nil, keyEquivalent: "")
+            menuItem.submenu = filterMenu
+            item.menuFormRepresentation = menuItem
+            filterItem = item
+            updateFilterItem()
+            return item
+        }
+        return nil
+    }
+
+    private struct ManagementRequest {
+        let action: DeviceManagementAction
+        let identifiers: Set<DeviceInventoryID>
+    }
+
+    func menuForSelectedDevices() -> NSMenu {
+        let menu = NSMenu(title: "Device")
+        menu.autoenablesItems = false
+        populateDeviceMenu(menu, devices: visibleSelectedDevices)
+        return menu
+    }
+
+    func updateDeviceMenu(for clickedRow: Int) {
+        if clickedRow >= 0 {
+            guard let row = table.item(atRow: clickedRow) as? DeviceRow else {
+                deviceMenu.removeAllItems()
+                return
+            }
+            if !selectedIdentifiers.contains(row.id) {
+                requestPresentation(.main)
+                selectedIdentifiers = [row.id]
+                updatingSelection = true
+                restoreVisibleSelection()
+                updatingSelection = false
+                updateSelection()
+                selectedDeviceChanged(selectionIdentifier)
+            }
+        }
+        populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)
+    }
+
+    private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
+        menu.removeAllItems()
+        let identifiers = Set(devices.map(\.id))
+        if includesViewScreen, devices.count == 1, canViewScreen(devices[0]) {
+            let title = model.openingDeviceIDs.contains(devices[0].id) ? "Cancel Opening" : "View Screen"
+            let item = NSMenuItem(title: title, action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = devices[0].id
+            item.isEnabled = true
+            menu.addItem(item)
+        }
+        if devices.count == 1, case .remote = devices[0], devices[0].id == deviceScreenViewController.liveDeviceIdentifier,
+           let controller = deviceScreenViewController.liveCommandTarget as? RemoteDeviceWindowController {
+            let item = NSMenuItem(title: "Lock", action: #selector(lockDeviceFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = devices[0].id
+            item.isEnabled = controller.isScreenActionEnabled("lock")
+            menu.addItem(item)
+        }
+        let name = devices.first?.name ?? ""
+        let operations: [(String, DeviceManagementAction)] = [
+            ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
+            ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown), ("Restart", .restart),
+            ("Pause", .pause), ("Resume", .resume),
+            ("Pair Simulators", .pair), ("Unpair", .unpair),
+            ("Erase Content and Settings…", .erase), ("Remove…", .remove),
+        ]
+        var addedDestructiveSection = false
+        for (title, action) in operations where supports(action, devices: devices) {
+            if !menu.items.isEmpty, case .rename = action { menu.addItem(.separator()) }
+            switch action {
+            case .unpair, .erase, .remove:
+                if !addedDestructiveSection && !menu.items.isEmpty { menu.addItem(.separator()) }
+                addedDestructiveSection = true
+            default: break
+            }
+            let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
+            item.isEnabled = model.canManage(action, deviceIDs: identifiers)
+            menu.addItem(item)
+        }
+        if menu.items.isEmpty {
+            let item = NSMenuItem(title: devices.isEmpty ? "No Devices Selected" : "No Actions Available", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+    }
+
+    private func updateCanvasMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard selectedDevices.count == 1, let device = selectedDevices.first else { return }
+        // NSMenuToolbarItem's pull-down cell hides the first item as its button title.
+        defer { menu.insertItem(NSMenuItem(title: "", action: nil, keyEquivalent: ""), at: 0) }
+        if case .remote = device {
+            populateDeviceMenu(menu, devices: [device], includesViewScreen: false)
+            return
+        }
+        func add(_ title: String, symbol: String, action: DeviceManagementAction, alternate: Bool = false) {
+            guard device.supports(action) else { return }
+            let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
+            item.target = self
+            item.image = NSImage.deviceControlSymbol(named: symbol, accessibilityDescription: title)
+            item.representedObject = ManagementRequest(action: action, identifiers: [device.id])
+            item.isEnabled = model.canManage(action, deviceIDs: [device.id])
+            item.keyEquivalentModifierMask = []
+            item.isAlternate = alternate
+            if alternate { item.keyEquivalentModifierMask = .option }
+            menu.addItem(item)
+        }
+        func separate() { if !menu.items.isEmpty { menu.addItem(.separator()) } }
+        add("Start", symbol: "play", action: .start)
+        add("Shut Down", symbol: "power", action: .shutdown)
+        add("Force Shut Down", symbol: "power", action: .forceShutdown, alternate: device.supports(.shutdown))
+        if device.supports(.restart) {
+            separate()
+            add("Restart", symbol: "restart", action: .restart)
+        }
+        if device.supports(.rename(device.name)) {
+            separate()
+            add("Rename…", symbol: "pencil", action: .rename(device.name))
+        }
+        if device.supports(.erase) {
+            separate()
+            add("Reset Content and Settings…", symbol: "eraser", action: .erase)
+        }
+        if case .simulator(let phone) = device, phone.productFamily == "iPhone", device.supports(.pair) {
+            separate()
+            let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
+            pairing.image = NSImage.deviceControlSymbol(named: "iphone.and.applewatch", accessibilityDescription: pairing.title)
+            let submenu = pairingMenu(for: phone)
+            pairing.submenu = submenu
+            pairing.isEnabled = submenu.items.contains { $0.action != nil && $0.isEnabled }
+            menu.addItem(pairing)
+        }
+        if device.supports(.remove) {
+            separate()
+            add("Remove…", symbol: "trash", action: .remove)
+        }
+    }
+
+    private func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
+        guard !devices.isEmpty, devices.allSatisfy({ $0.supports(action) }) else { return false }
+        switch action {
+        case .rename, .clone: return devices.count == 1
+        case .pair:
+            guard devices.count == 2,
+                  case .simulator(let first) = devices[0], case .simulator(let second) = devices[1] else { return false }
+            return Set([first.productFamily, second.productFamily]) == Set(["iPhone", "Apple Watch"])
+                && first.deviceSetPath == second.deviceSetPath
+        default: return true
+        }
+    }
+
+    func pairingMenu(for device: SimulatorHostDevice) -> NSMenu {
+        SimulatorPairingMenu.make(for: device, model: model, target: self, action: #selector(performPairingMenuAction(_:)))
+    }
+
+    @objc func performPairingMenuAction(_ sender: NSMenuItem) {
+        switch sender.representedObject as? SimulatorPairingMenu.Action {
+        case .pair(let identifiers):
+            let devices = model.inventory.filter { identifiers.contains($0.id) }
+            guard supports(.pair, devices: devices),
+                  let phone = devices.compactMap({ if case .simulator(let device) = $0, device.productFamily == "iPhone" { device } else { nil } }).first,
+                  model.pairingCandidates(for: phone).contains(where: { identifiers.contains($0.inventoryID) }),
+                  model.canManage(.pair, deviceIDs: identifiers) else { return }
+            model.manage(.pair, devices: devices)
+        case .newCompanion(let identifier):
+            guard let device = model.inventory.first(where: { $0.id == identifier }),
+                  case .simulator(let simulator) = device, model.canAddPairing(for: simulator),
+                  model.canManage(.pair, deviceIDs: [identifier]) else { return }
+            onNewCompanion?(simulator)
+        case nil: break
+        }
+    }
+
+    @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? DeviceInventoryID,
+              let device = model.inventory.first(where: { $0.id == id }), canViewScreen(device) else { return }
+        if model.openingDeviceIDs.contains(id) { model.cancelOpening(id) }
+        else { model.openScreen(for: device) }
+    }
+
+    @objc private func lockDeviceFromMenu(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? DeviceInventoryID,
+              let screen = deviceScreenViewController.liveScreen, screen.id == identifier else { return }
+        screen.perform("lock")
+    }
+
+    @objc private func performManagement(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? ManagementRequest else { return }
+        let devices = model.inventory.filter { request.identifiers.contains($0.id) }
+        guard devices.count == request.identifiers.count, supports(request.action, devices: devices),
+              model.canManage(request.action, deviceIDs: request.identifiers) else { return }
+        switch request.action {
+        case .rename: presentNameEditor(for: devices[0], cloning: false)
+        case .clone: presentNameEditor(for: devices[0], cloning: true)
+        case .erase, .remove: confirmManagement(request.action, devices: devices)
+        default: model.manage(request.action, devices: devices)
+        }
+    }
+
+    private func presentNameEditor(for device: InventoryDevice, cloning: Bool) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = cloning ? "Clone \(device.name)" : "Rename \(device.name)"
+        alert.informativeText = cloning ? "Enter a name for the new simulator." : "Enter a new device name."
+        alert.addButton(withTitle: cloning ? "Clone" : "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: cloning ? "\(device.name) Copy" : device.name)
+        field.frame.size = NSSize(width: 300, height: field.fittingSize.height)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        let submit = alert.buttons[0]
+        let observer = NotificationCenter.default.addObserver(forName: NSControl.textDidChangeNotification,
+            object: field, queue: .main) { _ in
+                MainActor.assumeIsolated { submit.isEnabled = !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            NotificationCenter.default.removeObserver(observer)
+            guard response == .alertFirstButtonReturn, let self else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, let current = self.model.inventory.first(where: { $0.id == device.id }) else { return }
+            self.model.manage(cloning ? .clone(name) : .rename(name), devices: [current])
+        }
+    }
+
+    private func confirmManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
+        guard let window else { return }
+        let removing: Bool
+        if case .remove = action { removing = true } else { removing = false }
+        let subject = devices.count == 1 ? "“\(devices[0].name)”" : "\(devices.count) devices"
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = removing ? "Remove \(subject)?" : "Erase \(subject)?"
+        if removing {
+            alert.informativeText = devices.contains { $0.kind == .virtualMachine }
+                ? "The selected devices and their stored data will be permanently removed. Removing a virtual machine also deletes its associated assets. This cannot be undone."
+                : "The selected devices and their data will be permanently removed. This cannot be undone."
+        } else {
+            alert.informativeText = "All content and settings on the selected devices will be permanently erased. This cannot be undone."
+        }
+        alert.addButton(withTitle: removing ? "Remove" : "Erase")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            let identifiers = Set(devices.map(\.id))
+            let current = self.model.inventory.filter { identifiers.contains($0.id) }
+            guard current.count == identifiers.count else { return }
+            self.model.manage(action, devices: current)
+        }
+    }
+
+    private func updateFilterItem() {
+        let active = kindFilter != .all || availabilityFilter != .all || familyFilter != nil
+        (filterItem?.view as? NSButton)?.state = active ? .on : .off
+        filterItem?.menuFormRepresentation?.state = active ? .on : .off
+    }
+
+    @objc private func showDeviceFilters(_ sender: NSButton) {
+        sender.state = .on
+        filterMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY), in: sender)
+        updateFilterItem()
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === deviceMenu { updateDeviceMenu(for: table.clickedRow); return }
+        if menu === moreItem?.menu { updateCanvasMenu(menu); return }
+        guard menu === filterMenu else { return }
+        menu.removeAllItems()
+        menu.addItem(.sectionHeader(title: "Devices"))
+        for filter in DeviceKindFilter.allCases {
+            let item = NSMenuItem(title: filter.title, action: #selector(filterKind(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = filter.rawValue
+            item.state = kindFilter == filter ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Availability"))
+        for filter in DeviceAvailabilityFilter.allCases {
+            let item = NSMenuItem(title: filter.title, action: #selector(filterAvailability(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = filter.rawValue
+            item.state = availabilityFilter == filter ? .on : .off
+            menu.addItem(item)
+        }
+        let grouping = NSMenuItem(title: "Show Groups", action: #selector(toggleDeviceGroups(_:)), keyEquivalent: "")
+        grouping.target = self
+        grouping.state = options.showGroups ? .on : .off
+        menu.addItem(grouping)
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Device Family"))
+        let allTypes = NSMenuItem(title: "All Families", action: #selector(filterFamily(_:)), keyEquivalent: "")
+        allTypes.target = self
+        allTypes.state = familyFilter == nil ? .on : .off
+        menu.addItem(allTypes)
+        for family in Set(model.inventory.map { family(of: $0) }).sorted() {
+            let item = NSMenuItem(title: family, action: #selector(filterFamily(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = family
+            item.state = familyFilter == family ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Sort By"))
+        for order in DeviceSortOrder.allCases {
+            let item = NSMenuItem(title: order.title, action: #selector(sortDevices(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = order.rawValue
+            item.state = options.sortOrder == order ? .on : .off
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func filterKind(_ sender: NSMenuItem) {
+        guard let filter = DeviceKindFilter(rawValue: sender.tag) else { return }
+        kindFilter = filter
+        update(animated: true)
+    }
+
+    @objc private func filterAvailability(_ sender: NSMenuItem) {
+        guard let filter = DeviceAvailabilityFilter(rawValue: sender.tag) else { return }
+        availabilityFilter = filter
+        update(animated: true)
+    }
+
+    @objc private func toggleDeviceGroups(_ sender: Any?) {
+        rememberCollapsedGroups()
+        options.showGroups.toggle()
+        options.save(to: defaults)
+        update(animated: true)
+    }
+
+    @objc private func filterFamily(_ sender: NSMenuItem) {
+        familyFilter = sender.representedObject as? String
+        update(animated: true)
+    }
+
+    @objc private func sortDevices(_ sender: NSMenuItem) {
+        guard let order = DeviceSortOrder(rawValue: sender.tag) else { return }
+        options.sortOrder = order
+        options.save(to: defaults)
+        update(animated: true)
+    }
+
+}

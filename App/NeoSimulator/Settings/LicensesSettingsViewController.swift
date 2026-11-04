@@ -39,7 +39,7 @@ final class LicensesSettingsViewController: NSSplitViewController, NSTableViewDa
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         let sidebar = NSViewController()
-        sidebar.view = OpaqueSettingsPane()
+        sidebar.view = LicenseSettingsPane()
         sidebar.view.addSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: sidebar.view.leadingAnchor),
@@ -125,9 +125,23 @@ private struct LicenseDetails: View {
     }
 }
 
+private final class LicenseSettingsPane: NSView {
+    override var isOpaque: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.fill()
+    }
+}
+
 #if DEBUG
+private struct LicensePreview: NSViewControllerRepresentable {
+    let makeController: () -> LicensesSettingsViewController
+    func makeNSViewController(context: Context) -> LicensesSettingsViewController { makeController() }
+    func updateNSViewController(_ controller: LicensesSettingsViewController, context: Context) {}
+}
+
 #Preview("Licenses") {
-    PreviewViewController { LicensesSettingsViewController() }
+    LicensePreview { LicensesSettingsViewController() }
         .frame(width: 720, height: 520)
 }
 #endif
