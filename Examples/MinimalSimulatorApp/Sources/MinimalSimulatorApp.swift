@@ -18,6 +18,7 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var guestToShutDown: SimulatorDeviceIdentifier?
     private var termination: Task<Void, Never>?
+    private var asynchronousFailures: [String] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task {
@@ -33,7 +34,7 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     private func start() async throws {
         let context = try await SimulatorContext.load()
         self.context = context
-        context.onError = { print("Simulator: \($0.localizedDescription)") }
+        context.onError = { [weak self] in self?.asynchronousFailures.append($0.localizedDescription) }
         let devices = try await context.devices()
         let arguments = CommandLine.arguments
         guard let option = arguments.firstIndex(of: "--device"), option + 1 < arguments.count else {
@@ -71,13 +72,35 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         print("Opened \(screen.device.name)")
         if arguments.contains("--exercise") {
+            guard try await context.openScreen(id) === screen else {
+                throw SimulatorError.operation("Reopening a screen created a second connection.")
+            }
             try await Task.sleep(for: .seconds(2))
-            try screen.press(.home) { print("Input failed: \($0.localizedDescription)") }
+            var end: SimulatorScreenEnd?
+            screen.onEnd = { end = $0; print("Screen ended: \($0)") }
+            try screen.press(.home) { [weak self] in self?.asynchronousFailures.append($0.localizedDescription) }
             try await screen.close()
+            guard screen.isClosed, end == .closed,
+                  try await context.devices().contains(where: { $0.id == id && $0.state == .booted }) else {
+                throw SimulatorError.operation("Closing the screen did not preserve the running guest.")
+            }
             self.screen = try await context.openScreen(id)
             try self.screen?.showWindow()
             try await Task.sleep(for: .seconds(1))
+            if guestToShutDown == id {
+                end = nil
+                self.screen?.onEnd = { end = $0 }
+                try await context.shutDown(id)
+                guestToShutDown = nil
+                guard self.screen?.isClosed == true, end == .deviceStopped else {
+                    throw SimulatorError.operation("Shutting down did not end the screen.")
+                }
+            }
             try await finish()
+            try await context.invalidate()
+            if !asynchronousFailures.isEmpty {
+                throw SimulatorError.operation(asynchronousFailures.joined(separator: "\n"))
+            }
             print("Exercise completed")
             exit(0)
         }

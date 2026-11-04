@@ -450,7 +450,7 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if isManaged, !managerRequestedQuit, !handoverRequested, !ownerExitRequested {
+        if isManaged, !engine.isStopped, !managerRequestedQuit, !handoverRequested, !ownerExitRequested {
             openManager(command: "quit")
             return .terminateCancel
         }
@@ -458,15 +458,16 @@ final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSourc
         CaptureThumbnail.savesImmediately = true
         let keepsRunning = handoverRequested || quitChoice == .keepRunning
             || (quitChoice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
+        let stopping = engine.beginStopping(keepingDevicesRunning: keepsRunning)
+        let requests = openRequests.values.map(\.task)
+        requests.forEach { $0.cancel() }
         terminationTask = Task {
-            let requests = openRequests.values.map(\.task)
-            requests.forEach { $0.cancel() }
-            for request in requests { await request.value }
-            do { try await engine.stop(keepingDevicesRunning: keepsRunning) }
+            do { try await stopping.value }
             catch {
                 if ownerExitRequested || handoverRequested { hostLog(error.localizedDescription) }
                 else { NSAlert(presenting: error).runModal() }
             }
+            for request in requests { await request.value }
             shutdown()
             sender.reply(toApplicationShouldTerminate: true)
         }

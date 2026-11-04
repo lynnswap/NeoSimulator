@@ -1011,26 +1011,34 @@ final class SimulatorScreenHost: NSObject {
     /// native input that an earlier stop could not remove.
     /// The headless backend remains responsible for guest lifetime in integrated mode.
     func stop(keepingDevicesRunning: Bool? = nil) async throws {
-        if let stoppingTask { try await stoppingTask.value; return }
-        guard !stopped else {
-            let inputFailures = await finishDisconnectedInput()
-            let failures = inputFailures + (await finishExternalDisplayChanges())
-            if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
-            return
-        }
-        isTerminating = true
-        let task = Task { try await finishStopping(keepingDevicesRunning: keepingDevicesRunning) }
-        stoppingTask = task
-        defer { stoppingTask = nil }
-        try await task.value
+        try await beginStopping(keepingDevicesRunning: keepingDevicesRunning).value
     }
 
-    private func finishStopping(keepingDevicesRunning: Bool?) async throws {
+    /// Freezes the shutdown targets before the shell cancels open requests and their ownership cleanup.
+    func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
+        if let stoppingTask { return stoppingTask }
+        isTerminating = true
+        let retryingCleanup = stopped
         let keepsRunning = isInProcess || (keepingDevicesRunning
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
         let devices = keepsRunning ? [] : ownedDeviceIdentifiers.union(sessions.keys).sorted().map {
             (identifier: $0.identifier, deviceSetPath: $0.deviceSetPath)
         }
+        let task = Task {
+            defer { stoppingTask = nil }
+            if retryingCleanup {
+                let inputFailures = await finishDisconnectedInput()
+                let failures = inputFailures + (await finishExternalDisplayChanges())
+                if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
+            } else {
+                try await finishStopping(devices: devices)
+            }
+        }
+        stoppingTask = task
+        return task
+    }
+
+    private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
         let pending = Array(connections.values) + Array(restarting.values)
         pending.forEach { $0.cancel() }
         bootOperations.values.forEach { $0.cancel() }
