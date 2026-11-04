@@ -85,7 +85,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var options: DeviceBrowserPresentation.Options
     private var loadedRows = false
     private var displayedGrouping = false
-    private var displayedGroups: [String] = []
     private let deviceMenu = NSMenu(title: "Device Actions")
     private var sidebarObservation: NSKeyValueObservation?
     private var inspectorObservation: NSKeyValueObservation?
@@ -211,12 +210,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     required init?(coder: NSCoder) { nil }
 
-    func update() {
+    func update(animated: Bool = false) {
         let previousIdentifier = selectionIdentifier
         rememberCollapsedGroups()
         updatingSelection = true
-        reloadRows()
-        restoreGroupExpansion()
+        NSAnimationContext.runAnimationGroup { context in
+            let animates = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            if !animates { context.duration = 0 }
+            reloadRows(effect: animates ? .effectFade : [])
+            restoreGroupExpansion()
+        }
         restoreVisibleSelection()
         updatingSelection = false
         loadedRows = true
@@ -230,7 +233,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             _ = model.inventory
             _ = model.activeStates
             guard event.kind != .initial else { return }
-            Task { @MainActor [weak self] in self?.update() }
+            Task { @MainActor [weak self] in self?.update(animated: true) }
         }
     }
 
@@ -305,6 +308,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         guard !updatingSelection, let group = notification.userInfo?["NSObject"] as? DeviceGroup else { return }
         collapsedGroups.remove(group.id)
         saveCollapsedGroups()
+        updatingSelection = true
+        restoreVisibleSelection()
+        updatingSelection = false
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
@@ -313,27 +319,58 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         saveCollapsedGroups()
     }
 
-    private func reloadRows() {
+    private func reloadRows(effect: NSTableView.AnimationOptions = []) {
         let previousDevices = devicesByID
         let previousActiveStates = displayedActiveStates
-        let previousRows = rows.map(\.id)
-        let previousMembers = groups.map { $0.rows.map(\.id) }
+        let previousRoots: [NSObject] = displayedGrouping ? groups : rows
+        let previousChildren = Dictionary(uniqueKeysWithValues: groups.map { ($0, $0.rows) })
+        let expanded = Set(groups.filter { table.isItemExpanded($0) })
         rebuildRows()
-        let sameStructure = loadedRows && displayedGrouping == options.showGroups
-            && previousRows == rows.map(\.id)
-            && (!options.showGroups || (displayedGroups == groups.map(\.id)
-                && previousMembers == groups.map { $0.rows.map(\.id) }))
-        if sameStructure {
+        if loadedRows {
+            let roots: [NSObject] = options.showGroups ? groups : rows
+            // AppKit ignores child insertions and removals under a collapsed parent.
+            // Replace that parent so expanding it reads the current children.
+            let replaced = Set(groups.filter { previousChildren[$0] != nil
+                && !expanded.contains($0) && previousChildren[$0] != $0.rows })
+            table.beginUpdates()
+            updateChildren(of: nil, from: previousRoots, to: roots,
+                           replacing: Set(replaced.map { $0 as NSObject }), effect: effect)
+            if options.showGroups {
+                for group in groups where expanded.contains(group) {
+                    updateChildren(of: group, from: previousChildren[group] ?? [], to: group.rows, effect: effect)
+                }
+            }
+            table.endUpdates()
             for row in rows {
-                guard let device = devicesByID[row.id] else { continue }
+                guard let device = devicesByID[row.id], previousDevices[row.id] != nil else { continue }
                 if previousDevices[row.id] != device
                     || previousActiveStates.isActive(device) != displayedActiveStates.isActive(device) {
                     table.reloadItem(row)
                 }
             }
-        } else { table.reloadData() }
+        } else {
+            table.reloadData()
+        }
         displayedGrouping = options.showGroups
-        displayedGroups = groups.map(\.id)
+    }
+
+    private func updateChildren(of parent: Any?, from previous: [NSObject], to current: [NSObject],
+                                replacing replaced: Set<NSObject> = [], effect: NSTableView.AnimationOptions) {
+        let retained = Set(current).subtracting(replaced)
+        let removed = IndexSet(previous.indices.filter { !retained.contains(previous[$0]) })
+        if !removed.isEmpty { table.removeItems(at: removed, inParent: parent, withAnimation: effect) }
+        var working = previous.filter { retained.contains($0) }
+        for (index, item) in current.enumerated() {
+            if let source = working.firstIndex(of: item) {
+                if source != index {
+                    table.moveItem(at: source, inParent: parent, to: index, inParent: parent)
+                    working.insert(working.remove(at: source), at: index)
+                }
+            } else {
+                table.insertItems(at: IndexSet(integer: index), inParent: parent, withAnimation: effect)
+                working.insert(item, at: index)
+            }
+        }
     }
 
     private func rebuildRows() {
@@ -574,8 +611,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !updatingSelection else { return }
+        let selection = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
+        let visibleSelection = Set(rows.filter { selectedIdentifiers.contains($0.id) && table.row(forItem: $0) >= 0 }.map(\.id))
+        guard selection != visibleSelection else { return }
         requestPresentation(.main)
-        selectedIdentifiers = Set(table.selectedRowIndexes.compactMap { (table.item(atRow: $0) as? DeviceRow)?.id })
+        selectedIdentifiers = selection
         updateSelection()
         selectedDeviceChanged(selectionIdentifier)
     }
@@ -620,7 +660,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func selectDevice(_ identifier: DeviceInventoryID) {
         selectedIdentifiers = [identifier]
         updatingSelection = true
-        reloadRows()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            reloadRows()
+        }
         if options.showGroups, let group = groups.first(where: { $0.rows.contains { $0.id == identifier } }) {
             collapsedGroups.remove(group.id)
             saveCollapsedGroups()
@@ -1467,33 +1510,32 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func filterKind(_ sender: NSMenuItem) {
         guard let filter = DeviceKindFilter(rawValue: sender.tag) else { return }
         kindFilter = filter
-        update()
+        update(animated: true)
     }
 
     @objc private func filterAvailability(_ sender: NSMenuItem) {
         guard let filter = DeviceAvailabilityFilter(rawValue: sender.tag) else { return }
         availabilityFilter = filter
-        update()
+        update(animated: true)
     }
 
     @objc private func toggleDeviceGroups(_ sender: Any?) {
         rememberCollapsedGroups()
         options.showGroups.toggle()
         options.save(to: defaults)
-        loadedRows = false
-        update()
+        update(animated: true)
     }
 
     @objc private func filterFamily(_ sender: NSMenuItem) {
         familyFilter = sender.representedObject as? String
-        update()
+        update(animated: true)
     }
 
     @objc private func sortDevices(_ sender: NSMenuItem) {
         guard let order = DeviceSortOrder(rawValue: sender.tag) else { return }
         options.sortOrder = order
         options.save(to: defaults)
-        update()
+        update(animated: true)
     }
 
 }
