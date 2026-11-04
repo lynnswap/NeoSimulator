@@ -1802,10 +1802,16 @@ struct ManagerModelTests {
     }
 
 
-    @Test func initialURLRestorationWaitsForTheDisplaySession() async throws {
+    @Test func initialURLRestorationWaitsForLaunchAndTheDisplaySession() async throws {
         _ = NSApplication.shared
         let source = ManagerModelSource(devices: [simulator()])
-        let app = AppDelegate(hostPreferenceAccess: HostPreferenceAccess(verifyAccess: { _ in }))
+        var window: NSWindow?
+        var accessRequests = 0
+        let access = HostPreferenceAccess(verifyAccess: { _ in
+            accessRequests += 1
+            #expect(window?.isVisible == true)
+        })
+        let app = AppDelegate(hostPreferenceAccess: access)
         app.model = SimulatorManagerModel(source: source)
         defer { app.mainWindow?.window?.close() }
         var events = source.events.makeAsyncIterator()
@@ -1813,9 +1819,15 @@ struct ManagerModelTests {
             xcodeURL: URL(fileURLWithPath: "/Xcode.app"), presentation: .compact)
         app.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
         app.application(NSApp, open: [restoration.url])
+        #expect(!app.model.isBusy && app.model.openingDeviceIDs.isEmpty)
+        #expect(accessRequests == 0 && app.mainWindow == nil)
+        #expect(await source.sessionEvents.isEmpty)
+        window = app.prepareMainWindow().window
+        app.startManager()
         while let event = await events.next() {
             if event == .open(restoration.deviceID) { break }
         }
+        #expect(accessRequests == 1)
         #expect(await source.sessionEvents.first == "begin")
         #expect(app.model.status?.preferredHost == .neo)
         await source.completeOpen()
