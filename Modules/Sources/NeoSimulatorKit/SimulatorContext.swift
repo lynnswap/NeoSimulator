@@ -81,6 +81,8 @@ package struct SimulatorContextConfiguration {
     package var onError: ((any Error) -> Void)?
     package var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
     package var guestLifetime: ManagedGuestLifetime?
+    package var onHostConflictBegan: ((SimulatorContext, String) -> Void)?
+    package var onHostConflictEnded: ((SimulatorContext, (any Error)?) -> Void)?
 
     package init() {}
 }
@@ -175,9 +177,17 @@ public final class SimulatorContext {
             }
         }
         engine.onError = { [weak self] error in self?.report(error) }
+        engine.onConflictBegan = { [weak self] name in
+            guard let self else { return }
+            configuration.onHostConflictBegan?(self, name)
+        }
         engine.onConflict = { [weak self] name, failure in
             guard let self else { return }
             Array(self.screens.keys).forEach { self.finishScreen($0, reason: .hostConflict) }
+            if let ended = configuration.onHostConflictEnded {
+                ended(self, failure)
+                return
+            }
             let detail = failure.map { "\n\($0.localizedDescription)" } ?? ""
             self.report(SimulatorError.conflict("\(name) is now displaying the simulators.\(detail)"))
         }
@@ -202,6 +212,8 @@ public final class SimulatorContext {
             }
         }
     }
+
+    package func checkForHostConflict() { engine.handleHostConflict() }
 
     package var isStopped: Bool { isInvalidating || engine.isStopped || engine.isTerminating }
     package var openScreens: [SimulatorScreen] { Array(screens.values) }
