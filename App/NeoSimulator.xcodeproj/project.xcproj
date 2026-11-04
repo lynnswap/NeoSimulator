@@ -702,7 +702,7 @@
           "index": false
         },
         {
-          "path": "<PRODUCTS>/NeoSimulatorHostTests.xctest",
+          "path": "<PRODUCTS>/NeoSimulatorLicenseTests.xctest",
           "id": "AB6705CF3060FBFC007E9CFA",
           "type": "wrapper.cfbundle",
           "index": false
@@ -792,14 +792,14 @@
               "path": "LicensesSettingsModel.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
-                "NeoSimulatorHostTests/compile-sources"
+                "NeoSimulatorLicenseTests/compile-sources"
               ]
             },
             {
               "path": "LicensesSettingsViewController.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
-                "NeoSimulatorHostTests/compile-sources"
+                "NeoSimulatorLicenseTests/compile-sources"
               ]
             }
           ]
@@ -898,7 +898,7 @@
       "target-membership": [
         "NeoSimulator/resources",
         "NeoSimulatorRenderer/resources",
-        "NeoSimulatorHostTests/resources"
+        "NeoSimulatorLicenseTests/resources"
       ]
     },
     {
@@ -908,7 +908,7 @@
         {
           "path": "LicensesSettingsTests.swift",
           "target-membership": [
-            "NeoSimulatorHostTests/compile-sources"
+            "NeoSimulatorLicenseTests/compile-sources"
           ]
         }
       ]
@@ -1066,9 +1066,9 @@
       }
     },
     {
-      "name": "NeoSimulatorHostTests",
+      "name": "NeoSimulatorLicenseTests",
       "id": "AB6705CE3060FBFC007E9CFA",
-      "product": "Products/NeoSimulatorHostTests.xctest",
+      "product": "Products/NeoSimulatorLicenseTests.xctest",
       "product-type": "bundle.unit-test",
       "build-phases": [
         "compile-sources",
@@ -1110,7 +1110,7 @@
         "LOCALIZATION_PREFERS_STRING_CATALOGS": "YES",
         "MACOSX_DEPLOYMENT_TARGET": "26.4",
         "MARKETING_VERSION": "1.0",
-        "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulatorHostTests",
+        "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulatorLicenseTests",
         "PRODUCT_NAME": "$(TARGET_NAME)",
         "SDKROOT": "macosx",
         "STRING_CATALOG_GENERATE_SYMBOLS": "NO",
