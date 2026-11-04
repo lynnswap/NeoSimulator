@@ -4,7 +4,6 @@ import LicenseList
 import Observation
 import SwiftUI
 import Testing
-import XCTest
 @_spi(NeoSimulator) @testable import XcodeSimulatorHost
 import Synchronization
 
@@ -376,10 +375,9 @@ struct ManagerModelTests {
         }
         func update(_ change: () -> Void, until expected: [String]) async throws {
             change()
-            let updated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                MainActor.assumeIsolated { order() == expected }
-            }, object: nil)
-            try #require(await XCTWaiter.fulfillment(of: [updated], timeout: 5) == .completed)
+            try await wait(timeout: .seconds(5)) {
+                order() == expected
+            }
             #expect(controller.selectedIdentifiers == [.coreDevice(ids["Mike"]!.uuidString)])
             #expect(outline.selectedRow == rows()["Mike"])
         }
@@ -392,10 +390,9 @@ struct ManagerModelTests {
         #expect(artwork() == ["Alpha": false, "Mike": true, "Zulu": true, "Echo": true])
         // The same order still redraws the row whose value changed.
         model.activeStatesDidChange(DeviceActiveStates([ids["Zulu"]!: true, ids["Alpha"]!: false, ids["Mike"]!: false, ids["Echo"]!: true]))
-        let redrawn = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { artwork()["Mike"] == false }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [redrawn], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            artwork()["Mike"] == false
+        }
         #expect(order() == ["Zulu", "Alpha", "Mike", "Echo"])
 
         try await update({ model.activeStateObservationFailed(ManagerModelSource.Failure.unavailable) },
@@ -569,10 +566,9 @@ struct ManagerModelTests {
         for (date, expected) in [(199_999.0, ["Beta", "Alpha"]), (200_001.0, ["Alpha", "Beta"])] {
             await source.setDevices(try devices(firstDate: date))
             await model.inventoryDidChange()
-            let reordered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                MainActor.assumeIsolated { deviceNames() == expected }
-            }, object: nil)
-            try #require(await XCTWaiter.fulfillment(of: [reordered], timeout: 5) == .completed)
+            try await wait(timeout: .seconds(5)) {
+                deviceNames() == expected
+            }
             #expect(controller.selectedIdentifiers == [.coreDevice("A")])
             #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
         }
@@ -612,10 +608,9 @@ struct ManagerModelTests {
             .first { $0.title == "View Screen" })
         viewScreen.performClick(nil)
         #expect(requested == [.coreDevice("A")])
-        let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !model.isBusy }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            !model.isBusy
+        }
     }
 
     @Test func sidebarOptionsRestoreAndUseNativeFallbacks() throws {
@@ -696,12 +691,9 @@ struct ManagerModelTests {
         let selected = mode == "return-selection" ? aID : bID
         let rendered = mode == "new-selection" ? bID : aID
         let renderedController = mode == "new-selection" ? bController : aController
-        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                pane.liveDeviceIdentifier == rendered && renderedController.presentationViewController.parent === pane.liveScreenContainer
-            }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            pane.liveDeviceIdentifier == rendered && renderedController.presentationViewController.parent === pane.liveScreenContainer
+        }
         #expect(main.selectedIdentifiers == [selected])
         #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect((mode == "new-selection" ? aController : bController).presentationViewController.parent == nil)
@@ -809,12 +801,9 @@ struct ManagerModelTests {
         }
         resume.continuation.yield(())
         try await connected.value
-        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                pane.liveDeviceIdentifier == aID && aController.presentationViewController.parent === pane.liveScreenContainer
-            }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            pane.liveDeviceIdentifier == aID && aController.presentationViewController.parent === pane.liveScreenContainer
+        }
         #expect(main.selectedIdentifiers == [aID])
         #expect(model.settings.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
         #expect(!bController.isEmbedded && aSession.state == .connected)
@@ -873,12 +862,9 @@ struct ManagerModelTests {
         try #require(main.selectedIdentifiers.count == 3)
         resume.continuation.yield(())
         try await compacting.value
-        let detached = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                pane.liveDeviceIdentifier == nil && pane.liveCommandTarget == nil
-            }
-        }, object: nil)
-        #expect(await XCTWaiter.fulfillment(of: [detached], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            pane.liveDeviceIdentifier == nil && pane.liveCommandTarget == nil
+        }
         #expect(controller.presentationViewController.parent == nil)
         #expect(main.selectedIdentifiers.count == 3 && model.settings.device == nil)
         try await session.stop()
@@ -912,10 +898,9 @@ struct ManagerModelTests {
         try await main.presentConnectedScreen(aID, purpose: .requested)
         let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
         #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-        let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !aController.isEmbedded }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            pane.liveDeviceIdentifier == nil && !aController.isEmbedded
+        }
         let compactIntent = main.presentationIntent
         main.update()
         let content = try #require(main.window?.contentView)
@@ -935,12 +920,9 @@ struct ManagerModelTests {
             row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
         })
         main.updateDeviceMenu(for: bRow)
-        let embedded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                pane.liveDeviceIdentifier == bID && bController.presentationViewController.parent === pane.liveScreenContainer
-            }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [embedded], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            pane.liveDeviceIdentifier == bID && bController.presentationViewController.parent === pane.liveScreenContainer
+        }
         try await main.presentConnectedScreen(bID, purpose: .automatic)
         #expect(main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == bID)
         #expect(bController.presentationViewController.parent === pane.liveScreenContainer)
@@ -990,18 +972,16 @@ struct ManagerModelTests {
             let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
             #expect(!compact.isHidden && main.validateToolbarItem(compact))
             #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-            let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !controller.isEmbedded }
-            }, object: nil)
-            try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
+            try await wait(timeout: .seconds(5)) {
+                pane.liveDeviceIdentifier == nil && !controller.isEmbedded
+            }
             #expect(compact.isHidden && !main.validateToolbarItem(compact))
             try await main.presentConnectedScreen(aID, purpose: .requested)
             #expect(pane.liveDeviceIdentifier == nil && !controller.isEmbedded)
             main.showDevice(aID)
-            let embedded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                MainActor.assumeIsolated { pane.liveDeviceIdentifier == aID && controller.isEmbedded }
-            }, object: nil)
-            try #require(await XCTWaiter.fulfillment(of: [embedded], timeout: 5) == .completed)
+            try await wait(timeout: .seconds(5)) {
+                pane.liveDeviceIdentifier == aID && controller.isEmbedded
+            }
         }
         try await session.stop()
         main.window?.close()
@@ -1042,10 +1022,9 @@ struct ManagerModelTests {
         #expect(controller.validateMenuItem(command))
         let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
         #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-        let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !controller.isEmbedded }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            pane.liveDeviceIdentifier == nil && !controller.isEmbedded
+        }
         #expect(controller.presentationViewController.supplementalTarget(forAction: action, sender: command) as AnyObject? === controller)
         #expect(controller.validateMenuItem(command))
         try await session.stop()
@@ -1092,21 +1071,18 @@ struct ManagerModelTests {
         } else {
             let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
             #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-            let compacted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                MainActor.assumeIsolated { pane.liveDeviceIdentifier == nil && !aController.isEmbedded }
-            }, object: nil)
-            try #require(await XCTWaiter.fulfillment(of: [compacted], timeout: 5) == .completed)
+            try await wait(timeout: .seconds(5)) {
+                pane.liveDeviceIdentifier == nil && !aController.isEmbedded
+            }
         }
         await source.returnOnNextRead(SimulatorDeviceSettings(appearance: "dark"))
         await source.completeWrite()
-        let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !model.isBusy }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [completed], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            !model.isBusy && bController.isEmbedded == selectsAnotherDevice && !aController.isEmbedded
+        }
         #expect(main.selectedIdentifiers == [selectsAnotherDevice ? bID : aID])
         #expect(pane.liveDeviceIdentifier == (selectsAnotherDevice ? bID : nil))
-        #expect(bController.isEmbedded == selectsAnotherDevice)
-        #expect(!aController.isEmbedded && aSession.state == .connected)
+        #expect(aSession.state == .connected)
         try await aSession.stop()
         try await bSession.stop()
         main.window?.close()
@@ -1148,17 +1124,15 @@ struct ManagerModelTests {
         let closing = Task { try await controller.stopAndClose() }
         #expect(await releases.next() != nil)
         // The remote controller reports that it is closing only through its change callback.
-        let disabled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !capture.isEnabled }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [disabled], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            !capture.isEnabled
+        }
         #expect(pane.liveScreen === screen)
         resume.continuation.yield(())
         try await closing.value
-        let previewed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { pane.liveScreenContainer.view.isHidden && capture.isHidden }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [previewed], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            pane.liveScreenContainer.view.isHidden && capture.isHidden
+        }
         #expect(app.screens.screen(for: aID) == nil && pane.liveDeviceIdentifier == nil)
     }
 
@@ -1361,10 +1335,9 @@ struct ManagerModelTests {
             $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
         })
         // The controller publishes rows in a separate observation callback after the model finishes reading.
-        let rowsPublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
-            MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == 1 }
-        }, object: table)
-        try #require(await XCTWaiter.fulfillment(of: [rowsPublished], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            table.numberOfRows == 1
+        }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         let filter = try #require(views.compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Report Type" })
         if selection.page == .reports {
@@ -1425,10 +1398,9 @@ struct ManagerModelTests {
         let table = try #require(views.compactMap { $0 as? NSTableView }.first {
             $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
         })
-        let rowsPublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
-            MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == 1 }
-        }, object: table)
-        try #require(await XCTWaiter.fulfillment(of: [rowsPublished], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            table.numberOfRows == 1
+        }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         let remove = try #require(views.compactMap { $0 as? NSButton }.first { $0.toolTip == "Remove…" })
         try #require(remove.isEnabled)
@@ -1442,10 +1414,9 @@ struct ManagerModelTests {
         await source.failInspectorRead()
         await finishInspectorRead(controller.inspection)
         let status = try #require(views.compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "Inspector Status" })
-        let failurePublished = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
-            MainActor.assumeIsolated { (object as? NSTextField)?.stringValue.contains("Unavailable") == true }
-        }, object: status)
-        try #require(await XCTWaiter.fulfillment(of: [failurePublished], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            status.stringValue.contains("Unavailable")
+        }
         #expect(table.numberOfRows == 0 && table.selectedRow == -1)
         #expect(!remove.isEnabled)
         controller.stopReading()
@@ -1498,12 +1469,7 @@ struct ManagerModelTests {
         let table = try #require(views.compactMap { $0 as? NSTableView }.first {
             $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
         })
-        func rows(_ count: Int) -> XCTNSPredicateExpectation {
-            XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
-                MainActor.assumeIsolated { (object as? NSTableView)?.numberOfRows == count }
-            }, object: table)
-        }
-        try #require(await XCTWaiter.fulfillment(of: [rows(1)], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) { table.numberOfRows == 1 }
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         let search = try #require(views.compactMap { $0 as? NSSearchField }.first)
         search.stringValue = "dev.example"
@@ -1516,7 +1482,7 @@ struct ManagerModelTests {
         controller.applicationsChanged(on: device.id)
         #expect(await events.next() == .inspect(device.id))
         await finishInspectorRead(controller.inspection)
-        try #require(await XCTWaiter.fulfillment(of: [rows(2)], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) { table.numberOfRows == 2 }
         #expect(controller.inspection.applications.map(\.name) == ["Installed", "Kept"])
         #expect(table.selectedRow == 1 && search.stringValue == "dev.example")
         controller.stopReading()
@@ -1884,7 +1850,7 @@ struct ManagerModelTests {
         }
         await events.next()
         #expect(owner.isRunning && !didExit)
-        owner.terminate()
+        try input.fileHandleForWriting.close()
         await waiting.value
         #expect(didExit)
     }
@@ -2516,10 +2482,9 @@ struct ManagerModelTests {
         #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above) == .move)
         #expect(!controller.tableView(table, acceptDrop: drag, row: 0, dropOperation: .above))
         #expect(controller.tableView(table, acceptDrop: drag, row: 1, dropOperation: .above))
-        let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { table.selectedRow == 3 }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [selected], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            table.selectedRow == 3
+        }
         #expect(store.profiles.map(\.id) == [third.id, first.id, second.id])
         #expect(controller.model.selectedProfile === second && store.profiles.first === third)
         let manager = SimulatorManagerModel(source: ManagerModelSource(devices: []), serviceProfiles: store)
@@ -2718,10 +2683,9 @@ struct ManagerModelTests {
         let search = controller.searchAccessory.searchField
         search.stringValue = "COM.APPLE.CHRONOD"
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
-        let filtered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { outline.outline.numberOfRows == 2 && outline.outline.isItemExpanded(widgets) }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [filtered], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            outline.outline.numberOfRows == 2 && outline.outline.isItemExpanded(widgets)
+        }
         #expect(outline.model.sections.flatMap(\.items).map(\.label) == ["com.apple.chronod"])
         #expect(!widgets.isExpanded && category.isExpanded)
         search.stringValue = "no-matching-service"
@@ -2729,10 +2693,9 @@ struct ManagerModelTests {
         #expect(outline.model.sections.isEmpty)
         search.stringValue = ""
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
-        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { outline.outline.isItemExpanded(category) && !outline.outline.isItemExpanded(widgets) }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [restored], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            outline.outline.isItemExpanded(category) && !outline.outline.isItemExpanded(widgets)
+        }
         #expect(outline.outline.tableColumns.first?.width == columnWidth)
         let row = outline.outline.row(forItem: item)
         let cell = try #require(outline.outline.view(atColumn: 0, row: row, makeIfNecessary: true))
@@ -2755,10 +2718,9 @@ struct ManagerModelTests {
         #expect(model.canSaveProfile)
         model.saveProfile()
         #expect(model.profileEditor != nil)
-        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { window.attachedSheet != nil }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [presented], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            window.attachedSheet != nil
+        }
         let expandedWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.collapseItem(category)
         view.layoutSubtreeIfNeeded()
@@ -2829,13 +2791,10 @@ struct ManagerModelTests {
         search.stringValue = "com.apple.searchd"
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
         controller.model.create()
-        let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                guard let field = window.firstResponder as? NSTextView else { return false }
-                return field.string == "Profile (1)" && field.selectedRange() == NSRange(location: 0, length: 11)
-            }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [focused], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            guard let field = window.firstResponder as? NSTextView else { return false }
+            return field.string == "Profile (1)" && field.selectedRange() == NSRange(location: 0, length: 11)
+        }
         #expect(window.attachedSheet == nil)
         let first = controller.model.selectedProfile
         let field = try #require(window.firstResponder as? NSTextView)
@@ -3016,12 +2975,9 @@ struct ManagerModelTests {
     }
 
     private func awaitServiceOperations(_ manager: SimulatorManagerModel) async throws {
-        let idle = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                !manager.isBusy && manager.managingDeviceIDs.isEmpty && manager.backgroundServices.changingDeviceIDs.isEmpty
-            }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [idle], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            !manager.isBusy && manager.managingDeviceIDs.isEmpty && manager.backgroundServices.changingDeviceIDs.isEmpty
+        }
     }
 
     @Test func serviceOverridesUseTheInspectedStateForSharedServices() async throws {
@@ -3385,12 +3341,9 @@ struct ManagerModelTests {
         #expect(await events.next() == .open(pairedID))
         await source.setDevices([phone(), watch("Renamed Companion")])
         await source.completeOpen()
-        let published = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                !manager.isBusy && manager.activePairedDevice(for: phone().id)?.name == "Renamed Companion"
-            }
-        }, object: nil)
-        try #require(await XCTWaiter.fulfillment(of: [published], timeout: 5) == .completed)
+        try await wait(timeout: .seconds(5)) {
+            !manager.isBusy && manager.activePairedDevice(for: phone().id)?.name == "Renamed Companion"
+        }
         await source.setDevices([phone(active: false), watch("Renamed Companion")])
         await manager.refresh()
         #expect(manager.activePairedDevice(for: phone().id) == nil)
