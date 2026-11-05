@@ -812,42 +812,50 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
             let resizingApp = screen.resizingApp
             let title = resizingApp ? "Stop Resize" : "Resize App"
-            item.label = title
-            item.toolTip = title
+            if item.label != title { item.label = title }
+            if item.toolTip != title { item.toolTip = title }
             item.menuFormRepresentation?.title = title
             if let button = item.view as? NSButton {
                 button.toolTip = title
                 button.setAccessibilityLabel(title)
             }
-            item.isHidden = !screen.supports("resizeApp")
-            item.isEnabled = screen.isEnabled("resizeApp")
+            let hidden = !screen.supports("resizeApp")
+            let enabled = screen.isEnabled("resizeApp")
+            if item.isHidden != hidden { item.isHidden = hidden }
+            if item.isEnabled != enabled { item.isEnabled = enabled }
             item.menuFormRepresentation?.isEnabled = item.isEnabled
             item.menuFormRepresentation?.state = resizingApp ? .on : .off
             if let button = item.view as? NSButton {
-                button.state = resizingApp ? .on : .off
-                button.isEnabled = item.isEnabled
+                let state: NSControl.StateValue = resizingApp ? .on : .off
+                if button.state != state { button.state = state }
+                if button.isEnabled != item.isEnabled { button.isEnabled = item.isEnabled }
             }
         }
         if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
             let capturesKeyboard = screen.capturesKeyboard
-            item.isHidden = !screen.supports("captureKeyboard")
-            item.isEnabled = screen.isEnabled("captureKeyboard")
+            let hidden = !screen.supports("captureKeyboard")
+            let enabled = screen.isEnabled("captureKeyboard")
+            if item.isHidden != hidden { item.isHidden = hidden }
+            if item.isEnabled != enabled { item.isEnabled = enabled }
             item.menuFormRepresentation?.state = capturesKeyboard ? .on : .off
             item.menuFormRepresentation?.isEnabled = item.isEnabled
             if let button = item.view as? NSButton {
-                button.state = capturesKeyboard ? .on : .off
-                button.isEnabled = item.isEnabled
+                let state: NSControl.StateValue = capturesKeyboard ? .on : .off
+                if button.state != state { button.state = state }
+                if button.isEnabled != item.isEnabled { button.isEnabled = item.isEnabled }
                 button.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
             }
         }
         if let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup {
-            group.isHidden = !screen.supports(CanvasZoom.Action.fit.rawValue)
+            let hidden = !screen.supports(CanvasZoom.Action.fit.rawValue)
+            if group.isHidden != hidden { group.isHidden = hidden }
             for (index, action) in CanvasZoom.Action.allCases.enumerated() {
-                group.subitems[index].isEnabled = screen.isEnabled(action.rawValue)
+                let enabled = screen.isEnabled(action.rawValue)
+                if group.subitems[index].isEnabled != enabled { group.subitems[index].isEnabled = enabled }
             }
             if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {
-                group.setSelected(true, at: selected)
-            } else {
+                if group.selectedIndex != selected { group.setSelected(true, at: selected) }
+            } else if group.selectedIndex >= 0 {
                 // selectOne rejects clearing its last selection, including selectedIndex = -1.
                 group.selectionMode = .selectAny
                 for index in group.subitems.indices { group.setSelected(false, at: index) }
