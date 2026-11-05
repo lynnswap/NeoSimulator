@@ -1,0 +1,726 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Set Up NeoSimulator": {
+      "comment": "Heading and window title for the initial Device Hub access setup. Keep NeoSimulator unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إعداد NeoSimulator"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator einrichten"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up NeoSimulator"
+          }
+        },
+        "en-GB": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up NeoSimulator"
+          }
+        },
+        "en-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up NeoSimulator"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurar NeoSimulator"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurar NeoSimulator"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurer NeoSimulator"
+          }
+        },
+        "fr-CA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurer NeoSimulator"
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator सेट अप करें"
+          }
+        },
+        "id": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siapkan NeoSimulator"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configura NeoSimulator"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator の初期設定"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator 설정"
+          }
+        },
+        "nl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator instellen"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurar o NeoSimulator"
+          }
+        },
+        "pt-PT": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurar o NeoSimulator"
+          }
+        },
+        "ro": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurare NeoSimulator"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Настройка NeoSimulator"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ตั้งค่า NeoSimulator"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator Kurulumu"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置 NeoSimulator"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設定 NeoSimulator"
+          }
+        }
+      }
+    },
+    "NeoSimulator updates Device Hub settings so simulators open in NeoSimulator.": {
+      "comment": "Explains why Device Hub settings need to change. Keep NeoSimulator and Device Hub unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يغيّر NeoSimulator إعدادات Device Hub لعرض أجهزة المحاكاة في NeoSimulator."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator ändert die Einstellungen von Device Hub, damit Simulatoren in NeoSimulator geöffnet werden."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator updates Device Hub settings so simulators open in NeoSimulator."
+          }
+        },
+        "en-GB": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator updates Device Hub settings so simulators open in NeoSimulator."
+          }
+        },
+        "en-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator updates Device Hub settings so simulators open in NeoSimulator."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator modifica los ajustes de Device Hub para que los simuladores se abran en NeoSimulator."
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator modifica la configuración de Device Hub para que los simuladores se abran en NeoSimulator."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator modifie les réglages de Device Hub pour que les simulateurs s’ouvrent dans NeoSimulator."
+          }
+        },
+        "fr-CA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator modifie les réglages de Device Hub pour que les simulateurs s’ouvrent dans NeoSimulator."
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "सिम्युलेटर को NeoSimulator में खोलने के लिए NeoSimulator, Device Hub की सेटिंग बदलता है।"
+          }
+        },
+        "id": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator mengubah pengaturan Device Hub agar simulator terbuka di NeoSimulator."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator modifica le impostazioni di Device Hub per aprire i simulatori in NeoSimulator."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シミュレーターを NeoSimulator で表示するために、Device Hub の設定を変更します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시뮬레이터가 NeoSimulator에서 열리도록 Device Hub 설정을 변경합니다."
+          }
+        },
+        "nl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator wijzigt de instellingen van Device Hub zodat simulatoren in NeoSimulator worden geopend."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O NeoSimulator altera os ajustes do Device Hub para que os simuladores sejam abertos no NeoSimulator."
+          }
+        },
+        "pt-PT": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O NeoSimulator altera as definições do Device Hub para que os simuladores sejam abertos no NeoSimulator."
+          }
+        },
+        "ro": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator modifică setările Device Hub pentru ca simulatoarele să se deschidă în NeoSimulator."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator изменяет настройки Device Hub, чтобы симуляторы открывались в NeoSimulator."
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator จะเปลี่ยนการตั้งค่า Device Hub เพื่อให้ตัวจำลองเปิดใน NeoSimulator"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator, simülatörlerin NeoSimulator’da açılması için Device Hub ayarlarını değiştirir."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator 会更改 Device Hub 设置，以便在 NeoSimulator 中打开模拟器。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NeoSimulator 會更改 Device Hub 設定，讓模擬器在 NeoSimulator 中開啟。"
+          }
+        }
+      }
+    },
+    "Allow access to the Device Hub settings folder to make this change.": {
+      "comment": "Explains which folder the app needs to access. Keep Device Hub unchanged.",
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "اسمح بالوصول إلى مجلد إعدادات Device Hub لإجراء هذا التغيير."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erlaube den Zugriff auf den Einstellungsordner von Device Hub, um diese Änderung vorzunehmen."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow access to the Device Hub settings folder to make this change."
+          }
+        },
+        "en-GB": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow access to the Device Hub settings folder to make this change."
+          }
+        },
+        "en-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow access to the Device Hub settings folder to make this change."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permite el acceso a la carpeta de ajustes de Device Hub para realizar este cambio."
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permite el acceso a la carpeta de configuración de Device Hub para realizar este cambio."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autorisez l’accès au dossier des réglages de Device Hub pour effectuer cette modification."
+          }
+        },
+        "fr-CA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autorisez l’accès au dossier des réglages de Device Hub pour effectuer cette modification."
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "यह बदलाव करने के लिए Device Hub के सेटिंग फ़ोल्डर का ऐक्सेस दें।"
+          }
+        },
+        "id": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Izinkan akses ke folder pengaturan Device Hub untuk melakukan perubahan ini."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consenti l’accesso alla cartella delle impostazioni di Device Hub per apportare questa modifica."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設定を変更できるよう、Device Hub の設定フォルダへのアクセスを許可してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설정을 변경하려면 Device Hub 설정 폴더에 대한 접근을 허용해 주세요."
+          }
+        },
+        "nl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geef toegang tot de instellingenmap van Device Hub om deze wijziging door te voeren."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permita o acesso à pasta de ajustes do Device Hub para fazer essa alteração."
+          }
+        },
+        "pt-PT": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permita o acesso à pasta de definições do Device Hub para efetuar esta alteração."
+          }
+        },
+        "ro": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permite accesul la dosarul cu setările Device Hub pentru a face această modificare."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Разрешите доступ к папке настроек Device Hub, чтобы внести это изменение."
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "โปรดอนุญาตให้เข้าถึงโฟลเดอร์การตั้งค่าของ Device Hub เพื่อเปลี่ยนการตั้งค่านี้"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu değişikliği yapmak için Device Hub ayar klasörüne erişime izin verin."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请允许访问 Device Hub 的设置文件夹，以进行这项更改。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "請允許取用 Device Hub 的設定檔案夾，以進行這項更改。"
+          }
+        }
+      }
+    },
+    "Click the button below to open the folder picker. Keep the displayed “Preferences” folder open and click “Allow Access”.": {
+      "comment": "Instructions for the following folder picker. Preferences is the displayed folder name; Allow Access is the existing English button in that picker. Preserve both labels.",
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "انقر على الزر أدناه لفتح نافذة اختيار المجلد. أبقِ مجلد «Preferences» المعروض مفتوحًا وانقر على «Allow Access»."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klicke auf die Schaltfläche unten, um die Ordnerauswahl zu öffnen. Lass den angezeigten Ordner „Preferences“ geöffnet und klicke auf „Allow Access“."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click the button below to open the folder picker. Keep the displayed “Preferences” folder open and click “Allow Access”."
+          }
+        },
+        "en-GB": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click the button below to open the folder picker. Keep the displayed “Preferences” folder open and click “Allow Access”."
+          }
+        },
+        "en-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click the button below to open the folder picker. Keep the displayed “Preferences” folder open and click “Allow Access”."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Haz clic en el botón de abajo para abrir el selector de carpetas. Mantén abierta la carpeta «Preferences» que se muestra y haz clic en «Allow Access»."
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Haz clic en el botón de abajo para abrir el selector de carpetas. Mantén abierta la carpeta «Preferences» que se muestra y haz clic en «Allow Access»."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cliquez sur le bouton ci-dessous pour ouvrir le sélecteur de dossiers. Laissez le dossier « Preferences » affiché ouvert et cliquez sur « Allow Access »."
+          }
+        },
+        "fr-CA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cliquez sur le bouton ci-dessous pour ouvrir le sélecteur de dossiers. Laissez le dossier « Preferences » affiché ouvert et cliquez sur « Allow Access »."
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "फ़ोल्डर चुनने की विंडो खोलने के लिए नीचे दिया गया बटन क्लिक करें। दिख रहा “Preferences” फ़ोल्डर खुला रखें और “Allow Access” पर क्लिक करें।"
+          }
+        },
+        "id": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klik tombol di bawah untuk membuka pemilih folder. Biarkan folder “Preferences” yang ditampilkan tetap terbuka, lalu klik “Allow Access”."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fai clic sul pulsante qui sotto per aprire la finestra di selezione della cartella. Lascia aperta la cartella “Preferences” visualizzata e fai clic su “Allow Access”."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下のボタンを押すと、フォルダの選択画面が開きます。表示されている「Preferences」フォルダのまま「Allow Access」を押してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "아래 버튼을 누르면 폴더 선택 창이 열립니다. 표시된 ‘Preferences’ 폴더를 그대로 열어 둔 채 ‘Allow Access’를 눌러 주세요."
+          }
+        },
+        "nl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klik op de knop hieronder om de mapkiezer te openen. Laat de weergegeven map ‘Preferences’ open en klik op ‘Allow Access’."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clique no botão abaixo para abrir o seletor de pastas. Mantenha a pasta “Preferences” exibida aberta e clique em “Allow Access”."
+          }
+        },
+        "pt-PT": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clique no botão abaixo para abrir o seletor de pastas. Mantenha aberta a pasta «Preferences» apresentada e clique em «Allow Access»."
+          }
+        },
+        "ro": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apasă pe butonul de mai jos pentru a deschide selectorul de dosare. Lasă deschis dosarul „Preferences” afișat și apasă pe „Allow Access”."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нажмите кнопку ниже, чтобы открыть окно выбора папки. Оставьте показанную папку «Preferences» открытой и нажмите «Allow Access»."
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "คลิกปุ่มด้านล่างเพื่อเปิดหน้าต่างเลือกโฟลเดอร์ เปิดโฟลเดอร์ “Preferences” ที่แสดงอยู่ไว้ แล้วคลิก “Allow Access”"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klasör seçiciyi açmak için aşağıdaki düğmeye tıklayın. Görüntülenen “Preferences” klasörünü açık tutun ve “Allow Access” düğmesine tıklayın."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击下方按钮打开文件夹选择窗口。保持显示的“Preferences”文件夹处于打开状态，然后点击“Allow Access”。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按一下下方按鈕來開啟檔案夾選擇視窗。保持顯示的「Preferences」檔案夾開啟，然後按一下「Allow Access」。"
+          }
+        }
+      }
+    },
+    "Allow Access…": {
+      "comment": "Button that opens the Device Hub settings folder picker.",
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "السماح بالوصول…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zugriff erlauben…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Access…"
+          }
+        },
+        "en-GB": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Access…"
+          }
+        },
+        "en-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow Access…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permitir acceso…"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permitir acceso…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoriser l’accès…"
+          }
+        },
+        "fr-CA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoriser l’accès…"
+          }
+        },
+        "hi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ऐक्सेस की अनुमति दें…"
+          }
+        },
+        "id": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Izinkan Akses…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consenti accesso…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセスを許可…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "접근 허용…"
+          }
+        },
+        "nl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sta toegang toe…"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permitir Acesso…"
+          }
+        },
+        "pt-PT": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permitir acesso…"
+          }
+        },
+        "ro": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permite accesul…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Разрешить доступ…"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "อนุญาตการเข้าถึง…"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erişime İzin Ver…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允许访问…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允許取用…"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

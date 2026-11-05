@@ -156,7 +156,7 @@ import Testing
 
     private static func remote(identifier: String = "report-device", reality: String = "physical", transport: DeviceInspectorTransport) throws -> DeviceInspector {
         let data = Data("""
-        {"result":{"devices":[{"identifier":"\(identifier)","properties":{"hardware":{"reality":"\(reality)","udid":"hardware-id"},"state":{"name":"Fixture"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.listFiles"},{"featureIdentifier":"com.apple.coredevice.feature.transferFiles"}]}]}}
+        {"result":{"devices":[{"identifier":"\(identifier)","properties":{"hardware":{"fidelity":"\(reality)","udid":"hardware-id"},"state":{"name":"Fixture"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.listFiles"},{"featureIdentifier":"com.apple.coredevice.feature.transferFiles"}]}]}}
         """.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         return DeviceInspector(device: .remote(device), simulatorXcodeURL: nil, transport: transport)

@@ -1435,7 +1435,7 @@ struct RemoteDeviceScreenTests {
         // The guest refuses the first service with its own error and then creates service 7.
         let refusal = NSError(domain: "dev.lynnswap.NeoSimulator.fixture", code: 5)
         var refusals = 1
-        peers.reply = { reply in
+        peers.reply = { _, reply in
             if refusals > 0 { refusals -= 1; try wire.refuse(reply, with: refusal) } else { try wire.create(reply, id: 7) }
         }
         let keyboard = try await NativeDeviceKeyboard.connect(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
@@ -1465,6 +1465,228 @@ struct RemoteDeviceScreenTests {
         let messages = await peers.messages(to: universalHID, count: expected.count)
         withExtendedLifetime(keyboard) {}
         #expect(messages.count == expected.count && zip(messages, expected).allSatisfy { xpc_equal($0, $1) })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func guestOrientationReadsAndRotatesWithoutCoreDeviceDiscoveryAndPreservesGuestErrors() async throws {
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: .shared)
+        let errors = try UniversalHIDFixtureMessages(runtime: .shared)
+        let refusal = NSError(domain: "dev.lynnswap.NeoSimulator.fixture", code: 7)
+        var physical = "unknown", nonFlat = "portrait"
+        peers.reply = { message, reply in
+            let payload = try #require(xpc_dictionary_get_value(message, "payload"))
+            if let rotation = xpc_dictionary_get_value(payload, "rotate") {
+                #expect(xpc_dictionary_get_string(rotation, "_0").map { String(cString: $0) } == "right")
+                physical = "landscapeRight"
+                nonFlat = physical
+            } else if let change = xpc_dictionary_get_value(payload, "changeOrientation") {
+                physical = try #require(xpc_dictionary_get_string(change, "_0").map { String(cString: $0) })
+                if physical != "faceUp" { nonFlat = physical }
+            } else {
+                #expect(xpc_dictionary_get_value(payload, "currentOrientation") != nil)
+            }
+            xpc_dictionary_set_string(reply, "currentDeviceOrientation", physical)
+            xpc_dictionary_set_string(reply, "currentDeviceNonFlatOrientation", nonFlat)
+            xpc_dictionary_set_bool(reply, "currentDeviceOrientationLocked", false)
+        }
+        let orientation = try GuestDeviceOrientation(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
+        let initial = try await orientation.read()
+        #expect(initial.physical == .portrait && initial.displayAngle == 0)
+        let rotated = try await orientation.rotate(left: false)
+        #expect(rotated.physical == .landscapeRight && rotated.displayAngle == -90)
+        let flat = try await orientation.set(.faceUp)
+        #expect(flat.physical == .faceUp && flat.displayAngle == -90)
+        peers.reply = { _, reply in try errors.refuse(reply, with: refusal) }
+        await #expect { try await orientation.set(.portrait) } throws: { ($0 as NSError) == refusal }
+        #expect(peers.lookUps == [GuestDeviceOrientation.feature])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func guestOrientationReportsAServiceThatNeverReplies() async throws {
+        let peers = GuestHIDPeerFixture()
+        peers.holdsReplies = true
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let orientation = try GuestDeviceOrientation(guest: guest, timeout: .milliseconds(50))
+        await #expect { try await orientation.read() } throws: { $0.localizedDescription.contains("timed out") }
+        peers.holdsReplies = false
+        peers.reply = { _, reply in
+            xpc_dictionary_set_string(reply, "currentDeviceOrientation", "portrait")
+            xpc_dictionary_set_string(reply, "currentDeviceNonFlatOrientation", "portrait")
+            xpc_dictionary_set_bool(reply, "currentDeviceOrientationLocked", false)
+        }
+        #expect(try await orientation.read().physical == .portrait)
+        #expect(peers.lookUps == [GuestDeviceOrientation.feature, GuestDeviceOrientation.feature])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func simulatorColorFiltersEnableChangeAndDisableThroughTheInstalledNativeCodecs() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        var current = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_bool(current, "enabled", false)
+        peers.reply = { message, reply in
+            let action = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+            let output = xpc_dictionary_create(nil, nil, 0)
+            if action == "com.apple.coredevice.action.getcolorfilter" {
+                xpc_dictionary_set_value(output, "colorFilter", current)
+            } else {
+                #expect(action == "com.apple.coredevice.action.setcolorfilter")
+                let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+                current = try #require(xpc_dictionary_get_value(input, "colorFilter"))
+            }
+            xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+        }
+        let changes: [(SimulatorColorFilter, Double?, Double?)] = [
+            (.protanopia, 0.75, 0.75), (.deuteranopia, nil, 0.75), (.tritanopia, nil, 0.75),
+            (.grayscale, nil, nil), (.none, nil, nil),
+        ]
+        for (filter, intensity, expectedIntensity) in changes {
+            let name: String?
+            if filter == .none { name = nil }
+            else {
+                let native = try await settings.namedValue("DeviceColorFilter.FilterType", member: filter.rawValue)
+                name = try #require((native as? [String: Any])?["name"] as? String)
+            }
+            try await settings.setColorFilter(filter, intensity: intensity)
+            let read = try await settings.get("GetColorFilterActionDeclaration")["colorFilter"]
+            #expect(read?["enabled"]?.boolean == (filter != .none))
+            #expect(read?["filterType"]?["name"]?.string == name)
+            #expect(read?["intensity"] == expectedIntensity.map(DeviceInspectorValue.number))
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func simulatorAppearanceConstantsUseTheInstalledNativeValueABI() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        let appearance = try await settings.namedValue("DeviceLookAndFeel", member: "clearLiquidGlass")
+        let filter = try await settings.namedValue("DeviceColorFilter.FilterType", member: "grayscale")
+        let appearanceName = try #require((appearance as? [String: Any])?["name"] as? String)
+        let filterName = try #require((filter as? [String: Any])?["name"] as? String)
+        #expect(!appearanceName.isEmpty && !filterName.isEmpty)
+        peers.reply = { message, reply in
+            let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+            let look = try #require(xpc_dictionary_get_value(input, "lookAndFeel"))
+            #expect(xpc_dictionary_get_string(look, "name").map { String(cString: $0) } == appearanceName)
+            xpc_dictionary_set_value(reply, "CoreDevice.output", xpc_dictionary_create(nil, nil, 0))
+        }
+        try await settings.set("SetDeviceLookAndFeelActionDeclaration", input: ["lookAndFeel": appearance])
+        peers.reply = { message, reply in
+            let name = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+            let look = xpc_dictionary_create(nil, nil, 0)
+            xpc_dictionary_set_string(look, "name", appearanceName)
+            let output = xpc_dictionary_create(nil, nil, 0)
+            if name == "com.apple.coredevice.action.getdevicelookandfeel" {
+                xpc_dictionary_set_value(output, "lookAndFeel", look)
+            } else {
+                #expect(name == "com.apple.coredevice.action.getsupportedlooksandfeels")
+                let choices = xpc_array_create(nil, 0)
+                xpc_array_append_value(choices, look)
+                xpc_dictionary_set_value(output, "looksAndFeels", choices)
+            }
+            xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+        }
+        #expect(try await settings.get("GetDeviceLookAndFeelActionDeclaration")["lookAndFeel"]?["name"]?.string == appearanceName)
+        #expect(try await settings.get("GetSupportedLooksAndFeelsActionDeclaration")["looksAndFeels"]?.array
+            == [.object(["name": .string(appearanceName)])])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func simulatorAppearanceAndVoiceOverActionsUseInstalledNativeCodecs() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        let cases: [(String, String, Bool?)] = [
+            ("ReduceMotion", "reduceMotion", true), ("ShowBorders", "showBorders", true),
+            ("ReduceTransparency", "reduceTransparency", false), ("VoiceOver", "voiceOverConfiguration", true),
+            ("LiquidGlassConfiguration", "configuration", nil),
+        ]
+        for (declaration, key, enabled) in cases {
+            peers.reply = { message, reply in
+                #expect(xpc_dictionary_get_string(message, "CoreDevice.deviceIdentifier").map { String(cString: $0) }
+                    == "simulator-not-in-coredevice")
+                let action = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+                let output = xpc_dictionary_create(nil, nil, 0)
+                if action == "com.apple.coredevice.action.get" + declaration.lowercased() {
+                    let configuration = xpc_dictionary_create(nil, nil, 0)
+                    if let enabled { xpc_dictionary_set_bool(configuration, "enabled", enabled) }
+                    else { xpc_dictionary_set_double(configuration, "opacity", 0.5) }
+                    xpc_dictionary_set_value(output, key, configuration)
+                } else {
+                    #expect(action == "com.apple.coredevice.action.set" + declaration.lowercased())
+                    let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+                    let configuration = try #require(xpc_dictionary_get_value(input, key))
+                    if let enabled { #expect(xpc_dictionary_get_bool(configuration, "enabled") == enabled) }
+                    else { #expect(xpc_dictionary_get_double(configuration, "opacity") == 0.5) }
+                }
+                xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+            }
+            let value = try await settings.get("Get" + declaration + "ActionDeclaration")[key]
+            let input: [String: Any]
+            if let enabled {
+                #expect(value?["enabled"]?.boolean == enabled)
+                input = ["enabled": enabled]
+            } else {
+                #expect(value?["opacity"] == .number(0.5))
+                input = ["opacity": 0.5]
+            }
+            try await settings.set("Set" + declaration + "ActionDeclaration", input: [key: input])
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func simulatorSettingsReachTheGuestWithoutCoreDeviceDiscoveryAndKeepProviderFailures() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        var actions: [String] = []
+        peers.reply = { message, reply in
+            #expect(xpc_dictionary_get_string(message, "CoreDevice.deviceIdentifier").map { String(cString: $0) }
+                    == "simulator-not-in-coredevice")
+            let action = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+            actions.append(action)
+            let output = xpc_dictionary_create(nil, nil, 0)
+            if action == "com.apple.coredevice.action.getreducemotion" {
+                let motion = xpc_dictionary_create(nil, nil, 0)
+                xpc_dictionary_set_bool(motion, "enabled", true)
+                xpc_dictionary_set_value(output, "reduceMotion", motion)
+            } else {
+                let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+                let motion = try #require(xpc_dictionary_get_value(input, "reduceMotion"))
+                #expect(!xpc_dictionary_get_bool(motion, "enabled"))
+            }
+            xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+        }
+        let value = try await settings.get("GetReduceMotionActionDeclaration")
+        #expect(value["reduceMotion"]?["enabled"]?.boolean == true)
+        try await settings.set("SetReduceMotionActionDeclaration", input: ["reduceMotion": ["enabled": false]])
+        #expect(actions == ["com.apple.coredevice.action.getreducemotion", "com.apple.coredevice.action.setreducemotion"])
+        #expect(peers.lookUps == ["com.apple.coredevice.feature.customizeappearancesettings"])
+        peers.reply = { _, reply in
+            let error = xpc_dictionary_create(nil, nil, 0)
+            xpc_dictionary_set_string(error, "domain", "fixture-provider")
+            xpc_dictionary_set_int64(error, "code", 17)
+            xpc_dictionary_set_value(reply, "CoreDevice.error", error)
+        }
+        await #expect { try await settings.get("GetReduceMotionActionDeclaration") } throws: {
+            let error = $0 as NSError
+            return error.domain == "fixture-provider" && error.code == 17
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func cancellingASimulatorSettingReadClosesThePendingGuestRequest() async throws {
+        let peers = GuestHIDPeerFixture()
+        peers.holdsReplies = true
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        let reading = Task { try await settings.get("GetReduceMotionActionDeclaration") }
+        _ = await peers.messages(to: "com.apple.coredevice.feature.customizeappearancesettings", count: 1)
+        reading.cancel()
+        await #expect(throws: CancellationError.self) { try await reading.value }
     }
 
     @Test func nativeTrackpadGesturesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
@@ -1791,7 +2013,7 @@ struct RemoteDeviceScreenTests {
     }
 
     private func device(identifier: String = "command-identifier") throws -> CoreDeviceDevice {
-        let data = Data(#"{"result":{"devices":[{"identifier":"\#(identifier)","properties":{"hardware":{"reality":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"\#(identifier)","properties":{"hardware":{"fidelity":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)
     }
 }
@@ -2070,7 +2292,9 @@ private final class GuestHIDPeerFixture {
     /// The Mach service names looked up, in order.
     private(set) var lookUps: [String] = []
     /// Fills the reply to each message that expects one, before the service sends it.
-    var reply: (@MainActor (xpc_object_t) throws -> Void)?
+    var reply: (@MainActor (xpc_object_t, xpc_object_t) throws -> Void)?
+    var holdsReplies = false
+    private var heldReplies: [xpc_object_t] = []
     private var connections: [xpc_connection_t] = []
     private var received: [String: [xpc_object_t]] = [:]
     private var waiters: [(name: String, count: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -2113,8 +2337,11 @@ private final class GuestHIDPeerFixture {
     private func receive(_ message: xpc_object_t, for name: String) {
         received[name, default: []].append(message)
         if let response = xpc_dictionary_create_reply(message), let peer = xpc_dictionary_get_remote_connection(message) {
-            do { try reply?(response) } catch { Issue.record(error) }
-            xpc_connection_send_message(peer, response)
+            if holdsReplies { heldReplies.append(response) }
+            else {
+                do { try reply?(message, response) } catch { Issue.record(error) }
+                xpc_connection_send_message(peer, response)
+            }
         }
         let count = received[name, default: []].count
         let ready = waiters.filter { $0.name == name && $0.count <= count }

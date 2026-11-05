@@ -326,13 +326,17 @@ package struct OrientationReading: Equatable {
             var result: Result
         }
         let result = try JSONDecoder().decode(Output.self, from: data).result
-        guard let upright = DeviceOrientation(rawValue: result.deviceOrientationNonFlat),
+        try self.init(physical: result.deviceOrientation, nonFlat: result.deviceOrientationNonFlat)
+    }
+
+    package init(physical: String, nonFlat: String) throws {
+        guard let upright = DeviceOrientation(rawValue: nonFlat),
               let angle = upright.displayAngle else {
-            throw SimulatorError.operation("Unsupported orientation: \(result.deviceOrientationNonFlat)")
+            throw SimulatorError.operation("Unsupported orientation: \(nonFlat)")
         }
         // Before an orientation is set, devicectl reports `unknown` for the
         // physical orientation; the device is then upright.
-        physical = DeviceOrientation(rawValue: result.deviceOrientation) ?? upright
+        self.physical = DeviceOrientation(rawValue: physical) ?? upright
         displayAngle = angle
     }
 }

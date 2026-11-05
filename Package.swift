@@ -4,11 +4,13 @@ import PackageDescription
 
 let package = Package(
     name: "NeoSimulatorKit",
+    defaultLocalization: "en",
     platforms: [.macOS("26.4")],
     products: [
         .library(name: "NeoSimulatorKit", targets: ["NeoSimulatorKit"]),
         .library(name: "NeoSimulatorApp", targets: ["NeoSimulatorApp"]),
         .library(name: "NeoSimulatorService", targets: ["NeoSimulatorService"]),
+        .executable(name: "CoreDeviceInventoryProbe", targets: ["CoreDeviceInventoryProbe"]),
     ],
     dependencies: [
         .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.16.2"),
@@ -31,10 +33,12 @@ let package = Package(
         .target(name: "NeoSimulatorApp", dependencies: [
             "NeoSimulatorKit", "NeoSimulatorHostSupport",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
-        ], path: "Modules/Sources/NeoSimulatorApp"),
+        ], path: "Modules/Sources/NeoSimulatorApp", resources: [.process("Resources")]),
         .target(name: "NeoSimulatorService", dependencies: [
             "NeoSimulatorKit", "NeoSimulatorHostSupport",
         ], path: "Modules/Sources/NeoSimulatorService"),
+        .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorHostSupport"],
+                          path: "Modules/Sources/CoreDeviceInventoryProbe"),
         .testTarget(name: "NeoSimulatorAppTests", dependencies: [
             "NeoSimulatorApp", "NeoSimulatorKit", "NeoSimulatorHostSupport", "NeoSimulatorService",
             .product(name: "ABIBridge", package: "ABIBridge"),

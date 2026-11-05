@@ -81,8 +81,8 @@ package struct CoreSimulatorInterface {
     package let setPath: NativeObjCMethod<String?>
     package let supportedDeviceTypes: NativeObjCMethod<[AnyObject]>
     package let supportedRuntimes: NativeObjCMethod<[AnyObject]>
-    package let subscribe: NativeObjCMethod<Void>
     package let availableDevices: NativeObjCMethod<[AnyObject]>
+    package let devicesByUDID: NativeObjCMethod<NSDictionary>
     package let registerHandler: NativeObjCMethod<UInt64, DispatchQueue, NotificationHandler>
     package let unregisterHandler: NativeObjCMethod<Void, UInt64>
     package let state: NativeObjCMethod<UInt>
@@ -171,12 +171,11 @@ package struct CoreSimulatorInterface {
         supportedRuntimes = try await runtime.resolve(
             .objc(.method("supportedRuntimes", as: (() -> [AnyObject]).self)),
             on: serviceClass)
-        subscribe = try await runtime.resolve(
-            .objc(.method("subscribeToNotificationsWithError:", as: (() throws -> Void).self)),
-            on: deviceSet)
         availableDevices = try await runtime.resolve(
             .objc(.method("availableDevices", as: (() -> [AnyObject]).self)),
             on: deviceSet)
+        devicesByUDID = try await runtime.resolve(
+            .objc(.method("devicesByUDID", as: (() -> NSDictionary).self)), on: deviceSet)
         registerHandler = try await runtime.resolve(
             .objc(.method("registerNotificationHandlerOnQueue:handler:",
                 as: ((DispatchQueue, @escaping NotificationHandler) -> UInt64).self)),
@@ -582,6 +581,7 @@ package final class SimulatorDeviceSet {
         self.interface = interface
         context = try unsafe interface.sharedContext.unsafeInvoke(
             on: interface.serviceClass as AnyObject, developerDirectory)
+        // SimServiceContext returns subscribed sets. Subscribing again replays every device's runtime policy.
         if let path {
             object = try unsafe interface.deviceSetWithPath.unsafeInvoke(on: context, path)
         } else {
@@ -589,7 +589,6 @@ package final class SimulatorDeviceSet {
         }
         self.path = try unsafe interface.setPath.unsafeInvoke(on: object) ?? path ?? ""
         toolPath = path == nil ? nil : self.path
-        try unsafe interface.subscribe.unsafeInvoke(on: object)
     }
 
     package func readCatalog() throws -> SimulatorCatalog {
@@ -639,8 +638,19 @@ package final class SimulatorDeviceSet {
         }
     }
 
+    package func device(withIdentifier identifier: String) throws -> SimulatorDevice? {
+        guard let uuid = NSUUID(uuidString: identifier) else { return nil }
+        let devices = try unsafe interface.devicesByUDID.unsafeInvoke(on: object)
+        guard let device = devices[uuid] else { return nil }
+        return try SimulatorDevice(device as AnyObject, deviceSetPath: toolPath, interface: interface)
+    }
+
     package func observe(_ handler: @escaping @MainActor () -> Void) throws -> UInt64 {
-        let block: CoreSimulatorInterface.NotificationHandler = { _ in
+        let block: CoreSimulatorInterface.NotificationHandler = { notification in
+            switch notification["notification"] as? String {
+            case "device_state", "device_added", "device_removed", "device_renamed", "device_runtime_changed", "runtime_policy_changed": break
+            default: return
+            }
             MainActor.assumeIsolated { handler() }
         }
         return try unsafe interface.registerHandler.unsafeInvoke(on: object, DispatchQueue.main, block)

@@ -426,7 +426,7 @@ struct DeviceManagementTests {
     ]) throws -> CoreDeviceDevice {
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
             "identifier": identifier,
-            "properties": ["hardware": ["reality": reality, "udid": "hardware-udid"],
+            "properties": ["hardware": ["fidelity": reality, "udid": "hardware-udid"],
                            "state": ["name": "Synthetic Device"], "connection": ["state": "connected", "pairingState": "paired"]],
             "capabilities": features.map { ["featureIdentifier": $0] }
         ]]]])

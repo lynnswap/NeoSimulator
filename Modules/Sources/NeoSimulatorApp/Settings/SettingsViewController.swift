@@ -10,6 +10,13 @@ final class SettingsViewController: NSTabViewController {
     let capture: CaptureSettingsViewController
     let serviceProfiles: ServiceProfilesSettingsViewController
     let licenses: NSViewController
+    #if DEBUG
+    private let debugModel: SimulatorManagerModel
+    var resetOnboarding: (() -> Void)?
+    private(set) lazy var debug = DebugSettingsViewController(model: debugModel) { [weak self] in
+        self?.resetOnboarding?()
+    }
+    #endif
     var onContentSizeChange: ((NSSize) -> Void)?
 
     init(makeLicenses: () -> NSViewController, model: SimulatorManagerModel, restart: @escaping () -> Void,
@@ -21,6 +28,9 @@ final class SettingsViewController: NSTabViewController {
         capture = CaptureSettingsViewController(preferences: preferences)
         serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
         licenses = makeLicenses()
+        #if DEBUG
+        debugModel = model
+        #endif
         super.init(nibName: nil, bundle: nil)
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
@@ -28,7 +38,12 @@ final class SettingsViewController: NSTabViewController {
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
-        for (controller, symbol) in [(general as NSViewController, "gear"), (devices, "iphone"), (capture, "camera"), (serviceProfiles, "cpu"), (licenses, "doc.text")] {
+        var tabs: [(NSViewController, String)] = [(general, "gear"), (devices, "iphone"), (capture, "camera"),
+                                                  (serviceProfiles, "cpu"), (licenses, "doc.text")]
+        #if DEBUG
+        tabs.append((debug, "hammer"))
+        #endif
+        for (controller, symbol) in tabs {
             let item = NSTabViewItem(viewController: controller)
             item.identifier = controller.title
             item.label = controller.title ?? ""

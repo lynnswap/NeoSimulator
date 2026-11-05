@@ -112,7 +112,7 @@ import Testing
 
     private func session(_ transport: RecordingFixtureTransport,
                          optionalSetup: RecordingFixtureGate? = nil) throws -> RemoteDeviceScreenSession {
-        let json = Data(#"{"result":{"devices":[{"identifier":"recording-command-id","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let json = Data(#"{"result":{"devices":[{"identifier":"recording-command-id","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(json).first)
         return RemoteDeviceScreenSession(device: device, makeResizeTransport: { _ in
             await optionalSetup?.hold()

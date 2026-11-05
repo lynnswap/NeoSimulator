@@ -96,11 +96,13 @@ package final class DeviceTools {
     private let simctlURL: URL
     private let devicectlURL: URL
     private let runner = DeviceToolRunner()
+    private let lookUp: (@MainActor (String) throws -> UInt32)?
+    private var guestOrientation: GuestDeviceOrientation?
 
     /// `deviceSetPath` selects a custom set for simctl; devicectl cannot address it.
     /// Executable arguments allow test substitution.
     package init(identifier: String, xcodeURL: URL, deviceSetPath: String? = nil, simctl: URL = DeviceTools.simctl,
-         devicectl: URL = DeviceTools.devicectl) throws {
+         devicectl: URL = DeviceTools.devicectl, lookUp: (@MainActor (String) throws -> UInt32)? = nil) throws {
         let developerDirectory = xcodeURL.appendingPathComponent("Contents/Developer").path
         simctlURL = simctl
         devicectlURL = devicectl
@@ -110,6 +112,7 @@ package final class DeviceTools {
             }
         }
         self.identifier = identifier
+        self.lookUp = lookUp
         self.deviceSetPath = deviceSetPath
         environment = ["DEVELOPER_DIR": developerDirectory]
     }
@@ -151,21 +154,33 @@ package final class DeviceTools {
         _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=\(mask.rawValue)"] + (displayID.map { ["--display=\($0)"] } ?? []) + [url.path])
     }
     package func rotate(left: Bool) async throws -> OrientationReading {
+        if let guest = try await orientationConnection() { return try await guest.rotate(left: left) }
         _ = try await runner.run(devicectlURL,
             arguments: ["device", "orientation", "rotate", "--device", identifier, left ? "left" : "right", "--quiet"],
             environment: environment)
         return try await orientation()
     }
     package func setOrientation(_ orientation: DeviceOrientation) async throws -> OrientationReading {
+        if let guest = try await orientationConnection() { return try await guest.set(orientation) }
         _ = try await runner.run(devicectlURL,
             arguments: ["device", "orientation", "set", "--device", identifier, orientation.rawValue, "--quiet"],
             environment: environment)
         return try await self.orientation()
     }
     package func orientation() async throws -> OrientationReading {
-        try OrientationReading(devicectlOutput: await runner.run(devicectlURL,
+        if let guest = try await orientationConnection() { return try await guest.read() }
+        return try OrientationReading(devicectlOutput: await runner.run(devicectlURL,
             arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
             environment: environment))
+    }
+
+    private func orientationConnection() async throws -> GuestDeviceOrientation? {
+        if let guestOrientation { return guestOrientation }
+        guard let lookUp else { return nil }
+        let guest = try await SimulatorGuestHID(lookUp: lookUp)
+        let orientation = try GuestDeviceOrientation(guest: guest)
+        guestOrientation = orientation
+        return orientation
     }
     /// Shutdown failure stops the restart; erase failure is reported but still allows boot.
     package func restart(erasing: Bool) async throws {

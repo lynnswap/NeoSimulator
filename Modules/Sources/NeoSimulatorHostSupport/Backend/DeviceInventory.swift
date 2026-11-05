@@ -120,10 +120,10 @@ extension SimulatorHostController {
     }
 
     @concurrent
-    private static func readCoreDeviceInventory() async throws -> Data {
+    package static func readCoreDeviceInventory() async throws -> Data {
         let result = try SystemCommandRunner().run(
             executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"),
-            arguments: ["list", "devices", "--omit-deprecated-fields-in-json", "--json-output", "-", "--quiet", "--timeout", "10"]
+            arguments: ["list", "devices", "--json-output", "-", "--quiet", "--timeout", "10"]
         )
         guard result.terminationStatus == 0 else {
             throw CLIError.io("coredevice-inventory", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
@@ -241,12 +241,29 @@ package enum CoreDeviceInventoryDecoder {
     private struct Properties: Decodable {
         struct Hardware: Decodable {
             struct CPU: Decodable { let type: UInt64; let subtype: UInt64 }
-            let reality: String
+            let fidelity: String
             let udid: String?
             let productType: String?
             let marketingName: String?
             let cpuType: CPU?
-            let platform: String?
+            let osPlatform: String?
+
+            private enum CodingKeys: String, CodingKey {
+                case fidelity, reality, udid, productType, marketingName, cpuType, osPlatform, platform
+            }
+
+            init(from decoder: any Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                // The host's CoreDevice installation supplies these names, independently of the selected Xcode.
+                fidelity = try values.decodeIfPresent(String.self, forKey: .fidelity)
+                    ?? values.decode(String.self, forKey: .reality)
+                udid = try values.decodeIfPresent(String.self, forKey: .udid)
+                productType = try values.decodeIfPresent(String.self, forKey: .productType)
+                marketingName = try values.decodeIfPresent(String.self, forKey: .marketingName)
+                cpuType = try values.decodeIfPresent(CPU.self, forKey: .cpuType)
+                osPlatform = try values.decodeIfPresent(String.self, forKey: .osPlatform)
+                    ?? values.decodeIfPresent(String.self, forKey: .platform)
+            }
         }
         struct Software: Decodable {
             struct Version: Decodable { let stringValue: String }
@@ -308,11 +325,11 @@ package enum CoreDeviceInventoryDecoder {
         let response = try JSONDecoder().decode(Response.self, from: data)
         return response.result.devices.map { device in
             let properties = device.properties
-            let kind: DeviceInventoryKind = switch properties.hardware.reality {
+            let kind: DeviceInventoryKind = switch properties.hardware.fidelity {
             case "simulated": .simulator
             case "physical": .physical
             case "virtual": .virtualMachine
-            case let reality: .other(reality)
+            case let fidelity: .other(fidelity)
             }
             return CoreDeviceDevice(
                 identifier: device.identifier, udid: properties.hardware.udid, kind: kind,
@@ -323,7 +340,7 @@ package enum CoreDeviceInventoryDecoder {
                 cpuType: properties.hardware.cpuType.map {
                     .init(type: Int32(truncatingIfNeeded: $0.type), subtype: Int32(truncatingIfNeeded: $0.subtype))
                 },
-                platform: properties.hardware.platform, osVersion: properties.software?.osVersionNumber?.stringValue,
+                platform: properties.hardware.osPlatform, osVersion: properties.software?.osVersionNumber?.stringValue,
                 osBuild: properties.software?.osBuildVersions?.buildVersion?.name,
                 osBuildUpdate: properties.software?.osBuildVersions?.update,
                 connectionState: properties.connection?.state, pairingState: properties.connection?.pairingState,

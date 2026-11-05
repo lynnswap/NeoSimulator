@@ -37,6 +37,7 @@ package final class SimulatorScreenHost: NSObject {
     package private(set) var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
+    private var rescanScheduled = false
     private var testingSet: SimulatorDeviceSet?
     private var testingNotificationToken: UInt64?
     private var testingSetWatcher: DispatchSourceFileSystemObject?
@@ -109,7 +110,7 @@ package final class SimulatorScreenHost: NSObject {
             testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
                 self?.applyTestingDeviceVisibility()
             }
-            notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
+            notificationToken = try deviceSet.observe { [weak self] in self?.scheduleRescan() }
             openTestingSet()
             if !attachingBootedDevices {
                 suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity))
@@ -262,7 +263,7 @@ package final class SimulatorScreenHost: NSObject {
         testingSetWatcher = nil
         do {
             let set = try runtime.openDeviceSet(at: url.path)
-            testingNotificationToken = try set.observe { [weak self] in self?.rescan() }
+            testingNotificationToken = try set.observe { [weak self] in self?.scheduleRescan() }
             testingSet = set
         } catch {
             hostLog("Could not open the parallel testing device set: \(error.localizedDescription)")
@@ -484,6 +485,16 @@ package final class SimulatorScreenHost: NSObject {
         if presents, !isInProcess { controller.showAndActivate() }
     }
 
+    private func scheduleRescan() {
+        guard !rescanScheduled, !stopped, !isTerminating else { return }
+        rescanScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.rescanScheduled = false
+            self.rescan()
+        }
+    }
+
     private func rescan(testingVisibilityChanged: Bool = false) {
         do { try scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
         catch let error as SimulatorError {
@@ -569,15 +580,17 @@ package final class SimulatorScreenHost: NSObject {
                             && !capabilities.supportsFeature(DeviceCapabilities.touchPressure)
                         if isDuo, device.deviceSetPath == nil {
                             nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
-                        } else if device.deviceSetPath != nil {
+                        } else if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
+                                  takesNativeTouches {
                             nativeCanvas = nil
-                            // Without CoreDevice, every input stream reaches the guest's own services or none does.
-                            if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
-                               takesNativeTouches, let input = try await guestInput(of: device) {
+                            // CoreDevice may omit a default-set simulator too. Reach the guest that owns the screen.
+                            if let input = try await guestInput(of: device) {
                                 keyboard = input.keyboard
                                 trackpad = input.trackpad
                                 touchRoute = input.touchRoute
                             }
+                        } else if device.deviceSetPath != nil {
+                            nativeCanvas = nil
                         } else if capabilities.isPhoneOrPad, capabilities.supportsFeature(DeviceCapabilities.touchPressure) {
                             nativeCanvas = nil
                             // Native keyboard or trackpad input would make the guest drop SimulatorKit's touches, which
@@ -607,7 +620,7 @@ package final class SimulatorScreenHost: NSObject {
                             device: Self.describe(device), capabilities: capabilities,
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
-                                                   deviceSetPath: device.deviceSetPath),
+                                                   deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
                             recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
                             externalDisplayChanges: externalDisplayChanges(of: device),
                             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
@@ -733,8 +746,8 @@ package final class SimulatorScreenHost: NSObject {
         }
     }
 
-    /// The native keyboard, trackpad, touches, and buttons of a device outside the default device set, which CoreDevice
-    /// does not list. They reach the guest's HID services through the Mach services that the device itself looks up, so
+    /// The native keyboard, trackpad, touches, and buttons of a simulator, whether CoreDevice lists it or not.
+    /// They reach the guest's HID services through the Mach services that the device itself looks up, so
     /// they stay with the device's own set. Connecting them sends the guest nothing, so when one cannot connect, the device
     /// keeps SimulatorKit's input for all of them: its keyboard, which the guest reads with a US layout, and its digitizer,
     /// which drops trackpad scrolling and pinches.

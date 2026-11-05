@@ -42,7 +42,8 @@ struct InputFocusTests {
         let model = SimulatorManagerModel(source: source)
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        let access = HostPreferenceAccess(file: URL.temporaryDirectory.appending(path: "\(UUID().uuidString).plist"))
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses, hostPreferenceAccess: access)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)
@@ -98,7 +99,7 @@ struct InputFocusTests {
 
     @Test func remoteKeyboardForwardsJISLanguageKeysAndTheirReleases() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         transport.inputCapabilities = [.keyboard]
@@ -127,7 +128,7 @@ struct InputFocusTests {
 
     @Test func remoteScreenForwardsScrollingWithoutLimitingItToTheTouchscreenEdges() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         transport.inputCapabilities = [.digitizer, .gesture]
@@ -190,7 +191,7 @@ struct InputFocusTests {
 
     @Test func aTrackpadPinchOverTheRemoteScreenPinchesTheDeviceUntilItEndsOrTheScreenLosesInput() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         transport.inputCapabilities = [.digitizer, .gesture]
@@ -249,7 +250,7 @@ struct InputFocusTests {
 
     @Test func mouseMovementsOverTheRemoteScreenMoveItsPointerOrThePointerWhereItsPinchesHappen() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
@@ -298,7 +299,7 @@ struct InputFocusTests {
     @Test(arguments: ["search", "screen-to-search", "screen"])
     func remoteAppResizeRestoresOnlyUnchangedScreenFocus(_ focus: String) async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let resize = TestAppResizeTransport()
         let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
@@ -675,7 +676,7 @@ struct InputFocusTests {
 
     @Test func remoteControlsReturnFromAnAccessoryToTheSameCompactScreen() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
@@ -712,7 +713,7 @@ struct InputFocusTests {
 
     @Test func remoteScreenTakesDroppedAppBundlesAcrossMovesAndReconnects() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         var connections = 0
@@ -768,7 +769,7 @@ struct InputFocusTests {
 
     @Test func stopAllPreservesRemoteCancellationAndCanRetry() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
@@ -787,7 +788,7 @@ struct InputFocusTests {
 
     @Test func remoteCaptureSourceChoiceWaitsForTheCurrentConnectionToEnd() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let suite = "NeoSimulatorTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -826,7 +827,7 @@ struct InputFocusTests {
 
     @Test func anUnavailableRemoteScreenShowsItsFailureOnceAndRetriesFromTheScreen() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let failure = RemoteScreenCaptureSourceError(reason: .disconnected)
         let transport = TestRemoteScreenTransport()
@@ -857,7 +858,7 @@ struct InputFocusTests {
 
     @Test func aFailedRemoteScreenKeepsItsStatusReadableOverTheLastFrame() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let transport = TestRemoteScreenTransport()
         // Like the capture transport's last drawable, a failed connection's last frame stays in the screen.
@@ -922,7 +923,7 @@ struct InputFocusTests {
 
     @Test func remoteWindowCoalescesLayoutSizesWithoutBlockingHID() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let resize = TestAppResizeTransport()
         let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
@@ -976,7 +977,7 @@ struct InputFocusTests {
 
     @Test func aRejectedAppSizeIsReportedOnceOverTheConnectedScreen() async throws {
         _ = NSApplication.shared
-        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"reality":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
         let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
         let resize = TestAppResizeTransport()
         let primary = TestRemoteScreenTransport(), dedicated = TestRemoteScreenTransport()
@@ -3211,6 +3212,33 @@ struct InputFocusTests {
         }
         let retried = try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: runtime.uiXcodeURL)
         #expect(retried.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func nativeDeviceSetDoesNotRefreshTheCatalogForBootProgressOrDeviceIO() async throws {
+        let runtime = try await makeRuntime()
+        let interface = runtime.coreSimulator
+        let set = try runtime.openDeviceSet()
+        let context = try unsafe interface.sharedContext.unsafeInvoke(on: interface.serviceClass as AnyObject,
+            runtime.xcodeURL.appendingPathComponent("Contents/Developer").path)
+        let nativeSet = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
+        let send = try await ABIRuntime.shared.resolve(
+            .objc(.method("sendNotification:", as: ((NSDictionary) -> Void).self)),
+            on: try #require(NSClassFromString("SimDeviceSet")))
+        let changes = AsyncStream<Void>.makeStream()
+        var refreshes = 0
+        let token = try set.observe {
+            refreshes += 1
+            changes.continuation.yield(())
+        }
+        defer { try? set.stopObserving(token); changes.continuation.finish() }
+        try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "SimDeviceNotificationType_BootStatus"] as NSDictionary)
+        try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_io_notification"] as NSDictionary)
+        try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_state", "new_state": 3] as NSDictionary)
+        var events = changes.stream.makeAsyncIterator()
+        await events.next()
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        #expect(refreshes == 1)
     }
 
     @Test func pasteboardDelegateAnswersSimPasteboardPlus() async throws {
