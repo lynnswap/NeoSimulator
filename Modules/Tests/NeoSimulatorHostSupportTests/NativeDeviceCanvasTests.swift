@@ -46,6 +46,17 @@ struct NativeDeviceCanvasTests {
         #expect(hit.map { $0 === recorder || $0.isDescendant(of: recorder) } == true)
         let local = recorder.convert(point, from: nil)
         #expect(abs(local.x - 20) < 0.5 && abs(local.y - 20) < 0.5, "Local \(NSStringFromPoint(local))")
+        presentation.magnification = 2
+        hosting.frame = NSRect(x: -300, y: -500, width: 800, height: 1600)
+        hosting.layoutSubtreeIfNeeded()
+        let enlarged = recorder.convert(recorder.bounds, to: hosting)
+        #expect(abs(enlarged.midX - 400) < 0.5 && abs(enlarged.midY - 800) < 0.5)
+        #expect(abs(enlarged.width - 80) < 0.5 && abs(enlarged.height - 80) < 0.5)
+        let panned = hosting.convert(NSPoint(x: 400, y: 800), to: nil)
+        let enlargedHit = container.hitTest(panned)
+        #expect(enlargedHit.map { $0 === recorder || $0.isDescendant(of: recorder) } == true)
+        let enlargedLocal = recorder.convert(panned, from: nil)
+        #expect(abs(enlargedLocal.x - 20) < 0.5 && abs(enlargedLocal.y - 20) < 0.5)
     }
 }
 
