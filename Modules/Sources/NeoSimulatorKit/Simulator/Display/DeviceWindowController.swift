@@ -487,6 +487,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         session.onAppResizeError = { [weak self] in self?.present($0) }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
+            self.content.finishCanvasMagnification()
             self.endCanvasResize()
             if !self.isFullScreen { self.saveWindowGeometry() }
             self.keyboard.setEnabled(false)
@@ -630,6 +631,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
     /// Finishes an active recording, then disconnects from the device so that
     /// it can shut down. The window stays open for `reconnect(_:)`.
     package func prepareForRestart() async {
+        content.finishCanvasMagnification()
         isRestarting = true
         if let window = presentationWindow, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
@@ -650,6 +652,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
             session.disconnect()
             return
         }
+        content.finishCanvasMagnification()
         // Preserve scale across reconnection, then fit the new display shape below the window's top edge.
         let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
         let restoreInputFocus = !isEmbedded || presentationWindow?.firstResponder === self.session.display.inputView
@@ -1881,7 +1884,7 @@ final class DeviceContentView: NSView, DisplayContentView {
         var latest: CanvasMagnificationRequest
         // Retargeting must preserve the intended anchor, not resample pixel-rounded animation geometry.
         var center: NSPoint
-        var animation: (link: CADisplayLink, from: CGFloat, start: CFTimeInterval)?
+        var animation: (link: CADisplayLink, from: CGFloat, start: CFTimeInterval?)?
     }
     @MainActor private final class CanvasMagnificationTarget: NSObject {
         weak var content: DeviceContentView?
@@ -2110,24 +2113,23 @@ final class DeviceContentView: NSView, DisplayContentView {
            !WindowScale.matches(canvasScrollView.magnification, prepared.scale) {
             let target = CanvasMagnificationTarget(content: self)
             let link = window.displayLink(target: target, selector: #selector(CanvasMagnificationTarget.tick(_:)))
-            canvasMagnificationOperation?.animation = (link, canvasScrollView.magnification, CACurrentMediaTime())
+            canvasMagnificationOperation?.animation = (link, canvasScrollView.magnification, nil)
             link.add(to: .main, forMode: .common)
             return
         }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            context.allowsImplicitAnimation = false
-            canvasScrollView.setMagnification(prepared.scale, centeredAt: prepared.point)
-            needsLayout = true
-            if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
-        }
+        canvasScrollView.setMagnification(prepared.scale, centeredAt: prepared.point)
+        needsLayout = true
+        if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
         if canvasMagnificationOperation?.latest.id == request.id { canvasMagnificationOperation = nil }
     }
 
     func advanceCanvasMagnification(at time: CFTimeInterval) {
         guard !isLayingOutCanvas, let operation = canvasMagnificationOperation,
               let animation = operation.animation, let canvasZoom else { return }
-        let progress = min(1, max(0, (time - animation.start) / 0.18))
+        // Scheduling delays before the first frame must not consume the transition.
+        let start = animation.start ?? time
+        if animation.start == nil { canvasMagnificationOperation?.animation?.start = time }
+        let progress = min(1, max(0, (time - start) / 0.18))
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             context.allowsImplicitAnimation = false
@@ -2142,7 +2144,11 @@ final class DeviceContentView: NSView, DisplayContentView {
 
     func finishCanvasMagnification() {
         guard let operation = canvasMagnificationOperation, operation.animation != nil else { return }
-        requestCanvasMagnification(.init(preparation: operation.latest.preparation))
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            requestCanvasMagnification(.init(preparation: operation.latest.preparation))
+        }
     }
 
     /// A bezel drag takes over from the displayed scale, keeping its initial corner under the pointer.
@@ -2151,6 +2157,7 @@ final class DeviceContentView: NSView, DisplayContentView {
         animation.link.invalidate()
         retainedCanvasCenter = operation.center
         canvasMagnificationOperation = nil
+        needsLayout = true
         return canvasScrollView.magnification
     }
 

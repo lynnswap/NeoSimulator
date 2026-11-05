@@ -2378,43 +2378,62 @@ struct InputFocusTests {
         window.orderBack(nil)
         let animatedCanvas = try #require(content as? DeviceContentView)
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let animationTime = CACurrentMediaTime()
             let start = scroll.magnification
             let anchor = visibleDevicePoint(of: display.view, in: scroll, fitting: fittingGuide, of: content)
             controller.performCanvasZoom(.zoomIn)
             #expect(scroll.magnification == start)
-            animatedCanvas.advanceCanvasMagnification(at: CACurrentMediaTime() + 0.09)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 0.09)
             #expect(scroll.magnification > start && scroll.magnification < controller.canvasZoom.scale)
             let shownAnchor = visibleDevicePoint(of: display.view, in: scroll, fitting: fittingGuide, of: content)
             #expect(abs(shownAnchor.x - anchor.x) * scroll.magnification <= 1 / window.backingScaleFactor
                 && abs(shownAnchor.y - anchor.y) * scroll.magnification <= 1 / window.backingScaleFactor)
-            let center = display.view.convert(NSPoint(x: display.view.bounds.midX, y: display.view.bounds.midY), to: nil)
+            let point = NSPoint(x: display.input.bounds.width * 0.35, y: display.input.bounds.height * 0.6)
+            let location = display.input.convert(point, to: nil)
             let presses = display.input.presses.count
-            #expect(try press(window, at: center) === display.input)
+            #expect(try press(window, at: location) === display.input)
             #expect(display.input.presses.count == presses + 1)
+            let received = display.input.convert(try #require(display.input.presses.last).locationInWindow, from: nil)
+            #expect(abs(received.x - point.x) * scroll.magnification <= 1 / window.backingScaleFactor
+                && abs(received.y - point.y) * scroll.magnification <= 1 / window.backingScaleFactor)
+            let shown = display.view.convert(display.view.bounds, to: content)
+            #expect(abs(shown.width - display.size(for: 1).width * scroll.magnification) <= 1 / window.backingScaleFactor)
+            if native {
+                let reported = try #require(display.canvasMagnifications.last?.scale)
+                #expect(WindowScale.matches(reported, scroll.magnification))
+            }
             controller.performCanvasZoom(.zoomIn)
             let latest = controller.canvasZoom.scale
-            animatedCanvas.advanceCanvasMagnification(at: CACurrentMediaTime() + 1)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 0.1)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 0.3)
             #expect(WindowScale.matches(scroll.magnification, latest))
             controller.performCanvasZoom(.zoomOut)
             controller.performCanvasZoom(.fit)
-            animatedCanvas.advanceCanvasMagnification(at: CACurrentMediaTime() + 1)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 0.5)
             #expect(WindowScale.matches(scroll.magnification, controller.canvasZoom.fitScale))
             controller.performCanvasZoom(.zoomOut)
-            animatedCanvas.advanceCanvasMagnification(at: CACurrentMediaTime() + 0.09)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 0.6)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 0.69)
             let interrupted = scroll.magnification
             let handle = try #require(content.subviews.first { $0.identifier?.rawValue == "DeviceCanvasResize.upperRight" })
             let corner = handle.convert(NSPoint(x: handle.bounds.midX + 3, y: handle.bounds.midY + 3), to: nil)
+            let cornerBefore = handle.convert(NSPoint(x: handle.bounds.midX, y: handle.bounds.midY), to: content)
             #expect(try press(window, at: corner) === handle)
+            content.layoutSubtreeIfNeeded()
+            let cornerAfter = handle.convert(NSPoint(x: handle.bounds.midX, y: handle.bounds.midY), to: content)
+            #expect(abs(cornerAfter.x - cornerBefore.x) <= 1 / window.backingScaleFactor
+                && abs(cornerAfter.y - cornerBefore.y) <= 1 / window.backingScaleFactor)
             #expect(controller.canvasZoom.mode == .fixed(interrupted) && controller.canvasZoom.scale == interrupted)
             handle.mouseUp(with: try #require(NSEvent.mouseEvent(
                 with: .leftMouseUp, location: corner, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)))
-            animatedCanvas.advanceCanvasMagnification(at: CACurrentMediaTime() + 1)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 0.9)
             #expect(scroll.magnification == interrupted)
             controller.performCanvasZoom(.zoomIn)
             #expect(controller.window?.frame == compactFrame)
             controller.showCompactWindow()
-            animatedCanvas.advanceCanvasMagnification(at: CACurrentMediaTime() + 1)
+            animatedCanvas.advanceCanvasMagnification(at: animationTime + 1)
             #expect(scroll.magnification == 1)
             controller.embed(in: parent)
             compactFrame = try #require(controller.window?.frame)
@@ -2592,6 +2611,21 @@ struct InputFocusTests {
         #expect(controller.canvasZoom.mode == .fixed(fixedScale))
         #expect(WindowScale.matches(scroll.magnification, fixedScale))
         #expect(abs(grownExtent.width - fixedExtent.width) <= pixel && abs(grownExtent.height - fixedExtent.height) <= pixel)
+        if native && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            controller.performCanvasZoom(.zoomIn)
+            let time = CACurrentMediaTime()
+            animatedCanvas.advanceCanvasMagnification(at: time)
+            animatedCanvas.advanceCanvasMagnification(at: time + 0.09)
+            let replacement = TestDisplay()
+            replacement.usesNativeCanvas = true
+            controller.reconnect(try makeSession(replacement, features: [DeviceCapabilities.keyboard]), present: false)
+            session.disconnect()
+            #expect(!replacement.canvasMagnifications.isEmpty)
+            #expect(replacement.canvasMagnifications.allSatisfy { $0.scale == nil || $0.attached })
+            let updates = replacement.canvasMagnifications.count
+            animatedCanvas.advanceCanvasMagnification(at: time + 1)
+            #expect(replacement.canvasMagnifications.count == updates)
+        }
     }
 
     @Test func commandsAndActivationRestoreTheNativeInputOwner() throws {
@@ -10094,6 +10128,10 @@ private final class TestDisplayView: NSView {
 @MainActor
 private final class TestDisplay: SimulatorDisplay {
     var usesNativeCanvas = false
+    var canvasMagnifications: [(scale: CGFloat?, attached: Bool)] = []
+    func setCanvasMagnification(_ magnification: CGFloat?) {
+        canvasMagnifications.append((magnification, view.window != nil))
+    }
     let view: NSView = TestDisplayView(frame: NSRect(x: 0, y: 0, width: 390, height: 844))
     let input = InputView()
     var captureDisplayID: UInt32?
