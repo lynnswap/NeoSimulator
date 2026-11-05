@@ -243,5 +243,6 @@ values before the first public release:
 | Variable | `NOTARY_API_KEY_ID` |
 | Variable | `NOTARY_API_ISSUER_ID` |
 
-Ordinary pushes to main produce validation artifacts and do not publish a
-release. Updates are installed by replacing the app in Applications.
+In GitHub Actions, release apps and DMGs are built only when **Publish Release**
+runs for a prerelease or release. Ordinary pushes to main run CI without producing release artifacts.
+Updates are installed by replacing the app in Applications.
