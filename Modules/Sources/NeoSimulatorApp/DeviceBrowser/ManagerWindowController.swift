@@ -520,7 +520,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     @objc private func changeInspector(_ sender: NSSegmentedControl) {
-        let index = sender.selectedSegment
+        toggleInspector(at: sender.selectedSegment)
+    }
+
+    @objc private func changeInspectorFromMenu(_ sender: NSMenuItem) {
+        toggleInspector(at: sender.tag)
+    }
+
+    private func toggleInspector(at index: Int) {
         let inspector = splitController.splitViewItems[2]
         if index == inspectorMode && !inspector.isCollapsed {
             inspector.animator().isCollapsed = true
@@ -875,7 +882,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 if group.subitems[index].isEnabled != enabled { group.subitems[index].isEnabled = enabled }
             }
             if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {
-                if group.selectedIndex != selected { group.setSelected(true, at: selected) }
+                if !group.isSelected(at: selected) { group.setSelected(true, at: selected) }
             } else if group.selectedIndex >= 0 {
                 // selectOne rejects clearing its last selection, including selectedIndex = -1.
                 group.selectionMode = .selectAny
@@ -1077,9 +1084,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateInspectorSelection() {
         let collapsed = splitController.splitViewItems[2].isCollapsed
-        guard let tabs = window?.toolbar?.items.first(where: { $0.itemIdentifier == inspectorIdentifier })?.view as? NSSegmentedControl else { return }
-        for index in 0..<tabs.segmentCount {
-            tabs.setSelected(!collapsed && index == inspectorMode, forSegment: index)
+        guard let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == inspectorIdentifier }),
+              let tabs = item.view as? NSSegmentedControl else { return }
+        tabs.selectedSegment = collapsed ? -1 : inspectorMode
+        for action in item.menuFormRepresentation?.submenu?.items ?? [] {
+            action.state = !collapsed && action.tag == inspectorMode ? .on : .off
         }
     }
 
@@ -1181,13 +1190,24 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 NSImage(systemSymbolName: $0.0, accessibilityDescription: $0.1)!
             }
             let tabs = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(changeInspector(_:)))
-            tabs.setSelected(!splitController.splitViewItems[2].isCollapsed, forSegment: inspectorMode)
+            tabs.selectedSegment = splitController.splitViewItems[2].isCollapsed ? -1 : inspectorMode
             tabs.setAccessibilityLabel("Device Inspector")
             for (index, label) in labels.enumerated() { tabs.setToolTip(label, forSegment: index) }
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Device Inspector"
             item.view = tabs
             item.visibilityPriority = .high
+            let menu = NSMenu(title: item.label)
+            for (index, label) in labels.enumerated() {
+                let action = NSMenuItem(title: label, action: #selector(changeInspectorFromMenu(_:)), keyEquivalent: "")
+                action.target = self
+                action.tag = index
+                action.state = tabs.selectedSegment == index ? .on : .off
+                menu.addItem(action)
+            }
+            let representation = NSMenuItem(title: item.label, action: nil, keyEquivalent: "")
+            representation.submenu = menu
+            item.menuFormRepresentation = representation
             return item
         }
         if itemIdentifier == settingsIdentifier {

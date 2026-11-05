@@ -647,6 +647,13 @@ struct InputFocusTests {
             mainWindow.contentView?.layoutSubtreeIfNeeded()
         }
         try await wait { !zoom.isHidden && zoom.isEnabled }
+        let fitIndex = try #require(CanvasZoom.Action.allCases.firstIndex(of: .fit))
+        screen.perform(CanvasZoom.Action.fit.rawValue)
+        try await wait { zoom.isSelected(at: fitIndex) }
+        screen.perform(CanvasZoom.Action.zoomIn.rawValue)
+        try await wait { !zoom.subitems.indices.contains { zoom.isSelected(at: $0) } }
+        screen.perform(CanvasZoom.Action.fit.rawValue)
+        try await wait { zoom.isSelected(at: fitIndex) }
         try #require(capture.isEnabled)
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 120),
                              styleMask: [.titled], backing: .buffered, defer: false)

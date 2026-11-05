@@ -1413,15 +1413,21 @@ struct ManagerModelTests {
         window.makeKeyAndOrderFront(nil)
         let frame = window.frame
 
-        func click(_ index: Int, collapsed: Bool, page: DeviceInspectorModel.Page? = nil) throws {
-            let action = try #require(tabs.action)
+        let overflow = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.menuFormRepresentation?.submenu)
+        #expect(overflow.items.map(\.title) == ["Settings", "Reports", "Info", "Background Services"])
+
+        func click(_ index: Int, collapsed: Bool, page: DeviceInspectorModel.Page? = nil, fromMenu: Bool = false) throws {
+            let sender: AnyObject = fromMenu ? overflow.items[index] : tabs
+            let action = try #require(fromMenu ? overflow.items[index].action : tabs.action)
+            let target = fromMenu ? overflow.items[index].target : tabs.target
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0
-                tabs.selectedSegment = index
-                #expect(NSApp.sendAction(action, to: tabs.target, from: tabs))
+                if !fromMenu { tabs.selectedSegment = index }
+                #expect(NSApp.sendAction(action, to: target, from: sender))
             }
             #expect(inspector.isCollapsed == collapsed)
             #expect((0..<tabs.segmentCount).filter { tabs.isSelected(forSegment: $0) } == (collapsed ? [] : [index]))
+            #expect(overflow.items.filter { $0.state == .on }.map(\.tag) == (collapsed ? [] : [index]))
             #expect(!tabs.isHidden)
             #expect(inspector.topAlignedAccessoryViewControllers.first === accessory)
             #expect(window.frame == frame, "Tab \(index), collapsed \(collapsed): frame \(window.frame), original \(frame)")
@@ -1441,6 +1447,8 @@ struct ManagerModelTests {
         try click(2, collapsed: false, page: .info)
         try click(2, collapsed: true, page: .info)
         try click(2, collapsed: false, page: .info)
+        try click(2, collapsed: true, page: .info, fromMenu: true)
+        try click(2, collapsed: false, page: .info, fromMenu: true)
 
         inspector.isCollapsed = true
         #expect((0..<tabs.segmentCount).allSatisfy { !tabs.isSelected(forSegment: $0) })
