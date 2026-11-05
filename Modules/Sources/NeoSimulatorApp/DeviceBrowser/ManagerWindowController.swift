@@ -868,8 +868,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         if let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup {
             let hidden = !screen.supports(CanvasZoom.Action.fit.rawValue)
             if group.isHidden != hidden { group.isHidden = hidden }
-            for (index, action) in CanvasZoom.Action.allCases.enumerated() {
-                let enabled = screen.isEnabled(action.rawValue) && !blocked
+            let enabledActions = CanvasZoom.Action.allCases.map { screen.isEnabled($0.rawValue) && !blocked }
+            let enabled = enabledActions.contains(true)
+            if group.isEnabled != enabled { group.isEnabled = enabled }
+            for (index, enabled) in enabledActions.enumerated() {
                 if group.subitems[index].isEnabled != enabled { group.subitems[index].isEnabled = enabled }
             }
             if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {

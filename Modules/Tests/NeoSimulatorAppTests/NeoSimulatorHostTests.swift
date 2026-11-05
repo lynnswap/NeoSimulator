@@ -638,6 +638,15 @@ struct InputFocusTests {
         let compact = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
         let zoom = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "CanvasZoom" } as? NSToolbarItemGroup)
         #expect(zoom.isEnabled)
+        controller.showCompactWindow()
+        manager.deviceScreenViewController.showDevicePreview(ifDisplaying: screen.id)
+        try await wait { zoom.isHidden && !zoom.isEnabled }
+        updateCanvas {
+            controller.embed(in: live)
+            manager.deviceScreenViewController.showLiveScreen(screen)
+            mainWindow.contentView?.layoutSubtreeIfNeeded()
+        }
+        try await wait { !zoom.isHidden && zoom.isEnabled }
         try #require(capture.isEnabled)
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 120),
                              styleMask: [.titled], backing: .buffered, defer: false)
