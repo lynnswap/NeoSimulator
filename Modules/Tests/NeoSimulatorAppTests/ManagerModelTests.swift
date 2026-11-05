@@ -91,50 +91,67 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
-    @Test(arguments: [nil, CocoaError.Code.fileReadNoSuchFile])
-    func launchAppliesThePreferenceAndQuitEndsTheSession(_ accessFailure: CocoaError.Code?) async throws {
+    @Test func launchAppliesThePreferenceAndQuitEndsTheSession() async throws {
         let source = ManagerModelSource(devices: [])
         let manager = SimulatorManagerModel(source: source)
-        let directory = FileManager.default.temporaryDirectory
-        var accessRequests = 0
-        let access = HostPreferenceAccess(directory: directory, verifyAccess: { url in
-            #expect(url == directory)
-            accessRequests += 1
-            if let accessFailure { throw CocoaError(accessFailure) }
+        let file = URL.temporaryDirectory.appending(path: "\(UUID().uuidString).plist")
+        let access = HostPreferenceAccess(file: file, chooseFile: { _, _ in
+            Issue.record("Device Hub has not created a settings file to select.")
+            return nil
         })
-        manager.requestHostPreferenceAccess = { try access.request() }
+        manager.requestHostPreferenceAccess = { try await access.request() }
         manager.start()
         try await manager.quitRenderer(keepingDevicesRunning: true)
-        #expect(accessRequests == 1)
         #expect(await source.sessionEvents == ["begin", "status", "quit", "end"])
     }
 
-    @Test(arguments: [CocoaError.Code.fileReadNoPermission, .fileWriteNoPermission])
-    func deniedAccessStopsHostChangesAndOffersTheResetCommand(_ failureCode: CocoaError.Code) async throws {
-        let source = ManagerModelSource(devices: [])
-        let manager = SimulatorManagerModel(source: source)
-        let access = HostPreferenceAccess(verifyAccess: { _ in throw CocoaError(failureCode) })
-        var reported: (any Error)?
-        manager.onError = { reported = $0 }
-        manager.requestHostPreferenceAccess = { try access.request() }
-        manager.start()
-        try await manager.prepareForQuit()
-        #expect(await source.sessionEvents == ["status"])
-        let failure = try #require(reported as? HostPreferenceAccess.Failure)
-        #expect(HostPreferenceAccess.Failure.recoveryCommand == "tccutil reset SystemPolicyAppData dev.lynnswap.NeoSimulator")
-        #expect(failure.recoverySuggestion?.contains(HostPreferenceAccess.Failure.recoveryCommand) == true)
-    }
-
-    @Test func accessVerificationLeavesTheDirectoryUnchanged() throws {
+    @Test(arguments: [false, true])
+    func preferenceAccessIsReusedAfterRelaunch(_ selectsFolder: Bool) async throws {
+        let domain = "dev.lynnswap.NeoSimulator.HostPreferenceAccess.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
         let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let existing = directory.appending(path: "settings.plist")
-        let content = Data("original".utf8)
-        try content.write(to: existing)
-        try HostPreferenceAccess(directory: directory).request()
-        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["settings.plist"])
-        #expect(try Data(contentsOf: existing) == content)
+        let file = directory.appending(path: "settings.plist")
+        try PropertyListSerialization.data(fromPropertyList: [:], format: .xml, options: 0).write(to: file)
+        var selections = 0
+        let chooseFile: (URL, NSWindow?) async throws -> URL? = { requested, _ in
+            #expect(requested == file)
+            selections += 1
+            return selectsFolder ? directory : file
+        }
+        let domains = SystemPreferenceDomains()
+        let preference = ManagedPreference(domain: file.deletingPathExtension().path, key: "enabled")
+        do {
+            let access = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: chooseFile)
+            try await access.request()
+            try domains.write(.trueValue, to: preference)
+        }
+        let restored = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: chooseFile)
+        #expect(restored.restore())
+        try await restored.request()
+        #expect(selections == 1)
+        #expect(try domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == true)
+    }
+
+    @Test func cancellingPreferenceFileSelectionStopsTheSessionBeforeSettingsChange() async throws {
+        let domain = "dev.lynnswap.NeoSimulator.HostPreferenceAccess.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let file = URL.temporaryDirectory.appending(path: "\(UUID().uuidString).plist")
+        try PropertyListSerialization.data(fromPropertyList: [:], format: .xml, options: 0).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let access = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: { _, _ in nil })
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        manager.requestHostPreferenceAccess = { try await access.request() }
+        var cancelled = false
+        manager.onError = { cancelled = $0 is CancellationError }
+        manager.start()
+        try await manager.prepareForQuit()
+        #expect(cancelled)
+        #expect(await source.sessionEvents == ["status"])
     }
 
     @Test func aFailedLaunchStillExposesThePreferredHostForRetry() async throws {
@@ -1904,14 +1921,23 @@ struct ManagerModelTests {
     }
 
 
-    @Test func initialURLRestorationWaitsForLaunchAndTheDisplaySession() async throws {
+    @Test func onboardingDefersInitialURLsUntilAccessIsGranted() async throws {
         _ = NSApplication.shared
+        let domain = "dev.lynnswap.NeoSimulator.HostPreferenceAccess.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let file = URL.temporaryDirectory.appending(path: "\(UUID().uuidString).plist")
+        try PropertyListSerialization.data(fromPropertyList: [:], format: .xml, options: 0).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
         let source = ManagerModelSource(devices: [simulator()])
-        var window: NSWindow?
-        var accessRequests = 0
-        let access = HostPreferenceAccess(verifyAccess: { _ in
-            accessRequests += 1
+        var selections = 0
+        let access = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: { _, window in
             #expect(window?.isVisible == true)
+            #expect(window?.title == "Welcome to NeoSimulator")
+            selections += 1
+            if selections == 1 { return nil }
+            if selections == 2 { throw ManagerModelSource.Failure.unavailable }
+            return file
         })
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses, hostPreferenceAccess: access)
         app.model = SimulatorManagerModel(source: source)
@@ -1922,14 +1948,33 @@ struct ManagerModelTests {
         app.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
         app.application(NSApp, open: [restoration.url])
         #expect(!app.model.isBusy && app.model.openingDeviceIDs.isEmpty)
-        #expect(accessRequests == 0 && app.mainWindow == nil)
+        #expect(app.mainWindow == nil && selections == 0)
         #expect(await source.sessionEvents.isEmpty)
-        window = app.prepareMainWindow().window
         app.startManager()
+        try await wait { app.onboardingWindow?.window?.isVisible == true }
+        #expect(app.mainWindow == nil && selections == 0)
+        #expect(await source.sessionEvents.isEmpty)
+        app.onboardingWindow?.close()
+        try await wait { app.onboardingWindow == nil }
+        #expect(app.mainWindow == nil && selections == 0)
+
+        app.startManager()
+        try await wait { app.onboardingWindow?.window?.isVisible == true }
+        let onboarding = try #require(app.onboardingWindow)
+        onboarding.allowAccess()
+        try await wait { selections == 1 && !onboarding.state.isRequesting }
+        #expect(onboarding.window?.isVisible == true && onboarding.state.errorMessage == nil)
+        #expect(app.mainWindow == nil)
+        onboarding.allowAccess()
+        try await wait { onboarding.state.errorMessage != nil && !onboarding.state.isRequesting }
+        #expect(onboarding.state.errorMessage == ManagerModelSource.Failure.unavailable.localizedDescription)
+        #expect(await source.sessionEvents.isEmpty)
+        onboarding.allowAccess()
         while let event = await events.next() {
             if event == .open(restoration.deviceID) { break }
         }
-        #expect(accessRequests == 1)
+        #expect(app.mainWindow?.window?.isVisible == true && selections == 3)
+        #expect(app.onboardingWindow == nil && onboarding.window?.isVisible == false)
         #expect(await source.sessionEvents.first == "begin")
         #expect(app.model.status?.preferredHost == .neo)
         await source.completeOpen()

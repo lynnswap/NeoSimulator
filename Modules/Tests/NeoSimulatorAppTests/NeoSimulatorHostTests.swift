@@ -42,7 +42,8 @@ struct InputFocusTests {
         let model = SimulatorManagerModel(source: source)
         model.settings.setReadingSuspended(true)
         await model.refresh()
-        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        let access = HostPreferenceAccess(file: URL.temporaryDirectory.appending(path: "\(UUID().uuidString).plist"))
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses, hostPreferenceAccess: access)
         app.model = model
         app.prepareMainWindow()
         let main = try #require(app.mainWindow)

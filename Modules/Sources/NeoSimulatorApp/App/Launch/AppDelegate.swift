@@ -17,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return screens
     }()
     private(set) var mainWindow: ManagerWindowController?
+    private(set) var onboardingWindow: OnboardingWindowController?
+    private var startupTask: Task<Void, Never>?
     private let preferences = SimulatorPreferences()
     private let hostPreferenceAccess: HostPreferenceAccess
     private var settingsWindow: SettingsWindowController?
@@ -80,7 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CoreDeviceRuntime.onInitializationDelayChanged = { [weak self] delayed in
             self?.updateCoreDeviceInitializationNotice(delayed)
         }
-        model.requestHostPreferenceAccess = { [hostPreferenceAccess] in try hostPreferenceAccess.request() }
+        model.requestHostPreferenceAccess = { [weak self] in
+            try await self?.requestHostPreferenceAccess()
+        }
         model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
             try await self?.screens.stopRemoteScreens(for: identifiers)
@@ -135,14 +139,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Shows the manager before its first access request and queues restored screens after session setup.
+    /// Completes access setup before starting the session or opening restored screens.
     func startManager() {
-        showDevices(nil)
-        model.start()
-        hasStarted = true
-        let urls = launchURLs
-        launchURLs.removeAll()
-        if !urls.isEmpty { application(NSApp, open: urls) }
+        guard startupTask == nil, !hasStarted else { return }
+        startupTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.startupTask = nil }
+            do {
+                try await self.requestHostPreferenceAccess()
+                try Task.checkCancellation()
+                self.hasStarted = true
+                self.showDevices(nil)
+                self.model.start()
+                let urls = self.launchURLs
+                self.launchURLs.removeAll()
+                if !urls.isEmpty { self.application(NSApp, open: urls) }
+            } catch is CancellationError {
+            } catch {
+                self.present(error)
+            }
+        }
+    }
+
+    private func requestHostPreferenceAccess() async throws {
+        if hostPreferenceAccess.restore() { return }
+        let controller = OnboardingWindowController { [hostPreferenceAccess] window in
+            try await hostPreferenceAccess.request(presenting: window)
+        }
+        onboardingWindow = controller
+        defer {
+            controller.close()
+            onboardingWindow = nil
+        }
+        try await controller.run()
     }
 
     private func startInventoryObservation() {
@@ -189,9 +218,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !quitting else { return .terminateLater }
         quitting = true
+        startupTask?.cancel()
+        onboardingWindow?.close()
         updateCoreDeviceInitializationNotice(false)
         screens.beginQuitting()
-        let preparation = Task.immediate { try await model.prepareForQuit() }
+        let preparation = Task.immediate {
+            await startupTask?.value
+            try await model.prepareForQuit()
+        }
         let restoring = restartsAfterQuitting ? screens.restorations() : []
         Task {
             var relaunchProcess: Process?
@@ -276,6 +310,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showDevices(_ sender: Any?) {
+        if let onboardingWindow {
+            onboardingWindow.showWindow(nil)
+            onboardingWindow.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return
+        }
+        guard hasStarted else { startManager(); return }
         prepareMainWindow()
         mainWindow?.showWindow(nil)
         mainWindow?.window?.makeKeyAndOrderFront(nil)
@@ -411,22 +452,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func present(_ error: any Error) {
-        if error is HostPreferenceAccess.Failure {
-            let content = HostPreferenceAccessView(
-                copyCommand: {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(HostPreferenceAccess.Failure.recoveryCommand, forType: .string)
-                },
-                cancel: { NSApp.stopModal(withCode: .cancel) })
-            let panel = NSPanel(contentViewController: NSHostingController(rootView: content))
-            panel.title = "Device Hub Settings Access"
-            panel.styleMask = [.titled]
-            panel.center()
-            NSApp.activate()
-            NSApp.runModal(for: panel)
-            panel.orderOut(nil)
-            return
-        }
         let alert = NSAlert()
         alert.messageText = error.localizedDescription
         let failure = error as? any LocalizedError
