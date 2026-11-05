@@ -123,7 +123,7 @@ extension SimulatorHostController {
     package static func readCoreDeviceInventory() async throws -> Data {
         let result = try SystemCommandRunner().run(
             executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"),
-            arguments: ["list", "devices", "--omit-deprecated-fields-in-json", "--json-output", "-", "--quiet", "--timeout", "10"]
+            arguments: ["list", "devices", "--json-output", "-", "--quiet", "--timeout", "10"]
         )
         guard result.terminationStatus == 0 else {
             throw CLIError.io("coredevice-inventory", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)

@@ -53,6 +53,10 @@ import Testing
 
     @Test func remoteApplicationsAndProfileMetadataUseCoreDeviceIdentity() async throws {
         let calls = InspectorCalls { command in
+            if command.arguments.contains("--omit-deprecated-fields-in-json") {
+                return CommandOutput(terminationStatus: 64, stdout: Data(),
+                    stderr: Data("Unknown option '--omit-deprecated-fields-in-json'".utf8))
+            }
             if command.arguments.starts(with: ["device", "info", "apps"]) { return Self.output(Self.apps) }
             return Self.output(Self.profiles)
         }

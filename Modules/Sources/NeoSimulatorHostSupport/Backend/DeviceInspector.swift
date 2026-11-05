@@ -530,7 +530,7 @@ package struct DeviceInspector: Sendable {
                 }
                 identifier = device.identifier
             }
-            let options = ["--device", identifier, "--omit-deprecated-fields-in-json", "--json-output", "-", "--quiet"]
+            let options = ["--device", identifier, "--json-output", "-", "--quiet"]
                 + (timeout.map { ["--timeout", String($0)] } ?? [])
             let command = DeviceInspectorCommand(source: .coreDevice, arguments: arguments + options + trailingArguments)
             return try await run(command, operation: operation)
