@@ -37,6 +37,7 @@ package final class SimulatorScreenHost: NSObject {
     package private(set) var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
+    private var rescanScheduled = false
     private var testingSet: SimulatorDeviceSet?
     private var testingNotificationToken: UInt64?
     private var testingSetWatcher: DispatchSourceFileSystemObject?
@@ -109,7 +110,7 @@ package final class SimulatorScreenHost: NSObject {
             testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
                 self?.applyTestingDeviceVisibility()
             }
-            notificationToken = try deviceSet.observe { [weak self] in self?.rescan() }
+            notificationToken = try deviceSet.observe { [weak self] in self?.scheduleRescan() }
             openTestingSet()
             if !attachingBootedDevices {
                 suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity))
@@ -262,7 +263,7 @@ package final class SimulatorScreenHost: NSObject {
         testingSetWatcher = nil
         do {
             let set = try runtime.openDeviceSet(at: url.path)
-            testingNotificationToken = try set.observe { [weak self] in self?.rescan() }
+            testingNotificationToken = try set.observe { [weak self] in self?.scheduleRescan() }
             testingSet = set
         } catch {
             hostLog("Could not open the parallel testing device set: \(error.localizedDescription)")
@@ -482,6 +483,16 @@ package final class SimulatorScreenHost: NSObject {
         // Refresh synchronization when a connected device is selected again.
         controller.session.updatePasteboardSync()
         if presents, !isInProcess { controller.showAndActivate() }
+    }
+
+    private func scheduleRescan() {
+        guard !rescanScheduled, !stopped, !isTerminating else { return }
+        rescanScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.rescanScheduled = false
+            self.rescan()
+        }
     }
 
     private func rescan(testingVisibilityChanged: Bool = false) {

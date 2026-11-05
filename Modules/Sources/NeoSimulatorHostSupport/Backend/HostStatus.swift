@@ -415,16 +415,16 @@ extension SimulatorHostController {
     }
 
     private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?) -> SimulatorSettingsBackend {
-        let guest: Task<SimulatorGuestSettings, any Error>?
+        let guest: SimulatorGuestSettings?
         if case .simulator(let simulator) = device, let xcodeURL {
-            guest = Task { @MainActor in try await SimulatorGuestSettings(device: simulator, xcodeURL: xcodeURL) }
+            guest = SimulatorGuestSettings(device: simulator, xcodeURL: xcodeURL)
         } else { guest = nil }
         return SimulatorSettingsBackend(run: { tool, arguments in
             if tool == .guestDevice {
                 guard let guest else {
                     throw CLIError.configuration("device-setting-source", "Guest settings require a simulator and its developer tools.")
                 }
-                return try await guest.value.execute(arguments)
+                return try await guest.execute(arguments)
             }
             let result: CommandOutput
             if tool != .devicectl {

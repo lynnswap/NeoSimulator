@@ -3093,6 +3093,33 @@ struct InputFocusTests {
         #expect(retried.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func nativeDeviceSetDoesNotRefreshTheCatalogForBootProgressOrDeviceIO() async throws {
+        let runtime = try await makeRuntime()
+        let interface = runtime.coreSimulator
+        let set = try runtime.openDeviceSet()
+        let context = try unsafe interface.sharedContext.unsafeInvoke(on: interface.serviceClass as AnyObject,
+            runtime.xcodeURL.appendingPathComponent("Contents/Developer").path)
+        let nativeSet = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
+        let send = try await ABIRuntime.shared.resolve(
+            .objc(.method("sendNotification:", as: ((NSDictionary) -> Void).self)),
+            on: try #require(NSClassFromString("SimDeviceSet")))
+        let changes = AsyncStream<Void>.makeStream()
+        var refreshes = 0
+        let token = try set.observe {
+            refreshes += 1
+            changes.continuation.yield(())
+        }
+        defer { try? set.stopObserving(token); changes.continuation.finish() }
+        try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "SimDeviceNotificationType_BootStatus"] as NSDictionary)
+        try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_io_notification"] as NSDictionary)
+        try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_state", "new_state": 3] as NSDictionary)
+        var events = changes.stream.makeAsyncIterator()
+        await events.next()
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        #expect(refreshes == 1)
+    }
+
     @Test func pasteboardDelegateAnswersSimPasteboardPlus() async throws {
         let runtime = try await makeRuntime()
         #expect(runtime.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")

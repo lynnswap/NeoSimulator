@@ -6,20 +6,30 @@ import XPC
 /// Settings of the simulator that owns the selected screen, independent of CoreDevice discovery.
 @MainActor
 package final class SimulatorGuestSettings {
-    private let device: SimulatorDevice
-    private let interface: CoreSimulatorInterface
+    private let source: SimulatorHostDevice
+    private let xcodeURL: URL
+    private var devicePreparation: Task<SimulatorDevice, any Error>?
     private var actionPreparation: Task<GuestSettingsActions, any Error>?
 
-    package init(device: SimulatorHostDevice, xcodeURL: URL) async throws {
-        try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator")
-        let interface = try await CoreSimulatorInterface(runtime: .shared)
-        let set = try SimulatorDeviceSet(interface: interface,
-            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: device.deviceSetPath)
-        guard let selected = try set.readDevices().first(where: { $0.identifier == device.identifier }) else {
-            throw CLIError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
+    nonisolated package init(device: SimulatorHostDevice, xcodeURL: URL) {
+        source = device
+        self.xcodeURL = xcodeURL
+    }
+
+    private func selectedDevice() async throws -> SimulatorDevice {
+        if let devicePreparation { return try await devicePreparation.value }
+        let preparation = Task { [source, xcodeURL] in
+            try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator")
+            let interface = try await CoreSimulatorInterface(runtime: .shared)
+            let set = try SimulatorDeviceSet(interface: interface,
+                developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: source.deviceSetPath)
+            guard let device = try set.device(withIdentifier: source.identifier) else {
+                throw CLIError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
+            }
+            return device
         }
-        self.device = selected
-        self.interface = interface
+        devicePreparation = preparation
+        return try await preparation.value
     }
 
     package func execute(_ arguments: [String]) async throws -> Data {
@@ -29,15 +39,15 @@ package final class SimulatorGuestSettings {
             guard let query = SimulatorSettingsBackend.Query(rawValue: arguments[2]) else {
                 throw CLIError.configuration("guest-settings-operation", "Unknown simulator settings query.")
             }
-            return try JSONEncoder().encode(await read(query))
+            return try JSONEncoder().encode(await read(query, device: selectedDevice()))
         case "set":
-            try await set(JSONDecoder().decode(SimulatorDeviceSetting.self, from: Data(arguments[2].utf8)))
+            try await set(JSONDecoder().decode(SimulatorDeviceSetting.self, from: Data(arguments[2].utf8)), device: selectedDevice())
             return Data()
         default: throw CLIError.configuration("guest-settings-operation", "Unknown simulator settings operation.")
         }
     }
 
-    private func service() async throws -> GuestSettingsActions {
+    private func service(device: SimulatorDevice) async throws -> GuestSettingsActions {
         if let actionPreparation { return try await actionPreparation.value }
         let preparation = Task { [device] in
             try await GuestSettingsActions(guest: SimulatorGuestHID(lookUp: device.lookUp), identifier: device.identifier)
@@ -46,7 +56,7 @@ package final class SimulatorGuestSettings {
         return try await preparation.value
     }
 
-    private func read(_ query: SimulatorSettingsBackend.Query) async -> SimulatorDeviceSettings {
+    private func read(_ query: SimulatorSettingsBackend.Query, device: SimulatorDevice) async -> SimulatorDeviceSettings {
         var result = SimulatorDeviceSettings()
         func capture<T>(_ name: String, _ read: () async throws -> T) async -> T? {
             guard !Task.isCancelled else { return nil }
@@ -57,7 +67,7 @@ package final class SimulatorGuestSettings {
             }
         }
         func get(_ declaration: String) async throws -> DeviceInspectorValue {
-            try await service().get(declaration)
+            try await service(device: device).get(declaration)
         }
         switch query {
         case .simulatorContentSize:
@@ -76,7 +86,7 @@ package final class SimulatorGuestSettings {
                 let values = try await get("GetSupportedLooksAndFeelsActionDeclaration")["looksAndFeels"]?.array ?? []
                 var supported: [SimulatorLookAndFeel] = []
                 for choice in SimulatorLookAndFeel.allCases {
-                    let native = try await service().namedValue("DeviceLookAndFeel", member: choice.nativeMember)
+                    let native = try await service(device: device).namedValue("DeviceLookAndFeel", member: choice.nativeMember)
                     if values.contains(try DeviceInspectorValue.propertyList(native)) { supported.append(choice) }
                 }
                 return supported
@@ -135,9 +145,9 @@ package final class SimulatorGuestSettings {
         return result
     }
 
-    private func set(_ setting: SimulatorDeviceSetting) async throws {
+    private func set(_ setting: SimulatorDeviceSetting, device: SimulatorDevice) async throws {
         func change(_ declaration: String, _ input: [String: Any]) async throws {
-            try await service().set(declaration, input: input)
+            try await service(device: device).set(declaration, input: input)
         }
         switch setting {
         case .contentSize(let value):
@@ -146,16 +156,16 @@ package final class SimulatorGuestSettings {
             }
             try device.setContentSizeCategory(index + 1)
         case .lookAndFeel(let value):
-            let native = try await service().namedValue("DeviceLookAndFeel",
+            let native = try await service(device: device).namedValue("DeviceLookAndFeel",
                 member: value.nativeMember)
             try await change("SetDeviceLookAndFeelActionDeclaration", ["lookAndFeel": native])
         case .liquidGlassOpacity(let value):
             try await change("SetLiquidGlassConfigurationActionDeclaration", ["configuration": ["opacity": value]])
         case .colorFilter(let value, let intensity):
-            let current = try await service().get("GetColorFilterActionDeclaration")["colorFilter"]
+            let current = try await service(device: device).get("GetColorFilterActionDeclaration")["colorFilter"]
             var filter: [String: Any] = ["enabled": value != .none]
             if value != .none {
-                filter["filterType"] = try await service().namedValue("DeviceColorFilter.FilterType", member: value.rawValue)
+                filter["filterType"] = try await service(device: device).namedValue("DeviceColorFilter.FilterType", member: value.rawValue)
             } else if let name = current?["filterType"]?["name"]?.string {
                 filter["filterType"] = ["name": name]
             }
