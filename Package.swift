@@ -4,6 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "NeoSimulatorKit",
+    defaultLocalization: "en",
     platforms: [.macOS("26.4")],
     products: [
         .library(name: "NeoSimulatorKit", targets: ["NeoSimulatorKit"]),
@@ -31,7 +32,7 @@ let package = Package(
         .target(name: "NeoSimulatorApp", dependencies: [
             "NeoSimulatorKit", "NeoSimulatorHostSupport",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
-        ], path: "Modules/Sources/NeoSimulatorApp"),
+        ], path: "Modules/Sources/NeoSimulatorApp", resources: [.process("Resources")]),
         .target(name: "NeoSimulatorService", dependencies: [
             "NeoSimulatorKit", "NeoSimulatorHostSupport",
         ], path: "Modules/Sources/NeoSimulatorService"),

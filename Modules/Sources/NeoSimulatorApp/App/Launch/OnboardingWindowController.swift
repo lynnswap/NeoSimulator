@@ -26,7 +26,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         }))
         host.sizingOptions = []
         window.contentViewController = host
-        window.title = "Welcome to NeoSimulator"
+        window.title = String(localized: "Set Up NeoSimulator", table: "Onboarding", bundle: #bundle)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
@@ -100,7 +100,7 @@ private struct OnboardingView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                Text("NeoSimulator の初期設定")
+                Text("Set Up NeoSimulator", tableName: "Onboarding", bundle: #bundle)
                     .font(.title)
                     .fontWeight(.semibold)
                 OnboardingDescription(errorMessage: state.errorMessage)
@@ -122,9 +122,9 @@ private struct OnboardingDescription: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("シミュレーターを NeoSimulator で表示するために、Device Hub の設定を変更します。")
-            Text("設定を変更できるよう、Device Hub の設定フォルダへのアクセスを許可してください。")
-            Text("下のボタンを押すと、フォルダの選択画面が開きます。表示されている「Preferences」フォルダのまま「Allow Access」を押してください。")
+            Text("NeoSimulator updates Device Hub settings so simulators open in NeoSimulator.", tableName: "Onboarding", bundle: #bundle)
+            Text("Allow access to the Device Hub settings folder to make this change.", tableName: "Onboarding", bundle: #bundle)
+            Text("Click the button below to open the folder picker. Keep the displayed “Preferences” folder open and click “Allow Access”.", tableName: "Onboarding", bundle: #bundle)
             if let errorMessage {
                 Text(errorMessage)
                     .foregroundStyle(.red)
@@ -141,7 +141,7 @@ private struct OnboardingAccessButton: View {
     var body: some View {
         Button(action: allowAccess) {
             HStack {
-                Text("アクセスを許可…")
+                Text("Allow Access…", tableName: "Onboarding", bundle: #bundle)
                 if isRequesting {
                     ProgressView()
                         .controlSize(.small)

@@ -7,7 +7,30 @@
   "localizations": {
     "development": "en",
     "supported": [
-      "Base"
+      "Base",
+      "ar",
+      "de",
+      "en",
+      "en-GB",
+      "en-IN",
+      "es",
+      "es-419",
+      "fr",
+      "fr-CA",
+      "hi",
+      "id",
+      "it",
+      "ja",
+      "ko",
+      "nl",
+      "pt-BR",
+      "pt-PT",
+      "ro",
+      "ru",
+      "th",
+      "tr",
+      "zh-Hans",
+      "zh-Hant"
     ]
   },
   "packages": [
@@ -483,6 +506,10 @@
                       "path": "SettingsWindowController.swift"
                     }
                   ]
+                },
+                {
+                  "kind": "folder",
+                  "path": "Resources"
                 }
               ]
             },

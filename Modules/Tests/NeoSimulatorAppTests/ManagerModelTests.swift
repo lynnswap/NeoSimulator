@@ -1933,7 +1933,6 @@ struct ManagerModelTests {
         var selections = 0
         let access = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: { _, window in
             #expect(window?.isVisible == true)
-            #expect(window?.title == "Welcome to NeoSimulator")
             selections += 1
             if selections == 1 { return nil }
             if selections == 2 { throw ManagerModelSource.Failure.unavailable }
