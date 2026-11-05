@@ -219,7 +219,6 @@
                     { "path": "DeviceArtwork.swift" },
                     { "path": "DeviceBrowserPresentation.swift" },
                     { "path": "DeviceBrowserState.swift" },
-                    { "path": "ManagerCommandBar.swift" },
                     { "path": "ManagerWindowController.swift" },
                     { "path": "SimulatorManagerModel.swift" },
                     { "path": "SimulatorSidebarCellView.swift" },
