@@ -387,7 +387,7 @@ package final class RemoteDeviceScreenSession {
             do {
                 guard let display = try await readDisplay(device),
                       let resources = try RemoteDeviceChromeResources(display: display, productType: device.modelIdentifier) else { return }
-                let chrome = try NativeDeviceChrome(resources: resources)
+                let chrome = try await NativeDeviceChrome(resources: resources)
                 try Task.checkCancellation()
                 guard let self else { return }
                 chrome.onButton = { [weak self] event in

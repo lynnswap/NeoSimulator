@@ -28,7 +28,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     package var canCaptureScreenshot: Bool { !stopped && !finished && frameSize != nil }
     package private(set) var canRecordScreen = false
 
-    package init(remote: CoreDeviceRemoteScreenDevice, source: RemoteScreenCaptureSource, contentView: NSView) throws {
+    package init(remote: CoreDeviceRemoteScreenDevice, source: RemoteScreenCaptureSource, contentView: NSView) async throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw CLIError.unavailable("remote-screen-metal", "This Mac has no Metal device to show the device screen.")
         }
@@ -37,9 +37,9 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         self.contentView = contentView
         let input = CoreDeviceScreenInput(remote: remote)
         self.input = input
-        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try CoreDeviceInputCapabilitySource(remote: remote),
+        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try await CoreDeviceInputCapabilitySource(remote: remote),
             read: { try input.capabilities() }, invalidateInputs: { input.discardInputs(for: $0) })
-        displayGeometry = try CoreDeviceDisplayGeometry(remote: remote)
+        displayGeometry = try await CoreDeviceDisplayGeometry(remote: remote)
         video.device = device
         video.pixelFormat = .bgra8Unorm
         // Frames are copied into the drawable rather than rendered as an attachment.

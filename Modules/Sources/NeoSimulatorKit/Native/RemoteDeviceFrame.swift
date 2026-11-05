@@ -102,39 +102,39 @@ package final class NativeDeviceChrome {
     private var applied: (display: RemoteDeviceDisplay, size: CGSize, layout: Layout?)?
     private var buttonEvents: Task<Void, Never>?
 
-    package init(resources: RemoteDeviceChromeResources) throws {
+    package init(resources: RemoteDeviceChromeResources) async throws {
         guard let bundle = Bundle(url: resources.bundle) else {
             throw CLIError.unavailable("device-chrome", "The device's frame artwork could not be opened.")
         }
         let runtime = ABIRuntime.shared
-        let modelType = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplayViewModel")))
-        let chromeType = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplayChrome")))
-        let inputType = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplayChrome.Input")))
-        let sizeType = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplaySize")))
-        let layoutType = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplayViewLayout")))
-        let viewType = try runtime.resolveAndWait(.swift(.type("DeviceKit.ChromeView")))
+        let modelType = try await runtime.resolve(.swift(.type("DeviceKit.DisplayViewModel")))
+        let chromeType = try await runtime.resolve(.swift(.type("DeviceKit.DisplayChrome")))
+        let inputType = try await runtime.resolve(.swift(.type("DeviceKit.DisplayChrome.Input")))
+        let sizeType = try await runtime.resolve(.swift(.type("DeviceKit.DisplaySize")))
+        let layoutType = try await runtime.resolve(.swift(.type("DeviceKit.DisplayViewLayout")))
+        let viewType = try await runtime.resolve(.swift(.type("DeviceKit.ChromeView")))
         // These DeviceKit values are resilient; their exported members pass them indirectly.
         let abis = try Dictionary(uniqueKeysWithValues: [chromeType, inputType, sizeType, layoutType, viewType]
             .map { ($0, try NativeType.opaque(named: $0.name)) })
-        let makeModel = try modelType.resolveAndWait(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self)))
-        let makeChrome = try chromeType.resolveAndWait(.swift(.initializer("init(bundle:)",
+        let makeModel = try await modelType.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self)))
+        let makeChrome = try await chromeType.resolve(.swift(.initializer("init(bundle:)",
             as: ((Bundle) throws -> NativeSwiftValue).self, valueABIs: abis)))
-        let makeView = try viewType.resolveAndWait(.swift(.initializer("init(viewModel:)",
+        let makeView = try await viewType.resolve(.swift(.initializer("init(viewModel:)",
             as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
-        makeSize = try sizeType.resolveAndWait(.swift(.initializer("init(pixelSize:uiScale:)",
+        makeSize = try await sizeType.resolve(.swift(.initializer("init(pixelSize:uiScale:)",
             as: ((CGSize, CGFloat) -> NativeSwiftValue).self, valueABIs: abis)))
-        apply = try modelType.resolveAndWait(.swift(.method("apply(chrome:displaySize:containerSize:)",
+        apply = try await modelType.resolve(.swift(.method("apply(chrome:displaySize:containerSize:)",
             as: ((NativeSwiftValue?, NativeSwiftValue?, CGSize) -> Void).self, valueABIs: abis)))
-        readLayout = try modelType.resolveAndWait(.swift(.getter("viewLayout", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
-        fullFrame = try layoutType.resolveAndWait(.swift(.getter("fullFrame", as: (() -> CGRect).self,
+        readLayout = try await modelType.resolve(.swift(.getter("viewLayout", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
+        fullFrame = try await layoutType.resolve(.swift(.getter("fullFrame", as: (() -> CGRect).self,
             valueABIs: abis, receiverABI: abis[layoutType])))
-        framebufferFrame = try layoutType.resolveAndWait(.swift(.getter("framebufferFrame", as: (() -> CGRect).self,
+        framebufferFrame = try await layoutType.resolve(.swift(.getter("framebufferFrame", as: (() -> CGRect).self,
             valueABIs: abis, receiverABI: abis[layoutType])))
-        let name = try inputType.resolveAndWait(.swift(.getter("name", as: (() -> String).self,
+        let name = try await inputType.resolve(.swift(.getter("name", as: (() -> String).self,
             valueABIs: abis, receiverABI: abis[inputType])))
         typealias Handler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
-        let setDown = try modelType.resolveAndWait(.swift(.setter("onButtonDown", as: ((Handler?) -> Void).self, valueABIs: abis)))
-        let setUp = try modelType.resolveAndWait(.swift(.setter("onButtonUp", as: ((Handler?) -> Void).self, valueABIs: abis)))
+        let setDown = try await modelType.resolve(.swift(.setter("onButtonDown", as: ((Handler?) -> Void).self, valueABIs: abis)))
+        let setUp = try await modelType.resolve(.swift(.setter("onButtonUp", as: ((Handler?) -> Void).self, valueABIs: abis)))
         model = try unsafe makeModel.unsafeInvoke()
         chrome = try unsafe makeChrome.unsafeInvoke(bundle)
         mask = resources.mask.flatMap(NSImage.init(contentsOf:))

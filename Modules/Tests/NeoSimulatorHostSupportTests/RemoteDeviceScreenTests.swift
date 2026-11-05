@@ -989,10 +989,10 @@ struct RemoteDeviceScreenTests {
         #expect(decoded == report && decoded.optionalBindings.allSatisfy { $0.unverified == unchecked })
     }
 
-    @Test func resizeGeometryBindingsPrepareWithoutADeviceOrAssertion() throws {
+    @Test func resizeGeometryBindingsPrepareWithoutADeviceOrAssertion() async throws {
         try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
-        let bindings = try CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
-        _ = try CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
+        let bindings = try await CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
+        _ = try await CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -1055,14 +1055,14 @@ struct RemoteDeviceScreenTests {
     @Test func displayGeometryBindingsReadDeviceKitPointSizesWithoutADevice() async throws {
         try await CoreDeviceDisplayGeometry.loadRuntime()
         let runtime = ABIRuntime.shared
-        let bindings = try CoreDeviceDisplayGeometry.Bindings(runtime: runtime)
+        let bindings = try await CoreDeviceDisplayGeometry.Bindings(runtime: runtime)
         let sizeType = try runtime.resolveAndWait(.swift(.type("DeviceKit.DisplaySize")))
         let makeSize = try sizeType.resolveAndWait(.swift(.initializer("init(pixelSize:uiScale:)",
             as: ((CGSize, CGFloat) -> NativeSwiftValue).self, valueABIs: bindings.abis)))
         let size = try unsafe makeSize.unsafeInvoke(CGSize(width: 300, height: 600), 2)
         #expect(try unsafe bindings.pointSize.unsafeInvoke(on: size) == CGSize(width: 150, height: 300))
         // The device frame reads the same size in DeviceKit's pixel and scale terms.
-        let frame = try CoreDeviceDisplayGeometry.FrameBindings(runtime: runtime, abis: bindings.abis)
+        let frame = try await CoreDeviceDisplayGeometry.FrameBindings(runtime: runtime, abis: bindings.abis)
         #expect(try unsafe frame.pixelSize.unsafeInvoke(on: size) == CGSize(width: 300, height: 600))
         #expect(try unsafe frame.scale.unsafeInvoke(on: size) == 2)
     }
@@ -1086,7 +1086,7 @@ struct RemoteDeviceScreenTests {
         #expect(try unsafe uniqueID.unsafeInvoke(on: descriptor) == "resized-app-display")
     }
 
-    @Test func dedicatedReportsRoundTripThroughTheInstalledUniversalHIDValueAPIs() throws {
+    @Test func dedicatedReportsRoundTripThroughTheInstalledUniversalHIDValueAPIs() async throws {
         let runtime = ABIRuntime.shared
         let systemURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHID.framework/Versions/A/UniversalHID")
         let coreDeviceURL = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
@@ -1095,7 +1095,7 @@ struct RemoteDeviceScreenTests {
         let systemImage = try #require(runtime.resolveImagesAndWait(matching: .path(systemURL)).first)
         let image = try #require(runtime.resolveImagesAndWait(matching: .path(coreDeviceURL)).first)
         try #require(image != systemImage)
-        let builder = try CoreDeviceDigitizerReports(runtime: runtime)
+        let builder = try await CoreDeviceDigitizerReports(runtime: runtime)
         let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")), in: image, loading: .loadedOnly)
         let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")), in: image, loading: .loadedOnly)
         let abis = builder.abis
@@ -1764,7 +1764,7 @@ struct RemoteDeviceScreenTests {
         #expect(!service.isRemoved)
         await #expect(throws: ScreenFixtureError.stream) { try await service.stop() }
         #expect(service.isRemoved && removes == 2 && resets == 2)
-        let report = try CoreDeviceDigitizerReports(runtime: .shared).make(point: .zero, second: nil, phase: .began, edge: .none)
+        let report = try await CoreDeviceDigitizerReports(runtime: .shared).make(point: .zero, second: nil, phase: .began, edge: .none)
         #expect(throws: CLIError.self) { try service.send(report) }
         try await service.stop()
         #expect(removes == 2 && resets == 2)

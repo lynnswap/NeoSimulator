@@ -130,13 +130,13 @@ package struct CoreDeviceDigitizerReports {
     package let abis: [NativeSwiftType: NativeType]
     private let build: (CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge) throws -> NativeSwiftValue
 
-    package init(runtime: ABIRuntime) throws {
-        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+    package init(runtime: ABIRuntime) async throws {
+        let report = try await runtime.prepare { try CoreDeviceHIDService.reportABI(runtime: $0) }
         let reportType = report.type
-        let digitizerType = try CoreDeviceHIDService.universalHIDType("DigitizerReport", runtime: runtime)
-        let contactType = try CoreDeviceHIDService.universalHIDType("DigitizerContact", runtime: runtime)
-        let descriptorType = try CoreDeviceHIDService.universalHIDType("HIDReportDescriptor", runtime: runtime)
-        let reportIDType = try CoreDeviceHIDService.universalHIDType("ReportID", runtime: runtime)
+        let digitizerType = try await runtime.prepare { try CoreDeviceHIDService.universalHIDType("DigitizerReport", runtime: $0) }
+        let contactType = try await runtime.prepare { try CoreDeviceHIDService.universalHIDType("DigitizerContact", runtime: $0) }
+        let descriptorType = try await runtime.prepare { try CoreDeviceHIDService.universalHIDType("HIDReportDescriptor", runtime: $0) }
+        let reportIDType = try await runtime.prepare { try CoreDeviceHIDService.universalHIDType("ReportID", runtime: $0) }
         // These exported constructors pass the two-word Data representation directly;
         // native value witnesses still own and copy their payloads.
         abis = [
@@ -147,32 +147,33 @@ package struct CoreDeviceDigitizerReports {
             reportIDType: try .structure(named: reportIDType.name, fields: [.uint8]),
         ]
         let abis = self.abis
-        let descriptor = try digitizerType.resolveAndWait(.swift(.staticGetter("descriptor", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
-        let bitCount = try descriptorType.resolveAndWait(.swift(.method("reportBitCount(for:)", as: ((NativeSwiftValue) -> Int).self,
+        let descriptor = try await digitizerType.resolve(.swift(.staticGetter("descriptor", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let bitCount = try await descriptorType.resolve(.swift(.method("reportBitCount(for:)", as: ((NativeSwiftValue) -> Int).self,
             valueABIs: abis, receiverABI: abis[descriptorType])))
-        let reportID = try digitizerType.resolveAndWait(.swift(.staticGetter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let reportID = try await digitizerType.resolve(.swift(.staticGetter("reportID", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
         let bits = try unsafe bitCount.unsafeInvoke(on: descriptor.unsafeInvoke(), reportID.unsafeInvoke())
-        let makeReport = try reportType.resolveAndWait(.swift(.initializer("init(bitCount:id:)",
+        let makeReport = try await reportType.resolve(.swift(.initializer("init(bitCount:id:)",
             as: ((Int, NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
-        let makeDigitizer = try digitizerType.resolveAndWait(.swift(.initializer("init(_report:)",
+        let makeDigitizer = try await digitizerType.resolve(.swift(.initializer("init(_report:)",
             as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
-        let makeContact = try contactType.resolveAndWait(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let makeContact = try await contactType.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
         let receiver = abis[digitizerType]!
-        let maxContacts = try digitizerType.resolveAndWait(.swift(.setter("contactCountMaximum", as: ((UInt8) -> Void).self, valueABIs: abis, receiverABI: receiver)))
-        let contactCount = try digitizerType.resolveAndWait(.swift(.setter("contactCount", as: ((UInt8) -> Void).self, valueABIs: abis, receiverABI: receiver)))
-        let setContact = try digitizerType.resolveAndWait(.swift(.method("setContact(_:atIndex:)", as: ((NativeSwiftValue, Int) -> Void).self, valueABIs: abis, receiverABI: receiver, receiver: .mutating)))
-        let identity = try digitizerType.resolveAndWait(.swift(.method("setContactIdentity(_:atIndex:)", as: ((UInt8, Int) -> Void).self, valueABIs: abis, receiverABI: receiver, receiver: .mutating)))
-        let readReport = try digitizerType.resolveAndWait(.swift(.getter("report", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: receiver)))
+        let maxContacts = try await digitizerType.resolve(.swift(.setter("contactCountMaximum", as: ((UInt8) -> Void).self, valueABIs: abis, receiverABI: receiver)))
+        let contactCount = try await digitizerType.resolve(.swift(.setter("contactCount", as: ((UInt8) -> Void).self, valueABIs: abis, receiverABI: receiver)))
+        let setContact = try await digitizerType.resolve(.swift(.method("setContact(_:atIndex:)", as: ((NativeSwiftValue, Int) -> Void).self, valueABIs: abis, receiverABI: receiver, receiver: .mutating)))
+        let identity = try await digitizerType.resolve(.swift(.method("setContactIdentity(_:atIndex:)", as: ((UInt8, Int) -> Void).self, valueABIs: abis, receiverABI: receiver, receiver: .mutating)))
+        let readReport = try await digitizerType.resolve(.swift(.getter("report", as: (() -> NativeSwiftValue).self, valueABIs: abis, receiverABI: receiver)))
         let contactReceiver = abis[contactType]!
-        let contactIndex = try contactType.resolveAndWait(.swift(.setter("index", as: ((Int) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
-        let x = try contactType.resolveAndWait(.swift(.setter("x", as: ((Double) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
-        let y = try contactType.resolveAndWait(.swift(.setter("y", as: ((Double) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
-        let touch = try contactType.resolveAndWait(.swift(.setter("touch", as: ((Bool) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
-        let range = try contactType.resolveAndWait(.swift(.setter("range", as: ((Bool) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
-        let edgeMethods = try Dictionary(uniqueKeysWithValues: ["top": "Up", "bottom": "Down", "left": "Left", "right": "Right"].map { edge, suffix in
-            (edge, try digitizerType.resolveAndWait(.swift(.method("setContactSwipe\(suffix)(_:atIndex:)",
-                as: ((Bool, Int) -> Void).self, valueABIs: abis, receiverABI: receiver, receiver: .mutating))))
-        })
+        let contactIndex = try await contactType.resolve(.swift(.setter("index", as: ((Int) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let x = try await contactType.resolve(.swift(.setter("x", as: ((Double) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let y = try await contactType.resolve(.swift(.setter("y", as: ((Double) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let touch = try await contactType.resolve(.swift(.setter("touch", as: ((Bool) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
+        let range = try await contactType.resolve(.swift(.setter("range", as: ((Bool) -> Void).self, valueABIs: abis, receiverABI: contactReceiver)))
+        var edgeMethods: [String: NativeSwiftMethod<(Bool, Int) -> Void>] = [:]
+        for (edge, suffix) in ["top": "Up", "bottom": "Down", "left": "Left", "right": "Right"] {
+            edgeMethods[edge] = try await digitizerType.resolve(.swift(.method("setContactSwipe\(suffix)(_:atIndex:)",
+                as: ((Bool, Int) -> Void).self, valueABIs: abis, receiverABI: receiver, receiver: .mutating)))
+        }
         build = { point, second, phase, edge in
             let initial = try unsafe makeReport.unsafeInvoke(bits, reportID.unsafeInvoke())
             let report = try unsafe makeDigitizer.unsafeInvoke(initial)

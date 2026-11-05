@@ -6,6 +6,7 @@ import Security
 @MainActor
 package enum CoreDeviceRuntime {
     private static var manager: NativeSwiftValue?
+    private static var managerPreparation: Task<Void, any Error>?
     private static var managerInitialization: Task<Void, any Error>?
     private static var uiXcodeOverride: URL?
     private static var uiXcodePreparation: Task<URL, any Error>?
@@ -47,8 +48,8 @@ package enum CoreDeviceRuntime {
         if let existing = managerInitialization {
             preparation = existing
         } else {
-            let manager = try deviceManagerIncludingSimulators()
             preparation = Task {
+                let manager = try await deviceManagerIncludingSimulators()
                 try await reportInitializationDelay(during: {
                     let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.DeviceManager")))
                     let initialize = try await type.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
@@ -116,8 +117,24 @@ package enum CoreDeviceRuntime {
     ///
     /// Callers must await the manager's `awaitFullInitialization()` before reading
     /// its devices or observing device changes. This method does not wait for initialization.
-    package static func deviceManagerIncludingSimulators() throws -> NativeSwiftValue {
+    package static func deviceManagerIncludingSimulators() async throws -> NativeSwiftValue {
+        try Task.checkCancellation()
         if let manager { return manager }
+        if let preparation = managerPreparation {
+            try await preparedValue(of: preparation)
+            return manager!
+        }
+        let preparation = Task {
+            defer { managerPreparation = nil }
+            let value = try await makeDeviceManager()
+            manager = value
+        }
+        managerPreparation = preparation
+        try await preparedValue(of: preparation)
+        return manager!
+    }
+
+    private static func makeDeviceManager() async throws -> NativeSwiftValue {
         let binary = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice"
         // Apple runtime metadata and registered classes outlive the handle.
         guard dlopen(binary, RTLD_NOW | RTLD_LOCAL) != nil else {
@@ -125,16 +142,15 @@ package enum CoreDeviceRuntime {
             throw CLIError.unavailable("coredevice-runtime", "Could not load CoreDevice: \(detail)")
         }
         let runtime = ABIRuntime.shared
-        let service = try runtime.resolveAndWait(.swift(.type("CoreDevice.CoreDeviceService")))
-        let sharedConnection = try service.resolveAndWait(.swift(.staticGetter("sharedConnection", as: (() -> NativeSwiftValue).self)))
+        let service = try await runtime.resolve(.swift(.type("CoreDevice.CoreDeviceService")))
+        let sharedConnection = try await service.resolve(.swift(.staticGetter("sharedConnection", as: (() -> NativeSwiftValue).self)))
         let connection = try unsafe sharedConnection.unsafeInvoke()
-        let visibility = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceVisibilityClass")))
+        let visibility = try await runtime.resolve(.swift(.type("CoreDevice.DeviceVisibilityClass")))
         let classes = try ["default", "simulators"].map { try visibility.makeEnumCase(named: $0) }
-        let type = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        let make = try type.resolveAndWait(.swift(.initializer("init(serviceConnection:allowedDeviceVisibilityClasses:)",
+        let type = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
+        let make = try await type.resolve(.swift(.initializer("init(serviceConnection:allowedDeviceVisibilityClasses:)",
             as: ((NativeSwiftValue, [NativeSwiftValue]) -> NativeSwiftValue).self)))
         let manager = try unsafe make.unsafeInvoke(connection, classes)
-        self.manager = manager
         return manager
     }
 }
@@ -148,23 +164,23 @@ package final class CoreDeviceRemoteScreenDevice {
     private let supportsFeature: NativeSwiftMethod<(String) -> Bool>
 
     package init(identifier: String) async throws {
-        let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
+        let manager = try await CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
-        let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
+        let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
         try await CoreDeviceRuntime.initializeDeviceManager()
         try Task.checkCancellation()
         guard let uuid = UUID(uuidString: identifier) else {
             throw CLIError.configuration("coredevice-identifier", "The selected CoreDevice identifier is not a UUID.")
         }
-        let devices = try managerType.resolveAndWait(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
+        let devices = try await managerType.resolve(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
         guard let object = try unsafe devices.unsafeInvoke(on: manager)[uuid] else {
             throw CLIError.unavailable("remote-screen-device", "The selected device is no longer available.")
         }
         self.runtime = runtime
         self.manager = manager
         self.object = object
-        type = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
-        supportsFeature = try type.resolveAndWait(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
+        type = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
+        supportsFeature = try await type.resolve(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
     }
 
     package func supports(_ feature: String) throws -> Bool {
@@ -173,7 +189,7 @@ package final class CoreDeviceRemoteScreenDevice {
 
     /// Simulator UDIDs identify hardware records, not keys in DeviceManager.devices.
     package static func simulatorIdentifier(udid: String) async throws -> String? {
-        let manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
+        let manager = try await CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
         let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
         try await CoreDeviceRuntime.initializeDeviceManager()
@@ -196,12 +212,12 @@ package final class CoreDeviceRemoteScreenDevice {
         return match
     }
 
-    package func vncURL() throws -> URL? {
-        let readInfo = try type.resolveAndWait(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+    package func vncURL() async throws -> URL? {
+        let readInfo = try await type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
         let info = try unsafe readInfo.unsafeInvoke(on: object)
-        let helper = try runtime.resolveAndWait(.swift(.type("CoreDevice.ScreenViewingURLHelper")))
-        let urlType = try runtime.resolveAndWait(.swift(.type("CoreDevice.ScreenViewingURLHelper.ScreenViewingURLType")))
-        let url = try helper.resolveAndWait(.swift(.staticMethod("url(for:withType:)",
+        let helper = try await runtime.resolve(.swift(.type("CoreDevice.ScreenViewingURLHelper")))
+        let urlType = try await runtime.resolve(.swift(.type("CoreDevice.ScreenViewingURLHelper.ScreenViewingURLType")))
+        let url = try await helper.resolve(.swift(.staticMethod("url(for:withType:)",
             as: ((NativeSwiftValue, NativeSwiftValue) -> URL?).self)))
         return try unsafe url.unsafeInvoke(info, urlType.makeEnumCase(named: "VNC"))
     }
@@ -236,8 +252,8 @@ package enum CoreDeviceScreenTransport {
     package static func make(_ device: CoreDeviceDevice, contentView: NSView, displayUniqueID: String?,
                      captureSources: any RemoteScreenCaptureSourceCatalog) async throws -> any RemoteScreenTransport {
         let remote = try await CoreDeviceRemoteScreenDevice(identifier: device.identifier)
-        if displayUniqueID == nil, let url = try remote.vncURL() {
-            return try ScreenSharingDeviceTransport(remote: remote, url: url, contentView: contentView)
+        if displayUniqueID == nil, let url = try await remote.vncURL() {
+            return try await ScreenSharingDeviceTransport(remote: remote, url: url, contentView: contentView)
         }
         guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen") else {
             throw CLIError.unavailable("remote-screen-capability", "The device does not currently expose a screen connection.")
@@ -249,13 +265,13 @@ package enum CoreDeviceScreenTransport {
             }
             try await captureSources.waitUntilConnected(source)
             try await CoreDeviceDisplayGeometry.loadRuntime()
-            return try CoreDeviceCaptureTransport(remote: remote, source: source, contentView: contentView)
+            return try await CoreDeviceCaptureTransport(remote: remote, source: source, contentView: contentView)
         }
         guard try hasMediaStreamEntitlement() else {
             throw CLIError.unavailable("remote-screen-entitlement", "This build of NeoSimulator cannot open the app's display because it lacks the video conferencing entitlement CoreDevice's display stream requires.")
         }
         try await CoreDeviceDisplayGeometry.loadRuntime()
-        return try CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
+        return try await CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
     }
 
     /// Reads the device's primary display for its frame, without opening a screen connection.

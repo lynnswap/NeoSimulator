@@ -57,8 +57,8 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         ], load: {
             try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         }, prepare: {
-            let bindings = try CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
-            _ = try CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
+            let bindings = try await CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
+            _ = try await CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
         })
         let pasteboard = await Preparation.check("nativePasteboard", unverified: [
             "Device capability and pasteboard implementation witnesses", "The device pasteboard's name and its transfers",
@@ -74,7 +74,7 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         ], load: {
             try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         }, prepare: {
-            _ = try CoreDeviceDigitizerReports(runtime: .shared)
+            _ = try await CoreDeviceDigitizerReports(runtime: .shared)
             // This constructs an SDK value only; it never registers the illustrative display identity.
             _ = try await CoreDeviceHIDService.touchscreenDescriptor(displayID: 0, uniqueID: "runtime-validation", runtime: .shared)
         })
@@ -92,7 +92,7 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
             "RemoteDevice display-info reads", "Display selection and normalized orientation and size values",
             "Display-info observation",
         ], load: { try await CoreDeviceDisplayGeometry.loadRuntime() }, prepare: {
-            _ = try CoreDeviceDisplayGeometry.Bindings(runtime: .shared)
+            _ = try await CoreDeviceDisplayGeometry.Bindings(runtime: .shared)
         })
         let activeState = await Preparation.check("sidebarActiveState", unverified: [
             "ObservedDeviceManager singleton and its device observation",

@@ -84,7 +84,7 @@ private final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
         let changes: NativeSwiftMethod<() -> NativeSwiftValue>
 
         init() async throws {
-            manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
+            manager = try await CoreDeviceRuntime.deviceManagerIncludingSimulators()
             let runtime = ABIRuntime.shared
             let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
             let remote = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
