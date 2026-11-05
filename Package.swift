@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "NeoSimulatorKit", targets: ["NeoSimulatorKit"]),
         .library(name: "NeoSimulatorApp", targets: ["NeoSimulatorApp"]),
         .library(name: "NeoSimulatorService", targets: ["NeoSimulatorService"]),
+        .executable(name: "CoreDeviceInventoryProbe", targets: ["CoreDeviceInventoryProbe"]),
     ],
     dependencies: [
         .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.16.2"),
@@ -36,6 +37,8 @@ let package = Package(
         .target(name: "NeoSimulatorService", dependencies: [
             "NeoSimulatorKit", "NeoSimulatorHostSupport",
         ], path: "Modules/Sources/NeoSimulatorService"),
+        .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorHostSupport"],
+                          path: "Modules/Sources/CoreDeviceInventoryProbe"),
         .testTarget(name: "NeoSimulatorAppTests", dependencies: [
             "NeoSimulatorApp", "NeoSimulatorKit", "NeoSimulatorHostSupport", "NeoSimulatorService",
             .product(name: "ABIBridge", package: "ABIBridge"),

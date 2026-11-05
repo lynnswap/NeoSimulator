@@ -104,10 +104,20 @@ package final class GuestHIDConnection {
     }
 
     /// Sends a message and returns the service's reply, whose contents the message type defines. The reply is awaited even
-    /// when the caller is cancelled, so that what the message creates in the guest gets an owner.
-    package func request(_ type: GuestHIDCodec.MessageType, _ payload: NativeSwiftValue) async throws -> xpc_object_t {
+    /// when the caller is cancelled, so that what the message creates in the guest gets an owner. A bounded request
+    /// closes its connection on timeout; it must not create a resource whose reply needs an owner.
+    package func request(_ type: GuestHIDCodec.MessageType, _ payload: NativeSwiftValue,
+                         timeout: Duration? = nil) async throws -> xpc_object_t {
         if let failure { throw failure }
         let message = try codec.message(type, to: feature, payload: payload)
+        let deadline = timeout.map { timeout in
+            Task { @MainActor in
+                do { try await Task.sleep(for: timeout) } catch { return }
+                self.failure = CLIError.unavailable("guest-service-timeout", "The guest's \(self.feature) service timed out.")
+                xpc_connection_cancel(self.connection)
+            }
+        }
+        defer { deadline?.cancel() }
         let reply: xpc_object_t = await withCheckedContinuation { continuation in
             xpc_connection_send_message_with_reply(connection, message, .main) { reply in
                 // libxpc does not modify a reply it has delivered.
@@ -115,6 +125,7 @@ package final class GuestHIDConnection {
                 continuation.resume(returning: received)
             }
         }
+        if let failure { throw failure }
         guard xpc_get_type(reply) != XPC_TYPE_ERROR else { throw Self.failure(reply, feature: feature) }
         return reply
     }
@@ -157,6 +168,7 @@ package struct GuestHIDCodec {
     /// The message types that CoreDevice sends the guest's touchscreen, button, and UniversalHID services.
     package enum MessageType: String {
         case digitizerEvent = "IndigoDigitizerEvent", buttonEvent = "IndigoButtonEvent", request = "Request"
+        case orientation = "OrientationRequest"
     }
 
     /// CoreDevice's binary, which loads the CoreDeviceUtilities values and Mercury encoder that CoreDevice's messages use.
@@ -172,6 +184,10 @@ package struct GuestHIDCodec {
     private let requestType: NativeSwiftType
     private let readReportData: NativeSwiftMethod<() -> Data>
     private let readCreatedService: (xpc_object_t) throws -> NativeSwiftValue
+    private let orientationRequestType: NativeSwiftType
+    private let orientationType: NativeSwiftType
+    private let rotationDirectionType: NativeSwiftType
+    private let readOrientation: (xpc_object_t) throws -> OrientationReading
 
     package init(runtime: ABIRuntime) async throws {
         try CoreDeviceRemoteScreenDevice.load(Self.coreDevicePath)
@@ -190,6 +206,9 @@ package struct GuestHIDCodec {
         let button = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.IndigoButtonEvent")))
         let request = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.DDIUniversalHIDServicePayload.Request")))
         requestType = request
+        orientationRequestType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.OrientationRequest")))
+        orientationType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceOrientation")))
+        rotationDirectionType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceOrientationRotationDirection")))
         // CoreDevice passes these resilient values by address.
         let abis = try Dictionary(uniqueKeysWithValues: [point, eventType, edge, target, digitizer, buttonState, button]
             .map { ($0, try NativeType.opaque(named: $0.name)) })
@@ -221,7 +240,8 @@ package struct GuestHIDCodec {
         let encoderType = try await runtime.resolve(.swift(.type("Mercury.XPCObjectEncoder")))
         let makeEncoder = try await encoderType.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self)))
         var encoders: [MessageType: (NativeSwiftValue) throws -> xpc_object_t] = [:]
-        let payloadTypes: [(MessageType, NativeSwiftType)] = [(.digitizerEvent, digitizer), (.buttonEvent, button), (.request, request)]
+        let payloadTypes: [(MessageType, NativeSwiftType)] = [(.digitizerEvent, digitizer), (.buttonEvent, button),
+            (.request, request), (.orientation, orientationRequestType)]
         for (type, payloadType) in payloadTypes {
             let encode = try await encoderType.resolve(.swift(.method(
                 "Mercury.XPCObjectEncoder.encode<A where A: Swift.Encodable>(A) throws -> __C.OS_xpc_object",
@@ -252,6 +272,24 @@ package struct GuestHIDCodec {
         }
         let decodeCreated = try await decoder(of: created)
         let decodeError = try await decoder(of: errorContainer)
+        let infoType = try await runtime.resolve(.swift(.type("CoreDevice.OrientationInfo")))
+        let decodeOrientation = try await decoder(of: infoType)
+        let orientationABIs = try Dictionary(uniqueKeysWithValues: [infoType, orientationType]
+            .map { ($0, try NativeType.opaque(named: $0.name)) })
+        let physical = try await infoType.resolve(.swift(.getter("currentDeviceOrientation",
+            as: (() -> NativeSwiftValue).self, valueABIs: orientationABIs, receiverABI: orientationABIs[infoType])))
+        let upright = try await infoType.resolve(.swift(.getter("currentDeviceNonFlatOrientation",
+            as: (() -> NativeSwiftValue).self, valueABIs: orientationABIs, receiverABI: orientationABIs[infoType])))
+        let rawValue = try await orientationType.resolve(.swift(.getter("rawValue", as: (() -> String).self,
+            valueABIs: orientationABIs, receiverABI: orientationABIs[orientationType])))
+        readOrientation = { reply in
+            if let error = xpc_dictionary_get_value(reply, errorKey) {
+                throw try unsafe readError.unsafeInvoke(on: decodeError(error))
+            }
+            let info = try decodeOrientation(reply)
+            return try unsafe OrientationReading(physical: rawValue.unsafeInvoke(on: physical.unsafeInvoke(on: info)),
+                nonFlat: rawValue.unsafeInvoke(on: upright.unsafeInvoke(on: info)))
+        }
         readCreatedService = { reply in
             // The guest's error, which CoreDevice throws as it is; otherwise the reply itself is the created service's ID.
             if let error = xpc_dictionary_get_value(reply, errorKey) {
@@ -306,6 +344,53 @@ package struct GuestHIDCodec {
 
     package func removeService(_ serviceID: NativeSwiftValue) async throws -> NativeSwiftValue {
         try await requestType.makeEnumCase(named: "removeService", payload: serviceID)
+    }
+
+    package func currentOrientationRequest() throws -> NativeSwiftValue {
+        return try orientationRequestType.makeEnumCase(named: "currentOrientation")
+    }
+
+    package func orientationRequest(_ orientation: DeviceOrientation) throws -> NativeSwiftValue {
+        try orientationRequestType.makeEnumCaseAndWait(named: "changeOrientation",
+            payload: orientationType.makeEnumCase(named: orientation.rawValue))
+    }
+
+    package func rotationRequest(left: Bool) throws -> NativeSwiftValue {
+        try orientationRequestType.makeEnumCaseAndWait(named: "rotate",
+            payload: rotationDirectionType.makeEnumCase(named: left ? "left" : "right"))
+    }
+
+    package func orientation(from reply: xpc_object_t) throws -> OrientationReading { try readOrientation(reply) }
+}
+
+/// Controls the guest that owns the screen, including when CoreDevice discovery does not list it.
+@MainActor
+package final class GuestDeviceOrientation {
+    package static let feature = "com.apple.coredevice.feature.remote.devicecontrol.orientation"
+    private let connection: GuestHIDConnection
+    private let codec: GuestHIDCodec
+    private let timeout: Duration
+
+    package init(guest: SimulatorGuestHID, timeout: Duration = .seconds(30)) throws {
+        connection = try guest.connection(to: Self.feature)
+        codec = guest.codec
+        self.timeout = timeout
+    }
+
+    package func read() async throws -> OrientationReading {
+        try await send(codec.currentOrientationRequest())
+    }
+
+    package func rotate(left: Bool) async throws -> OrientationReading {
+        try await send(codec.rotationRequest(left: left))
+    }
+
+    package func set(_ orientation: DeviceOrientation) async throws -> OrientationReading {
+        try await send(codec.orientationRequest(orientation))
+    }
+
+    private func send(_ request: NativeSwiftValue) async throws -> OrientationReading {
+        try codec.orientation(from: await connection.request(.orientation, request, timeout: timeout))
     }
 }
 

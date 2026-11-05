@@ -133,6 +133,14 @@ struct ManagerModelTests {
         try await restored.request()
         #expect(selections == 1)
         #expect(try domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == true)
+        #if DEBUG
+        restored.reset()
+        #expect(!restored.restore())
+        let reset = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: chooseFile)
+        #expect(!reset.restore())
+        try await restored.request()
+        #expect(selections == 2)
+        #endif
     }
 
     @Test func cancellingPreferenceFileSelectionStopsTheSessionBeforeSettingsChange() async throws {
@@ -208,6 +216,13 @@ struct ManagerModelTests {
                 pair: { _, _ in Issue.record("Unexpected pairing") })
         }, preferences: preferences, reportFailure: { _ in Issue.record("Unexpected failure") })
         let controller = windowController.settings
+        #if DEBUG
+        #expect(controller.tabViewItems.last?.viewController === controller.debug)
+        var resets = 0
+        controller.resetOnboarding = { resets += 1 }
+        controller.debug.rootView.resetOnboarding()
+        #expect(resets == 1)
+        #endif
         let settingsWindow = try #require(windowController.window)
         defer { settingsWindow.close() }
         settingsWindow.layoutIfNeeded()
@@ -344,18 +359,18 @@ struct ManagerModelTests {
     func sidebarSortsOwnTheirSections(_ order: DeviceBrowserPresentation.SortOrder) throws {
         let records = try CoreDeviceInventoryDecoder.decode(Data(#"""
         {"result":{"devices":[
-          {"identifier":"phone","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"phone","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "state":{"name":"Beta"},"software":{"osVersionNumber":{"stringValue":"27.2"}},
             "connection":{"state":"connected","lastConnectionDate":200}}},
-          {"identifier":"provisioning","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"provisioning","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "state":{"name":"Bravo","visibilityClass":"devicesBeingProvisioned"},
             "software":{"osVersionNumber":{"stringValue":"27.2"}},
             "connection":{"state":"unavailable","lastConnectionDate":50}}},
-          {"identifier":"vm","properties":{"hardware":{"reality":"virtual","platform":"macOS"},
+          {"identifier":"vm","properties":{"hardware":{"fidelity":"virtual","osPlatform":"macOS"},
             "state":{"name":"Alpha"},"software":{"osVersionNumber":{"stringValue":"15.10"}},
             "connection":{"state":"connected","lastConnectionDate":100}}},
-          {"identifier":"other","properties":{"hardware":{"reality":"future","marketingName":"Fallback Name"}}},
-          {"identifier":"symbol","properties":{"hardware":{"reality":"future"},"state":{"name":"42"}}}
+          {"identifier":"other","properties":{"hardware":{"fidelity":"future","marketingName":"Fallback Name"}}},
+          {"identifier":"symbol","properties":{"hardware":{"fidelity":"future"},"state":{"name":"42"}}}
         ]}}
         """#.utf8))
         var calendar = Calendar(identifier: .gregorian)
@@ -386,21 +401,21 @@ struct ManagerModelTests {
     @Test func sidebarAvailabilityUsesRetainedCoreDeviceClassification() throws {
         let data = Data(#"""
         {"result":{"devices":[
-          {"identifier":"connecting","properties":{"hardware":{"reality":"physical"},
+          {"identifier":"connecting","properties":{"hardware":{"fidelity":"physical"},
             "state":{"name":"Connecting"},"connection":{"state":"connecting"}}},
-          {"identifier":"boot","properties":{"hardware":{"reality":"virtual"},
+          {"identifier":"boot","properties":{"hardware":{"fidelity":"virtual"},
             "connection":{"state":"unavailable"}},
             "capabilities":[{"featureIdentifier":"com.apple.dt.coredevice.device.boot"}]},
-          {"identifier":"resume","properties":{"hardware":{"reality":"virtual"},
+          {"identifier":"resume","properties":{"hardware":{"fidelity":"virtual"},
             "connection":{"state":"unavailable"}},
             "capabilities":[{"featureIdentifier":"com.apple.dt.coredevice.virtualmachineplugin.resumeFromPause"}]},
-          {"identifier":"provisioning","properties":{"hardware":{"reality":"physical"},
+          {"identifier":"provisioning","properties":{"hardware":{"fidelity":"physical"},
             "state":{"visibilityClass":"devicesBeingProvisioned"},"connection":{"state":"unavailable"}}},
-          {"identifier":"unavailable","properties":{"hardware":{"reality":"physical"},
+          {"identifier":"unavailable","properties":{"hardware":{"fidelity":"physical"},
             "connection":{"state":"unavailable"}}},
-          {"identifier":"future","properties":{"hardware":{"reality":"physical"},
+          {"identifier":"future","properties":{"hardware":{"fidelity":"physical"},
             "connection":{"state":"future-state"}}},
-          {"identifier":"missing","properties":{"hardware":{"reality":"physical"}}}
+          {"identifier":"missing","properties":{"hardware":{"fidelity":"physical"}}}
         ]}}
         """#.utf8)
         let devices = try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)
@@ -426,7 +441,7 @@ struct ManagerModelTests {
             ("Alpha", "connected", ["bootState": "booting"]), ("Mike", "connected", ["bootState": "booting"]),
             ("Zulu", "connected", [:]), ("Echo", "unavailable", [:]),
         ].map { name, connection, state in
-            ["identifier": ids[name]!.uuidString, "properties": ["hardware": ["reality": "physical"],
+            ["identifier": ids[name]!.uuidString, "properties": ["hardware": ["fidelity": "physical"],
                 "state": state.merging(["name": name]) { $1 }, "connection": ["state": connection]]]
         }]])
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)))
@@ -488,7 +503,7 @@ struct ManagerModelTests {
         var state: [String: String] = [:]
         state["name"] = name
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [["identifier": "phone",
-            "properties": ["hardware": ["reality": "physical", "marketingName": "Fallback"], "state": state]]]]])
+            "properties": ["hardware": ["fidelity": "physical", "marketingName": "Fallback"], "state": state]]]]])
         let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
         let presentation = DeviceBrowserPresentation(devices: [device], sortOrder: .name)
         #expect(presentation.sections.map(\.id) == [expected])
@@ -500,7 +515,7 @@ struct ManagerModelTests {
         let newDevice = simulator(deviceSet: "/tmp/sidebar-new-set", name: "New", createdAt: Date(timeIntervalSinceReferenceDate: 400))
         let payload = Data(#"""
         {"result":{"devices":[{"identifier":"core-record","properties":{
-          "hardware":{"reality":"simulated","udid":"same-udid"},"state":{"name":"Default"},
+          "hardware":{"fidelity":"simulated","udid":"same-udid"},"state":{"name":"Default"},
           "connection":{"state":"unavailable","lastConnectionDate":100}}}]}}
         """#.utf8)
         let snapshot = await DeviceInventoryReader(
@@ -522,30 +537,30 @@ struct ManagerModelTests {
         // compares only base and patched by factory, so availability and identifiers would then form a cycle.
         let payload = Data(#"""
         {"result":{"devices":[
-          {"identifier":"older","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"older","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"}},"connection":{"state":"connected"}}},
-          {"identifier":"base","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"base","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":1,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
               "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"a","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}}}},
-          {"identifier":"patched","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"patched","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":2,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
               "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"a","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}},
             "connection":{"state":"connected"}}},
-          {"identifier":"rebuilt","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"rebuilt","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":1,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B114",
               "revisionVersion":{"components":[24,2,114,0,0],"extraInfo":{"humanReadableVersionString":"b","versionExtraString":"x"},"originalComponentsCount":5,"stringValue":"24.2.114.0.0"},"updateNumberComponent":114}}},
             "connection":{"state":"connected"}}},
-          {"identifier":"earlierBuild","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"earlierBuild","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"},"osBuildVersions":{"buildVersion":{"factoryIdentifier":9,"majorLetterComponent":"B","majorNumberComponent":24,"name":"24B91016s",
               "revisionVersion":{"components":[24,2,101,6,19],"originalComponentsCount":5,"stringValue":"24.2.101.6.19"},"updateLetterComponent":"s","updateNumberComponent":91016}}}}},
-          {"identifier":"newer","properties":{"hardware":{"reality":"physical","platform":"iOS"},
+          {"identifier":"newer","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"},
             "software":{"osVersionNumber":{"stringValue":"27.10"}}}},
-          {"identifier":"unknown","properties":{"hardware":{"reality":"physical","platform":"iOS"}}},
-          {"identifier":"watch","properties":{"hardware":{"reality":"physical","platform":"watchOS"},
+          {"identifier":"unknown","properties":{"hardware":{"fidelity":"physical","osPlatform":"iOS"}}},
+          {"identifier":"watch","properties":{"hardware":{"fidelity":"physical","osPlatform":"watchOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
-          {"identifier":"vision","properties":{"hardware":{"reality":"physical","platform":"visionOS"},
+          {"identifier":"vision","properties":{"hardware":{"fidelity":"physical","osPlatform":"visionOS"},
             "software":{"osVersionNumber":{"stringValue":"27.2"}}}},
-          {"identifier":"future","properties":{"hardware":{"reality":"physical","platform":"futureOS"},
+          {"identifier":"future","properties":{"hardware":{"fidelity":"physical","osPlatform":"futureOS"},
             "software":{"osVersionNumber":{"stringValue":"1.0"}}}}
         ]}}
         """#.utf8)
@@ -567,10 +582,10 @@ struct ManagerModelTests {
         defer { defaults.removePersistentDomain(forName: domain) }
         func devices(firstDate: Double = 100, firstConnection: String = "connected") throws -> [InventoryDevice] {
             let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [
-                ["identifier": "A", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Alpha"],
+                ["identifier": "A", "properties": ["hardware": ["fidelity": "physical"], "state": ["name": "Alpha"],
                     "connection": ["state": firstConnection, "lastConnectionDate": firstDate]],
                     "capabilities": [["featureIdentifier": "com.apple.coredevice.feature.viewdevicescreen"]]],
-                ["identifier": "B", "properties": ["hardware": ["reality": "physical"], "state": ["name": "Beta"],
+                ["identifier": "B", "properties": ["hardware": ["fidelity": "physical"], "state": ["name": "Beta"],
                     "connection": ["state": "connected", "lastConnectionDate": 200_000]]],
             ]]])
             return try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)
@@ -698,7 +713,7 @@ struct ManagerModelTests {
 
     @Test func previewViewScreenOpensTheSelectedDevice() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.viewdevicescreen"}]}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.viewdevicescreen"}]}]}}"#.utf8))
         let source = ManagerModelSource(devices: devices.map(InventoryDevice.remote))
         let model = SimulatorManagerModel(source: source)
         model.settings.setReadingSuspended(true)
@@ -739,7 +754,7 @@ struct ManagerModelTests {
     @Test(arguments: ["new-selection", "return-selection", "rollback"])
     func pendingPresentationKeepsTheLaterSelectionAndCanvas(_ mode: String) async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let source = ManagerModelSource(devices: devices.map(InventoryDevice.remote))
         let model = SimulatorManagerModel(source: source)
@@ -813,7 +828,7 @@ struct ManagerModelTests {
 
     @Test func quittingStopsTheAcceptedMoveAndWaitsForIt() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
@@ -863,7 +878,7 @@ struct ManagerModelTests {
 
     @Test func connectionCompletionHonorsTheReselectedDevicesLatestMainIntent() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
@@ -922,7 +937,7 @@ struct ManagerModelTests {
 
     @Test func extendingMultipleSelectionReplacesThePendingDetach() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}},{"identifier":"C","properties":{"hardware":{"reality":"physical"},"state":{"name":"C"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}},{"identifier":"C","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"C"}}}]}}"#.utf8))
         let a = try #require(devices.first), c = try #require(devices.last)
         let aID = DeviceInventoryID.coreDevice(a.identifier), cID = DeviceInventoryID.coreDevice(c.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
@@ -981,7 +996,7 @@ struct ManagerModelTests {
 
     @Test func contextMenuSelectionStartsMainIntentWithoutChangingRefreshOrSameRowIntent() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.settings.setReadingSuspended(true)
@@ -1045,7 +1060,7 @@ struct ManagerModelTests {
         let domain = "NeoSimulator.AutomaticPresentation.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
@@ -1097,7 +1112,7 @@ struct ManagerModelTests {
 
     @Test func screenSourceCommandReachesTheRemoteScreenInEitherWindow() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}}]}}"#.utf8))
         let a = try #require(devices.first)
         let aID = DeviceInventoryID.coreDevice(a.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
@@ -1141,7 +1156,7 @@ struct ManagerModelTests {
     @Test(arguments: [false, true])
     func queuedRemoteOpenPreservesNewerSelectionOrCompact(_ selectsAnotherDevice: Bool) async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"reality":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
         let source = ManagerModelSource(devices: devices.map(InventoryDevice.remote))
@@ -1198,7 +1213,7 @@ struct ManagerModelTests {
 
     @Test func liveRemoteScreenChangesReachTheToolbarAndClosingReturnsThePaneToThePreview() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"reality":"physical"},"state":{"name":"A"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}}]}}"#.utf8))
         let a = try #require(devices.first)
         let aID = DeviceInventoryID.coreDevice(a.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
@@ -1765,7 +1780,7 @@ struct ManagerModelTests {
     @Test func connectingAScreenReplacesItsFailedPostureOwnerAfterDrainingIt() async throws {
         let features = DevicePosturePayload.features
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
-            "identifier": "remote-command", "properties": ["hardware": ["reality": "physical", "hardwareModel": "V68AP"],
+            "identifier": "remote-command", "properties": ["hardware": ["fidelity": "physical", "hardwareModel": "V68AP"],
                 "state": ["name": "Duo"], "connection": ["state": "connected"]],
             "capabilities": features.sorted().map { ["featureIdentifier": $0] }]]]])
         let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
@@ -1859,7 +1874,7 @@ struct ManagerModelTests {
         let features = DevicePosturePayload.features.union(["com.apple.coredevice.feature.rebootdevice"])
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
             "identifier": "coredevice-command-id", "properties": [
-                "hardware": ["reality": "physical", "udid": "different-hardware-udid", "hardwareModel": "V68AP"],
+                "hardware": ["fidelity": "physical", "udid": "different-hardware-udid", "hardwareModel": "V68AP"],
                 "state": ["name": "Remote Duo"], "connection": ["state": "connected"]],
             "capabilities": features.sorted().map { ["featureIdentifier": $0] }]]]])
         let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
@@ -2211,7 +2226,7 @@ struct ManagerModelTests {
     func retiringAnOpenPublishesRefreshRequestsDeferredWhileBusy(_ cancelled: Bool) async throws {
         func remote(_ name: String) throws -> InventoryDevice {
             let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [["identifier": "remote",
-                "properties": ["hardware": ["reality": "physical"], "state": ["name": name]]]]]])
+                "properties": ["hardware": ["fidelity": "physical"], "state": ["name": name]]]]]])
             return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
         }
         let device = simulator()
@@ -3371,7 +3386,7 @@ struct ManagerModelTests {
                     capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
             }
             let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
-                "identifier": identifier, "properties": ["hardware": ["reality": "virtual"],
+                "identifier": identifier, "properties": ["hardware": ["fidelity": "virtual"],
                     "state": ["name": identifier], "connection": ["state": "connected", "pairingState": "paired"]],
                 "capabilities": [["featureIdentifier": "com.apple.dt.coredevice.device.shutdown"]]
             ]]]])

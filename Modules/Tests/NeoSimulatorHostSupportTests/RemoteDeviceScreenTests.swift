@@ -1435,7 +1435,7 @@ struct RemoteDeviceScreenTests {
         // The guest refuses the first service with its own error and then creates service 7.
         let refusal = NSError(domain: "dev.lynnswap.NeoSimulator.fixture", code: 5)
         var refusals = 1
-        peers.reply = { reply in
+        peers.reply = { _, reply in
             if refusals > 0 { refusals -= 1; try wire.refuse(reply, with: refusal) } else { try wire.create(reply, id: 7) }
         }
         let keyboard = try await NativeDeviceKeyboard.connect(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
@@ -1465,6 +1465,50 @@ struct RemoteDeviceScreenTests {
         let messages = await peers.messages(to: universalHID, count: expected.count)
         withExtendedLifetime(keyboard) {}
         #expect(messages.count == expected.count && zip(messages, expected).allSatisfy { xpc_equal($0, $1) })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func guestOrientationReadsAndRotatesWithoutCoreDeviceDiscoveryAndPreservesGuestErrors() async throws {
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: .shared)
+        let errors = try UniversalHIDFixtureMessages(runtime: .shared)
+        let refusal = NSError(domain: "dev.lynnswap.NeoSimulator.fixture", code: 7)
+        var physical = "unknown", nonFlat = "portrait"
+        peers.reply = { message, reply in
+            let payload = try #require(xpc_dictionary_get_value(message, "payload"))
+            if let rotation = xpc_dictionary_get_value(payload, "rotate") {
+                #expect(xpc_dictionary_get_string(rotation, "_0").map { String(cString: $0) } == "right")
+                physical = "landscapeRight"
+                nonFlat = physical
+            } else if let change = xpc_dictionary_get_value(payload, "changeOrientation") {
+                physical = try #require(xpc_dictionary_get_string(change, "_0").map { String(cString: $0) })
+                if physical != "faceUp" { nonFlat = physical }
+            } else {
+                #expect(xpc_dictionary_get_value(payload, "currentOrientation") != nil)
+            }
+            xpc_dictionary_set_string(reply, "currentDeviceOrientation", physical)
+            xpc_dictionary_set_string(reply, "currentDeviceNonFlatOrientation", nonFlat)
+            xpc_dictionary_set_bool(reply, "currentDeviceOrientationLocked", false)
+        }
+        let orientation = try GuestDeviceOrientation(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
+        let initial = try await orientation.read()
+        #expect(initial.physical == .portrait && initial.displayAngle == 0)
+        let rotated = try await orientation.rotate(left: false)
+        #expect(rotated.physical == .landscapeRight && rotated.displayAngle == -90)
+        let flat = try await orientation.set(.faceUp)
+        #expect(flat.physical == .faceUp && flat.displayAngle == -90)
+        peers.reply = { _, reply in try errors.refuse(reply, with: refusal) }
+        await #expect { try await orientation.set(.portrait) } throws: { ($0 as NSError) == refusal }
+        #expect(peers.lookUps == [GuestDeviceOrientation.feature])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func guestOrientationReportsAServiceThatNeverReplies() async throws {
+        let peers = GuestHIDPeerFixture()
+        peers.holdsReplies = true
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let orientation = try GuestDeviceOrientation(guest: guest, timeout: .milliseconds(50))
+        await #expect { try await orientation.read() } throws: { $0.localizedDescription.contains("timed out") }
     }
 
     @Test func nativeTrackpadGesturesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
@@ -1791,7 +1835,7 @@ struct RemoteDeviceScreenTests {
     }
 
     private func device(identifier: String = "command-identifier") throws -> CoreDeviceDevice {
-        let data = Data(#"{"result":{"devices":[{"identifier":"\#(identifier)","properties":{"hardware":{"reality":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
+        let data = Data(#"{"result":{"devices":[{"identifier":"\#(identifier)","properties":{"hardware":{"fidelity":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)
     }
 }
@@ -2070,7 +2114,9 @@ private final class GuestHIDPeerFixture {
     /// The Mach service names looked up, in order.
     private(set) var lookUps: [String] = []
     /// Fills the reply to each message that expects one, before the service sends it.
-    var reply: (@MainActor (xpc_object_t) throws -> Void)?
+    var reply: (@MainActor (xpc_object_t, xpc_object_t) throws -> Void)?
+    var holdsReplies = false
+    private var heldReplies: [xpc_object_t] = []
     private var connections: [xpc_connection_t] = []
     private var received: [String: [xpc_object_t]] = [:]
     private var waiters: [(name: String, count: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -2113,8 +2159,11 @@ private final class GuestHIDPeerFixture {
     private func receive(_ message: xpc_object_t, for name: String) {
         received[name, default: []].append(message)
         if let response = xpc_dictionary_create_reply(message), let peer = xpc_dictionary_get_remote_connection(message) {
-            do { try reply?(response) } catch { Issue.record(error) }
-            xpc_connection_send_message(peer, response)
+            if holdsReplies { heldReplies.append(response) }
+            else {
+                do { try reply?(message, response) } catch { Issue.record(error) }
+                xpc_connection_send_message(peer, response)
+            }
         }
         let count = received[name, default: []].count
         let ready = waiters.filter { $0.name == name && $0.count <= count }

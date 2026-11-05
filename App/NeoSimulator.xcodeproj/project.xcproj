@@ -2,7 +2,7 @@
   "default-configuration": "Debug",
   "configurations": [
     "Debug",
-    "Release"
+    "Release",
   ],
   "localizations": {
     "development": "en",
@@ -10,7 +10,6 @@
       "Base",
       "ar",
       "de",
-      "en",
       "en-GB",
       "en-IN",
       "es",
@@ -30,28 +29,26 @@
       "th",
       "tr",
       "zh-Hans",
-      "zh-Hant"
-    ]
+      "zh-Hant",
+    ],
   },
   "packages": [
     {
       "kind": "remote",
       "repository": "https://github.com/lynnswap/LicenseList",
       "version": {
-        "revision": "ed35df2d3b90de2e5ba22ee3a808c4e799c1adf0"
-      }
-    },
-    {
+        "revision": "ed35df2d3b90de2e5ba22ee3a808c4e799c1adf0",
+      },
+    }, {
       "kind": "local",
-      "path": ".."
-    },
-    {
+      "path": "..",
+    }, {
       "kind": "remote",
       "repository": "https://github.com/lynnswap/ObservationBridge.git",
       "version": {
-        "version": "0.15.7"
-      }
-    }
+        "version": "0.15.7",
+      },
+    },
   ],
   "files": [
     {
@@ -66,12 +63,8 @@
               "kind": "group",
               "path": "NeoSimulatorKit",
               "children": [
-                {
-                  "path": "SimulatorContext.swift"
-                },
-                {
-                  "path": "SimulatorError.swift"
-                },
+                { "path": "SimulatorContext.swift" },
+                { "path": "SimulatorError.swift" },
                 {
                   "kind": "group",
                   "path": "Simulator",
@@ -80,33 +73,22 @@
                       "kind": "group",
                       "path": "Audio",
                       "children": [
-                        {
-                          "path": "AudioRouting.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "AudioRouting.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Capture",
                       "children": [
-                        {
-                          "path": "CaptureThumbnail.swift"
-                        },
-                        {
-                          "path": "VideoRecording.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "CaptureThumbnail.swift" },
+                        { "path": "VideoRecording.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Commands",
                       "children": [
-                        {
-                          "path": "DeviceCommand.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "DeviceCommand.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Display",
                       "children": [
@@ -114,62 +96,33 @@
                           "kind": "group",
                           "path": "Layout",
                           "children": [
-                            {
-                              "path": "DisplayFitting.swift"
-                            },
-                            {
-                              "path": "DisplayContentView.swift"
-                            }
-                          ]
+                            { "path": "DisplayFitting.swift" },
+                            { "path": "DisplayContentView.swift" },
+                          ],
                         },
-                        {
-                          "path": "DeviceSymbolResource.swift"
-                        },
-                        {
-                          "path": "DeviceWindowController.swift"
-                        },
-                        {
-                          "path": "DeviceToolbar.swift"
-                        },
-                        {
-                          "path": "WindowScale.swift"
-                        },
-                        {
-                          "path": "ExternalDisplay.swift"
-                        },
-                        {
-                          "path": "DisplayPresentationView.swift"
-                        },
-                        {
-                          "path": "ExternalDisplayWindowController.swift"
-                        },
-                        {
-                          "path": "DeviceCanvasControls.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "DeviceSymbolResource.swift" },
+                        { "path": "DeviceWindowController.swift" },
+                        { "path": "DeviceToolbar.swift" },
+                        { "path": "WindowScale.swift" },
+                        { "path": "ExternalDisplay.swift" },
+                        { "path": "DisplayPresentationView.swift" },
+                        { "path": "ExternalDisplayWindowController.swift" },
+                        { "path": "DeviceCanvasControls.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Hosting",
                       "children": [
-                        {
-                          "path": "HostConflictMonitor.swift"
-                        },
-                        {
-                          "path": "SimulatorScreenHost.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "HostConflictMonitor.swift" },
+                        { "path": "SimulatorScreenHost.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Import",
                       "children": [
-                        {
-                          "path": "FileImport.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "FileImport.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Input",
                       "children": [
@@ -177,99 +130,56 @@
                           "kind": "group",
                           "path": "Keyboard",
                           "children": [
-                            {
-                              "path": "KeyboardEventTap.swift"
-                            },
-                            {
-                              "path": "DisplayKeyboardInput.swift"
-                            },
-                            {
-                              "path": "KeyboardCapture.swift"
-                            }
-                          ]
+                            { "path": "KeyboardEventTap.swift" },
+                            { "path": "DisplayKeyboardInput.swift" },
+                            { "path": "KeyboardCapture.swift" },
+                          ],
                         },
-                        {
-                          "path": "TVRemote.swift"
-                        },
-                        {
-                          "path": "InputSettings.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "TVRemote.swift" },
+                        { "path": "InputSettings.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Location",
                       "children": [
-                        {
-                          "path": "CustomLocation.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "CustomLocation.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Management",
                       "children": [
-                        {
-                          "path": "DeviceToolRunner.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "DeviceToolRunner.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Pasteboard",
                       "children": [
-                        {
-                          "path": "NativePasteboardConnection.swift"
-                        },
-                        {
-                          "path": "PasteboardSync.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "NativePasteboardConnection.swift" },
+                        { "path": "PasteboardSync.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Runtime",
                       "children": [
-                        {
-                          "path": "SimulatorRuntime.swift"
-                        },
-                        {
-                          "path": "CoreSimulator.swift"
-                        },
-                        {
-                          "path": "SimulatorCatalog.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "SimulatorRuntime.swift" },
+                        { "path": "CoreSimulator.swift" },
+                        { "path": "SimulatorCatalog.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Session",
                       "children": [
-                        {
-                          "path": "DeviceSession.swift"
-                        }
-                      ]
-                    }
-                  ]
+                        { "path": "DeviceSession.swift" },
+                      ],
+                    },
+                  ],
                 },
-                {
-                  "path": "ErrorAlert.swift"
-                },
-                {
-                  "kind": "folder",
-                  "path": "Native"
-                },
-                {
-                  "kind": "folder",
-                  "path": "Installations"
-                },
-                {
-                  "kind": "folder",
-                  "path": "System"
-                }
-              ]
-            },
-            {
+                { "path": "ErrorAlert.swift" },
+                { "kind": "folder", "path": "Native" },
+                { "kind": "folder", "path": "Installations" },
+                { "kind": "folder", "path": "System" },
+              ],
+            }, {
               "kind": "group",
               "path": "NeoSimulatorApp",
               "children": [
@@ -281,35 +191,21 @@
                       "kind": "group",
                       "path": "Launch",
                       "children": [
-                        {
-                          "path": "AppDelegate.swift"
-                        },
-                        {
-                          "path": "HostPreferenceAccess.swift"
-                        },
-                        {
-                          "path": "OnboardingWindowController.swift"
-                        },
-                        {
-                          "path": "NeoSimulatorApplication.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "AppDelegate.swift" },
+                        { "path": "HostPreferenceAccess.swift" },
+                        { "path": "OnboardingWindowController.swift" },
+                        { "path": "NeoSimulatorApplication.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Menus",
                       "children": [
-                        {
-                          "path": "SelectedDeviceMenu.swift"
-                        },
-                        {
-                          "path": "SimulatorDevicesMenu.swift"
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
+                        { "path": "SelectedDeviceMenu.swift" },
+                        { "path": "SimulatorDevicesMenu.swift" },
+                      ],
+                    },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "DeviceBrowser",
                   "children": [
@@ -317,203 +213,91 @@
                       "kind": "group",
                       "path": "Menus",
                       "children": [
-                        {
-                          "path": "SimulatorPairingMenu.swift"
-                        }
-                      ]
+                        { "path": "SimulatorPairingMenu.swift" },
+                      ],
                     },
-                    {
-                      "path": "DeviceArtwork.swift"
-                    },
-                    {
-                      "path": "DeviceBrowserPresentation.swift"
-                    },
-                    {
-                      "path": "DeviceBrowserState.swift"
-                    },
-                    {
-                      "path": "ManagerWindowController.swift"
-                    },
-                    {
-                      "path": "SimulatorManagerModel.swift"
-                    },
-                    {
-                      "path": "SimulatorSidebarCellView.swift"
-                    },
-                    {
-                      "path": "SimulatorSidebarRowView.swift"
-                    }
-                  ]
-                },
-                {
+                    { "path": "DeviceArtwork.swift" },
+                    { "path": "DeviceBrowserPresentation.swift" },
+                    { "path": "DeviceBrowserState.swift" },
+                    { "path": "ManagerWindowController.swift" },
+                    { "path": "SimulatorManagerModel.swift" },
+                    { "path": "SimulatorSidebarCellView.swift" },
+                    { "path": "SimulatorSidebarRowView.swift" },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "DeviceDisplay",
                   "children": [
-                    {
-                      "path": "DeviceCanvasAccessoryViewController.swift"
-                    },
-                    {
-                      "path": "DeviceScreen.swift"
-                    },
-                    {
-                      "path": "DeviceScreenViewController.swift"
-                    },
-                    {
-                      "path": "DeviceScreens.swift"
-                    },
-                    {
-                      "path": "HostTakeovers.swift"
-                    }
-                  ]
-                },
-                {
+                    { "path": "DeviceCanvasAccessoryViewController.swift" },
+                    { "path": "DeviceScreen.swift" },
+                    { "path": "DeviceScreenViewController.swift" },
+                    { "path": "DeviceScreens.swift" },
+                    { "path": "HostTakeovers.swift" },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "DeviceInspector",
                   "children": [
-                    {
-                      "path": "DeviceInfoVisibility.swift"
-                    },
-                    {
-                      "path": "DeviceInformation.swift"
-                    },
-                    {
-                      "path": "DeviceInformationModel.swift"
-                    },
-                    {
-                      "path": "DeviceInformationView.swift"
-                    },
-                    {
-                      "path": "DeviceInspectorModel.swift"
-                    },
-                    {
-                      "path": "InspectorCategoryAccessoryViewController.swift"
-                    },
-                    {
-                      "path": "ManagerDeviceInspectorController.swift"
-                    },
-                    {
-                      "path": "ManagerInspectorPropertiesController.swift"
-                    },
-                    {
-                      "path": "ManagerInspectorRecordCell.swift"
-                    },
-                    {
-                      "path": "ManagerReportPreviewWindowController.swift"
-                    },
-                    {
-                      "path": "PairedSimulatorsView.swift"
-                    }
-                  ]
-                },
-                {
+                    { "path": "DeviceInfoVisibility.swift" },
+                    { "path": "DeviceInformation.swift" },
+                    { "path": "DeviceInformationModel.swift" },
+                    { "path": "DeviceInformationView.swift" },
+                    { "path": "DeviceInspectorModel.swift" },
+                    { "path": "InspectorCategoryAccessoryViewController.swift" },
+                    { "path": "ManagerDeviceInspectorController.swift" },
+                    { "path": "ManagerInspectorPropertiesController.swift" },
+                    { "path": "ManagerInspectorRecordCell.swift" },
+                    { "path": "ManagerReportPreviewWindowController.swift" },
+                    { "path": "PairedSimulatorsView.swift" },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "DeviceSettings",
                   "children": [
-                    {
-                      "path": "BackgroundServiceCategoryModel.swift"
-                    },
-                    {
-                      "path": "BackgroundServiceListModel.swift"
-                    },
-                    {
-                      "path": "BackgroundServiceOutlineController.swift"
-                    },
-                    {
-                      "path": "BackgroundServiceSearchAccessoryViewController.swift"
-                    },
-                    {
-                      "path": "BackgroundServicesAccessoryViewController.swift"
-                    },
-                    {
-                      "path": "BackgroundServicesInspectorModel.swift"
-                    },
-                    {
-                      "path": "BackgroundServicesModel.swift"
-                    },
-                    {
-                      "path": "BackgroundServicesPreview.swift"
-                    },
-                    {
-                      "path": "BackgroundServicesViewController.swift"
-                    },
-                    {
-                      "path": "DeviceSettingsModel.swift"
-                    },
-                    {
-                      "path": "DeviceSettingsPanelModel.swift"
-                    },
-                    {
-                      "path": "ManagerDeviceSettingsView.swift"
-                    },
-                    {
-                      "path": "ManagerSettingSlider.swift"
-                    },
-                    {
-                      "path": "ServiceProfileStore.swift"
-                    }
-                  ]
-                },
-                {
+                    { "path": "BackgroundServiceCategoryModel.swift" },
+                    { "path": "BackgroundServiceListModel.swift" },
+                    { "path": "BackgroundServiceOutlineController.swift" },
+                    { "path": "BackgroundServiceSearchAccessoryViewController.swift" },
+                    { "path": "BackgroundServicesAccessoryViewController.swift" },
+                    { "path": "BackgroundServicesInspectorModel.swift" },
+                    { "path": "BackgroundServicesModel.swift" },
+                    { "path": "BackgroundServicesPreview.swift" },
+                    { "path": "BackgroundServicesViewController.swift" },
+                    { "path": "DeviceSettingsModel.swift" },
+                    { "path": "DeviceSettingsPanelModel.swift" },
+                    { "path": "ManagerDeviceSettingsView.swift" },
+                    { "path": "ManagerSettingSlider.swift" },
+                    { "path": "ServiceProfileStore.swift" },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "RemoteDevice",
                   "children": [
-                    {
-                      "path": "RemoteDeviceInputView.swift"
-                    },
-                    {
-                      "path": "RemoteDevicePresentationViewController.swift"
-                    },
-                    {
-                      "path": "RemoteDeviceWindowController.swift"
-                    },
-                    {
-                      "path": "RemoteDeviceWindowError.swift"
-                    }
-                  ]
-                },
-                {
+                    { "path": "RemoteDeviceInputView.swift" },
+                    { "path": "RemoteDevicePresentationViewController.swift" },
+                    { "path": "RemoteDeviceWindowController.swift" },
+                    { "path": "RemoteDeviceWindowError.swift" },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "Settings",
                   "children": [
-                    {
-                      "path": "CaptureSettingsViewController.swift"
-                    },
-                    {
-                      "path": "DevicesSettingsViewController.swift"
-                    },
-                    {
-                      "path": "GeneralSettingsModel.swift"
-                    },
-                    {
-                      "path": "GeneralSettingsViewController.swift"
-                    },
-                    {
-                      "path": "ServiceProfileEditorController.swift"
-                    },
-                    {
-                      "path": "ServiceProfileEditorModel.swift"
-                    },
-                    {
-                      "path": "ServiceProfilesSettingsModel.swift"
-                    },
-                    {
-                      "path": "ServiceProfilesSettingsViewController.swift"
-                    },
-                    {
-                      "path": "SettingsViewController.swift"
-                    },
-                    {
-                      "path": "SettingsWindowController.swift"
-                    }
-                  ]
+                    { "path": "CaptureSettingsViewController.swift" },
+                    { "path": "DevicesSettingsViewController.swift" },
+                    { "path": "GeneralSettingsModel.swift" },
+                    { "path": "GeneralSettingsViewController.swift" },
+                    { "path": "ServiceProfileEditorController.swift" },
+                    { "path": "ServiceProfileEditorModel.swift" },
+                    { "path": "ServiceProfilesSettingsModel.swift" },
+                    { "path": "ServiceProfilesSettingsViewController.swift" },
+                    { "path": "SettingsViewController.swift" },
+                    { "path": "SettingsWindowController.swift" },
+                    { "path": "DebugSettingsViewController.swift" },
+                  ],
                 },
-                {
-                  "kind": "folder",
-                  "path": "Resources"
-                }
-              ]
-            },
-            {
+                { "kind": "folder", "path": "Resources" },
+              ],
+            }, {
               "kind": "group",
               "path": "NeoSimulatorHostSupport",
               "children": [
@@ -525,14 +309,11 @@
                       "kind": "group",
                       "path": "Launch",
                       "children": [
-                        {
-                          "path": "ManagerRelaunch.swift"
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
+                        { "path": "ManagerRelaunch.swift" },
+                      ],
+                    },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "DeviceBrowser",
                   "children": [
@@ -540,38 +321,22 @@
                       "kind": "group",
                       "path": "Creation",
                       "children": [
-                        {
-                          "path": "NewSimulatorModel.swift"
-                        },
-                        {
-                          "path": "NewSimulatorView.swift"
-                        },
-                        {
-                          "path": "NewSimulatorViewController.swift"
-                        },
-                        {
-                          "path": "NewSimulatorWindowController.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "NewSimulatorModel.swift" },
+                        { "path": "NewSimulatorView.swift" },
+                        { "path": "NewSimulatorViewController.swift" },
+                        { "path": "NewSimulatorWindowController.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Menus",
                       "children": [
-                        {
-                          "path": "SimulatorDeviceMenu.swift"
-                        },
-                        {
-                          "path": "SimulatorMenuDevice.swift"
-                        }
-                      ]
+                        { "path": "SimulatorDeviceMenu.swift" },
+                        { "path": "SimulatorMenuDevice.swift" },
+                      ],
                     },
-                    {
-                      "path": "DeviceBrowser.swift"
-                    }
-                  ]
-                },
-                {
+                    { "path": "DeviceBrowser.swift" },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "Settings",
                   "children": [
@@ -579,14 +344,11 @@
                       "kind": "group",
                       "path": "Preferences",
                       "children": [
-                        {
-                          "path": "SimulatorPreferences.swift"
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
+                        { "path": "SimulatorPreferences.swift" },
+                      ],
+                    },
+                  ],
+                }, {
                   "kind": "group",
                   "path": "Simulator",
                   "children": [
@@ -594,35 +356,22 @@
                       "kind": "group",
                       "path": "Commands",
                       "children": [
-                        {
-                          "path": "MenuController.swift"
-                        }
-                      ]
-                    },
-                    {
+                        { "path": "MenuController.swift" },
+                      ],
+                    }, {
                       "kind": "group",
                       "path": "Hosting",
                       "children": [
-                        {
-                          "path": "HostApplication.swift"
-                        },
-                        {
-                          "path": "RendererOwnerIdentity.swift"
-                        },
-                        {
-                          "path": "RendererRequest.swift"
-                        }
-                      ]
-                    }
-                  ]
+                        { "path": "HostApplication.swift" },
+                        { "path": "RendererOwnerIdentity.swift" },
+                        { "path": "RendererRequest.swift" },
+                      ],
+                    },
+                  ],
                 },
-                {
-                  "kind": "folder",
-                  "path": "Backend"
-                }
-              ]
-            },
-            {
+                { "kind": "folder", "path": "Backend" },
+              ],
+            }, {
               "kind": "group",
               "path": "NeoSimulatorService",
               "children": [
@@ -634,24 +383,18 @@
                       "kind": "group",
                       "path": "Launch",
                       "children": [
-                        {
-                          "path": "HostLaunchOptions.swift"
-                        },
-                        {
-                          "path": "NeoSimulatorServiceMain.swift"
-                        },
-                        {
-                          "path": "RendererOwnerMonitor.swift"
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
+                        { "path": "HostLaunchOptions.swift" },
+                        { "path": "NeoSimulatorServiceMain.swift" },
+                        { "path": "RendererOwnerMonitor.swift" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+            { "kind": "folder", "path": "CoreDeviceInventoryProbe" },
+          ],
+        }, {
           "kind": "group",
           "path": "Tests",
           "children": [
@@ -659,178 +402,73 @@
               "kind": "group",
               "path": "NeoSimulatorHostSupportTests",
               "children": [
-                {
-                  "path": "DeviceReportTests.swift"
-                },
-                {
-                  "path": "RemoteDeviceScreenTests.swift"
-                },
-                {
-                  "path": "XcodeConnectionTrackerTests.swift"
-                },
-                {
-                  "path": "DeviceInventoryTests.swift"
-                },
-                {
-                  "path": "DeviceManagementTests.swift"
-                },
-                {
-                  "path": "NativeDeviceCanvasTests.swift"
-                },
-                {
-                  "path": "CodeSignatureValidatorTests.swift"
-                },
-                {
-                  "path": "ReceiptStoreTests.swift"
-                },
-                {
-                  "path": "DeviceInspectorTests.swift"
-                },
-                {
-                  "path": "RemoteDeviceRecordingTests.swift"
-                },
-                {
-                  "path": "InstallationInspectorTests.swift"
-                },
-                {
-                  "path": "BackgroundServicesTests.swift"
-                },
-                {
-                  "path": "TestSupport.swift"
-                },
-                {
-                  "path": "HostModeControllerTests.swift"
-                },
-                {
-                  "path": "DefaultsStoreTests.swift"
-                },
-                {
-                  "path": "DeviceInventoryObservationTests.swift"
-                }
-              ]
+                { "path": "DeviceReportTests.swift" },
+                { "path": "RemoteDeviceScreenTests.swift" },
+                { "path": "XcodeConnectionTrackerTests.swift" },
+                { "path": "DeviceInventoryTests.swift" },
+                { "path": "DeviceManagementTests.swift" },
+                { "path": "NativeDeviceCanvasTests.swift" },
+                { "path": "CodeSignatureValidatorTests.swift" },
+                { "path": "ReceiptStoreTests.swift" },
+                { "path": "DeviceInspectorTests.swift" },
+                { "path": "RemoteDeviceRecordingTests.swift" },
+                { "path": "InstallationInspectorTests.swift" },
+                { "path": "BackgroundServicesTests.swift" },
+                { "path": "TestSupport.swift" },
+                { "path": "HostModeControllerTests.swift" },
+                { "path": "DefaultsStoreTests.swift" },
+                { "path": "DeviceInventoryObservationTests.swift" },
+              ],
             },
-            {
-              "kind": "folder",
-              "path": "NeoSimulatorAppTests"
-            }
-          ]
-        }
-      ]
-    },
-    {
+            { "kind": "folder", "path": "NeoSimulatorAppTests" },
+          ],
+        },
+      ],
+    }, {
       "kind": "group",
       "path": "NeoSimulatorGuestSettings",
       "children": [
-        {
-          "path": "main.m",
-          "target-membership": [
-            "NeoSimulatorGuestSettings/compile-sources"
-          ]
-        },
-        {
-          "path": "GuestSettings.entitlements"
-        },
-        {
-          "path": "GuestVirtual.entitlements"
-        },
-        {
-          "path": "DisplayAndBrightnessSettings.tbd"
-        }
-      ]
-    },
-    {
+        { "path": "main.m", "target-membership": [ "NeoSimulatorGuestSettings/compile-sources" ] },
+        { "path": "GuestSettings.entitlements" },
+        { "path": "GuestVirtual.entitlements" },
+        { "path": "DisplayAndBrightnessSettings.tbd" },
+      ],
+    }, {
       "kind": "group",
       "path": "NeoSimulatorRenderer",
       "children": [
-        {
-          "path": "Info.plist"
-        },
-        {
-          "path": "Settings.bundle",
-          "target-membership": [
-            "NeoSimulatorRenderer/resources"
-          ]
-        },
-        {
-          "path": "NeoSimulatorRendererMain.swift",
-          "target-membership": [
-            "NeoSimulatorRenderer/compile-sources"
-          ]
-        }
-      ]
-    },
-    {
+        { "path": "Info.plist" },
+        { "path": "Settings.bundle", "target-membership": [ "NeoSimulatorRenderer/resources" ] },
+        { "path": "NeoSimulatorRendererMain.swift", "target-membership": [ "NeoSimulatorRenderer/compile-sources" ] },
+      ],
+    }, {
       "path": "AppIcon.icon",
       "type": "folder.iconcomposer.icon",
       "target-membership": [
         "NeoSimulator/resources",
-        "NeoSimulatorRenderer/resources"
-      ]
-    },
-    {
+        "NeoSimulatorRenderer/resources",
+      ],
+    }, {
       "kind": "group",
       "name": "Frameworks",
       "children": [
-        {
-          "path": "<SDK>/System/Library/Frameworks/AppKit.framework",
-          "target-membership": [
-            "NeoSimulatorRenderer/frameworks"
-          ]
-        },
-        {
-          "path": "<SDK>/System/Library/Frameworks/UniformTypeIdentifiers.framework",
-          "target-membership": [
-            "NeoSimulatorRenderer/frameworks"
-          ]
-        }
-      ]
-    },
-    {
+        { "path": "<SDK>/System/Library/Frameworks/AppKit.framework", "target-membership": [ "NeoSimulatorRenderer/frameworks" ] },
+        { "path": "<SDK>/System/Library/Frameworks/UniformTypeIdentifiers.framework", "target-membership": [ "NeoSimulatorRenderer/frameworks" ] },
+      ],
+    }, {
       "kind": "group",
       "name": "Products",
       "children": [
-        {
-          "path": "<PRODUCTS>/NeoSimulatorGuestSettings",
-          "id": "AD2198FB9B131280383B467F",
-          "type": "compiled.mach-o.executable",
-          "index": false,
-          "target-membership": [
-            "NeoSimulator/copy/Embed Guest Settings"
-          ]
-        },
-        {
-          "path": "<PRODUCTS>/NeoSimulator.app",
-          "id": "52678CF6A775A386BE4B4373",
-          "type": "wrapper.application",
-          "index": false
-        },
-        {
-          "path": "<PRODUCTS>/NeoSimulatorLicenseTests.xctest",
-          "id": "AB6705CF3060FBFC007E9CFA",
-          "type": "wrapper.cfbundle",
-          "index": false
-        },
-        {
-          "path": "<PRODUCTS>/NeoSimulatorRenderer.app",
-          "id": "DB53DA24AE8041B1A82D0570",
-          "type": "wrapper.application",
-          "index": false,
-          "target-membership": [
-            {
-              "build-phase": "NeoSimulator/copy/Embed Renderer",
-              "code-sign-on-copy": true
-            }
-          ]
-        }
-      ]
-    },
-    {
+        { "path": "<PRODUCTS>/NeoSimulatorGuestSettings", "id": "AD2198FB9B131280383B467F", "type": "compiled.mach-o.executable", "index": false, "target-membership": [ "NeoSimulator/copy/Embed Guest Settings" ] },
+        { "path": "<PRODUCTS>/NeoSimulator.app", "id": "52678CF6A775A386BE4B4373", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/NeoSimulatorLicenseTests.xctest", "id": "AB6705CF3060FBFC007E9CFA", "type": "wrapper.cfbundle", "index": false },
+        { "path": "<PRODUCTS>/NeoSimulatorRenderer.app", "id": "DB53DA24AE8041B1A82D0570", "type": "wrapper.application", "index": false, "target-membership": [ { "build-phase": "NeoSimulator/copy/Embed Renderer", "code-sign-on-copy": true } ] },
+      ],
+    }, {
       "kind": "group",
       "path": "NeoSimulator",
       "children": [
-        {
-          "path": "Info.plist"
-        },
+        { "path": "Info.plist" },
         {
           "kind": "group",
           "path": "App",
@@ -839,17 +477,11 @@
               "kind": "group",
               "path": "Launch",
               "children": [
-                {
-                  "path": "NeoSimulatorMain.swift",
-                  "target-membership": [
-                    "NeoSimulator/compile-sources"
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
+                { "path": "NeoSimulatorMain.swift", "target-membership": [ "NeoSimulator/compile-sources" ] },
+              ],
+            },
+          ],
+        }, {
           "kind": "group",
           "path": "Settings",
           "children": [
@@ -857,43 +489,33 @@
               "path": "LicensesSettingsModel.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
-                "NeoSimulatorLicenseTests/compile-sources"
-              ]
-            },
-            {
+                "NeoSimulatorLicenseTests/compile-sources",
+              ],
+            }, {
               "path": "LicensesSettingsViewController.swift",
               "target-membership": [
                 "NeoSimulator/compile-sources",
-                "NeoSimulatorLicenseTests/compile-sources"
-              ]
-            }
-          ]
+                "NeoSimulatorLicenseTests/compile-sources",
+              ],
+            },
+          ],
         },
-        {
-          "path": "NeoSimulator.entitlements"
-        }
-      ]
-    },
-    {
+        { "path": "NeoSimulator.entitlements" },
+      ],
+    }, {
       "path": "Credits.rtf",
       "target-membership": [
         "NeoSimulator/resources",
         "NeoSimulatorRenderer/resources",
-        "NeoSimulatorLicenseTests/resources"
-      ]
-    },
-    {
+        "NeoSimulatorLicenseTests/resources",
+      ],
+    }, {
       "kind": "group",
       "path": "NeoSimulatorLicenseTests",
       "children": [
-        {
-          "path": "LicensesSettingsTests.swift",
-          "target-membership": [
-            "NeoSimulatorLicenseTests/compile-sources"
-          ]
-        }
-      ]
-    }
+        { "path": "LicensesSettingsTests.swift", "target-membership": [ "NeoSimulatorLicenseTests/compile-sources" ] },
+      ],
+    },
   ],
   "targets": [
     {
@@ -903,7 +525,7 @@
       "product-type": "tool",
       "build-phases": [
         "compile-sources",
-        "frameworks"
+        "frameworks",
       ],
       "build-settings": {
         "ARCHS": "arm64",
@@ -921,22 +543,21 @@
           "-Xlinker",
           "-weak_library",
           "-Xlinker",
-          "\"$(SRCROOT)/NeoSimulatorGuestSettings/DisplayAndBrightnessSettings.tbd\""
+          "\"$(SRCROOT)/NeoSimulatorGuestSettings/DisplayAndBrightnessSettings.tbd\"",
         ],
         "PRODUCT_NAME": "NeoSimulatorGuestSettings",
         "SDKROOT": "iphonesimulator",
         "SKIP_INSTALL": "YES",
-        "SUPPORTED_PLATFORMS": "iphonesimulator"
-      }
-    },
-    {
+        "SUPPORTED_PLATFORMS": "iphonesimulator",
+      },
+    }, {
       "name": "NeoSimulator",
       "id": "0B7837795C8C6DC7CC39C54C",
       "product": "Products/NeoSimulator.app",
       "product-type": "application",
       "dependencies": [
         "NeoSimulatorRenderer",
-        "NeoSimulatorGuestSettings"
+        "NeoSimulatorGuestSettings",
       ],
       "build-phases": [
         "compile-sources",
@@ -945,45 +566,39 @@
         {
           "kind": "copy",
           "name": "Embed Guest Settings",
-          "bundle-base-path": "resources-directory"
-        },
-        {
+          "bundle-base-path": "resources-directory",
+        }, {
           "kind": "copy",
           "name": "Embed Renderer",
           "bundle-base-path": "contents-directory",
-          "relative-path": "Applications"
-        }
+          "relative-path": "Applications",
+        },
       ],
       "package-product-members": [
         {
           "product-name": "NeoSimulatorApp",
-          "build-phase": {
-            "build-phase": "frameworks"
-          }
-        },
-        {
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
           "package": "LicenseList",
           "product-name": "LicenseList",
-          "build-phase": {
-            "build-phase": "frameworks"
-          }
-        },
-        {
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
           "package": "ObservationBridge",
           "product-name": "ObservationBridge",
-          "build-phase": {
-            "build-phase": "frameworks"
-          }
-        }
+          "build-phase": { "build-phase": "frameworks" },
+        },
       ],
       "build-settings": {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
         "CODE_SIGN_ENTITLEMENTS": "NeoSimulator/NeoSimulator.entitlements",
-        "CODE_SIGN_IDENTITY": "Apple Development",
+        "CODE_SIGN_IDENTITY[config=Debug]": "Apple Development",
+        "CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*]": "-",
+        "CODE_SIGN_IDENTITY[config=Release]": "Apple Development",
         "CODE_SIGN_STYLE": "Automatic",
         "COMBINE_HIDPI_IMAGES": "YES",
         "CURRENT_PROJECT_VERSION": "1",
-        "DEVELOPMENT_TEAM": "58KPFKMJJW",
+        "DEVELOPMENT_TEAM[config=Debug]": "",
+        "DEVELOPMENT_TEAM[config=Release]": "58KPFKMJJW",
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
         "INFOPLIST_FILE": "NeoSimulator/Info.plist",
@@ -992,7 +607,7 @@
         "INFOPLIST_PREPROCESSOR_DEFINITIONS[config=Debug]": "NEOSIMULATOR_ALLOW_MULTIPLE_INSTANCES=1",
         "LD_RUNPATH_SEARCH_PATHS": [
           "$(inherited)",
-          "@executable_path/../Frameworks"
+          "@executable_path/../Frameworks",
         ],
         "LM_SKIP_METADATA_EXTRACTION": "YES",
         "MARKETING_VERSION": "0.0.0",
@@ -1000,10 +615,9 @@
         "PRODUCT_NAME": "NeoSimulator",
         "PROVISIONING_PROFILE_SPECIFIER": "",
         "SDKROOT": "macosx",
-        "SWIFT_VERSION": "6.0"
-      }
-    },
-    {
+        "SWIFT_VERSION": "6.0",
+      },
+    }, {
       "name": "NeoSimulatorRenderer",
       "id": "975DC0F3934A4DEFB24ED4AC",
       "product": "Products/NeoSimulatorRenderer.app",
@@ -1011,30 +625,31 @@
       "build-phases": [
         "compile-sources",
         "frameworks",
-        "resources"
+        "resources",
       ],
       "package-product-members": [
         {
           "product-name": "NeoSimulatorService",
-          "build-phase": {
-            "build-phase": "frameworks"
-          }
-        }
+          "build-phase": { "build-phase": "frameworks" },
+        },
       ],
       "build-settings": {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-        "CODE_SIGN_IDENTITY": "Apple Development",
+        "CODE_SIGN_IDENTITY[config=Debug]": "Apple Development",
+        "CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*]": "-",
+        "CODE_SIGN_IDENTITY[config=Release]": "Apple Development",
         "CODE_SIGN_STYLE": "Automatic",
         "COMBINE_HIDPI_IMAGES": "YES",
         "CURRENT_PROJECT_VERSION": "1",
-        "DEVELOPMENT_TEAM": "58KPFKMJJW",
+        "DEVELOPMENT_TEAM[config=Debug]": "",
+        "DEVELOPMENT_TEAM[config=Release]": "58KPFKMJJW",
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
         "INFOPLIST_FILE": "NeoSimulatorRenderer/Info.plist",
         "INFOPLIST_KEY_LSApplicationCategoryType": "public.app-category.developer-tools",
         "LD_RUNPATH_SEARCH_PATHS": [
           "$(inherited)",
-          "@executable_path/../Frameworks"
+          "@executable_path/../Frameworks",
         ],
         "LM_SKIP_METADATA_EXTRACTION": "YES",
         "MARKETING_VERSION": "0.0.0",
@@ -1043,10 +658,9 @@
         "PROVISIONING_PROFILE_SPECIFIER": "",
         "SDKROOT": "macosx",
         "SKIP_INSTALL": "YES",
-        "SWIFT_VERSION": "6.0"
-      }
-    },
-    {
+        "SWIFT_VERSION": "6.0",
+      },
+    }, {
       "name": "NeoSimulatorLicenseTests",
       "id": "AB6705CE3060FBFC007E9CFA",
       "product": "Products/NeoSimulatorLicenseTests.xctest",
@@ -1054,23 +668,18 @@
       "build-phases": [
         "compile-sources",
         "frameworks",
-        "resources"
+        "resources",
       ],
       "package-product-members": [
         {
           "package": "LicenseList",
           "product-name": "LicenseList",
-          "build-phase": {
-            "build-phase": "frameworks"
-          }
-        },
-        {
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
           "package": "ObservationBridge",
           "product-name": "ObservationBridge",
-          "build-phase": {
-            "build-phase": "frameworks"
-          }
-        }
+          "build-phase": { "build-phase": "frameworks" },
+        },
       ],
       "build-settings": {
         "ARCHS": "arm64",
@@ -1083,7 +692,7 @@
         "GCC_C_LANGUAGE_STANDARD": "gnu17",
         "GCC_PREPROCESSOR_DEFINITIONS[config=Debug]": [
           "DEBUG=1",
-          "$(inherited)"
+          "$(inherited)",
         ],
         "GENERATE_INFOPLIST_FILE": "YES",
         "IPHONEOS_DEPLOYMENT_TARGET": "27.0",
@@ -1102,9 +711,9 @@
         "SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY": "YES",
         "SWIFT_VERSION": "6.0",
         "TARGETED_DEVICE_FAMILY": "1,2,7",
-        "XROS_DEPLOYMENT_TARGET": "27.0"
-      }
-    }
+        "XROS_DEPLOYMENT_TARGET": "27.0",
+      },
+    },
   ],
   "build-settings": {
     "ALWAYS_SEARCH_USER_PATHS": "NO",
@@ -1150,7 +759,7 @@
     "GCC_OPTIMIZATION_LEVEL[config=Debug]": "0",
     "GCC_PREPROCESSOR_DEFINITIONS[config=Debug]": [
       "$(inherited)",
-      "DEBUG=1"
+      "DEBUG=1",
     ],
     "GCC_WARN_64_TO_32_BIT_CONVERSION": "YES",
     "GCC_WARN_ABOUT_RETURN_TYPE": "YES_ERROR",
@@ -1169,8 +778,8 @@
     "SWIFT_COMPILATION_MODE[config=Release]": "wholemodule",
     "SWIFT_OPTIMIZATION_LEVEL[config=Debug]": "-Onone",
     "SWIFT_OPTIMIZATION_LEVEL[config=Release]": "-O",
-    "SWIFT_VERSION": "5.0"
+    "SWIFT_VERSION": "5.0",
   },
   "last-upgrade": "27.0",
-  "last-swift-update": "27.0"
+  "last-swift-update": "27.0",
 }

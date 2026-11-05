@@ -569,15 +569,17 @@ package final class SimulatorScreenHost: NSObject {
                             && !capabilities.supportsFeature(DeviceCapabilities.touchPressure)
                         if isDuo, device.deviceSetPath == nil {
                             nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
-                        } else if device.deviceSetPath != nil {
+                        } else if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
+                                  takesNativeTouches {
                             nativeCanvas = nil
-                            // Without CoreDevice, every input stream reaches the guest's own services or none does.
-                            if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
-                               takesNativeTouches, let input = try await guestInput(of: device) {
+                            // CoreDevice may omit a default-set simulator too. Reach the guest that owns the screen.
+                            if let input = try await guestInput(of: device) {
                                 keyboard = input.keyboard
                                 trackpad = input.trackpad
                                 touchRoute = input.touchRoute
                             }
+                        } else if device.deviceSetPath != nil {
+                            nativeCanvas = nil
                         } else if capabilities.isPhoneOrPad, capabilities.supportsFeature(DeviceCapabilities.touchPressure) {
                             nativeCanvas = nil
                             // Native keyboard or trackpad input would make the guest drop SimulatorKit's touches, which
@@ -607,7 +609,7 @@ package final class SimulatorScreenHost: NSObject {
                             device: Self.describe(device), capabilities: capabilities,
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
-                                                   deviceSetPath: device.deviceSetPath),
+                                                   deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
                             recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
                             externalDisplayChanges: externalDisplayChanges(of: device),
                             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
@@ -733,8 +735,8 @@ package final class SimulatorScreenHost: NSObject {
         }
     }
 
-    /// The native keyboard, trackpad, touches, and buttons of a device outside the default device set, which CoreDevice
-    /// does not list. They reach the guest's HID services through the Mach services that the device itself looks up, so
+    /// The native keyboard, trackpad, touches, and buttons of a simulator, whether CoreDevice lists it or not.
+    /// They reach the guest's HID services through the Mach services that the device itself looks up, so
     /// they stay with the device's own set. Connecting them sends the guest nothing, so when one cannot connect, the device
     /// keeps SimulatorKit's input for all of them: its keyboard, which the guest reads with a US layout, and its digitizer,
     /// which drops trackpad scrolling and pinches.

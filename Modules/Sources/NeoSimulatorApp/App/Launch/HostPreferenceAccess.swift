@@ -57,6 +57,14 @@ final class HostPreferenceAccess {
         }
     }
 
+    #if DEBUG
+    func reset() {
+        scopedURL?.stopAccessingSecurityScopedResource()
+        scopedURL = nil
+        defaults.removeObject(forKey: Self.bookmarkKey)
+    }
+    #endif
+
     private func saveBookmark(for url: URL) throws {
         let bookmark = try url.bookmarkData(options: .withSecurityScope,
                                             includingResourceValuesForKeys: nil, relativeTo: nil)

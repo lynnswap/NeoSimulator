@@ -41,6 +41,24 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Build CoreDevice inventory probe
+        run: |
+          xcodebuild build -workspace Tools/PackageTests.xcworkspace \
+            -scheme CoreDeviceInventoryProbe -configuration Release \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/inventory-probe" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Check live CoreDevice inventory
+        run: "$RUNNER_TEMP/inventory-probe/Build/Products/Release/CoreDeviceInventoryProbe"
+
+      - name: Upload CoreDevice inventory probe
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coredevice-inventory-probe
+          path: ${{ runner.temp }}/inventory-probe/Build/Products/Release/CoreDeviceInventoryProbe
+          if-no-files-found: error
+
       - name: Test package
         run: xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme NeoSimulatorKit -destination 'platform=macOS,arch=arm64'
 
@@ -64,3 +82,25 @@ jobs:
             scripts/package-release.sh
           python3 -m compileall -q scripts
           python3 -m unittest discover -s scripts/tests -v
+
+  coredevice-xcode-26:
+    name: CoreDevice (Xcode 26.6)
+    needs: package
+    runs-on: macos-26
+    timeout-minutes: 5
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Show Xcode toolchain
+        run: xcodebuild -version
+
+      - name: Download CoreDevice inventory probe
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coredevice-inventory-probe
+          path: inventory-probe
+
+      - name: Check live CoreDevice inventory
+        run: |
+          chmod +x inventory-probe/CoreDeviceInventoryProbe
+          inventory-probe/CoreDeviceInventoryProbe

@@ -954,7 +954,7 @@ struct SimulatorSettingsBackendTests {
     private func remote(_ reality: String, features: [String], connection: String = "connected") throws -> InventoryDevice {
         let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [[
             "identifier": "core-device", "properties": [
-                "hardware": ["reality": reality, "udid": "hardware-udid"],
+                "hardware": ["fidelity": reality, "udid": "hardware-udid"],
                 "state": ["name": "Fixture Device"], "connection": ["state": connection]],
             "capabilities": features.map { ["featureIdentifier": "com.apple.coredevice.feature." + $0] }
         ]]]])

@@ -333,6 +333,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let self else { throw CancellationError() }
                     return try await self.makeNewSimulatorModel(pairingWith: nil)
                 }, preferences: preferences, reportFailure: { [weak self] error in self?.present(error) })
+            #if DEBUG
+            settingsWindow?.settings.resetOnboarding = { [weak self] in self?.resetOnboarding() }
+            #endif
         }
         if let profileID { settingsWindow?.settings.selectServiceProfile(profileID) }
         model.frameworks.reload()
@@ -340,6 +343,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
     }
+
+    #if DEBUG
+    private func resetOnboarding() {
+        guard !model.isBusy, !quitting, onboardingWindow == nil else { return }
+        hostPreferenceAccess.reset()
+        settingsWindow?.close()
+        Task {
+            do { try await requestHostPreferenceAccess() }
+            catch is CancellationError {}
+            catch { present(error) }
+        }
+    }
+    #endif
 
     @objc func showNewSimulator(_ sender: Any?) {
         showNewSimulator(pairingWith: nil)

@@ -52,8 +52,8 @@ import Testing
         // A simulator's CoreDevice identifier can equal its UDID, which a custom-set clone also has.
         let phoneID = UUID(), simulatorID = UUID(), udid = simulatorID.uuidString
         let payload = try JSONSerialization.data(withJSONObject: ["result": ["devices": [
-            ["identifier": phoneID.uuidString, "properties": ["hardware": ["reality": "physical"]]],
-            ["identifier": udid, "properties": ["hardware": ["reality": "simulated", "udid": udid]]],
+            ["identifier": phoneID.uuidString, "properties": ["hardware": ["fidelity": "physical"]]],
+            ["identifier": udid, "properties": ["hardware": ["fidelity": "simulated", "udid": udid]]],
         ]]])
         let simulators = [nil, "/testing"].map { path in
             InventoryDevice.simulator(SimulatorHostDevice(identifier: udid, name: "Phone", descriptiveName: "Phone",
