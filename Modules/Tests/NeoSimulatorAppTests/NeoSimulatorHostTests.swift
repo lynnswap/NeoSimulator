@@ -6014,9 +6014,8 @@ struct InputFocusTests {
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         display.deviceFrameReadCount = 0
         display.resizeRectReadCount = 0
-        content.needsLayout = true
-        content.layoutSubtreeIfNeeded()
-        #expect(display.resizeRectReadCount > 0)
+        content.layout()
+        #expect(display.resizeRectReadCount == 1)
         #expect(display.deviceFrameReadCount == display.resizeRectReadCount)
         for corner in [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft] {
             controller.performCanvasZoom(.fit)

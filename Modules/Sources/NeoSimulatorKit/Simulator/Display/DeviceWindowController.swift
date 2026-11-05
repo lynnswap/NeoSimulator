@@ -1962,8 +1962,10 @@ private final class DeviceContentView: NSView, DisplayContentView {
         clipBoundsObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification, object: canvasScrollView.contentView, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.placeNativeCanvas()
-                    self?.layoutResizeHandles()
+                    guard let self else { return }
+                    self.placeNativeCanvas()
+                    // The enclosing layout places handles after the clip's geometry settles.
+                    if !self.isLayingOutCanvas, self.canvasMagnificationOperation == nil { self.layoutResizeHandles() }
                 }
             }
         addSubview(canvasScrollView)
