@@ -7,7 +7,7 @@ import ObservationBridge
 
 @MainActor
 final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,
-                                     NSSearchFieldDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
+                                     NSSearchFieldDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSMenuItemValidation, NSMenuDelegate {
     private let model: SimulatorManagerModel
     private let screens: DeviceScreens
     /// Device commands' shared shortcuts follow the live screen.
@@ -881,6 +881,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             for (index, enabled) in enabledActions.enumerated() {
                 if group.subitems[index].isEnabled != enabled { group.subitems[index].isEnabled = enabled }
             }
+            for action in group.menuFormRepresentation?.submenu?.items ?? [] {
+                action.state = screen.canvasZoomIsSelected(CanvasZoom.Action.allCases[action.tag].rawValue) ? .on : .off
+            }
             if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {
                 if !group.isSelected(at: selected) { group.setSelected(true, at: selected) }
             } else if group.selectedIndex >= 0 {
@@ -899,8 +902,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func captureKeyboard(_ sender: Any?) { deviceScreenViewController.liveScreen?.perform("captureKeyboard") }
 
     @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
-        guard CanvasZoom.Action.allCases.indices.contains(sender.selectedIndex) else { return }
-        deviceScreenViewController.liveScreen?.perform(CanvasZoom.Action.allCases[sender.selectedIndex].rawValue)
+        performCanvasZoom(at: sender.selectedIndex)
+    }
+
+    @objc private func performCanvasZoomFromMenu(_ sender: NSMenuItem) {
+        performCanvasZoom(at: sender.tag)
+    }
+
+    private func performCanvasZoom(at index: Int) {
+        guard CanvasZoom.Action.allCases.indices.contains(index) else { return }
+        deviceScreenViewController.liveScreen?.perform(CanvasZoom.Action.allCases[index].rawValue)
     }
 
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
@@ -921,6 +932,21 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             } catch is CancellationError {}
             catch { onError?(error) }
         }
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let action: String
+        switch item.action {
+        case #selector(captureKeyboard(_:)): action = "captureKeyboard"
+        case #selector(resizeApp(_:)): action = "resizeApp"
+        case #selector(performCanvasZoomFromMenu(_:)):
+            guard CanvasZoom.Action.allCases.indices.contains(item.tag) else { return false }
+            action = CanvasZoom.Action.allCases[item.tag].rawValue
+        case #selector(showCompactDeviceWindow(_:)):
+            return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
+        default: return true
+        }
+        return deviceScreenViewController.liveScreen?.isEnabled(action) == true && window?.attachedSheet == nil
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
@@ -1159,6 +1185,16 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             for subitem in item.subitems { subitem.autovalidates = false }
             item.controlRepresentation = .automatic
             item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
+            let menu = NSMenu(title: item.label)
+            for (index, label) in labels.enumerated() {
+                let action = NSMenuItem(title: label, action: #selector(performCanvasZoomFromMenu(_:)), keyEquivalent: "")
+                action.target = self
+                action.tag = index
+                menu.addItem(action)
+            }
+            let representation = NSMenuItem(title: item.label, action: nil, keyEquivalent: "")
+            representation.submenu = menu
+            item.menuFormRepresentation = representation
             return item
         }
         if itemIdentifier == moreIdentifier {

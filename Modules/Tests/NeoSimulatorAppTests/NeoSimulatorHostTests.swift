@@ -648,12 +648,23 @@ struct InputFocusTests {
         }
         try await wait { !zoom.isHidden && zoom.isEnabled }
         let fitIndex = try #require(CanvasZoom.Action.allCases.firstIndex(of: .fit))
-        screen.perform(CanvasZoom.Action.fit.rawValue)
+        let zoomMenu = try #require(zoom.menuFormRepresentation?.submenu)
+        let fitMenuItem = zoomMenu.items[fitIndex]
+        #expect(NSApp.sendAction(try #require(fitMenuItem.action), to: fitMenuItem.target, from: fitMenuItem))
         try await wait { zoom.isSelected(at: fitIndex) }
         screen.perform(CanvasZoom.Action.zoomIn.rawValue)
         try await wait { !zoom.subitems.indices.contains { zoom.isSelected(at: $0) } }
-        screen.perform(CanvasZoom.Action.fit.rawValue)
+        #expect(NSApp.sendAction(try #require(fitMenuItem.action), to: fitMenuItem.target, from: fitMenuItem))
         try await wait { zoom.isSelected(at: fitIndex) }
+        #expect(fitMenuItem.state == .on)
+        let physicalIndex = try #require(CanvasZoom.Action.allCases.firstIndex(of: .physicalSize))
+        display.displayClass = 1
+        zoomMenu.update()
+        #expect(!zoomMenu.items[physicalIndex].isEnabled && fitMenuItem.isEnabled)
+        display.displayClass = 0
+        let overflow = NSMenu()
+        let captureMenuItem = try #require(capture.menuFormRepresentation)
+        overflow.addItem(captureMenuItem)
         try #require(capture.isEnabled)
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 120),
                              styleMask: [.titled], backing: .buffered, defer: false)
@@ -661,11 +672,17 @@ struct InputFocusTests {
         defer { if let parent = sheet.sheetParent { parent.endSheet(sheet) }; sheet.close() }
         mainWindow.beginSheet(sheet, completionHandler: { _ in })
         try await wait { !capture.isEnabled && !compact.isEnabled && !zoom.isEnabled }
+        overflow.update()
+        zoomMenu.update()
+        #expect(!captureMenuItem.isEnabled && zoomMenu.items.allSatisfy { !$0.isEnabled })
         let revision = screen.canvasControlsUpdates
         screen.perform(CanvasZoom.Action.zoomIn.rawValue)
         try await wait { screen.canvasControlsUpdates > revision }
         mainWindow.endSheet(sheet)
         try await wait { compact.isEnabled && capture.isEnabled && zoom.isEnabled }
+        overflow.update()
+        zoomMenu.update()
+        #expect(captureMenuItem.isEnabled && fitMenuItem.isEnabled)
         controller.session.disconnect()
         try await wait { !capture.isEnabled }
     }
