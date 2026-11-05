@@ -625,6 +625,19 @@ struct InputFocusTests {
         #expect(pane.insetBy(dx: -pixel, dy: -pixel).contains(shown))
         // Clicks in the fitting area still reach the matching device point; the controls stay above the device.
         let frameView = try #require(mainWindow.contentView?.superview)
+        let bar = manager.commandBar
+        let commands: [NSControl] = [bar.sidebar, bar.settings, bar.filter, bar.captureKeyboard, bar.resizeApp,
+                                     bar.compact, bar.more, bar.zoom, bar.inspector]
+        for command in commands where !command.isHidden && command.window === mainWindow {
+            let parent = try #require(command.superview)
+            let rect = parent.convert(command.alignmentRect(forFrame: command.frame), to: nil)
+            #expect(rect.height >= 32)
+            for y in [rect.minY + 2, rect.maxY - 2] {
+                let hit = frameView.hitTest(NSPoint(x: rect.midX, y: y))
+                #expect(hit.map { $0 === command || $0.isDescendant(of: command) } == true,
+                        "\(command.identifier?.rawValue ?? command.description) at \(y), hit \(String(describing: hit))")
+            }
+        }
         let center = NSPoint(x: fitArea.midX, y: fitArea.midY)
         let hit = try #require(frameView.hitTest(center))
         #expect(hit === display.view || hit.isDescendant(of: display.view))

@@ -39,6 +39,7 @@ final class ManagerCommandBar: NSView {
         inspector.selectedSegmentBezelColor = .unemphasizedSelectedContentBackgroundColor
         for (control, labels) in [(zoom, Self.zoomLabels), (inspector, Self.inspectorLabels)] {
             control.cell?.isBordered = false
+            control.heightAnchor.constraint(equalToConstant: 32).isActive = true
             for (index, label) in labels.enumerated() { control.setToolTip(label, forSegment: index) }
         }
         more.identifier = .init("CanvasMoreActions")
@@ -64,6 +65,7 @@ final class ManagerCommandBar: NSView {
         }
         for control in [sidebar, settings, filter, captureKeyboard, resizeApp, compact, more] {
             control.widthAnchor.constraint(equalToConstant: 32).isActive = true
+            control.heightAnchor.constraint(equalToConstant: 32).isActive = true
         }
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
