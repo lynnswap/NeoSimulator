@@ -1199,6 +1199,9 @@ struct ManagerModelTests {
         try await main.presentConnectedScreen(aID, purpose: .requested)
         let capture = main.commandBar.captureKeyboard
         #expect(pane.liveScreen === screen && !capture.isHidden && capture.isEnabled)
+        let more = try #require(main.commandBar.more.menu)
+        main.menuNeedsUpdate(more)
+        #expect(more.items.contains { $0.title == "Inspector" && $0.submenu?.items.count == 4 })
         let window = try #require(main.window)
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 120),
                              styleMask: [.titled], backing: .buffered, defer: false)

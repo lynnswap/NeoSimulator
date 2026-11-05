@@ -83,6 +83,7 @@ final class ManagerCommandBar: NSView {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
     }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
 
     // The stack also hides views while they overflow; command availability must not change that hidden flag.

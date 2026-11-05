@@ -189,6 +189,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             guard let self else { return }
             presentationState.inspectorContent = deviceInspector.inspection.content
         }
+        window.setContentSize(NSSize(width: 1040, height: 700))
         window.center()
         window.setFrameAutosaveName("NeoSimulatorDevices")
         update()
@@ -824,9 +825,13 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     @objc private func resizeApp(_ sender: Any?) {
         deviceScreenViewController.liveScreen?.perform("resizeApp")
+        updateLiveScreenCommands()
     }
 
-    @objc private func captureKeyboard(_ sender: Any?) { deviceScreenViewController.liveScreen?.perform("captureKeyboard") }
+    @objc private func captureKeyboard(_ sender: Any?) {
+        deviceScreenViewController.liveScreen?.perform("captureKeyboard")
+        updateLiveScreenCommands()
+    }
 
     @objc private func performCanvasZoom(_ sender: NSSegmentedControl) {
         performCanvasZoom(at: sender.selectedSegment)
@@ -835,6 +840,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private func performCanvasZoom(at index: Int) {
         guard CanvasZoom.Action.allCases.indices.contains(index) else { return }
         deviceScreenViewController.liveScreen?.perform(CanvasZoom.Action.allCases[index].rawValue)
+        updateLiveScreenCommands()
     }
 
     @objc private func performCanvasZoomFromMenu(_ sender: NSMenuItem) { performCanvasZoom(at: sender.tag) }
@@ -1158,10 +1164,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func updateCanvasMenu(_ menu: NSMenu) {
         menu.removeAllItems()
-        defer { ManagerCommandBar.insertMenuTitle(into: menu) }
-        appendWindowCommands(to: menu)
+        defer {
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            appendWindowCommands(to: menu)
+            ManagerCommandBar.insertMenuTitle(into: menu)
+        }
         guard selectedDevices.count == 1, let device = selectedDevices.first else { return }
-        menu.addItem(.separator())
         if case .remote = device {
             populateDeviceMenu(menu, devices: [device], includesViewScreen: false)
             return
