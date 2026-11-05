@@ -1512,6 +1512,25 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func simulatorAppearanceConstantsUseTheInstalledNativeValueABI() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        let appearance = try await settings.namedValue("DeviceLookAndFeel", member: "clearLiquidGlass")
+        let filter = try await settings.namedValue("DeviceColorFilter.FilterType", member: "grayscale")
+        let appearanceName = try #require((appearance as? [String: Any])?["name"] as? String)
+        let filterName = try #require((filter as? [String: Any])?["name"] as? String)
+        #expect(!appearanceName.isEmpty && !filterName.isEmpty)
+        peers.reply = { message, reply in
+            let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+            let look = try #require(xpc_dictionary_get_value(input, "lookAndFeel"))
+            #expect(xpc_dictionary_get_string(look, "name").map { String(cString: $0) } == appearanceName)
+            xpc_dictionary_set_value(reply, "CoreDevice.output", xpc_dictionary_create(nil, nil, 0))
+        }
+        try await settings.set("SetDeviceLookAndFeelActionDeclaration", input: ["lookAndFeel": appearance])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func simulatorSettingsReachTheGuestWithoutCoreDeviceDiscoveryAndKeepProviderFailures() async throws {
         let peers = GuestHIDPeerFixture()
         let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)

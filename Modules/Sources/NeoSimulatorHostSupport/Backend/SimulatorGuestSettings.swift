@@ -239,7 +239,9 @@ package final class GuestSettingsActions {
 
     package func namedValue(_ typeName: String, member: String) async throws -> Any {
         let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDeviceUtilities." + typeName)))
-        let getter = try await type.resolve(.swift(.staticGetter(member, as: (() -> NativeSwiftValue).self)))
+        // These CoreDevice value getters return through Swift's indirect result buffer.
+        let getter = try await type.resolve(.swift(.staticGetter(member, as: (() -> NativeSwiftValue).self,
+            valueABIs: [type: try .opaque(named: type.name)])))
         return try unsafe JSONSerialization.jsonObject(with: encoded(getter.unsafeInvoke()))
     }
 
