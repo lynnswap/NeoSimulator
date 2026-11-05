@@ -68,10 +68,6 @@ jobs:
         working-directory: Examples/MinimalSimulatorApp
         run: xcodebuild build -scheme MinimalSimulatorApp -destination 'platform=macOS,arch=arm64'
 
-      - name: Build release products
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: scripts/build-local.sh
-
       - name: Validate distribution scripts
         run: |
           bash -n \

@@ -169,9 +169,9 @@ scripts/build-documentation.sh ''
 python3 -m http.server 8000 --directory .build/documentation
 ```
 
-Open `http://localhost:8000`. The Documentation workflow checks pull requests
-and deploys main to GitHub Pages. Manual runs deploy only from main. The
-repository's Pages source must be **GitHub Actions**.
+Open `http://localhost:8000`. On pushes to main, the Documentation workflow builds
+and deploys the guide to GitHub Pages. The repository's Pages source must be
+**GitHub Actions**.
 
 ## DMG distribution
 
@@ -243,5 +243,6 @@ values before the first public release:
 | Variable | `NOTARY_API_KEY_ID` |
 | Variable | `NOTARY_API_ISSUER_ID` |
 
-Ordinary pushes to main produce validation artifacts and do not publish a
-release. Updates are installed by replacing the app in Applications.
+In GitHub Actions, release apps and DMGs are built only when **Publish Release**
+runs for a prerelease or release. Ordinary pushes to main run CI without producing release artifacts.
+Updates are installed by replacing the app in Applications.

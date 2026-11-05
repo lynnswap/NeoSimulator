@@ -1,16 +1,6 @@
 name: Release Build
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Version label for the validation DMG (no release or tag is created)
-        required: true
-        default: v0.0.0-validation
-        type: string
   workflow_call:
     inputs:
       version:
@@ -55,11 +45,7 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            version="${REQUESTED_VERSION}"
-          else
-            version="v0.0.0-validation.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-          fi
+          version="${REQUESTED_VERSION}"
           if [[ ! "$version" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
             echo "Version must look like v1.2.3 or v1.2.3-validation." >&2
             exit 1
