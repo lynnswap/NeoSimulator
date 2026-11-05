@@ -578,7 +578,7 @@ struct InputFocusTests {
     }
 
     @Test(.timeLimit(.minutes(1)), arguments: [false, true])
-    func embeddedCanvasFitsBetweenThePaneBarsAndDrawsBehindThem(native: Bool) async throws {
+    func embeddedCanvasFitsBelowTheCommandBarAndDrawsBehindBottomControls(native: Bool) async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
         display.usesNativeCanvas = native
@@ -611,15 +611,16 @@ struct InputFocusTests {
         let pixel = 1 / mainWindow.backingScaleFactor
         let fitArea = canvas.convert(viewport.frame, to: nil)
         let controlsRect = controls.convert(controls.bounds, to: nil)
-        // Fit keeps the device between the toolbar and the canvas controls.
+        let commandsRect = manager.commandBar.convert(manager.commandBar.bounds, to: nil)
+        // Fit keeps the device between the command bar and the canvas controls.
         #expect(controller.canvasZoom.mode == .fit && controls.window === mainWindow)
-        #expect(fitArea.minY >= controlsRect.maxY - pixel && fitArea.maxY <= mainWindow.contentLayoutRect.maxY + pixel)
+        #expect(fitArea.minY >= controlsRect.maxY - pixel && fitArea.maxY <= commandsRect.minY + pixel)
         #expect(fitArea.insetBy(dx: -pixel, dy: -pixel).contains(display.view.convert(display.view.bounds, to: nil)))
-        // At point size the device is taller than the fitting area and continues behind both bars.
+        // The opaque command bar clips the canvas; the bottom controls remain above its drawing.
         updateCanvas { controller.setScale(.pointAccurate) }
         let pane = live.view.convert(live.view.bounds, to: nil)
         let shown = display.view.convert(display.view.visibleRect, to: nil)
-        #expect(shown.maxY > mainWindow.contentLayoutRect.maxY + 1 && shown.minY < controlsRect.minY - 1,
+        #expect(shown.maxY <= commandsRect.minY + pixel && shown.minY < controlsRect.minY - 1,
                 "Shown \(NSStringFromRect(shown)) for fitting area \(NSStringFromRect(fitArea))")
         #expect(pane.insetBy(dx: -pixel, dy: -pixel).contains(shown))
         // Clicks in the fitting area still reach the matching device point; the controls stay above the device.
@@ -632,6 +633,16 @@ struct InputFocusTests {
                 "Local \(NSStringFromPoint(local)) in \(NSStringFromRect(display.view.bounds))")
         let control = try #require(frameView.hitTest(NSPoint(x: controlsRect.midX, y: controlsRect.midY)))
         #expect(control === controls || control.isDescendant(of: controls))
+        let headerHit = try #require(frameView.hitTest(NSPoint(x: commandsRect.midX, y: commandsRect.midY)))
+        #expect(headerHit === manager.commandBar || headerHit.isDescendant(of: manager.commandBar))
+        let split = try #require(mainWindow.contentViewController?.children.compactMap { $0 as? NSSplitViewController }.first)
+        split.splitViewItems[0].isCollapsed = true
+        split.splitViewItems[2].isCollapsed = true
+        mainWindow.setContentSize(NSSize(width: 300, height: 700))
+        mainWindow.contentView?.layoutSubtreeIfNeeded()
+        let more = try #require(manager.commandBar.more.menu)
+        manager.menuNeedsUpdate(more)
+        #expect(more.items.contains { $0.action == manager.commandBar.compact.action && $0.isEnabled })
     }
 
     @Test func remoteControlsReturnFromAnAccessoryToTheSameCompactScreen() async throws {

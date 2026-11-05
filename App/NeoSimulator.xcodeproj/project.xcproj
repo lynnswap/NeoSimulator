@@ -319,6 +319,9 @@
                     },
                     {
                       "path": "SimulatorSidebarRowView.swift"
+                    },
+                    {
+                      "path": "ManagerCommandBar.swift"
                     }
                   ]
                 },

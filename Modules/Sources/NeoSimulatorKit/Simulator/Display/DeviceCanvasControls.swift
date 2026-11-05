@@ -172,7 +172,8 @@ private struct CanvasBottomContent: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
                     .foregroundStyle(.primary)
-                    .glassEffect(.regular, in: .capsule)
+                    .background(.background, in: .capsule)
+                    .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5).allowsHitTesting(false) }
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("pairedDevice")
@@ -256,7 +257,8 @@ private struct CanvasActionGroup<Content: View>: View {
             .fixedSize(horizontal: false, vertical: true)
             .buttonStyle(CanvasActionButtonStyle(isGrouped: count > 1))
             .labelStyle(.iconOnly)
-            .glassEffect(.regular, in: .capsule)
+            .background(.background, in: .capsule)
+            .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5).allowsHitTesting(false) }
     }
 }
 
