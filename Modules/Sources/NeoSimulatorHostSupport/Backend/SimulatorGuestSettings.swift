@@ -133,11 +133,7 @@ package final class SimulatorGuestSettings {
                 defer { connection.disconnect() }
                 return try connection.state()
             }) {
-                func selection(_ value: String?) -> String? { value == AudioRouting.systemDefault ? "systemDefault" : value }
-                result.audioInputDevice = selection(state.inputRoute)
-                result.audioOutputDevice = selection(state.outputRoute)
-                result.audioInputDevices = state.devices(in: .input).map { SimulatorAudioDevice(identifier: $0.uid, name: $0.name) }
-                result.audioOutputDevices = state.devices(in: .output).map { SimulatorAudioDevice(identifier: $0.uid, name: $0.name) }
+                result.updateAudioRoutes(state)
             }
         default:
             result.issues.append("settings: This query uses the simulator command-line tools.")

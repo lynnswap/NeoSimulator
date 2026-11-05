@@ -1033,10 +1033,11 @@ struct SimulatorSettingsBackendTests {
                 case "voiceOver": value.voiceOver = false
                 case "audio":
                     value.volume = 60
-                    value.audioInputDevice = "systemDefault"
-                    value.audioOutputDevice = "speaker-uid"
-                    value.audioInputDevices = [microphone]
-                    value.audioOutputDevices = [speaker]
+                    value.updateAudioRoutes(AudioRouteState(devices: [
+                        HostAudioDevice(uid: microphone.identifier, name: microphone.name, inputChannels: 1, outputChannels: 0, defaultScopes: 1),
+                        HostAudioDevice(uid: speaker.identifier, name: speaker.name, inputChannels: 0, outputChannels: 2, defaultScopes: 2),
+                    ], inputRoute: AudioRouting.systemDefault, outputRoute: speaker.identifier,
+                       defaultInput: microphone.identifier, defaultOutput: speaker.identifier))
                 default: Issue.record("Unexpected native query")
                 }
                 return try JSONEncoder().encode(value)
@@ -1057,7 +1058,8 @@ struct SimulatorSettingsBackendTests {
         #expect(value.reduceMotion == true && value.reduceTransparency == false && value.showBorders == true)
         #expect(value.voiceOver == false && value.volume == 60)
         #expect(value.audioInputDevice == "systemDefault" && value.audioOutputDevice == "speaker-uid")
-        #expect(value.audioInputDevices == [microphone] && value.audioOutputDevices == [speaker])
+        let systemDefault = SimulatorAudioDevice(identifier: "systemDefault", name: "System Default")
+        #expect(value.audioInputDevices == [systemDefault, microphone] && value.audioOutputDevices == [systemDefault, speaker])
         #expect(value.locationAvailable && value.locationScenarios == [.init(name: "City Run", displayName: "City Run localized")])
         #expect(value.issues.isEmpty)
     }

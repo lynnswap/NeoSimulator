@@ -168,6 +168,15 @@ extension SimulatorDeviceSettings {
         }
         return result
     }
+
+    package mutating func updateAudioRoutes(_ state: AudioRouteState) {
+        func selection(_ value: String?) -> String? { value == AudioRouting.systemDefault ? "systemDefault" : value }
+        let systemDefault = SimulatorAudioDevice(identifier: "systemDefault", name: "System Default")
+        audioInputDevice = selection(state.inputRoute)
+        audioOutputDevice = selection(state.outputRoute)
+        audioInputDevices = [systemDefault] + state.devices(in: .input).map { SimulatorAudioDevice(identifier: $0.uid, name: $0.name) }
+        audioOutputDevices = [systemDefault] + state.devices(in: .output).map { SimulatorAudioDevice(identifier: $0.uid, name: $0.name) }
+    }
 }
 
 private enum DeviceSettingsQuery { case appearance, voiceOver, audio, location }
