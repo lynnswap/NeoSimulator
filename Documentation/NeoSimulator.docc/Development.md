@@ -169,9 +169,9 @@ scripts/build-documentation.sh ''
 python3 -m http.server 8000 --directory .build/documentation
 ```
 
-Open `http://localhost:8000`. The Documentation workflow checks pull requests
-and deploys main to GitHub Pages. Manual runs deploy only from main. The
-repository's Pages source must be **GitHub Actions**.
+Open `http://localhost:8000`. On pushes to main, the Documentation workflow builds
+and deploys the guide to GitHub Pages. The repository's Pages source must be
+**GitHub Actions**.
 
 ## DMG distribution
 
