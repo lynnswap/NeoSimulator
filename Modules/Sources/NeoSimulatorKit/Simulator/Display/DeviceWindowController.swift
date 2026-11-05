@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import UniformTypeIdentifiers
 
 @MainActor
@@ -486,6 +487,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         session.onAppResizeError = { [weak self] in self?.present($0) }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
+            self.content.finishCanvasMagnification()
             self.endCanvasResize()
             if !self.isFullScreen { self.saveWindowGeometry() }
             self.keyboard.setEnabled(false)
@@ -629,6 +631,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
     /// Finishes an active recording, then disconnects from the device so that
     /// it can shut down. The window stays open for `reconnect(_:)`.
     package func prepareForRestart() async {
+        content.finishCanvasMagnification()
         isRestarting = true
         if let window = presentationWindow, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
@@ -649,6 +652,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
             session.disconnect()
             return
         }
+        content.finishCanvasMagnification()
         // Preserve scale across reconnection, then fit the new display shape below the window's top edge.
         let scale = WindowScale.usable(self.session.display.renderScale) ?? 1
         let restoreInputFocus = !isEmbedded || presentationWindow?.firstResponder === self.session.display.inputView
@@ -1323,10 +1327,10 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         case .zoomIn:
             canvasZoom.mode = .fixed(min(canvasScaleRange.upperBound, canvasZoom.scale * 1.25))
         }
-        updateEmbeddedScale()
+        updateEmbeddedScale(animated: action != .fit)
     }
 
-    private func updateEmbeddedScale(layout: Bool = true) {
+    private func updateEmbeddedScale(layout: Bool = true, animated: Bool = false) {
         guard isEmbedded, !closed else { return }
         let available = content.availableDisplaySize
         guard available.width > 0, available.height > 0 else { return }
@@ -1340,7 +1344,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
             }
         } else { canvasZoom.scale = 1 }
         if session.display.renderScale != 1 { fitting.setScale(1) }
-        content.applyCanvasMagnification(range: canvasScaleRange, layout: layout)
+        content.applyCanvasMagnification(range: canvasScaleRange, layout: layout, animated: animated)
     }
 
     /// Returns nil for Fit Screen when no host screen is available.
@@ -1420,7 +1424,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
             case .physicalSize: performCanvasZoom(.physicalSize)
             case .pointAccurate, .pixelAccurate:
                 canvasZoom.mode = .fixed(scale)
-                updateEmbeddedScale()
+                updateEmbeddedScale(animated: true)
             }
             return
         }
@@ -1519,6 +1523,10 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         case .leftMouseDown:
             guard !closed, isEmbedded, fitting.scalesDisplay, session.canPerformCommands,
                   let window = presentationWindow else { return }
+            if let scale = content.interruptCanvasMagnification() {
+                canvasZoom.mode = .fixed(scale)
+                canvasZoom.scale = scale
+            }
             let frame = session.display.view.convert(session.display.view.bounds, to: nil)
             guard frame.width > 0, frame.height > 0 else { return }
             canvasResize = CanvasResize(corner: corner, size: frame.size,
@@ -1790,7 +1798,7 @@ package final class DeviceWindow: NSWindow {
 }
 
 @MainActor
-private final class DeviceContentView: NSView, DisplayContentView {
+final class DeviceContentView: NSView, DisplayContentView {
     private(set) var display: NSView
     private var usesNativeCanvas: Bool
     private let displayPresentation = DisplayPresentationView(frame: .zero)
@@ -1876,6 +1884,12 @@ private final class DeviceContentView: NSView, DisplayContentView {
         var latest: CanvasMagnificationRequest
         // Retargeting must preserve the intended anchor, not resample pixel-rounded animation geometry.
         var center: NSPoint
+        var animation: (link: CADisplayLink, from: CGFloat, start: CFTimeInterval?)?
+    }
+    @MainActor private final class CanvasMagnificationTarget: NSObject {
+        weak var content: DeviceContentView?
+        init(content: DeviceContentView) { self.content = content }
+        @objc func tick(_ link: CADisplayLink) { content?.advanceCanvasMagnification(at: link.targetTimestamp) }
     }
     private var canvasMagnificationOperation: CanvasMagnificationOperation?
     private var scrollMonitor: Any?
@@ -1891,7 +1905,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
         return usesNativeCanvas ? canvasOverlay : canvasDocumentView
     }
     private func updateViewport() {
-        retainedCanvasCenter = canvasCenter
+        retainedCanvasCenter = canvasMagnificationOperation?.center ?? canvasCenter
         if !isEmbedded || scrollsDisplay {
             requestCanvasMagnification(.init(preparation: .reset))
         }
@@ -1976,9 +1990,14 @@ private final class DeviceContentView: NSView, DisplayContentView {
         registerForDraggedTypes([.fileURL])
     }
     isolated deinit {
+        canvasMagnificationOperation?.animation?.link.invalidate()
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
         if let liveScrollObserver { NotificationCenter.default.removeObserver(liveScrollObserver) }
         if let clipBoundsObserver { NotificationCenter.default.removeObserver(clipBoundsObserver) }
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { finishCanvasMagnification() }
+        super.viewWillMove(toWindow: newWindow)
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -2070,24 +2089,82 @@ private final class DeviceContentView: NSView, DisplayContentView {
         needsLayout = true
     }
 
-    func applyCanvasMagnification(range: ClosedRange<CGFloat>, layout: Bool) {
+    func applyCanvasMagnification(range: ClosedRange<CGFloat>, layout: Bool, animated: Bool = false) {
         guard isEmbedded, canvasZoom != nil else { return }
-        requestCanvasMagnification(.init(preparation: .canvas(range: range, layout: layout)))
+        requestCanvasMagnification(.init(preparation: .canvas(range: range, layout: layout)), animated: animated)
     }
 
-    private func requestCanvasMagnification(_ request: CanvasMagnificationRequest) {
+    private func requestCanvasMagnification(_ request: CanvasMagnificationRequest, animated: Bool = false) {
+        canvasMagnificationOperation?.animation?.link.invalidate()
+        canvasMagnificationOperation?.animation = nil
         if canvasMagnificationOperation == nil {
             canvasMagnificationOperation = .init(latest: request,
                 center: retainedCanvasCenter ?? canvasCenter ?? NSPoint(x: 0.5, y: 0.5))
         } else {
             canvasMagnificationOperation?.latest = request
         }
-        guard let prepared = prepareCanvasMagnification(request),
-              canvasMagnificationOperation?.latest.id == request.id else { return }
+        guard let prepared = prepareCanvasMagnification(request) else {
+            if canvasMagnificationOperation?.latest.id == request.id { canvasMagnificationOperation = nil }
+            return
+        }
+        guard canvasMagnificationOperation?.latest.id == request.id else { return }
+        if animated, let window, window.isVisible, NSAnimationContext.current.duration > 0,
+           !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+           !WindowScale.matches(canvasScrollView.magnification, prepared.scale) {
+            let target = CanvasMagnificationTarget(content: self)
+            let link = window.displayLink(target: target, selector: #selector(CanvasMagnificationTarget.tick(_:)))
+            canvasMagnificationOperation?.animation = (link, canvasScrollView.magnification, nil)
+            link.add(to: .main, forMode: .common)
+            return
+        }
         canvasScrollView.setMagnification(prepared.scale, centeredAt: prepared.point)
         needsLayout = true
         if !isLayingOutCanvas { layoutSubtreeIfNeeded() }
         if canvasMagnificationOperation?.latest.id == request.id { canvasMagnificationOperation = nil }
+    }
+
+    func advanceCanvasMagnification(at time: CFTimeInterval) {
+        guard !isLayingOutCanvas, let operation = canvasMagnificationOperation,
+              let animation = operation.animation, let canvasZoom else { return }
+        // Scheduling delays before the first frame must not consume the transition.
+        let start = animation.start ?? time
+        if animation.start == nil { canvasMagnificationOperation?.animation?.start = time }
+        let progress = min(1, max(0, (time - start) / 0.18))
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            guard progress < 1 else { finishCanvasMagnification(); return }
+            let eased = 1 - pow(1 - progress, 3)
+            let scale = animation.from * pow(canvasZoom.scale / animation.from, eased)
+            canvasScrollView.setMagnification(scale, centeredAt: canvasMagnificationPoint(operation.center))
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        }
+    }
+
+    func finishCanvasMagnification() {
+        guard let operation = canvasMagnificationOperation, operation.animation != nil else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            requestCanvasMagnification(.init(preparation: operation.latest.preparation))
+        }
+    }
+
+    /// A bezel drag takes over from the displayed scale, keeping its initial corner under the pointer.
+    func interruptCanvasMagnification() -> CGFloat? {
+        guard let operation = canvasMagnificationOperation, let animation = operation.animation else { return nil }
+        animation.link.invalidate()
+        retainedCanvasCenter = operation.center
+        canvasMagnificationOperation = nil
+        needsLayout = true
+        return canvasScrollView.magnification
+    }
+
+    private func canvasMagnificationPoint(_ center: NSPoint) -> NSPoint {
+        let documentPoint = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
+                                   y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
+        return canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView)
     }
 
     private func prepareCanvasMagnification(_ request: CanvasMagnificationRequest) -> (scale: CGFloat, point: NSPoint)? {
@@ -2105,9 +2182,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
             guard canvasMagnificationOperation?.latest.id == request.id else { return nil }
             canvasScrollView.minMagnification = min(range.lowerBound, canvasZoom.scale, canvasScrollView.magnification, 1)
             canvasScrollView.maxMagnification = max(range.upperBound, canvasZoom.scale, canvasScrollView.magnification, 1)
-            let documentPoint = NSPoint(x: canvasDisplayFrame.minX + canvasDisplayFrame.width * center.x,
-                                        y: canvasDisplayFrame.minY + canvasDisplayFrame.height * center.y)
-            return (canvasZoom.scale, canvasScrollView.contentView.convert(documentPoint, from: canvasDocumentView))
+            return (canvasZoom.scale, canvasMagnificationPoint(center))
         }
     }
 

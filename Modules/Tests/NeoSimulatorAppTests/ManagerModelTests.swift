@@ -200,9 +200,7 @@ struct ManagerModelTests {
         let browser = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
                                               menus: MenuController(application: nil), defaults: defaults)
         defer { browser.window?.close() }
-        let items = try #require(browser.window?.toolbar?.items)
-        #expect(items.first(where: { $0.itemIdentifier.rawValue == "Settings" })?.action == #selector(AppDelegate.showSettings(_:)))
-        #expect(items.allSatisfy { $0.itemIdentifier.rawValue != "NewSimulator" })
+        #expect(browser.commandBar.settings.action == #selector(AppDelegate.showSettings(_:)))
         var created: [String] = []
         var attempts = 0
         let windowController = SettingsWindowController(makeLicenses: SettingsPreview.licenses, model: model, restart: {}, makeSimulator: {
@@ -259,16 +257,14 @@ struct ManagerModelTests {
         let browser = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
                                               menus: MenuController(application: nil), defaults: defaults)
         defer { browser.window?.close() }
-        let item = try #require(browser.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "FilterSimulators" })
-        let button = try #require(item.view as? NSButton)
+        let button = browser.commandBar.filter
         let image = try #require(button.image)
-        let menu = try #require(item.menuFormRepresentation?.submenu)
+        let menu = try #require(button.menu)
         browser.menuNeedsUpdate(menu)
         #expect(button.state == .off)
         let simulators = try #require(menu.items.first { $0.title == "Simulators" })
         #expect(NSApp.sendAction(try #require(simulators.action), to: simulators.target, from: simulators))
         #expect(button.state == .on && button.image === image)
-        #expect(item.menuFormRepresentation?.state == .on)
         let all = try #require(menu.items.first { $0.title == "All Devices" })
         #expect(NSApp.sendAction(try #require(all.action), to: all.target, from: all))
         #expect(button.state == .off && button.image === image)
@@ -600,8 +596,7 @@ struct ManagerModelTests {
         defer { controller.window?.close() }
         let content = try #require(controller.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
-        let menu = try #require(controller.window?.toolbar?.items
-            .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
+        let menu = try #require(controller.commandBar.filter.menu)
         func choose(_ title: String) throws {
             controller.menuNeedsUpdate(menu)
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
@@ -1019,7 +1014,7 @@ struct ManagerModelTests {
         app.screens.attach(bController)
         main.selectDevice(aID)
         try await main.presentConnectedScreen(aID, purpose: .requested)
-        let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
+        let compact = main.commandBar.compact
         #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
         try await wait(timeout: .seconds(5)) {
             pane.liveDeviceIdentifier == nil && !aController.isEmbedded
@@ -1092,13 +1087,13 @@ struct ManagerModelTests {
             #expect(compactPresentations == 1 && main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == nil)
         }
         if initial {
-            let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
-            #expect(!compact.isHidden && main.validateToolbarItem(compact))
+            let compact = main.commandBar.compact
+            #expect(!compact.isHidden && compact.isEnabled)
             #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
             try await wait(timeout: .seconds(5)) {
                 pane.liveDeviceIdentifier == nil && !controller.isEmbedded
             }
-            #expect(compact.isHidden && !main.validateToolbarItem(compact))
+            #expect(compact.isHidden && !compact.isEnabled)
             try await main.presentConnectedScreen(aID, purpose: .requested)
             #expect(pane.liveDeviceIdentifier == nil && !controller.isEmbedded)
             main.showDevice(aID)
@@ -1143,7 +1138,7 @@ struct ManagerModelTests {
         #expect(!controller.validateMenuItem(command))
         catalog.choose(RemoteScreenCaptureSource(name: "A", uniqueID: "a-capture-identity"), for: a.identifier)
         #expect(controller.validateMenuItem(command))
-        let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
+        let compact = main.commandBar.compact
         #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
         try await wait(timeout: .seconds(5)) {
             pane.liveDeviceIdentifier == nil && !controller.isEmbedded
@@ -1192,7 +1187,7 @@ struct ManagerModelTests {
             })
             outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         } else {
-            let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
+            let compact = main.commandBar.compact
             #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
             try await wait(timeout: .seconds(5)) {
                 pane.liveDeviceIdentifier == nil && !aController.isEmbedded
@@ -1234,8 +1229,27 @@ struct ManagerModelTests {
         let screen = app.screens.attach(controller)
         main.selectDevice(aID)
         try await main.presentConnectedScreen(aID, purpose: .requested)
-        let capture = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "captureKeyboard" })
+        let capture = main.commandBar.captureKeyboard
         #expect(pane.liveScreen === screen && !capture.isHidden && capture.isEnabled)
+        let more = try #require(main.commandBar.more.menu)
+        main.menuNeedsUpdate(more)
+        #expect(more.items.contains { $0.title == "Inspector" && $0.submenu?.items.count == 4 })
+        let window = try #require(main.window)
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 120),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        defer {
+            if let parent = sheet.sheetParent { parent.endSheet(sheet) }
+            sheet.close()
+        }
+        window.beginSheet(sheet, completionHandler: { _ in })
+        try await wait(timeout: .seconds(5)) {
+            !capture.isEnabled && !main.commandBar.compact.isEnabled && !main.commandBar.more.isEnabled
+        }
+        window.endSheet(sheet)
+        try await wait(timeout: .seconds(5)) {
+            capture.isEnabled && main.commandBar.compact.isEnabled && main.commandBar.more.isEnabled
+        }
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
         var releases = releasing.stream.makeAsyncIterator()
         transport.onReleaseInputs = {
@@ -1286,10 +1300,10 @@ struct ManagerModelTests {
             return controller
         }
         func split(_ controller: ManagerWindowController) throws -> NSSplitViewController {
-            try #require(controller.window?.contentViewController as? NSSplitViewController)
+            try #require(controller.window?.contentViewController?.children.compactMap { $0 as? NSSplitViewController }.first)
         }
         func tabs(_ controller: ManagerWindowController) throws -> NSSegmentedControl {
-            try #require(controller.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
+            controller.commandBar.inspector
         }
         let first = browser()
         defer { first.window?.close() }
@@ -1356,10 +1370,10 @@ struct ManagerModelTests {
         let window = try #require(controller.window)
         window.setFrameAutosaveName("")
         defer { window.close() }
-        let split = try #require(window.contentViewController as? NSSplitViewController)
+        let split = try #require(window.contentViewController?.children.compactMap { $0 as? NSSplitViewController }.first)
         let inspector = try #require(split.splitViewItems.last)
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
-        let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
+        let tabs = controller.commandBar.inspector
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
         let servicesAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServicesAccessoryViewController }.first)
         let searchAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
