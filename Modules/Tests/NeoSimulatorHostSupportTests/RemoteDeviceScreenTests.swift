@@ -1509,6 +1509,52 @@ struct RemoteDeviceScreenTests {
         let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
         let orientation = try GuestDeviceOrientation(guest: guest, timeout: .milliseconds(50))
         await #expect { try await orientation.read() } throws: { $0.localizedDescription.contains("timed out") }
+        peers.holdsReplies = false
+        peers.reply = { _, reply in
+            xpc_dictionary_set_string(reply, "currentDeviceOrientation", "portrait")
+            xpc_dictionary_set_string(reply, "currentDeviceNonFlatOrientation", "portrait")
+            xpc_dictionary_set_bool(reply, "currentDeviceOrientationLocked", false)
+        }
+        #expect(try await orientation.read().physical == .portrait)
+        #expect(peers.lookUps == [GuestDeviceOrientation.feature, GuestDeviceOrientation.feature])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func simulatorColorFiltersEnableChangeAndDisableThroughTheInstalledNativeCodecs() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        var current = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_bool(current, "enabled", false)
+        peers.reply = { message, reply in
+            let action = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+            let output = xpc_dictionary_create(nil, nil, 0)
+            if action == "com.apple.coredevice.action.getcolorfilter" {
+                xpc_dictionary_set_value(output, "colorFilter", current)
+            } else {
+                #expect(action == "com.apple.coredevice.action.setcolorfilter")
+                let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+                current = try #require(xpc_dictionary_get_value(input, "colorFilter"))
+            }
+            xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+        }
+        let changes: [(SimulatorColorFilter, Double?, Double?)] = [
+            (.protanopia, 0.75, 0.75), (.deuteranopia, nil, 0.75), (.tritanopia, nil, 0.75),
+            (.grayscale, nil, nil), (.none, nil, nil),
+        ]
+        for (filter, intensity, expectedIntensity) in changes {
+            let name: String?
+            if filter == .none { name = nil }
+            else {
+                let native = try await settings.namedValue("DeviceColorFilter.FilterType", member: filter.rawValue)
+                name = try #require((native as? [String: Any])?["name"] as? String)
+            }
+            try await settings.setColorFilter(filter, intensity: intensity)
+            let read = try await settings.get("GetColorFilterActionDeclaration")["colorFilter"]
+            #expect(read?["enabled"]?.boolean == (filter != .none))
+            #expect(read?["filterType"]?["name"]?.string == name)
+            #expect(read?["intensity"] == expectedIntensity.map(DeviceInspectorValue.number))
+        }
     }
 
     @Test(.timeLimit(.minutes(1)))

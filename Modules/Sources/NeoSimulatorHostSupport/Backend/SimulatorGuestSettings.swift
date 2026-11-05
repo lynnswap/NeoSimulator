@@ -158,15 +158,7 @@ package final class SimulatorGuestSettings {
         case .liquidGlassOpacity(let value):
             try await change("SetLiquidGlassConfigurationActionDeclaration", ["configuration": ["opacity": value]])
         case .colorFilter(let value, let intensity):
-            let current = try await service(device: device).get("GetColorFilterActionDeclaration")["colorFilter"]
-            var filter: [String: Any] = ["enabled": value != .none]
-            if value != .none {
-                filter["filterType"] = try await service(device: device).namedValue("DeviceColorFilter.FilterType", member: value.rawValue)
-            } else if let name = current?["filterType"]?["name"]?.string {
-                filter["filterType"] = ["name": name]
-            }
-            if let intensity = intensity ?? current?["intensity"]?.numeric { filter["intensity"] = intensity }
-            try await change("SetColorFilterActionDeclaration", ["colorFilter": filter])
+            try await service(device: device).setColorFilter(value, intensity: intensity)
         case .reduceMotion(let value):
             try await change("SetReduceMotionActionDeclaration", ["reduceMotion": ["enabled": value]])
         case .showBorders(let value):
@@ -222,6 +214,20 @@ package final class GuestSettingsActions {
 
     package func set(_ declaration: String, input: [String: Any]) async throws {
         _ = try await perform(declaration, input: input, readsOutput: false)
+    }
+
+    package func setColorFilter(_ value: SimulatorColorFilter, intensity: Double?) async throws {
+        var filter: [String: Any] = ["enabled": value != .none]
+        if value != .none {
+            filter["filterType"] = try await namedValue("DeviceColorFilter.FilterType", member: value.rawValue)
+            // The provider rejects intensity for grayscale and disabled filters.
+            if value != .grayscale {
+                let level = if let intensity { intensity }
+                    else { try await get("GetColorFilterActionDeclaration")["colorFilter"]?["intensity"]?.numeric }
+                if let level { filter["intensity"] = level }
+            }
+        }
+        try await set("SetColorFilterActionDeclaration", input: ["colorFilter": filter])
     }
 
     private func encoded(_ value: NativeSwiftValue) throws -> Data {

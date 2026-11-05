@@ -76,6 +76,7 @@ package final class GuestHIDConnection {
     private let codec: GuestHIDCodec
     /// Why the connection ended. An ended connection sends nothing.
     private var failure: (any Error)?
+    package var hasFailed: Bool { failure != nil }
 
     /// Activates `connection`, which has not been activated.
     package init(_ connection: xpc_connection_t, feature: String, codec: GuestHIDCodec) {
@@ -139,7 +140,11 @@ package final class GuestHIDConnection {
             }
         }
         if let failure { throw failure }
-        guard xpc_get_type(reply) != XPC_TYPE_ERROR else { throw Self.failure(reply, feature: feature) }
+        guard xpc_get_type(reply) != XPC_TYPE_ERROR else {
+            let error = Self.failure(reply, feature: feature)
+            failure = error
+            throw error
+        }
         return reply
     }
 
@@ -380,11 +385,13 @@ package struct GuestHIDCodec {
 @MainActor
 package final class GuestDeviceOrientation {
     package static let feature = "com.apple.coredevice.feature.remote.devicecontrol.orientation"
-    private let connection: GuestHIDConnection
+    private var connection: GuestHIDConnection
+    private let guest: SimulatorGuestHID
     private let codec: GuestHIDCodec
     private let timeout: Duration
 
     package init(guest: SimulatorGuestHID, timeout: Duration = .seconds(30)) throws {
+        self.guest = guest
         connection = try guest.connection(to: Self.feature)
         codec = guest.codec
         self.timeout = timeout
@@ -403,7 +410,8 @@ package final class GuestDeviceOrientation {
     }
 
     private func send(_ request: NativeSwiftValue) async throws -> OrientationReading {
-        try codec.orientation(from: await connection.request(.orientation, request, timeout: timeout))
+        if connection.hasFailed { connection = try guest.connection(to: Self.feature) }
+        return try codec.orientation(from: await connection.request(.orientation, request, timeout: timeout))
     }
 }
 
