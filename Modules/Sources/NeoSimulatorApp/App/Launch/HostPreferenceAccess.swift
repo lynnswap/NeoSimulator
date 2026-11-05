@@ -39,7 +39,14 @@ final class HostPreferenceAccess {
         }
 
         // Device Hub may not have created its preferences file yet.
-        return !FileManager.default.fileExists(atPath: file.path)
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: file.path)
+            return false
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return true
+        } catch {
+            return false
+        }
     }
 
     func request(presenting window: NSWindow? = nil) async throws {

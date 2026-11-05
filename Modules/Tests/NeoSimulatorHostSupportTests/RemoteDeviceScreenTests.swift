@@ -1574,6 +1574,67 @@ struct RemoteDeviceScreenTests {
             xpc_dictionary_set_value(reply, "CoreDevice.output", xpc_dictionary_create(nil, nil, 0))
         }
         try await settings.set("SetDeviceLookAndFeelActionDeclaration", input: ["lookAndFeel": appearance])
+        peers.reply = { message, reply in
+            let name = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+            let look = xpc_dictionary_create(nil, nil, 0)
+            xpc_dictionary_set_string(look, "name", appearanceName)
+            let output = xpc_dictionary_create(nil, nil, 0)
+            if name == "com.apple.coredevice.action.getdevicelookandfeel" {
+                xpc_dictionary_set_value(output, "lookAndFeel", look)
+            } else {
+                #expect(name == "com.apple.coredevice.action.getsupportedlooksandfeels")
+                let choices = xpc_array_create(nil, 0)
+                xpc_array_append_value(choices, look)
+                xpc_dictionary_set_value(output, "looksAndFeels", choices)
+            }
+            xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+        }
+        #expect(try await settings.get("GetDeviceLookAndFeelActionDeclaration")["lookAndFeel"]?["name"]?.string == appearanceName)
+        #expect(try await settings.get("GetSupportedLooksAndFeelsActionDeclaration")["looksAndFeels"]?.array
+            == [.object(["name": .string(appearanceName)])])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func simulatorAppearanceAndVoiceOverActionsUseInstalledNativeCodecs() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        let cases: [(String, String, Bool?)] = [
+            ("ReduceMotion", "reduceMotion", true), ("ShowBorders", "showBorders", true),
+            ("ReduceTransparency", "reduceTransparency", false), ("VoiceOver", "voiceOverConfiguration", true),
+            ("LiquidGlassConfiguration", "configuration", nil),
+        ]
+        for (declaration, key, enabled) in cases {
+            peers.reply = { message, reply in
+                #expect(xpc_dictionary_get_string(message, "CoreDevice.deviceIdentifier").map { String(cString: $0) }
+                    == "simulator-not-in-coredevice")
+                let action = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+                let output = xpc_dictionary_create(nil, nil, 0)
+                if action == "com.apple.coredevice.action.get" + declaration.lowercased() {
+                    let configuration = xpc_dictionary_create(nil, nil, 0)
+                    if let enabled { xpc_dictionary_set_bool(configuration, "enabled", enabled) }
+                    else { xpc_dictionary_set_double(configuration, "opacity", 0.5) }
+                    xpc_dictionary_set_value(output, key, configuration)
+                } else {
+                    #expect(action == "com.apple.coredevice.action.set" + declaration.lowercased())
+                    let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+                    let configuration = try #require(xpc_dictionary_get_value(input, key))
+                    if let enabled { #expect(xpc_dictionary_get_bool(configuration, "enabled") == enabled) }
+                    else { #expect(xpc_dictionary_get_double(configuration, "opacity") == 0.5) }
+                }
+                xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+            }
+            let value = try await settings.get("Get" + declaration + "ActionDeclaration")[key]
+            let input: [String: Any]
+            if let enabled {
+                #expect(value?["enabled"]?.boolean == enabled)
+                input = ["enabled": enabled]
+            } else {
+                #expect(value?["opacity"] == .number(0.5))
+                input = ["opacity": 0.5]
+            }
+            try await settings.set("Set" + declaration + "ActionDeclaration", input: [key: input])
+        }
     }
 
     @Test(.timeLimit(.minutes(1)))

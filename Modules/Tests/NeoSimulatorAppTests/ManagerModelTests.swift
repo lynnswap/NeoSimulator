@@ -143,6 +143,29 @@ struct ManagerModelTests {
         #endif
     }
 
+    @Test func inaccessiblePreferenceFilesStillRequestFolderAccess() async throws {
+        let domain = "dev.lynnswap.NeoSimulator.HostPreferenceAccess.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let file = directory.appending(path: "settings.plist")
+        try Data().write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: directory.path)
+        var selections = 0
+        let access = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: { _, _ in
+            selections += 1
+            return nil
+        })
+        #expect(!access.restore())
+        await #expect(throws: CancellationError.self) { try await access.request() }
+        #expect(selections == 1)
+    }
+
     @Test func cancellingPreferenceFileSelectionStopsTheSessionBeforeSettingsChange() async throws {
         let domain = "dev.lynnswap.NeoSimulator.HostPreferenceAccess.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
