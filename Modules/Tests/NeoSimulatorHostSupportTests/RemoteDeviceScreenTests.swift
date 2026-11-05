@@ -1511,6 +1511,58 @@ struct RemoteDeviceScreenTests {
         await #expect { try await orientation.read() } throws: { $0.localizedDescription.contains("timed out") }
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func simulatorSettingsReachTheGuestWithoutCoreDeviceDiscoveryAndKeepProviderFailures() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        var actions: [String] = []
+        peers.reply = { message, reply in
+            #expect(xpc_dictionary_get_string(message, "CoreDevice.deviceIdentifier").map { String(cString: $0) }
+                    == "simulator-not-in-coredevice")
+            let action = try #require(xpc_dictionary_get_string(message, "CoreDevice.actionIdentifier").map { String(cString: $0) })
+            actions.append(action)
+            let output = xpc_dictionary_create(nil, nil, 0)
+            if action == "com.apple.coredevice.action.getreducemotion" {
+                let motion = xpc_dictionary_create(nil, nil, 0)
+                xpc_dictionary_set_bool(motion, "enabled", true)
+                xpc_dictionary_set_value(output, "reduceMotion", motion)
+            } else {
+                let input = try #require(xpc_dictionary_get_value(message, "CoreDevice.input"))
+                let motion = try #require(xpc_dictionary_get_value(input, "reduceMotion"))
+                #expect(!xpc_dictionary_get_bool(motion, "enabled"))
+            }
+            xpc_dictionary_set_value(reply, "CoreDevice.output", output)
+        }
+        let value = try await settings.get("GetReduceMotionActionDeclaration")
+        #expect(value["reduceMotion"]?["enabled"]?.boolean == true)
+        try await settings.set("SetReduceMotionActionDeclaration", input: ["reduceMotion": ["enabled": false]])
+        #expect(actions == ["com.apple.coredevice.action.getreducemotion", "com.apple.coredevice.action.setreducemotion"])
+        #expect(peers.lookUps == ["com.apple.coredevice.feature.customizeappearancesettings"])
+        peers.reply = { _, reply in
+            let error = xpc_dictionary_create(nil, nil, 0)
+            xpc_dictionary_set_string(error, "domain", "fixture-provider")
+            xpc_dictionary_set_int64(error, "code", 17)
+            xpc_dictionary_set_value(reply, "CoreDevice.error", error)
+        }
+        await #expect { try await settings.get("GetReduceMotionActionDeclaration") } throws: {
+            let error = $0 as NSError
+            return error.domain == "fixture-provider" && error.code == 17
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func cancellingASimulatorSettingReadClosesThePendingGuestRequest() async throws {
+        let peers = GuestHIDPeerFixture()
+        peers.holdsReplies = true
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        let reading = Task { try await settings.get("GetReduceMotionActionDeclaration") }
+        _ = await peers.messages(to: "com.apple.coredevice.feature.customizeappearancesettings", count: 1)
+        reading.cancel()
+        await #expect(throws: CancellationError.self) { try await reading.value }
+    }
+
     @Test func nativeTrackpadGesturesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
         let runtime = ABIRuntime.shared
         let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: runtime))

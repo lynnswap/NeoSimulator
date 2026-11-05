@@ -47,25 +47,25 @@ package struct RestoreReport: Equatable {
     package let terminatedNeoHostCount: Int
 }
 
-package enum SimulatorLookAndFeel: String, CaseIterable, Sendable {
+package enum SimulatorLookAndFeel: String, CaseIterable, Sendable, Codable {
     case clear, tinted
 }
 
-package enum SimulatorColorFilter: String, CaseIterable, Sendable {
+package enum SimulatorColorFilter: String, CaseIterable, Sendable, Codable {
     case none, grayscale, protanopia, deuteranopia, tritanopia
 }
 
-package struct SimulatorAudioDevice: Sendable, Equatable {
+package struct SimulatorAudioDevice: Sendable, Equatable, Codable {
     package let identifier: String
     package let name: String
 }
 
-package struct SimulatorLocationScenario: Sendable, Equatable {
+package struct SimulatorLocationScenario: Sendable, Equatable, Codable {
     package let name: String
     package let displayName: String
 }
 
-package struct SimulatorDisplayZoomMode: Sendable, Equatable, Decodable {
+package struct SimulatorDisplayZoomMode: Sendable, Equatable, Codable {
     package let rawMode: UInt64
     package let nativeName: String
     package let width: Double
@@ -73,7 +73,7 @@ package struct SimulatorDisplayZoomMode: Sendable, Equatable, Decodable {
 }
 
 /// A snapshot of the guest settings. Nil means a value is unavailable; query failures are retained in `issues`.
-package struct SimulatorDeviceSettings: Sendable, Equatable {
+package struct SimulatorDeviceSettings: Sendable, Equatable, Codable {
     package static let contentSizes = ["extra-small", "small", "medium", "large", "extra-large", "extra-extra-large", "extra-extra-extra-large", "accessibility-medium", "accessibility-large", "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large"]
     package internal(set) var appearance: String?
     package internal(set) var contentSize: String?
@@ -113,7 +113,7 @@ package struct SimulatorDeviceSettingsUpdateFailure: Error, LocalizedError, Send
     package var recoverySuggestion: String? { underlyingError.recoverySuggestion }
 }
 
-package enum SimulatorDeviceSetting: Sendable {
+package enum SimulatorDeviceSetting: Sendable, Codable {
     case appearance(String)
     case contentSize(String)
     case boldText(Bool)
@@ -198,7 +198,7 @@ private extension InventoryDevice {
 
     func supportsSettingsFeature(_ feature: String) -> Bool {
         switch self {
-        case .simulator(let device): device.deviceSetPath == nil
+        case .simulator: true
         case .remote(let device): device.capabilities.contains("com.apple.coredevice.feature." + feature)
         }
     }
@@ -225,16 +225,7 @@ private extension InventoryDevice {
         if case .displayZoom = setting, !supportsIOSDisplaySettings {
             throw CLIError.unavailable("display-zoom-unavailable", "Display Zoom is available only for iOS simulators.")
         }
-        if case .simulator(let device) = self {
-            switch setting {
-            case .appearance, .contentSize, .boldText, .displayZoom, .increaseContrast, .location, .locationScenario, .clearLocation: return
-            default:
-                guard device.deviceSetPath == nil else {
-                    throw CLIError.unavailable("custom-set-setting", "This setting is not available for simulators in a custom device set.")
-                }
-                return
-            }
-        }
+        if case .simulator = self { return }
         guard settingsAvailable else {
             throw CLIError.unavailable("device-setting-unavailable", "The selected device is not currently available.")
         }
@@ -397,7 +388,44 @@ extension SimulatorHostController {
 
     @concurrent
     private static func readSettings(device: InventoryDevice, xcodeURL: URL?) async -> SimulatorDeviceSettings {
-        let backend = settingsBackend(device: device, xcodeURL: xcodeURL, readCommand: { tool, arguments in
+        let backend = settingsBackend(device: device, xcodeURL: xcodeURL)
+        return await backend.read(device: device)
+    }
+
+    @concurrent
+    private static func updateSettings(_ settings: SimulatorDeviceSettings, after setting: SimulatorDeviceSetting,
+                                       device: InventoryDevice, xcodeURL: URL?,
+                                       applying write: @escaping @Sendable () async throws -> Void)
+        async -> (settings: SimulatorDeviceSettings, failure: SimulatorHostFailure?) {
+        await settingsBackend(device: device, xcodeURL: xcodeURL).update(settings, with: setting, device: device, applying: write)
+    }
+
+    @concurrent
+    private static func writeSetting(_ setting: SimulatorDeviceSetting, device: InventoryDevice, xcodeURL: URL?) async throws {
+        try await settingsBackend(device: device, xcodeURL: xcodeURL).set(setting, device: device)
+    }
+
+    private static func settingsArguments(_ tool: SimulatorSettingsBackend.Tool, _ arguments: [String]) throws -> [String] {
+        guard tool == .guestSettings else { return arguments }
+        guard let helper = Bundle.main.url(forResource: "NeoSimulatorGuestSettings", withExtension: nil),
+              FileManager.default.isExecutableFile(atPath: helper.path) else {
+            throw CLIError.unavailable("guest-settings-helper", "The app's guest settings helper is unavailable.")
+        }
+        return ["spawn", arguments[0], helper.path] + arguments.dropFirst()
+    }
+
+    private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?) -> SimulatorSettingsBackend {
+        let guest: Task<SimulatorGuestSettings, any Error>?
+        if case .simulator(let simulator) = device, let xcodeURL {
+            guest = Task { @MainActor in try await SimulatorGuestSettings(device: simulator, xcodeURL: xcodeURL) }
+        } else { guest = nil }
+        return SimulatorSettingsBackend(run: { tool, arguments in
+            if tool == .guestDevice {
+                guard let guest else {
+                    throw CLIError.configuration("device-setting-source", "Guest settings require a simulator and its developer tools.")
+                }
+                return try await guest.value.execute(arguments)
+            }
             let result: CommandOutput
             if tool != .devicectl {
                 guard case .simulator(let simulator) = device, let xcodeURL else {
@@ -412,73 +440,28 @@ extension SimulatorHostController {
                 throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
             }
             return result.stdout
-        })
-        return await backend.read(device: device)
-    }
-
-    @concurrent
-    private static func updateSettings(_ settings: SimulatorDeviceSettings, after setting: SimulatorDeviceSetting,
-                                       device: InventoryDevice, xcodeURL: URL?,
-                                       applying write: @escaping @Sendable () async throws -> Void)
-        async -> (settings: SimulatorDeviceSettings, failure: SimulatorHostFailure?) {
-        await settingsBackend(device: device, xcodeURL: xcodeURL).update(settings, with: setting, device: device, applying: write)
-    }
-
-    @concurrent
-    private static func writeSetting(_ setting: SimulatorDeviceSetting, device: InventoryDevice, xcodeURL: URL?) async throws {
-        try settingsBackend(device: device, xcodeURL: xcodeURL).set(setting, device: device)
-    }
-
-    private static func settingsArguments(_ tool: SimulatorSettingsBackend.Tool, _ arguments: [String]) throws -> [String] {
-        guard tool == .guestSettings else { return arguments }
-        guard let helper = Bundle.main.url(forResource: "NeoSimulatorGuestSettings", withExtension: nil),
-              FileManager.default.isExecutableFile(atPath: helper.path) else {
-            throw CLIError.unavailable("guest-settings-helper", "The app's guest settings helper is unavailable.")
-        }
-        return ["spawn", arguments[0], helper.path] + arguments.dropFirst()
-    }
-
-    private static func settingsBackend(device: InventoryDevice, xcodeURL: URL?,
-                                        readCommand: (@Sendable (SimulatorSettingsBackend.Tool, [String]) async throws -> Data)? = nil) -> SimulatorSettingsBackend {
-        SimulatorSettingsBackend(run: { tool, arguments in
-            let runner = SystemCommandRunner()
-            let result: CommandOutput
-            if tool != .devicectl {
-                guard case .simulator(let simulator) = device, let xcodeURL else {
-                    throw CLIError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
-                }
-                result = try runner.runSimctl(xcodeURL: xcodeURL, arguments: try settingsArguments(tool, arguments), deviceSetPath: simulator.deviceSetPath)
-            } else if let xcodeURL {
-                result = try runner.runDevicectl(xcodeURL: xcodeURL, arguments: arguments)
-            } else {
-                result = try runner.run(executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"), arguments: arguments)
-            }
-            guard result.terminationStatus == 0 || (tool == .guestSettings && !result.stdout.isEmpty) else {
-                throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
-            }
-            return result.stdout
-        }, readCommand: readCommand, audioDevices: SimulatorSettingsBackend.hostAudioDevices)
+        }, audioDevices: SimulatorSettingsBackend.hostAudioDevices)
     }
 }
 
 /// Keeps the command transport replaceable while tests exercise the same partial-result and write paths.
 package struct SimulatorSettingsBackend: Sendable {
-    package enum Tool { case simctl, devicectl, guestSettings }
-    package var run: @Sendable (Tool, [String]) throws -> Data
+    package enum Tool { case simctl, devicectl, guestSettings, guestDevice }
+    package var run: @Sendable (Tool, [String]) async throws -> Data
     package var readCommand: @Sendable (Tool, [String]) async throws -> Data
     package var audioDevices: @Sendable () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])
 
-    package init(run: @escaping @Sendable (Tool, [String]) throws -> Data,
+    package init(run: @escaping @Sendable (Tool, [String]) async throws -> Data,
          readCommand: (@Sendable (Tool, [String]) async throws -> Data)? = nil,
          audioDevices: @escaping @Sendable () throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice])) {
         self.run = run
-        self.readCommand = readCommand ?? { try run($0, $1) }
+        self.readCommand = readCommand ?? { try await run($0, $1) }
         self.audioDevices = audioDevices
     }
 
     /// Declaration order is the merge order: simctl values take priority over CoreDevice's
     /// appearance values, and issues keep the same order however the commands finish.
-    private enum Query: CaseIterable {
+    package enum Query: String, CaseIterable, Sendable {
         case simulatorAppearance, simulatorContentSize, simulatorContrast, displayZoom, boldText, appearance, voiceOver, audio, location
 
         var issueNames: [String] {
@@ -488,9 +471,10 @@ package struct SimulatorSettingsBackend: Sendable {
             case .simulatorContrast: ["increase_contrast"]
             case .boldText: ["Bold Text"]
             case .displayZoom: ["Display Zoom"]
-            case .appearance: ["appearance settings", "color filter"]
+            case .appearance: ["appearance settings", "color filter", "look and feel", "supported looks and feels",
+                               "Liquid Glass", "Reduce Motion", "Show Borders", "Reduce Transparency"]
             case .voiceOver: ["VoiceOver"]
-            case .audio: ["audio"]
+            case .audio: ["audio", "volume", "audio routes"]
             case .location: ["location scenarios", "location"]
             }
         }
@@ -628,15 +612,45 @@ package struct SimulatorSettingsBackend: Sendable {
         func ui(_ name: String) async -> String? {
             await capture(name) { String(decoding: try await readCommand(.simctl, ["ui", identifier, name]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
         }
+        if case .simulator = device, [.simulatorContentSize, .appearance, .voiceOver, .audio].contains(query) {
+            guard let native = await capture(query.issueNames[0], {
+                try JSONDecoder().decode(SimulatorDeviceSettings.self,
+                    from: await readCommand(.guestDevice, [identifier, "read", query.rawValue]))
+            }) else { return result }
+            result.issues += native.issues
+            result.apply = { settings in
+                switch query {
+                case .simulatorContentSize: settings.contentSize = native.contentSize
+                case .appearance:
+                    settings.lookAndFeel = native.lookAndFeel
+                    settings.supportedLooksAndFeels = native.supportedLooksAndFeels
+                    settings.liquidGlassOpacity = native.liquidGlassOpacity
+                    settings.colorFilter = native.colorFilter
+                    settings.colorFilterIntensity = native.colorFilterIntensity
+                    settings.reduceMotion = native.reduceMotion
+                    settings.reduceTransparency = native.reduceTransparency
+                    settings.showBorders = native.showBorders
+                case .voiceOver: settings.voiceOver = native.voiceOver
+                case .audio:
+                    settings.volume = native.volume
+                    settings.audioInputDevice = native.audioInputDevice
+                    settings.audioOutputDevice = native.audioOutputDevice
+                    if refreshAudioDevices {
+                        settings.audioInputDevices = native.audioInputDevices
+                        settings.audioOutputDevices = native.audioOutputDevices
+                    }
+                default: break
+                }
+            }
+            return result
+        }
         switch query {
         case .simulatorAppearance:
             guard case .simulator = device else { break }
             let appearance = await ui("appearance")
             result.apply = { $0.appearance = appearance.flatMap { ["light", "dark"].contains($0) ? $0 : nil } }
         case .simulatorContentSize:
-            guard case .simulator = device else { break }
-            let size = await ui("content_size")
-            result.apply = { $0.contentSize = size.flatMap { SimulatorDeviceSettings.contentSizes.contains($0) ? $0 : nil } }
+            break
         case .simulatorContrast:
             guard case .simulator = device else { break }
             let contrast = await ui("increase_contrast")
@@ -694,7 +708,7 @@ package struct SimulatorSettingsBackend: Sendable {
                 }
             }
         case .location:
-            if device.supportsSettingsQuery(.location), let scenarios = await capture("location scenarios", { try await self.query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
+            if case .remote = device, device.supportsSettingsQuery(.location), let scenarios = await capture("location scenarios", { try await self.query(Scenarios.self, ["device", "simulate", "location", "list"], identifier) }) {
                 let values = scenarios.availableScenarios.map { SimulatorLocationScenario(name: $0.name, displayName: $0.localizedName ?? $0.name) }
                 result.apply = {
                     $0.locationAvailable = true
@@ -711,64 +725,70 @@ package struct SimulatorSettingsBackend: Sendable {
         return result
     }
 
-    package func set(_ setting: SimulatorDeviceSetting, device: InventoryDevice) throws {
+    package func set(_ setting: SimulatorDeviceSetting, device: InventoryDevice) async throws {
         try device.checkSettingsWrite(setting)
         let identifier = device.settingsIdentifier
-        func ui(_ name: String, _ value: String) throws { _ = try run(.simctl, ["ui", identifier, name, value]) }
-        func appearance(_ option: String, _ value: String) throws {
-            _ = try run(.devicectl, command(["device", "settings", "appearance", option, value], identifier))
+        if case .simulator = device {
+            switch setting {
+            case .contentSize, .lookAndFeel, .liquidGlassOpacity, .colorFilter, .reduceMotion, .showBorders,
+                 .reduceTransparency, .voiceOver, .volume, .audioInputDevice, .audioOutputDevice:
+                _ = try await run(.guestDevice, [identifier, "set", String(decoding: JSONEncoder().encode(setting), as: UTF8.self)])
+                return
+            default: break
+            }
         }
-        func audio(_ option: String, _ value: String) throws {
-            _ = try run(.devicectl, command(["device", "settings", "audio", option, value], identifier))
+        func ui(_ name: String, _ value: String) async throws { _ = try await run(.simctl, ["ui", identifier, name, value]) }
+        func appearance(_ option: String, _ value: String) async throws {
+            _ = try await run(.devicectl, command(["device", "settings", "appearance", option, value], identifier))
+        }
+        func audio(_ option: String, _ value: String) async throws {
+            _ = try await run(.devicectl, command(["device", "settings", "audio", option, value], identifier))
         }
         switch setting {
         case .appearance(let value):
-            if case .simulator = device { try ui("appearance", value) }
-            else { try appearance("--mode", value) }
+            if case .simulator = device { try await ui("appearance", value) }
+            else { try await appearance("--mode", value) }
         case .contentSize(let value):
-            if case .simulator = device { try ui("content_size", value) }
-            else {
-                var options = ["--text-size", value]
-                if value.hasPrefix("accessibility-") { options += ["--larger-accessibility-sizes", "on"] }
-                _ = try run(.devicectl, command(["device", "settings", "appearance"] + options, identifier))
-            }
+            var options = ["--text-size", value]
+            if value.hasPrefix("accessibility-") { options += ["--larger-accessibility-sizes", "on"] }
+            _ = try await run(.devicectl, command(["device", "settings", "appearance"] + options, identifier))
         case .displayZoom(let mode):
-            _ = try Self.displayZoomResult(run(.guestSettings, [identifier, "display-zoom", "set", String(mode)]))
+            _ = try Self.displayZoomResult(await run(.guestSettings, [identifier, "display-zoom", "set", String(mode)]))
         case .boldText(let enabled):
-            _ = try run(.simctl, ["spawn", identifier, "defaults", "write", Self.boldTextDomain, Self.boldTextKey, "-int", enabled ? "1" : "0"])
+            _ = try await run(.simctl, ["spawn", identifier, "defaults", "write", Self.boldTextDomain, Self.boldTextKey, "-int", enabled ? "1" : "0"])
             do {
-                _ = try run(.simctl, ["spawn", identifier, "notifyutil", "-p", Self.boldTextNotification])
+                _ = try await run(.simctl, ["spawn", identifier, "notifyutil", "-p", Self.boldTextNotification])
             } catch {
                 throw CLIError.io("bold-text-notification", "Bold Text was saved, but its change notification failed: \(error.localizedDescription)")
             }
         case .increaseContrast(let enabled):
-            if case .simulator = device { try ui("increase_contrast", enabled ? "enabled" : "disabled") }
-            else { try appearance("--increase-contrast", enabled ? "on" : "off") }
-        case .lookAndFeel(let value): try appearance("--look-and-feel", value.rawValue)
-        case .liquidGlassOpacity(let value): try appearance("--liquid-glass-opacity", String(value))
+            if case .simulator = device { try await ui("increase_contrast", enabled ? "enabled" : "disabled") }
+            else { try await appearance("--increase-contrast", enabled ? "on" : "off") }
+        case .lookAndFeel(let value): try await appearance("--look-and-feel", value.rawValue)
+        case .liquidGlassOpacity(let value): try await appearance("--liquid-glass-opacity", String(value))
         case .colorFilter(let value, let intensity):
             var options = value == .none ? ["--color-filter", "off"] : ["--color-filter", "on", "--color-filter-type", value.rawValue]
             if let intensity { options += ["--color-filter-intensity", String(intensity)] }
-            _ = try run(.devicectl, command(["device", "settings", "appearance"] + options, identifier))
-        case .reduceMotion(let enabled): try appearance("--reduce-motion", enabled ? "on" : "off")
-        case .showBorders(let enabled): try appearance("--show-borders", enabled ? "on" : "off")
-        case .reduceTransparency(let enabled): try appearance("--reduce-transparency", enabled ? "on" : "off")
-        case .voiceOver(let enabled): _ = try run(.devicectl, command(["device", "settings", "voiceover", enabled ? "--enable" : "--disable"], identifier))
-        case .volume(let value): try audio("--volume", String(value))
-        case .audioInputDevice(let value): try audio("--input-device", value)
-        case .audioOutputDevice(let value): try audio("--output-device", value)
+            _ = try await run(.devicectl, command(["device", "settings", "appearance"] + options, identifier))
+        case .reduceMotion(let enabled): try await appearance("--reduce-motion", enabled ? "on" : "off")
+        case .showBorders(let enabled): try await appearance("--show-borders", enabled ? "on" : "off")
+        case .reduceTransparency(let enabled): try await appearance("--reduce-transparency", enabled ? "on" : "off")
+        case .voiceOver(let enabled): _ = try await run(.devicectl, command(["device", "settings", "voiceover", enabled ? "--enable" : "--disable"], identifier))
+        case .volume(let value): try await audio("--volume", String(value))
+        case .audioInputDevice(let value): try await audio("--input-device", value)
+        case .audioOutputDevice(let value): try await audio("--output-device", value)
         case .location(let latitude, let longitude):
-            if case .simulator = device { _ = try run(.simctl, ["location", identifier, "set", "\(latitude),\(longitude)"]) }
+            if case .simulator = device { _ = try await run(.simctl, ["location", identifier, "set", "\(latitude),\(longitude)"]) }
             else {
-                _ = try run(.devicectl, command(["device", "simulate", "location", "coordinate",
+                _ = try await run(.devicectl, command(["device", "simulate", "location", "coordinate",
                     "--latitude", String(latitude), "--longitude", String(longitude)], identifier))
             }
         case .locationScenario(let name):
-            if case .simulator = device { _ = try run(.simctl, ["location", identifier, "run", name]) }
-            else { _ = try run(.devicectl, command(["device", "simulate", "location", "scenario", name], identifier)) }
+            if case .simulator = device { _ = try await run(.simctl, ["location", identifier, "run", name]) }
+            else { _ = try await run(.devicectl, command(["device", "simulate", "location", "scenario", name], identifier)) }
         case .clearLocation:
-            if case .simulator = device { _ = try run(.simctl, ["location", identifier, "clear"]) }
-            else { _ = try run(.devicectl, command(["device", "simulate", "location", "clear"], identifier)) }
+            if case .simulator = device { _ = try await run(.simctl, ["location", identifier, "clear"]) }
+            else { _ = try await run(.devicectl, command(["device", "simulate", "location", "clear"], identifier)) }
         }
     }
 

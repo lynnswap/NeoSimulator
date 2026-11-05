@@ -108,8 +108,13 @@ package final class GuestHIDConnection {
     /// closes its connection on timeout; it must not create a resource whose reply needs an owner.
     package func request(_ type: GuestHIDCodec.MessageType, _ payload: NativeSwiftValue,
                          timeout: Duration? = nil) async throws -> xpc_object_t {
+        try await request(codec.message(type, to: feature, payload: payload), timeout: timeout)
+    }
+
+    /// Sends a CoreDevice action envelope to this guest service.
+    package func request(_ message: xpc_object_t, timeout: Duration?, cancelsWithTask: Bool = false) async throws -> xpc_object_t {
         if let failure { throw failure }
-        let message = try codec.message(type, to: feature, payload: payload)
+        if cancelsWithTask { try Task.checkCancellation() }
         let deadline = timeout.map { timeout in
             Task { @MainActor in
                 do { try await Task.sleep(for: timeout) } catch { return }
@@ -118,11 +123,19 @@ package final class GuestHIDConnection {
             }
         }
         defer { deadline?.cancel() }
-        let reply: xpc_object_t = await withCheckedContinuation { continuation in
-            xpc_connection_send_message_with_reply(connection, message, .main) { reply in
-                // libxpc does not modify a reply it has delivered.
-                nonisolated(unsafe) let received = reply
-                continuation.resume(returning: received)
+        let reply: xpc_object_t = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                xpc_connection_send_message_with_reply(connection, message, .main) { reply in
+                    // libxpc does not modify a reply it has delivered.
+                    nonisolated(unsafe) let received = reply
+                    continuation.resume(returning: received)
+                }
+            }
+        } onCancel: {
+            guard cancelsWithTask else { return }
+            Task { @MainActor in
+                self.failure = CancellationError()
+                xpc_connection_cancel(self.connection)
             }
         }
         if let failure { throw failure }

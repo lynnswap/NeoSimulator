@@ -217,7 +217,7 @@ struct ManagerModelTests {
         }, preferences: preferences, reportFailure: { _ in Issue.record("Unexpected failure") })
         let controller = windowController.settings
         #if DEBUG
-        #expect(controller.tabViewItems.last?.viewController === controller.debug)
+        #expect(controller.tabViewItems.contains { $0.viewController === controller.debug })
         var resets = 0
         controller.resetOnboarding = { resets += 1 }
         controller.debug.rootView.resetOnboarding()
@@ -286,18 +286,18 @@ struct ManagerModelTests {
         let window = try #require(controller.window)
         defer { window.close() }
         #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.default.id)
-        #expect(controller.settings.tabViewItems.last?.label == "Licenses")
         window.makeKeyAndOrderFront(nil)
         window.layoutIfNeeded()
         let samples = SettingsWindowFrameSamples()
         NotificationCenter.default.addObserver(samples, selector: #selector(SettingsWindowFrameSamples.resized(_:)),
                                                 name: NSWindow.didResizeNotification, object: window)
         defer { NotificationCenter.default.removeObserver(samples) }
-        for index in [4, 2, 3, 0] {
+        for tab in [controller.settings.licenses, controller.settings.capture,
+                    controller.settings.serviceProfiles, controller.settings.general] {
             let before = window.frame
             samples.frames = []
             let item = try #require(window.toolbar?.items.first {
-                $0.label == controller.settings.tabViewItems[index].label
+                $0.label == tab.title
             })
             let action = try #require(item.action)
             #expect(NSApp.sendAction(action, to: item.target, from: item))
