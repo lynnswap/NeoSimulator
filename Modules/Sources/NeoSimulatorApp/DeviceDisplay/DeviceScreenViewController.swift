@@ -5,7 +5,7 @@ import Observation
 import ObservationBridge
 
 /// The manager's center pane, which shows the selected device's live screen or its preview.
-/// The manager window owns the selection and command bar, and attaches `canvasAccessory` to this pane's split view item.
+/// The manager window owns the selection and toolbar, and attaches `canvasAccessory` to this pane's split view item.
 /// The pane returns to the preview when `DeviceScreens` closes or replaces the screen it shows.
 ///
 /// The pane runs screen moves in the order the window accepts them. The window passes each move a check of its
@@ -65,7 +65,7 @@ final class DeviceScreenViewController: NSViewController {
         liveView.isHidden = true
         liveView.clipsToBounds = true
         view.addSubview(liveView)
-        // The canvas draws behind the bottom accessory and footer; their safe-area insets reserve fitting space.
+        // Presentations may draw behind the toolbar, bottom accessory and footer; each keeps its content in the safe area.
         NSLayoutConstraint.activate([
             liveView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             liveView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
