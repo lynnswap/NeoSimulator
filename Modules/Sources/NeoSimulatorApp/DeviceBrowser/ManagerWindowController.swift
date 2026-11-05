@@ -794,14 +794,14 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let title = resizing ? "Stop Resize" : "Resize App"
         if resize.title != title { resize.title = title; resize.toolTip = title; resize.setAccessibilityLabel(title) }
         let hidesResize = screen?.supports("resizeApp") != true
-        let enablesResize = !blocked && screen?.isEnabled("resizeApp") == true
+        let enablesResize = screen?.isEnabled("resizeApp") == true && !blocked
         commandBar.setAvailable(!hidesResize, for: resize)
         if resize.isEnabled != enablesResize { resize.isEnabled = enablesResize }
         let resizeState: NSControl.StateValue = resizing ? .on : .off
         if resize.state != resizeState { resize.state = resizeState }
         let capture = commandBar.captureKeyboard
         let hidesCapture = screen?.supports("captureKeyboard") != true
-        let enablesCapture = !blocked && screen?.isEnabled("captureKeyboard") == true
+        let enablesCapture = screen?.isEnabled("captureKeyboard") == true && !blocked
         commandBar.setAvailable(!hidesCapture, for: capture)
         if capture.isEnabled != enablesCapture { capture.isEnabled = enablesCapture }
         let captureState: NSControl.StateValue = screen?.capturesKeyboard == true ? .on : .off
@@ -811,7 +811,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let hidesZoom = screen?.supports(CanvasZoom.Action.fit.rawValue) != true
         commandBar.setAvailable(!hidesZoom, for: zoom)
         for (index, action) in CanvasZoom.Action.allCases.enumerated() {
-            let enabled = !blocked && screen?.isEnabled(action.rawValue) == true
+            let enabled = screen?.isEnabled(action.rawValue) == true && !blocked
             if zoom.isEnabled(forSegment: index) != enabled { zoom.setEnabled(enabled, forSegment: index) }
         }
         let selected = CanvasZoom.Action.allCases.firstIndex { screen?.canvasZoomIsSelected($0.rawValue) == true } ?? -1

@@ -643,6 +643,21 @@ struct InputFocusTests {
         let more = try #require(manager.commandBar.more.menu)
         manager.menuNeedsUpdate(more)
         #expect(more.items.contains { $0.action == manager.commandBar.compact.action && $0.isEnabled })
+        let capture = manager.commandBar.captureKeyboard
+        try #require(capture.isEnabled)
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 120),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        defer { if let parent = sheet.sheetParent { parent.endSheet(sheet) }; sheet.close() }
+        mainWindow.beginSheet(sheet, completionHandler: { _ in })
+        try await wait { !capture.isEnabled && !manager.commandBar.compact.isEnabled }
+        let revision = screen.canvasControlsUpdates
+        screen.perform(CanvasZoom.Action.zoomIn.rawValue)
+        try await wait { screen.canvasControlsUpdates > revision }
+        mainWindow.endSheet(sheet)
+        try await wait { manager.commandBar.compact.isEnabled && capture.isEnabled }
+        controller.session.disconnect()
+        try await wait { !capture.isEnabled }
     }
 
     @Test func remoteControlsReturnFromAnAccessoryToTheSameCompactScreen() async throws {
