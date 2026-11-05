@@ -497,7 +497,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         session.onExternalScreenChange = { [weak self] in self?.syncExternalDisplayWindow() }
         content.canvasZoom = canvasZoom
         content.deviceFrame = { [weak self] in self?.session.display.deviceFrame ?? .zero }
-        content.displayResizeRects = { [weak self] in self?.session.display.resizeRects ?? [] }
+        content.framebufferFrame = { [weak self] in self?.session.display.framebufferFrame ?? .zero }
         content.onCanvasResize = { [weak self] in self?.resizeCanvas(from: $0, with: $1) }
         content.onNativeCanvasMagnification = { [weak self] in self?.session.display.setCanvasMagnification($0) }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
@@ -1846,7 +1846,7 @@ private final class DeviceContentView: NSView, DisplayContentView {
     }
     var canvasZoom: CanvasZoom?
     var deviceFrame: (() -> NSRect)?
-    var displayResizeRects: (() -> [DisplayResizeRect])?
+    var framebufferFrame: (() -> NSRect)?
     var onCanvasResize: (DisplayResizeCorner, NSEvent) -> Void = { _, _ in }
     private lazy var resizeHandles = [DisplayResizeCorner.lowerLeft, .lowerRight, .upperRight, .upperLeft].map { corner in
         DeviceCanvasResizeHandle(corner: corner) { [weak self] in self?.onCanvasResize(corner, $0) }
@@ -2129,43 +2129,45 @@ private final class DeviceContentView: NSView, DisplayContentView {
 
     private func layoutResizeHandles() {
         guard isEmbedded, !scrollsDisplay else {
-            for handle in resizeHandles {
+            for handle in resizeHandles where !handle.isHidden {
                 handle.isHidden = true
                 window?.invalidateCursorRects(for: handle)
             }
             return
         }
-        let bezelRects = displayResizeRects?() ?? []
-        var fallbackFrame: NSRect?
+        let frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
+        let framebuffer = display.convert(framebufferFrame?() ?? display.bounds, to: self)
+        let radius: CGFloat = 24
         for handle in resizeHandles {
-            handle.isHidden = false
-            if let area = bezelRects.first(where: { $0.corner == handle.corner }) {
-                let bezel = display.convert(area.rect, to: self)
-                let size = NSSize(width: max(44, bezel.width + 24), height: max(44, bezel.height + 24))
-                // Keep the bezel's inner boundary so the larger target does not take guest input.
-                handle.frame = NSRect(x: handle.corner.isLeft ? bezel.maxX - size.width : bezel.minX,
-                                      y: handle.corner.isLower ? bezel.maxY - size.height : bezel.minY,
-                                      width: size.width, height: size.height)
-                handle.resizeRects = [handle.bounds]
+            let previousFrame = handle.frame
+            let previousRects = handle.resizeRects
+            let wasHidden = handle.isHidden
+            if wasHidden { handle.isHidden = false }
+            handle.frame = NSRect(x: (handle.corner.isLeft ? frame.minX : frame.maxX) - radius,
+                                  y: (handle.corner.isLower ? frame.minY : frame.maxY) - radius,
+                                  width: radius * 2, height: radius * 2)
+            let guest = handle.convert(framebuffer, from: self)
+            var horizontal = handle.bounds
+            var vertical = handle.bounds
+            if handle.corner.isLeft {
+                horizontal.size.width = min(horizontal.width, max(0, guest.minX - horizontal.minX))
             } else {
-                let frame: NSRect
-                if let fallbackFrame { frame = fallbackFrame }
-                else {
-                    frame = display.convert(deviceFrame?() ?? display.bounds, to: self)
-                    fallbackFrame = frame
-                }
-                let radius: CGFloat = 24
-                handle.frame = NSRect(x: (handle.corner.isLeft ? frame.minX : frame.maxX) - radius,
-                                      y: (handle.corner.isLower ? frame.minY : frame.maxY) - radius,
-                                      width: radius * 2, height: radius * 2)
-                // Displays without bezel resize areas leave the guest's corners available for input.
-                handle.resizeRects = [
-                    NSRect(x: handle.corner.isLeft ? 0 : radius, y: 0, width: radius, height: radius * 2),
-                    NSRect(x: handle.corner.isLeft ? radius : 0, y: handle.corner.isLower ? 0 : radius,
-                           width: radius, height: radius),
-                ]
+                horizontal.origin.x = min(horizontal.maxX, max(horizontal.minX, guest.maxX))
+                horizontal.size.width = handle.bounds.maxX - horizontal.minX
             }
-            window?.invalidateCursorRects(for: handle)
+            if handle.corner.isLower {
+                vertical.size.height = min(vertical.height, max(0, guest.minY - vertical.minY))
+            } else {
+                vertical.origin.y = min(vertical.maxY, max(vertical.minY, guest.maxY))
+                vertical.size.height = handle.bounds.maxY - vertical.minY
+            }
+            // Bezel sides carry edge gestures and hardware buttons; only their corner block resizes.
+            // Without a bezel, the outward strips remain available beyond the displayed composition.
+            let targets = frame == framebuffer ? [horizontal, vertical] : [horizontal.intersection(vertical)]
+            handle.resizeRects = targets.filter { !$0.isEmpty }
+            if wasHidden || handle.frame != previousFrame || handle.resizeRects != previousRects {
+                window?.invalidateCursorRects(for: handle)
+            }
         }
     }
 
