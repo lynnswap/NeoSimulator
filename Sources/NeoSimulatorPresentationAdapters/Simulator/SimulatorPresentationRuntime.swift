@@ -529,7 +529,8 @@ package struct SimulatorInputInterface {
     }
 
     package func connect(to device: SimulatorDevice) async throws -> WorkerOwned<AnyObject> {
-        nonisolated(unsafe) let makeClient = makeClient, clientClass = clientClass, object = device.handle.object
+        let clientClass: AnyClass = clientClass
+        nonisolated(unsafe) let makeClient = makeClient, object = device.handle.object
         let channel = device.channel
         return try await channel.read("connect the device's input") {
             guard let instance = allocate(clientClass) else {
@@ -749,13 +750,14 @@ package struct SimulatorPasteboardInterface {
                  events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> SimulatorPasteboardConnection {
         // The interface calls the delegate on the main queue; the connection keeps it.
         let delegate = SimulatorPasteboardDelegate(events)
-        nonisolated(unsafe) let makeInterface = makeInterface, interfaceClass = interfaceClass, pasteboard = pasteboard, target = delegate
+        let interfaceClass: AnyClass = interfaceClass
+        nonisolated(unsafe) let makeInterface = makeInterface, pasteboard = pasteboard
         let object = try await channel.read("connect the device's pasteboard") { () throws -> WorkerOwned<AnyObject> in
             guard let instance = allocate(interfaceClass) else {
                 throw SimulatorError.unavailable("Could not allocate the simulator's pasteboard connection")
             }
             let right = port.take()
-            return WorkerOwned(try unsafe makeInterface.unsafeInvoke(on: instance, right, pasteboard, target, .main), channel: channel)
+            return WorkerOwned(try unsafe makeInterface.unsafeInvoke(on: instance, right, pasteboard, delegate, .main), channel: channel)
         }
         return SimulatorPasteboardConnection(object: object, delegate: delegate, interface: self, channel: channel)
     }

@@ -204,8 +204,6 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     }
 }
 
-extension CoreDeviceRemoteScreenDevice: CoreDeviceFeatureRecord {}
-
 /// The record of the simulator of `udid` in CoreDevice's own list, which holds only the default device set.
 @MainActor
 package final class CoreDeviceSimulatorRecordSource: CoreDeviceRecordSource {

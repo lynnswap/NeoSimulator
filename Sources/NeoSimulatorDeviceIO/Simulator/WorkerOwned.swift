@@ -19,7 +19,7 @@ package final class WorkerOwned<Value: AnyObject>: @unchecked Sendable {
         // Nothing else may keep it once the worker has been asked, or the worker's release would not be the last.
         nonisolated(unsafe) var last = object
         object = nil
-        channel.cleanUp("release a native connection") { last = nil }
+        channel.cleanUp("release a native connection") { withExtendedLifetime(last) { last = nil } }
     }
 }
 
