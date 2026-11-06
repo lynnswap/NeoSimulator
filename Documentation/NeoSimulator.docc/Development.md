@@ -7,7 +7,7 @@ Build NeoSimulator.app and its embedded renderer with Xcode.
 Use Xcode 27+ and Swift 6.4+. Open `NeoSimulator.xcworkspace`, which contains
 `App/NeoSimulator.xcodeproj` and the local Swift package.
 
-Implementation lives under `Modules/Sources`:
+Implementation lives under `Sources`:
 
 | Module | Responsibility |
 | --- | --- |
@@ -18,7 +18,7 @@ Implementation lives under `Modules/Sources`:
 | `NeoSimulatorService` | Embedded renderer startup, arguments, and owner monitoring. |
 
 The package exposes Kit, App, and Service as library products. The device-I/O
-and host-support modules are shared only within the package. Tests in `Modules/Tests` import these
+and host-support modules are shared only within the package. Tests in `Tests` import these
 modules rather than compiling their implementation again.
 
 The Xcode application targets contain their entry points and bundle resources.
@@ -121,7 +121,7 @@ bundled `Credits.rtf`, since its code is ported rather than linked as a package.
 ## Tests
 
 ```bash
-xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme NeoSimulatorKit -destination 'platform=macOS,arch=arm64'
+xcodebuild test -workspace NeoSimulator.xcworkspace -scheme NeoSimulatorKit -destination 'platform=macOS,arch=arm64'
 scripts/test-app-bundle.sh
 python3 -m unittest discover -s scripts/tests -v
 ```
