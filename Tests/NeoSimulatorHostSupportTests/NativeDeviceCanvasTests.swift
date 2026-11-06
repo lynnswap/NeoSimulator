@@ -10,6 +10,64 @@ import XCTest
 
 @MainActor
 struct NativeDeviceCanvasTests {
+    @Test func projectedCanvasUsesDevicePointsAndExcludesTheEmptyRenderingSurface() async throws {
+        _ = NSApplication.shared
+        let surface = CALayer()
+        surface.bounds = CGRect(x: 0, y: 0, width: 2000, height: 2000)
+        let screen = CALayer()
+        screen.anchorPoint = .zero
+        screen.bounds = CGRect(x: 0, y: 0, width: 400, height: 800)
+        screen.position = CGPoint(x: 700, y: 700)
+        screen.transform = CATransform3DMakeScale(0.5, 0.5, 1)
+        surface.addSublayer(screen)
+        let inactive = CALayer()
+        inactive.bounds = surface.bounds
+        inactive.isHidden = true
+        surface.addSublayer(inactive)
+
+        let presentation = NativeCanvasPresentation()
+        presentation.compositionSize = CGSize(width: 1200, height: 1000)
+        let viewport: CGRect = try #require(NativeCanvasProjection.viewport(
+            for: [screen, inactive], frameMargin: nil, showsChrome: false))
+        presentation.viewport = viewport
+        presentation.pointScale = 2
+        presentation.zoom = 1.25
+        presentation.magnification = 0.6
+        #expect(presentation.naturalSize == CGSize(width: 400, height: 800))
+        let recorder = RecorderView()
+        let composition = ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: 1200, height: 1000)
+            Recorder(view: recorder).frame(width: 200, height: 400)
+                .padding(EdgeInsets(top: 200, leading: 300, bottom: 0, trailing: 0))
+        }
+        let hosting = NativeCanvasHostingView(rootView: AnyView(NativeCanvasRoot(
+            presentation: presentation, shown: AnyView(composition), hidden: AnyView(composition),
+            canvasPath: \.nativeCanvasTestFlag, zoomPath: \.nativeCanvasTestZoom)))
+        hosting.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 600), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        let shown = recorder.convert(recorder.bounds, to: hosting)
+        #expect(abs(shown.minX) < 0.5 && abs(shown.minY) < 0.5)
+        #expect(abs(shown.width - 300) < 0.5 && abs(shown.height - 600) < 0.5)
+        let point = hosting.convert(CGPoint(x: 225, y: 450), to: nil)
+        #expect(hosting.hitTest(point).map { $0 === recorder || $0.isDescendant(of: recorder) } == true)
+        let local = recorder.convert(point, from: nil)
+        // The recorder uses AppKit's upward Y axis.
+        #expect(abs(local.x - 150) < 0.5 && abs(local.y - 100) < 0.5)
+
+        screen.isHidden = true
+        inactive.isHidden = false
+        inactive.bounds = CGRect(x: 0, y: 0, width: 600, height: 400)
+        inactive.anchorPoint = .zero
+        inactive.position = CGPoint(x: 200, y: 300)
+        #expect(NativeCanvasProjection.viewport(for: [screen, inactive], frameMargin: 0)
+            == CGRect(x: -800, y: -700, width: 600, height: 400))
+    }
+
     /// The canvas frames the host at the scaled composition; Fit often shrinks a device below its natural size.
     @Test func shrunkenCanvasPresentsTheMeasuredCompositionInItsHostFrame() async throws {
         _ = NSApplication.shared
