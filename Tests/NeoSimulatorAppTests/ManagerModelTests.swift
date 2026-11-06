@@ -2170,6 +2170,29 @@ struct ManagerModelTests {
         #expect(manager.managingDeviceIDs.isEmpty)
     }
 
+    @Test func aStalledAcceptedChangeCannotHoldAQuitAndIsReportedAsUnknown() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device], holdsManagement: true)
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        let commands = UninterruptedCommands()
+        manager.uninterruptedCommands = commands
+        manager.terminationLimit = .milliseconds(50)
+        manager.terminationGrace = .milliseconds(50)
+        var reports: [String] = []
+        manager.onError = { reports.append($0.localizedDescription) }
+        manager.manage(.erase, devices: [device])
+        #expect(await events.next() == .manage(.erase, [device.id]))
+
+        try await manager.prepareForQuit()
+        #expect(reports.count == 1 && reports[0].contains("had not finished when NeoSimulator quit"))
+        // Later steps of the quit join the same wait, and report it once.
+        try await manager.prepareForQuit()
+        #expect(reports.count == 1)
+        // The stalled change has an owner to the end, whose own report still arrives.
+        await source.completeManagement(.erase)
+    }
+
     @Test(arguments: [DeviceManagementAction.restart, .erase, .remove])
     func forceCannotJoinOtherManagementRequests(_ action: DeviceManagementAction) async throws {
         let device = simulator()

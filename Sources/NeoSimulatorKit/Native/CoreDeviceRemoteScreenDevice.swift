@@ -1,13 +1,19 @@
 import ABIBridge
 import AppKit
 import Darwin
+import NeoSimulatorDeviceIO
 import Security
 
 @MainActor
 package enum CoreDeviceRuntime {
     private static var manager: NativeSwiftValue?
     private static var managerPreparation: Task<Void, any Error>?
-    private static var managerInitialization: Task<Void, any Error>?
+    private static let managerInitialization = makeInitialization {
+        let manager = try await deviceManagerIncludingSimulators()
+        let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.DeviceManager")))
+        let initialize = try await type.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
+        try await unsafe initialize.unsafeInvoke(on: manager)
+    }
     private static var uiXcodeOverride: URL?
     private static var uiXcodePreparation: Task<URL, any Error>?
 
@@ -41,31 +47,28 @@ package enum CoreDeviceRuntime {
         try await PreparationWaiter<Value>().value(of: preparation)
     }
 
-    /// Shares CoreDevice initialization without making a consumer's cancellation stop the native initializer.
+    /// Shares CoreDevice's one initialization. Neither a consumer's cancellation nor its limit stops the native
+    /// initializer, and no consumer starts another or a new client while it is pending.
     package static func initializeDeviceManager() async throws {
-        try Task.checkCancellation()
-        let preparation: Task<Void, any Error>
-        if let existing = managerInitialization {
-            preparation = existing
-        } else {
-            preparation = Task {
-                let manager = try await deviceManagerIncludingSimulators()
-                try await reportInitializationDelay(during: {
-                    let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.DeviceManager")))
-                    let initialize = try await type.resolve(.swift(.method("awaitFullInitialization()", as: (() async -> Void).self)))
-                    try await unsafe initialize.unsafeInvoke(on: manager)
-                }, onChange: { onInitializationDelayChanged?($0) })
-            }
-            managerInitialization = preparation
+        try await managerInitialization.value(limit: DeviceOperationLimit.coreDeviceInitialization)
+    }
+
+    /// One initialization, whose delay is reported until it actually finishes.
+    package static func makeInitialization(
+        waitUntilDelayed: @escaping @MainActor () async throws -> Void = {
+            try await Task.sleep(for: DeviceOperationLimit.coreDeviceInitialization)
+        },
+        _ initialize: @escaping @MainActor () async throws -> Void
+    ) -> SharedTask<Void> {
+        SharedTask("finish CoreDevice's initialization") {
+            try await reportInitializationDelay(during: initialize, waitUntilDelayed: waitUntilDelayed,
+                                                onChange: { onInitializationDelayChanged?($0) })
         }
-        try await preparedValue(of: preparation)
     }
 
     /// A delay offers recovery guidance without ending the native initialization or its consumers' waits.
     package static func reportInitializationDelay(during initialize: @MainActor () async throws -> Void,
-                                          waitUntilDelayed: @escaping @MainActor () async throws -> Void = {
-                                              try await Task.sleep(for: .seconds(60))
-                                          },
+                                          waitUntilDelayed: @escaping @MainActor () async throws -> Void,
                                           onChange: @escaping @MainActor (Bool) -> Void) async throws {
         var delayed = false
         let notice = Task {

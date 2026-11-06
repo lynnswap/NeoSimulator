@@ -1,5 +1,6 @@
 import ABIBridge
 import Foundation
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import XPC
 
@@ -21,9 +22,9 @@ package final class SimulatorGuestSettings {
         let preparation = Task { [source, xcodeURL] in
             try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator")
             let interface = try await CoreSimulatorInterface(runtime: .shared)
-            let set = try SimulatorDeviceSet(interface: interface,
+            let set = SimulatorDeviceSet.shared(interface: interface,
                 developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: source.deviceSetPath)
-            guard let device = try set.device(withIdentifier: source.identifier) else {
+            guard let device = try await set.device(withIdentifier: source.identifier) else {
                 throw CLIError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
             }
             return device
@@ -72,7 +73,7 @@ package final class SimulatorGuestSettings {
         switch query {
         case .simulatorContentSize:
             result.contentSize = await capture("content_size") {
-                let category = try device.contentSizeCategory()
+                let category = try await device.contentSizeCategory()
                 guard (1...SimulatorDeviceSettings.contentSizes.count).contains(category) else {
                     throw CLIError.unavailable("content-size", "The simulator returned an unknown text size: \(category).")
                 }
@@ -121,7 +122,7 @@ package final class SimulatorGuestSettings {
             } ?? nil
         case .audio:
             result.volume = await capture("volume") {
-                let volume = try device.notificationState("com.apple.springboard.volumestate")
+                let volume = try await device.notificationState("com.apple.springboard.volumestate")
                 guard volume <= 100 else {
                     throw CLIError.io("audio-volume", "The simulator returned a volume outside 0...100.")
                 }
@@ -129,9 +130,9 @@ package final class SimulatorGuestSettings {
             }
             if let state = await capture("audio routes", {
                 let audio = try await SimulatorAudioInterface(runtime: .shared)
-                let connection = try audio.connect(to: device, changed: { _ in })
+                let connection = try await audio.connect(to: device, changed: { _ in })
                 defer { connection.disconnect() }
-                return try connection.state()
+                return try await connection.state()
             }) {
                 result.updateAudioRoutes(state)
             }
@@ -150,7 +151,7 @@ package final class SimulatorGuestSettings {
             guard let index = SimulatorDeviceSettings.contentSizes.firstIndex(of: value) else {
                 throw CLIError.configuration("guest-settings-operation", "Unknown text size: \(value).")
             }
-            try device.setContentSizeCategory(index + 1)
+            try await device.setContentSizeCategory(index + 1)
         case .lookAndFeel(let value):
             let native = try await service(device: device).namedValue("DeviceLookAndFeel",
                 member: value.nativeMember)
@@ -169,24 +170,32 @@ package final class SimulatorGuestSettings {
             try await change("SetVoiceOverActionDeclaration", ["voiceOverConfiguration": ["enabled": value]])
         case .volume(let value):
             guard (0...100).contains(value) else { throw CLIError.configuration("guest-settings-operation", "Volume must be between 0 and 100.") }
-            try await device.setNotificationState("com.apple.springboard.volumestate", to: UInt64(value))
-            try await device.postNotification("com.apple.springboard.volumestate")
+            try await device.sendNotificationState("com.apple.springboard.volumestate", to: UInt64(value))
         case .audioInputDevice(let value), .audioOutputDevice(let value):
             let audio = try await SimulatorAudioInterface(runtime: .shared)
-            let connection = try audio.connect(to: device, changed: { _ in })
+            let connection = try await audio.connect(to: device, changed: { _ in })
             defer { connection.disconnect() }
             let scope: AudioScope = if case .audioInputDevice = setting { .input } else { .output }
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                do {
-                    try connection.route(scope, to: value == "systemDefault" ? AudioRouting.systemDefault : value) { error in
-                        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-                    }
-                } catch { continuation.resume(throwing: error) }
-            }
+            try await route(through: connection, scope, to: value == "systemDefault" ? AudioRouting.systemDefault : value)
         default: throw CLIError.configuration("guest-settings-operation", "This setting uses the simulator command-line tools.")
         }
     }
 
+    /// Routes and waits for the port's answer, which may never come or come after the request's own failure.
+    private func route(through connection: SimulatorAudioConnection, _ scope: AudioScope, to route: String) async throws {
+        let (answer, answered) = AsyncThrowingStream.makeStream(of: Void.self)
+        try await connection.route(scope, to: route) { error in answered.finish(throwing: error) }
+        let limit = DeviceOperationLimit.bridge
+        let deadline = Task {
+            try? await Task.sleep(for: limit)
+            answered.finish(throwing: DeviceOperationFailure.outcomeUnknown(operation: "route the device's audio", cause: .timedOut(limit)))
+        }
+        defer { deadline.cancel() }
+        for try await _ in answer {}
+        if Task.isCancelled {
+            throw DeviceOperationFailure.outcomeUnknown(operation: "route the device's audio", cause: .cancelled)
+        }
+    }
 }
 
 private extension SimulatorLookAndFeel {
@@ -257,7 +266,7 @@ package final class GuestSettingsActions {
         let connection: GuestHIDConnection
         if let existing = connections[binding.feature] { connection = existing }
         else {
-            connection = try guest.connection(to: binding.feature)
+            connection = try await guest.connection(to: binding.feature)
             connections[binding.feature] = connection
         }
         let message = try binding.message(identifier: identifier, input: JSONSerialization.data(withJSONObject: input))

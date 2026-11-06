@@ -297,6 +297,12 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
         updateVisibility(in: menu, for: activeWindow?.session.capabilities)
     }
 
+    /// Reads what the menu shows of the key device, without waiting for the device: validation shows what it last
+    /// reported, and an open menu updates if this read changes that.
+    package func menuWillOpen(_ menu: NSMenu) {
+        activeWindow?.session.refreshGuestState { [weak menu] in menu?.update() }
+    }
+
     /// Attaches audio menus to the key device.
     package func updateAudioMenus(for window: DeviceWindowController?) {
         for audio in audioMenus { audio.attach(to: window) }
@@ -412,14 +418,9 @@ package final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
 
     package func menuNeedsUpdate(_ menu: NSMenu) {
         guard let application else { return }
-        do {
-            let devices = try application.availableSimulatorDevices()
-            menu.items = Self.items(for: devices, hasWindow: application.hasVisibleWindow(forDevice:),
-                                    action: #selector(select(_:)), target: self)
-        } catch {
-            hostLog(error.localizedDescription)
-            menu.items = []
-        }
+        menu.items = Self.items(for: application.availableSimulatorDevices(),
+                                hasWindow: application.hasVisibleWindow(forDevice:),
+                                action: #selector(select(_:)), target: self)
     }
 
     /// Groups by runtime in catalog order; Option shows descriptive device names.

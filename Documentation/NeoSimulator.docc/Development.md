@@ -11,7 +11,7 @@ Implementation lives under `Sources`:
 
 | Module | Responsibility |
 | --- | --- |
-| `NeoSimulatorDeviceIO` | Package-only subprocess execution and each operation's deadlines. |
+| `NeoSimulatorDeviceIO` | Package-only subprocess execution, each device's native request channel, and each operation's deadlines. |
 | `NeoSimulatorKit` | Public simulator API, display and input sessions, and native runtime bindings. |
 | `NeoSimulatorHostSupport` | Package-only host selection, settings transactions, inventory, renderer ownership, and shared menus. |
 | `NeoSimulatorApp` | Manager UI, device operations, inspectors, and application lifecycle. |

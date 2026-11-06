@@ -147,7 +147,7 @@ public final class SimulatorContext {
                                              pasteboardSync: configuration.pasteboardSync,
                                              offersLifetimeChoice: configuration.offersLifetimeChoice)
         let context = SimulatorContext(engine: engine, configuration: configuration)
-        try engine.start(attachingBootedDevices: false)
+        try await engine.start(attachingBootedDevices: false)
         return context
     }
 
@@ -245,7 +245,7 @@ public final class SimulatorContext {
     /// Reads the devices currently available in this context.
     public func devices() async throws -> [SimulatorDeviceSnapshot] {
         try checkActive()
-        return try engine.availableSimulatorDevices().map(SimulatorDeviceSnapshot.init)
+        return try await engine.readAvailableDevices().map(SimulatorDeviceSnapshot.init)
     }
 
     /// Boots the guest and waits for CoreSimulator to report it running, without opening its screen.
@@ -260,7 +260,7 @@ public final class SimulatorContext {
         if let task = boots[id] { return try await CoreDeviceRuntime.preparedValue(of: task) }
         let task = Task {
             defer { self.boots[id] = nil }
-            let device = try self.device(id)
+            let device = try await self.device(id)
             if device.state == 3 { return SimulatorBootOutcome.alreadyRunning }
             if device.state != 2 {
                 let tools = try DeviceTools(identifier: id.identifier, xcodeURL: self.xcodeURL, deviceSetPath: id.deviceSetPath)
@@ -269,7 +269,7 @@ public final class SimulatorContext {
             let deadline = ContinuousClock.now + .seconds(120)
             while true {
                 try Task.checkCancellation()
-                let state = try self.device(id).state
+                let state = try await self.device(id).state
                 if state == 3 { return SimulatorBootOutcome.booted }
                 guard state == 2, ContinuousClock.now < deadline else {
                     throw SimulatorError.operation("The simulator did not finish starting.")
@@ -298,7 +298,7 @@ public final class SimulatorContext {
         let task = Task {
             defer { self.openings[id] = nil }
             if self.engine.hasUnfinishedCleanup(for: id) { try await self.engine.releasePresentation(for: id) }
-            let device = SimulatorDeviceSnapshot(try self.device(id))
+            let device = SimulatorDeviceSnapshot(try await self.device(id))
             let controller = try await self.engine.openPresentation(for: id)
             try self.checkActive()
             if let screen = self.screens[id] { return screen }
@@ -346,14 +346,14 @@ public final class SimulatorContext {
                 let reason: SimulatorScreenEnd
                 if intent.shutsDownGuest {
                     await self.engine.cancelRestart(for: id)
-                    let state = try self.device(id).state
+                    let state = try await self.device(id).state
                     if state != 1 && state != 4 {
                         let tools = try DeviceTools(identifier: id.identifier, xcodeURL: self.xcodeURL,
                                                     deviceSetPath: id.deviceSetPath)
                         try await tools.shutdown()
                     }
                     let deadline = ContinuousClock.now + .seconds(120)
-                    while try self.device(id).state != 1 {
+                    while try await self.device(id).state != 1 {
                         guard ContinuousClock.now < deadline else {
                             throw SimulatorError.operation("The simulator did not finish shutting down.")
                         }
@@ -417,8 +417,8 @@ public final class SimulatorContext {
         try await beginRelease(id, shutsDownGuest: false).value
     }
 
-    private func device(_ id: SimulatorDeviceIdentifier) throws -> AvailableDevice {
-        guard let device = try engine.availableSimulatorDevices().first(where: { $0.identity == id }) else {
+    private func device(_ id: SimulatorDeviceIdentifier) async throws -> AvailableDevice {
+        guard let device = try await engine.readAvailableDevices().first(where: { $0.identity == id }) else {
             throw SimulatorError.operation("The selected simulator is no longer available.")
         }
         return device
@@ -435,9 +435,7 @@ public final class SimulatorContext {
         let opened = engine.openedDeviceIdentifiers
         let ended = screens.keys.filter { releases[$0] == nil && !opened.contains($0) }
         guard !ended.isEmpty else { return }
-        let devices: [AvailableDevice]
-        do { devices = try engine.availableSimulatorDevices() }
-        catch { report(error); return }
+        let devices = engine.availableSimulatorDevices()
         for id in ended {
             let state = devices.first { $0.identity == id }?.state
             let reason: SimulatorScreenEnd = switch state {
@@ -521,6 +519,44 @@ public final class SimulatorScreen {
             throw SimulatorError.operation("This hardware button is unavailable for the simulator.")
         }
         controller.session.send(button.input, failure: onFailure)
+    }
+
+    /// What is known of the device, held so that reading it asks the device nothing. `refreshDeviceState()` updates it.
+    public var deviceModel: SimulatorDeviceModel { controller.session.model }
+
+    /// Asks the device for what `deviceModel` holds, without waiting for its answer.
+    public func refreshDeviceState() {
+        guard !isClosed else { return }
+        controller.session.refreshGuestState()
+    }
+
+    /// Flips the guest between its light and dark appearance.
+    public func toggleAppearance() async throws {
+        try checkOpen()
+        try await controller.session.toggleAppearance()
+    }
+
+    /// Changes the guest's preferred text size by `delta` steps, stopping at the ends of its range.
+    public func changeTextSize(by delta: Int) async throws {
+        try checkOpen()
+        try await controller.session.changeTextSize(by: delta)
+    }
+
+    public func toggleIncreaseContrast() async throws {
+        try checkOpen()
+        try await controller.session.toggleIncreaseContrast()
+    }
+
+    /// Flips whether biometrics are enrolled, where the device has them. Touch ID, Face ID, and Optic ID share this state.
+    public func toggleBiometricEnrollment() async throws {
+        try checkOpen()
+        try await controller.session.toggleBiometricEnrollment()
+    }
+
+    /// Flips a Core Animation debug option, and throws if the device does not report the new state.
+    public func toggle(_ option: CADebugOption) async throws {
+        try checkOpen()
+        try await controller.session.toggle(option)
     }
 
     /// Releases this screen's resources without shutting down the guest.

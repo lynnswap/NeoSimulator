@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import Foundation
@@ -175,6 +176,13 @@ final class SimulatorManagerModel {
     @ObservationIgnored private var synchronizing = false
     @ObservationIgnored private var inventoryRefreshRequested = false
     @ObservationIgnored private var stopping = false
+    /// The wait for accepted work that the first step of a quit starts and later steps join, until the quit is cancelled.
+    @ObservationIgnored private var quitPreparation: Task<(any Error)?, Never>?
+    /// How long accepted work has before a quit stops it. Nil uses `TerminationTimeout`.
+    @ObservationIgnored var terminationLimit: Duration?
+    /// How long what quitting stopped has to finish.
+    @ObservationIgnored var terminationGrace = DeviceOperationLimit.terminationGrace
+    @ObservationIgnored var uninterruptedCommands = UninterruptedCommands.shared
     @ObservationIgnored private var operationTask: Task<Void, Never>?
     private struct PendingOperation {
         let activity: String
@@ -786,18 +794,67 @@ final class SimulatorManagerModel {
         // Accepted changes finish below, but no child that only reads state can hold them or this wait.
         controller.stopReads()
         defer { controller.resumeReads() }
-        await stopDevicePostures()
         statusRefreshTask?.cancel()
-        await operationTask?.value
-        for task in managementRequests.values.compactMap(\.task) { await task.value }
-        await statusRefreshTask?.value
-        await settings.finishReading()
-        await backgroundServices.finishReading()
-        for opening in openings {
-            if case .failure(let error) = await opening.result, !(error is CancellationError) {
-                throw error
+        let preparation = quitPreparation ?? Task { await self.finishAcceptedWork(openings: openings) }
+        quitPreparation = preparation
+        if let failure = await preparation.value { throw failure }
+    }
+
+    /// Waits for what was accepted before the quit for `TerminationTimeout`. Then what has not started is reported as not
+    /// run and what is still running is stopped, which its own transaction and rollback then finish and report; what does
+    /// not finish in the time left is reported as unknown. Commands that start from here on are bounded, so that the rest
+    /// of the quit cannot be held by them either. Returns why an opening that ended failed.
+    private func finishAcceptedWork(openings: [Task<Void, any Error>]) async -> (any Error)? {
+        let limit = terminationLimit ?? HostPreferences.terminationLimit
+        let deadline = ContinuousClock.now + limit
+        let postures = Task { await self.stopDevicePostures() }
+        var finished = await postures.ends(before: deadline)
+        if let operationTask, await !operationTask.ends(before: deadline) { finished = false }
+        for task in managementRequests.values.compactMap(\.task) where await !task.ends(before: deadline) { finished = false }
+        var heldOpenings: Set<Task<Void, any Error>> = []
+        for opening in openings where await !opening.ends(before: deadline) {
+            heldOpenings.insert(opening)
+            finished = false
+        }
+        uninterruptedCommands.stopForTermination()
+        if !finished {
+            let unstarted = pendingOperations
+            pendingOperations.removeAll()
+            publishQueueState()
+            resumeOperations()
+            for operation in unstarted { onError?(QuitOutcome.notRun(operation.activity)) }
+            heldOpenings = await waitForStoppedWork(openings: heldOpenings, before: .now + terminationGrace)
+        }
+        let reads = Task {
+            await self.statusRefreshTask?.value
+            await self.settings.finishReading()
+            await self.backgroundServices.finishReading()
+        }
+        if await !reads.ends(before: .now + terminationGrace) {
+            NSLog("NeoSimulator: Reads of device state had not stopped when quitting went on.")
+        }
+        for opening in openings where !heldOpenings.contains(opening) {
+            if case .failure(let error) = await opening.result, !(error is CancellationError) { return error }
+        }
+        return nil
+    }
+
+    /// Returns the openings that are still held at `deadline`.
+    private func waitForStoppedWork(openings: Set<Task<Void, any Error>>, before deadline: ContinuousClock.Instant) async
+        -> Set<Task<Void, any Error>> {
+        let activity = runningOperation?.activity
+        if let operationTask, await !operationTask.ends(before: deadline) { onError?(QuitOutcome.unknown(activity ?? "A change")) }
+        for request in managementRequests.values {
+            if let task = request.task, await !task.ends(before: deadline) {
+                onError?(QuitOutcome.unknown(request.action.map { "\($0)" } ?? "An inspector change"))
             }
         }
+        var held: Set<Task<Void, any Error>> = []
+        for opening in openings where await !opening.ends(before: deadline) {
+            held.insert(opening)
+            onError?(QuitOutcome.unknown("Opening a device"))
+        }
+        return held
     }
 
     func quitRenderer(keepingDevicesRunning: Bool?, beforeEndingSession: () async throws -> Void = {}) async throws {
@@ -811,6 +868,8 @@ final class SimulatorManagerModel {
 
     func resumeAfterCancelledQuit() {
         stopping = false
+        quitPreparation = nil
+        uninterruptedCommands.resumeAfterCancelledQuit()
         settings.resumeReading()
         backgroundServices.resumeReading()
         if inventoryRefreshRequested { Task { await refresh() } }
@@ -960,6 +1019,19 @@ private struct InventoryReadError: LocalizedError {
         }
         return (messages + [statusError?.localizedDescription, observationIssue, activeStateIssue].compactMap { $0 })
             .joined(separator: "\n")
+    }
+}
+
+/// What became of work accepted before a quit that did not finish in the time the quit had.
+private enum QuitOutcome: LocalizedError {
+    case notRun(String)
+    case unknown(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notRun(let activity): "\(activity) did not run, because NeoSimulator quit first."
+        case .unknown(let activity): "\(activity) had not finished when NeoSimulator quit, so what it changed is unknown."
+        }
     }
 }
 

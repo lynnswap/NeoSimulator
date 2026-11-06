@@ -1,5 +1,7 @@
 import ABIBridge
+import Darwin
 import Foundation
+import NeoSimulatorDeviceIO
 import ObjectiveC
 
 /// A simulator belongs to one device set; a UDID alone is not a session key.
@@ -8,7 +10,7 @@ public struct SimulatorDeviceIdentifier: Hashable, Codable, Sendable, Comparable
     public let deviceSetPath: String?
     public init(_ identifier: String, deviceSetPath: String? = nil) {
         self.identifier = identifier
-        self.deviceSetPath = deviceSetPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }
+        self.deviceSetPath = deviceSetPath.map(DeviceAddress.normalized(path:))
     }
     package var queryItems: [URLQueryItem] {
         [URLQueryItem(name: "udid", value: identifier)]
@@ -70,79 +72,55 @@ package struct AvailableDevice: Identifiable {
     }
 }
 
-/// Prepared CoreSimulator messages. NSError-out failures and Objective-C exceptions
-/// are surfaced as Swift errors.
-@MainActor
-package struct CoreSimulatorInterface {
+/// Prepared CoreSimulator messages. NSError-out failures and Objective-C exceptions are surfaced as Swift errors. The
+/// messages can be sent from any queue, and nearly all of them wait on one of CoreSimulator's queues or on its service, so
+/// no Swift job may send them: only a `SimulatorDeviceSet`'s or a `SimulatorDevice`'s worker does.
+package struct CoreSimulatorInterface: @unchecked Sendable {
     package let serviceClass: AnyClass
     package let sharedContext: NativeObjCMethod<AnyObject, String>
     package let defaultDeviceSet: NativeObjCMethod<AnyObject>
-    package let deviceSetWithPath: NativeObjCMethod<AnyObject, String>
-    package let setPath: NativeObjCMethod<String?>
-    package let supportedDeviceTypes: NativeObjCMethod<[AnyObject]>
-    package let supportedRuntimes: NativeObjCMethod<[AnyObject]>
-    package let availableDevices: NativeObjCMethod<[AnyObject]>
-    package let devicesByUDID: NativeObjCMethod<NSDictionary>
-    package let registerHandler: NativeObjCMethod<UInt64, DispatchQueue, NotificationHandler>
-    package let unregisterHandler: NativeObjCMethod<Void, UInt64>
-    package let state: NativeObjCMethod<UInt>
-    package let name: NativeObjCMethod<String?>
-    package let descriptiveName: NativeObjCMethod<String?>
-    package let identifier: NativeObjCMethod<NSUUID?>
-    package let lastBootedAt: NativeObjCMethod<NSDate?>
-    package let deviceRuntimeIdentifier: NativeObjCMethod<String?>
-    package let deviceRuntime: NativeObjCMethod<AnyObject?>
-    package let deviceType: NativeObjCMethod<AnyObject?>
-    package let supportsFeature: NativeObjCMethod<Bool, String>
-    package let interfaceStyle: NativeObjCMethod<Int>
-    package let setInterfaceStyle: NativeObjCMethod<Void, Int>
-    package let postDarwinNotification: NativeObjCMethod<Void, String>
-    package let darwinNotificationState: NativeObjCMethod<Void, UnsafeMutablePointer<UInt64>, String>
-    package let setDarwinNotificationState: NativeObjCMethod<Void, UInt64, String>
-    package let contentSizeCategory: NativeObjCMethod<Int>
-    package let setContentSizeCategory: NativeObjCMethod<Void, Int>
-    package let increaseContrastMode: NativeObjCMethod<Int>
-    package let setIncreaseContrast: NativeObjCMethod<Void, Bool>
-    package let triggerCloudSync: NativeObjCMethod<Void, DispatchQueue, CloudSyncCompletion>
-    package let logPath: NativeObjCMethod<String?>
-    package let memoryWarningFilePath: NativeObjCMethod<String?>
-    package let caDebugOption: NativeObjCMethod<Bool, UInt32>
-    package let setCADebugOption: NativeObjCMethod<Void, UInt32, Bool>
-    package let dataPath: NativeObjCMethod<String?>
-    /// Requests the guest's counted CarPlay session through CoreSimulatorBridge.
-    package let enableCarPlay: NativeObjCMethod<Void, Bool>
-    /// Scenario dictionaries with name and localizedName, or nil if unavailable.
-    package let availableLocationScenarios: NativeObjCMethod<[NSDictionary]?>
-    package let clearSimulatedLocation: NativeObjCMethod<Void>
-    package let setLocation: NativeObjCMethod<Void, Double, Double>
-    package let setLocationScenario: NativeObjCMethod<Void, String>
-    /// The private keyboardType parameter is one byte.
-    package let setHardwareKeyboard: NativeObjCMethod<Void, Bool, UInt8>
-    package let setKeyboardLanguage: NativeObjCMethod<Void, String>
-    /// The lookup:error: return is a Mach port, so its error slot must be passed explicitly.
-    package let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
-    package let runtimeName: NativeObjCMethod<String?>
-    package let runtimeIdentifier: NativeObjCMethod<String?>
-    package let systemRuntime: NativeObjCMethod<AnyObject?, String>
-    package let runtimeBuildVersion: NativeObjCMethod<String?>
-    package let runtimeAvailable: NativeObjCMethod<Bool>
-    package let runtimeSupportsDeviceType: NativeObjCMethod<Bool, AnyObject>
-    package let runtimeVersion: NativeObjCMethod<UInt32>
-    package let productFamily: NativeObjCMethod<Int32>
-    package let deviceTypeName: NativeObjCMethod<String?>
-    package let framebufferMaskURL: NativeObjCMethod<NSURL?>
-    package let deviceTypeCapabilities: NativeObjCMethod<NSDictionary?>
-    package let deviceTypeIdentifier: NativeObjCMethod<String?>
-    package let mainScreenDPI: NativeObjCMethod<CGSize>
-    package let mainScreenScale: NativeObjCMethod<Float>
-    package let userInterfaceIdentifier: NativeObjCMethod<String?>
-    package let devicePairClass: AnyClass
+    fileprivate let deviceSetWithPath: NativeObjCMethod<AnyObject, String>
+    fileprivate let setPath: NativeObjCMethod<String?>
+    fileprivate let supportedDeviceTypes: NativeObjCMethod<[AnyObject]>
+    fileprivate let supportedRuntimes: NativeObjCMethod<[AnyObject]>
+    fileprivate let availableDevices: NativeObjCMethod<[AnyObject]>
+    fileprivate let devicesByUDID: NativeObjCMethod<NSDictionary>
+    fileprivate let registerHandler: NativeObjCMethod<UInt64, DispatchQueue, NotificationHandler>
+    fileprivate let unregisterHandler: NativeObjCMethod<Void, UInt64>
+    fileprivate let name: NativeObjCMethod<String?>
+    fileprivate let descriptiveName: NativeObjCMethod<String?>
+    fileprivate let identifier: NativeObjCMethod<NSUUID?>
+    fileprivate let deviceRuntimeIdentifier: NativeObjCMethod<String?>
+    fileprivate let deviceRuntime: NativeObjCMethod<AnyObject?>
+    fileprivate let deviceType: NativeObjCMethod<AnyObject?>
+    /// What a device's own worker sends.
+    fileprivate let guest: GuestMessages
+    fileprivate let logPath: NativeObjCMethod<String?>
+    fileprivate let memoryWarningFilePath: NativeObjCMethod<String?>
+    fileprivate let dataPath: NativeObjCMethod<String?>
+    fileprivate let runtimeName: NativeObjCMethod<String?>
+    fileprivate let runtimeIdentifier: NativeObjCMethod<String?>
+    fileprivate let systemRuntime: NativeObjCMethod<AnyObject?, String>
+    fileprivate let runtimeBuildVersion: NativeObjCMethod<String?>
+    fileprivate let runtimeAvailable: NativeObjCMethod<Bool>
+    fileprivate let runtimeSupportsDeviceType: NativeObjCMethod<Bool, AnyObject>
+    fileprivate let runtimeVersion: NativeObjCMethod<UInt32>
+    fileprivate let productFamily: NativeObjCMethod<Int32>
+    fileprivate let deviceTypeName: NativeObjCMethod<String?>
+    fileprivate let framebufferMaskURL: NativeObjCMethod<NSURL?>
+    fileprivate let deviceTypeCapabilities: NativeObjCMethod<NSDictionary?>
+    fileprivate let deviceTypeIdentifier: NativeObjCMethod<String?>
+    fileprivate let mainScreenDPI: NativeObjCMethod<CGSize>
+    fileprivate let mainScreenScale: NativeObjCMethod<Float>
+    fileprivate let userInterfaceIdentifier: NativeObjCMethod<String?>
+    fileprivate let devicePairClass: AnyClass
     /// CoreSimulator pairing validation takes the watch type/runtime before the phone.
-    package let testPossiblePairing: NativeObjCMethod<Void, AnyObject, AnyObject, AnyObject, AnyObject>
+    fileprivate let testPossiblePairing: NativeObjCMethod<Void, AnyObject, AnyObject, AnyObject, AnyObject>
 
     package typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
     package typealias CloudSyncCompletion = @convention(block) (NSError?) -> Void
 
+    @MainActor
     package init(runtime: ABIRuntime) async throws {
         func requireClass(_ name: String) throws -> AnyClass {
             guard let type = NSClassFromString(name) else {
@@ -183,13 +161,11 @@ package struct CoreSimulatorInterface {
         unregisterHandler = try await runtime.resolve(
             .objc(.method("unregisterNotificationHandler:error:", as: ((UInt64) throws -> Void).self)),
             on: deviceSet)
-        state = try await runtime.resolve(.objc(.method("state", as: (() -> UInt).self)), on: device)
         name = try await runtime.resolve(.objc(.method("name", as: (() -> String?).self)), on: device)
         descriptiveName = try await runtime.resolve(
             .objc(.method("descriptiveName", as: (() -> String?).self)),
             on: device)
         identifier = try await runtime.resolve(.objc(.method("UDID", as: (() -> NSUUID?).self)), on: device)
-        lastBootedAt = try await runtime.resolve(.objc(.method("lastBootedAt", as: (() -> NSDate?).self)), on: device)
         deviceRuntimeIdentifier = try await runtime.resolve(
             .objc(.method("runtimeIdentifier", as: (() -> String?).self)),
             on: device)
@@ -199,76 +175,12 @@ package struct CoreSimulatorInterface {
         deviceType = try await runtime.resolve(
             .objc(.method("deviceType", as: (() -> AnyObject?).self)),
             on: device)
-        supportsFeature = try await runtime.resolve(
-            .objc(.method("supportsFeature:", as: ((String) -> Bool).self)),
-            on: device)
-        interfaceStyle = try await runtime.resolve(
-            .objc(.method("currentUIInterfaceStyle", as: (() -> Int).self)),
-            on: device)
-        setInterfaceStyle = try await runtime.resolve(
-            .objc(.method("setUIInterfaceStyle:error:", as: ((Int) throws -> Void).self)),
-            on: device)
-        postDarwinNotification = try await runtime.resolve(
-            .objc(.method("postDarwinNotification:error:", as: ((String) throws -> Void).self)),
-            on: device)
-        darwinNotificationState = try await runtime.resolve(
-            .objc(.method("darwinNotificationGetState:name:error:",
-                as: ((UnsafeMutablePointer<UInt64>, String) throws -> Void).self)),
-            on: device)
-        setDarwinNotificationState = try await runtime.resolve(
-            .objc(.method("darwinNotificationSetState:name:error:", as: ((UInt64, String) throws -> Void).self)),
-            on: device)
-        contentSizeCategory = try await runtime.resolve(
-            .objc(.method("currentContentSizeCategory", as: (() -> Int).self)),
-            on: device)
-        setContentSizeCategory = try await runtime.resolve(
-            .objc(.method("setContentSizeCategory:error:", as: ((Int) throws -> Void).self)),
-            on: device)
-        increaseContrastMode = try await runtime.resolve(
-            .objc(.method("currentIncreaseContrastMode", as: (() -> Int).self)),
-            on: device)
-        setIncreaseContrast = try await runtime.resolve(
-            .objc(.method("setIncreaseContrastEnabled:error:", as: ((Bool) throws -> Void).self)),
-            on: device)
-        triggerCloudSync = try await runtime.resolve(
-            .objc(.method("triggerCloudSyncWithCompletionQueue:completionHandler:",
-                as: ((DispatchQueue, @escaping CloudSyncCompletion) -> Void).self)),
-            on: device)
+        guest = try await GuestMessages(runtime: runtime, device: device)
         logPath = try await runtime.resolve(.objc(.method("logPath", as: (() -> String?).self)), on: device)
         memoryWarningFilePath = try await runtime.resolve(
             .objc(.method("memoryWarningFilePath", as: (() -> String?).self)),
             on: device)
-        caDebugOption = try await runtime.resolve(
-            .objc(.method("getCADebugOption:", as: ((UInt32) -> Bool).self)),
-            on: device)
-        setCADebugOption = try await runtime.resolve(
-            .objc(.method("setCADebugOption:enabled:", as: ((UInt32, Bool) -> Void).self)),
-            on: device)
         dataPath = try await runtime.resolve(.objc(.method("dataPath", as: (() -> String?).self)), on: device)
-        enableCarPlay = try await runtime.resolve(
-            .objc(.method("enableCarPlay:error:", as: ((Bool) throws -> Void).self)),
-            on: device)
-        availableLocationScenarios = try await runtime.resolve(
-            .objc(.method("availableLocationScenarios", as: (() -> [NSDictionary]?).self)),
-            on: device)
-        clearSimulatedLocation = try await runtime.resolve(
-            .objc(.method("clearSimulatedLocationWithError:", as: (() throws -> Void).self)),
-            on: device)
-        setLocation = try await runtime.resolve(
-            .objc(.method("setLocationWithLatitude:andLongitude:error:", as: ((Double, Double) throws -> Void).self)),
-            on: device)
-        setLocationScenario = try await runtime.resolve(
-            .objc(.method("setLocationScenario:error:", as: ((String) throws -> Void).self)),
-            on: device)
-        setHardwareKeyboard = try await runtime.resolve(
-            .objc(.method("setHardwareKeyboardEnabled:keyboardType:error:", as: ((Bool, UInt8) throws -> Void).self)),
-            on: device)
-        setKeyboardLanguage = try await runtime.resolve(
-            .objc(.method("setKeyboardLanguage:error:", as: ((String) throws -> Void).self)),
-            on: device)
-        lookup = try await runtime.resolve(
-            .objc(.method("lookup:error:", as: ((String, AutoreleasingUnsafeMutablePointer<NSError?>?) -> UInt32).self)),
-            on: device)
         runtimeName = try await runtime.resolve(
             .objc(.method("name", as: (() -> String?).self)),
             on: simRuntime)
@@ -322,42 +234,198 @@ package struct CoreSimulatorInterface {
     }
 }
 
-/// A device with catalog properties captured when its set was scanned.
-@MainActor
-package final class SimulatorDevice {
-    /// The underlying SimDevice.
-    package let object: AnyObject
-    package let identifier: String
-    package let name: String
-    /// Runtime, build, and type description shown while Option is held.
-    package let descriptiveName: String
-    package let runtimeIdentifier: String
-    package let runtimeName: String
-    /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
-    package let productFamily: Int
-    package let deviceTypeName: String
-    package let deviceTypeIdentifier: String
-    package let hasFramebufferMask: Bool
-    /// DeviceCornerRadius in points; zero for a square screen.
-    package let screenCornerRadius: Double
-    /// DeviceSupportsEnhancedMultitasking capability (Stage Manager).
-    package let supportsEnhancedMultitasking: Bool
-    /// mainScreenDPI.width / mainScreenScale, or nil without a device type.
-    package let screenPointsPerInch: Double?
-    /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
-    package let runtimeVersion: UInt32
-    /// Whether SimulatorKit should load the device type's user-interface profile.
-    package let hasUserInterfacePlugin: Bool
-    /// Nil denotes the default device set.
-    package let deviceSetPath: String?
-    package var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
-    private let interface: CoreSimulatorInterface
+/// A device's prepared messages that wait on its guest or on CoreSimulator's services: bridge requests, service lookups
+/// and guest notifications. They block their thread for as long as the guest takes, which can be forever, so nothing on
+/// the main actor can reach them. Prepared messages and SimDevice support being sent from another queue.
+private struct GuestMessages: @unchecked Sendable {
+    typealias CloudSyncCompletion = CoreSimulatorInterface.CloudSyncCompletion
 
-    fileprivate init?(_ object: AnyObject, deviceSetPath: String?, interface: CoreSimulatorInterface) throws {
+    let state: NativeObjCMethod<UInt>
+    let lastBootedAt: NativeObjCMethod<NSDate?>
+    let supportsFeature: NativeObjCMethod<Bool, String>
+    let interfaceStyle: NativeObjCMethod<Int>
+    let setInterfaceStyle: NativeObjCMethod<Void, Int>
+    let postDarwinNotification: NativeObjCMethod<Void, String>
+    let darwinNotificationState: NativeObjCMethod<Void, UnsafeMutablePointer<UInt64>, String>
+    let setDarwinNotificationState: NativeObjCMethod<Void, UInt64, String>
+    let contentSizeCategory: NativeObjCMethod<Int>
+    let setContentSizeCategory: NativeObjCMethod<Void, Int>
+    let increaseContrastMode: NativeObjCMethod<Int>
+    let setIncreaseContrast: NativeObjCMethod<Void, Bool>
+    let triggerCloudSync: NativeObjCMethod<Void, DispatchQueue, CloudSyncCompletion>
+    let caDebugOption: NativeObjCMethod<Bool, UInt32>
+    let setCADebugOption: NativeObjCMethod<Void, UInt32, Bool>
+    /// Requests the guest's counted CarPlay session through CoreSimulatorBridge.
+    let enableCarPlay: NativeObjCMethod<Void, Bool>
+    /// Scenario dictionaries with name and localizedName, or nil if unavailable.
+    let availableLocationScenarios: NativeObjCMethod<[NSDictionary]?>
+    let clearSimulatedLocation: NativeObjCMethod<Void>
+    let setLocation: NativeObjCMethod<Void, Double, Double>
+    let setLocationScenario: NativeObjCMethod<Void, String>
+    /// The private keyboardType parameter is one byte.
+    let setHardwareKeyboard: NativeObjCMethod<Void, Bool, UInt8>
+    let setKeyboardLanguage: NativeObjCMethod<Void, String>
+    /// The lookup:error: return is a Mach port, so its error slot must be passed explicitly.
+    let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
+
+    @MainActor
+    init(runtime: ABIRuntime, device: AnyClass) async throws {
+        state = try await runtime.resolve(.objc(.method("state", as: (() -> UInt).self)), on: device)
+        lastBootedAt = try await runtime.resolve(.objc(.method("lastBootedAt", as: (() -> NSDate?).self)), on: device)
+        supportsFeature = try await runtime.resolve(
+            .objc(.method("supportsFeature:", as: ((String) -> Bool).self)),
+            on: device)
+        interfaceStyle = try await runtime.resolve(
+            .objc(.method("currentUIInterfaceStyle", as: (() -> Int).self)),
+            on: device)
+        setInterfaceStyle = try await runtime.resolve(
+            .objc(.method("setUIInterfaceStyle:error:", as: ((Int) throws -> Void).self)),
+            on: device)
+        postDarwinNotification = try await runtime.resolve(
+            .objc(.method("postDarwinNotification:error:", as: ((String) throws -> Void).self)),
+            on: device)
+        darwinNotificationState = try await runtime.resolve(
+            .objc(.method("darwinNotificationGetState:name:error:",
+                as: ((UnsafeMutablePointer<UInt64>, String) throws -> Void).self)),
+            on: device)
+        setDarwinNotificationState = try await runtime.resolve(
+            .objc(.method("darwinNotificationSetState:name:error:", as: ((UInt64, String) throws -> Void).self)),
+            on: device)
+        contentSizeCategory = try await runtime.resolve(
+            .objc(.method("currentContentSizeCategory", as: (() -> Int).self)),
+            on: device)
+        setContentSizeCategory = try await runtime.resolve(
+            .objc(.method("setContentSizeCategory:error:", as: ((Int) throws -> Void).self)),
+            on: device)
+        increaseContrastMode = try await runtime.resolve(
+            .objc(.method("currentIncreaseContrastMode", as: (() -> Int).self)),
+            on: device)
+        setIncreaseContrast = try await runtime.resolve(
+            .objc(.method("setIncreaseContrastEnabled:error:", as: ((Bool) throws -> Void).self)),
+            on: device)
+        triggerCloudSync = try await runtime.resolve(
+            .objc(.method("triggerCloudSyncWithCompletionQueue:completionHandler:",
+                as: ((DispatchQueue, @escaping CloudSyncCompletion) -> Void).self)),
+            on: device)
+        caDebugOption = try await runtime.resolve(
+            .objc(.method("getCADebugOption:", as: ((UInt32) -> Bool).self)),
+            on: device)
+        setCADebugOption = try await runtime.resolve(
+            .objc(.method("setCADebugOption:enabled:", as: ((UInt32, Bool) -> Void).self)),
+            on: device)
+        enableCarPlay = try await runtime.resolve(
+            .objc(.method("enableCarPlay:error:", as: ((Bool) throws -> Void).self)),
+            on: device)
+        availableLocationScenarios = try await runtime.resolve(
+            .objc(.method("availableLocationScenarios", as: (() -> [NSDictionary]?).self)),
+            on: device)
+        clearSimulatedLocation = try await runtime.resolve(
+            .objc(.method("clearSimulatedLocationWithError:", as: (() throws -> Void).self)),
+            on: device)
+        setLocation = try await runtime.resolve(
+            .objc(.method("setLocationWithLatitude:andLongitude:error:", as: ((Double, Double) throws -> Void).self)),
+            on: device)
+        setLocationScenario = try await runtime.resolve(
+            .objc(.method("setLocationScenario:error:", as: ((String) throws -> Void).self)),
+            on: device)
+        setHardwareKeyboard = try await runtime.resolve(
+            .objc(.method("setHardwareKeyboardEnabled:keyboardType:error:", as: ((Bool, UInt8) throws -> Void).self)),
+            on: device)
+        setKeyboardLanguage = try await runtime.resolve(
+            .objc(.method("setKeyboardLanguage:error:", as: ((String) throws -> Void).self)),
+            on: device)
+        lookup = try await runtime.resolve(
+            .objc(.method("lookup:error:", as: ((String, AutoreleasingUnsafeMutablePointer<NSError?>?) -> UInt32).self)),
+            on: device)
+    }
+}
+
+/// One device's `GuestMessages`, whose calls only its channel's worker makes.
+private struct GuestBridge: @unchecked Sendable {
+    let device: AnyObject
+    let messages: GuestMessages
+
+    func notificationState(_ name: String) throws -> UInt64 {
+        var state: UInt64 = 0
+        try withUnsafeMutablePointer(to: &state) {
+            try unsafe messages.darwinNotificationState.unsafeInvoke(on: device, $0, name)
+        }
+        return state
+    }
+
+    /// Sets a guest notification's state and posts it. A failure after the state changed says so.
+    func send(_ state: UInt64, to name: String) throws {
+        try unsafe messages.setDarwinNotificationState.unsafeInvoke(on: device, state, name)
+        do { try post(name) } catch { throw GuestNotificationNotPosted(underlying: error) }
+    }
+
+    func post(_ name: String) throws {
+        try unsafe messages.postDarwinNotification.unsafeInvoke(on: device, name)
+    }
+
+    func debugOption(_ option: CADebugOption) throws -> Bool {
+        try unsafe messages.caDebugOption.unsafeInvoke(on: device, option.rawValue)
+    }
+
+    var lastBootDate: Date? { (try? unsafe messages.lastBootedAt.unsafeInvoke(on: device)).flatMap { $0 as Date? } }
+}
+
+/// A guest notification whose state changed, but which did not reach the guest.
+package struct GuestNotificationNotPosted: LocalizedError {
+    package let underlying: any Error
+    package init(underlying: any Error) { self.underlying = underlying }
+    package var errorDescription: String? {
+        "The device's state changed, but it was not notified: \(underlying.localizedDescription)"
+    }
+}
+
+/// What a request for a Core Animation debug option found: CoreSimulator drops the change's error, so only reading the
+/// option back shows whether it applied.
+package struct CADebugOptionChange: Equatable, Sendable {
+    package let requested: Bool
+    package let observed: Bool
+    package init(requested: Bool, observed: Bool) {
+        self.requested = requested
+        self.observed = observed
+    }
+}
+
+/// The guest values that the host's commands show, read together.
+package struct GuestStateReading: Equatable, Sendable {
+    package var notifications: [String: UInt64] = [:]
+    package var debugOptions: [CADebugOption: Bool] = [:]
+    package init(notifications: [String: UInt64] = [:], debugOptions: [CADebugOption: Bool] = [:]) {
+        self.notifications = notifications
+        self.debugOptions = debugOptions
+    }
+}
+
+/// What a SimDevice reported when its set read it. Its state, name, boot date, runtime and device type all wait on one of
+/// CoreSimulator's queues, so this is captured on the set's worker.
+private struct SimulatorDeviceRecord: @unchecked Sendable {
+    let object: AnyObject
+    let identifier: String
+    let name: String
+    let descriptiveName: String
+    let runtimeIdentifier: String
+    let runtimeName: String
+    let runtimeVersion: UInt32
+    let productFamily: Int
+    let deviceTypeName: String
+    let deviceTypeIdentifier: String
+    let hasFramebufferMask: Bool
+    let screenCornerRadius: Double
+    let supportsEnhancedMultitasking: Bool
+    let screenPointsPerInch: Double?
+    let hasUserInterfacePlugin: Bool
+    let deviceSetPath: String?
+    let lastBootDate: Date?
+    var state: UInt
+
+    init?(_ object: AnyObject, deviceSetPath: String?, interface: CoreSimulatorInterface) throws {
         guard let identifier = try unsafe interface.identifier.unsafeInvoke(on: object) else { return nil }
         self.object = object
         self.deviceSetPath = deviceSetPath
-        self.interface = interface
         self.identifier = identifier.uuidString
         name = try unsafe interface.name.unsafeInvoke(on: object) ?? "iOS Simulator"
         descriptiveName = try unsafe interface.descriptiveName.unsafeInvoke(on: object) ?? name
@@ -380,67 +448,185 @@ package final class SimulatorDevice {
         }
         hasUserInterfacePlugin =
             try deviceType.flatMap { try unsafe interface.userInterfaceIdentifier.unsafeInvoke(on: $0) } != nil
+        lastBootDate = try unsafe interface.guest.lastBootedAt.unsafeInvoke(on: object).map { $0 as Date }
+        state = try unsafe interface.guest.state.unsafeInvoke(on: object)
     }
 
-    /// SimDeviceState; 3 means booted. Read failures are treated as shutdown.
-    package var state: UInt { (try? unsafe interface.state.unsafeInvoke(on: object)) ?? 0 }
+    /// A booted iPhone that no SimDevice stands behind: see ``SimulatorDeviceSet/shared(interface:developerDirectory:path:listing:)``.
+    init(listed identifier: String, deviceSetPath: String?) {
+        object = NSObject()
+        self.identifier = identifier
+        self.deviceSetPath = deviceSetPath
+        name = identifier
+        descriptiveName = identifier
+        runtimeIdentifier = ""
+        runtimeName = ""
+        runtimeVersion = 0
+        productFamily = DeviceCapabilities.Family.iPhone.rawValue
+        deviceTypeName = ""
+        deviceTypeIdentifier = ""
+        hasFramebufferMask = false
+        screenCornerRadius = 0
+        supportsEnhancedMultitasking = false
+        screenPointsPerInch = nil
+        hasUserInterfacePlugin = false
+        lastBootDate = nil
+        state = 3
+    }
+}
 
-    /// Identifies a boot; nil if unreadable.
-    package var lastBootDate: Date? { (try? unsafe interface.lastBootedAt.unsafeInvoke(on: object)).flatMap { $0 as Date? } }
+/// A device as its set last reported it. Its set keeps one object per device and updates it with each report, so reading
+/// these properties waits for nothing and what holds the device sees its state change.
+@MainActor
+package final class SimulatorDevice {
+    private var record: SimulatorDeviceRecord
+    /// The underlying SimDevice.
+    package var object: AnyObject { record.object }
+    package var identifier: String { record.identifier }
+    package var name: String { record.name }
+    /// Runtime, build, and type description shown while Option is held.
+    package var descriptiveName: String { record.descriptiveName }
+    package var runtimeIdentifier: String { record.runtimeIdentifier }
+    package var runtimeName: String { record.runtimeName }
+    /// `SimDeviceType.productFamilyID`: 1 iPhone, 2 iPad, 3 TV, 4 Watch, 7 Vision.
+    package var productFamily: Int { record.productFamily }
+    package var deviceTypeName: String { record.deviceTypeName }
+    package var deviceTypeIdentifier: String { record.deviceTypeIdentifier }
+    package var hasFramebufferMask: Bool { record.hasFramebufferMask }
+    /// DeviceCornerRadius in points; zero for a square screen.
+    package var screenCornerRadius: Double { record.screenCornerRadius }
+    /// DeviceSupportsEnhancedMultitasking capability (Stage Manager).
+    package var supportsEnhancedMultitasking: Bool { record.supportsEnhancedMultitasking }
+    /// mainScreenDPI.width / mainScreenScale, or nil without a device type.
+    package var screenPointsPerInch: Double? { record.screenPointsPerInch }
+    /// `SimRuntime.version`, packed as major << 16 | minor << 8 | patch.
+    package var runtimeVersion: UInt32 { record.runtimeVersion }
+    /// Whether SimulatorKit should load the device type's user-interface profile.
+    package var hasUserInterfacePlugin: Bool { record.hasUserInterfacePlugin }
+    /// Nil denotes the default device set.
+    package var deviceSetPath: String? { record.deviceSetPath }
+    package var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
+    /// The owner of this device's requests, which every object made for the device shares.
+    package let channel: SimulatorDeviceChannel
+    private let interface: CoreSimulatorInterface
+    private var guest: GuestBridge { GuestBridge(device: record.object, messages: interface.guest) }
 
-    package func supportsFeature(_ feature: String) -> Bool {
-        (try? unsafe interface.supportsFeature.unsafeInvoke(on: object, feature)) ?? false
+    fileprivate init(_ record: SimulatorDeviceRecord, interface: CoreSimulatorInterface) {
+        self.record = record
+        self.interface = interface
+        channel = DeviceIOHub.shared.channel(for: .device(DeviceAddress(identifier: record.identifier,
+                                                                        deviceSetPath: record.deviceSetPath)))
     }
 
-    package func toggleAppearance() throws {
-        let style = try unsafe interface.interfaceStyle.unsafeInvoke(on: object)
-        try unsafe interface.setInterfaceStyle.unsafeInvoke(on: object, style == 2 ? 1 : 2)
+    fileprivate func update(_ record: SimulatorDeviceRecord) { self.record = record }
+    fileprivate func removeFromSet() { record.state = 0 }
+
+    /// SimDeviceState as the set last reported it; 3 means booted and 0 that the set no longer lists the device.
+    package var state: UInt { record.state }
+
+    /// Identifies a boot, as the set last reported it; nil if the device has none.
+    package var lastBootDate: Date? { record.lastBootDate }
+
+    /// The SimDeviceState that the device reports now, for when what it was last reported to be is not enough.
+    package func currentState() async throws -> UInt {
+        try await channel.read("read the device's state") { [guest] in
+            try unsafe guest.messages.state.unsafeInvoke(on: guest.device)
+        }
+    }
+
+    /// Which of `features` the device supports. `SimDevice supportsFeature:` reads its device type and runtime, which
+    /// wait on CoreSimulator's queues.
+    package func supportedFeatures(_ features: [String]) async throws -> Set<String> {
+        try await channel.read("read the device's features") { [guest] in
+            Set(try features.filter { try unsafe guest.messages.supportsFeature.unsafeInvoke(on: guest.device, $0) })
+        }
+    }
+
+    /// Reads and flips the appearance as one step, so that no other request runs between them.
+    package func toggleAppearance() async throws {
+        try await channel.change("toggle the device's appearance") { [guest] in
+            let style = try unsafe guest.messages.interfaceStyle.unsafeInvoke(on: guest.device)
+            try unsafe guest.messages.setInterfaceStyle.unsafeInvoke(on: guest.device, style == 2 ? 1 : 2)
+        }
     }
 
     package func postNotification(_ name: String) async throws {
-        try await call(interface.postDarwinNotification, on: notificationQueue) {
-            try unsafe $0.unsafeInvoke(on: $1, name)
-        }
+        try await channel.change("post \(name) in the device") { [guest] in try guest.post(name) }
     }
 
-    package func notificationState(_ name: String) throws -> UInt64 {
-        var state: UInt64 = 0
-        try withUnsafeMutablePointer(to: &state) {
-            try unsafe interface.darwinNotificationState.unsafeInvoke(on: object, $0, name)
-        }
-        return state
+    /// The guest's state of a Darwin notification.
+    package func notificationState(_ name: String) async throws -> UInt64 {
+        try await channel.read("read \(name) from the device") { [guest] in try guest.notificationState(name) }
     }
 
-    package func setNotificationState(_ name: String, to state: UInt64) async throws {
-        try await call(interface.setDarwinNotificationState, on: notificationQueue) {
-            try unsafe $0.unsafeInvoke(on: $1, state, name)
+    /// Sets a guest notification's state and posts it as one step. Throws ``GuestNotificationNotPosted`` when the state
+    /// changed and only the post failed.
+    package func sendNotificationState(_ name: String, to state: UInt64) async throws {
+        try await channel.change("change \(name) in the device") { [guest] in try guest.send(state, to: name) }
+    }
+
+    /// Reads a guest notification's state, then sets and posts what `change` makes of it, as one step. Returns the state
+    /// it set. Throws ``GuestNotificationNotPosted`` when the state changed and only the post failed.
+    package func updateNotificationState(_ name: String, _ change: @escaping @Sendable (UInt64) -> UInt64) async throws {
+        try await channel.change("change \(name) in the device") { [guest] in
+            try guest.send(change(try guest.notificationState(name)), to: name)
         }
     }
 
     /// CoreSimulator content-size values: 1–12, from Extra Small to Accessibility XXXL.
-    package func contentSizeCategory() throws -> Int { try unsafe interface.contentSizeCategory.unsafeInvoke(on: object) }
-
-    package func setContentSizeCategory(_ category: Int) throws {
-        try unsafe interface.setContentSizeCategory.unsafeInvoke(on: object, category)
-    }
-
-    /// 1 when Increase Contrast is off and 2 when it is on; 0 when unknown.
-    package func increaseContrastMode() throws -> Int { try unsafe interface.increaseContrastMode.unsafeInvoke(on: object) }
-
-    package func setIncreaseContrast(_ enabled: Bool) throws {
-        try unsafe interface.setIncreaseContrast.unsafeInvoke(on: object, enabled)
-    }
-
-    package func triggerCloudSync() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let completion: CoreSimulatorInterface.CloudSyncCompletion = { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-            }
-            do { try unsafe interface.triggerCloudSync.unsafeInvoke(on: object, .main, completion) }
-            catch { continuation.resume(throwing: error) }
+    package func contentSizeCategory() async throws -> Int {
+        try await channel.read("read the device's text size") { [guest] in
+            try unsafe guest.messages.contentSizeCategory.unsafeInvoke(on: guest.device)
         }
     }
 
+    package func setContentSizeCategory(_ category: Int) async throws {
+        try await channel.change("change the device's text size") { [guest] in
+            try unsafe guest.messages.setContentSizeCategory.unsafeInvoke(on: guest.device, category)
+        }
+    }
+
+    /// Reads the text size and sets what `change` makes of it, if anything, as one step.
+    package func updateContentSizeCategory(_ change: @escaping @Sendable (Int) throws -> Int?) async throws {
+        try await channel.change("change the device's text size") { [guest] in
+            let category = try unsafe guest.messages.contentSizeCategory.unsafeInvoke(on: guest.device)
+            if let updated = try change(category) {
+                try unsafe guest.messages.setContentSizeCategory.unsafeInvoke(on: guest.device, updated)
+            }
+        }
+    }
+
+    /// Reads Increase Contrast's mode, 1 when it is off and 2 when it is on and 0 when unknown, and sets whether it is on
+    /// as `change` decides, as one step.
+    package func updateIncreaseContrast(_ change: @escaping @Sendable (Int) throws -> Bool) async throws {
+        try await channel.change("change the device's Increase Contrast") { [guest] in
+            let enabled = try change(try unsafe guest.messages.increaseContrastMode.unsafeInvoke(on: guest.device))
+            try unsafe guest.messages.setIncreaseContrast.unsafeInvoke(on: guest.device, enabled)
+        }
+    }
+
+    /// Waits for CoreSimulator's completion for at most ``DeviceOperationLimit/cloudSync``, and ends with its caller,
+    /// since the sync goes on without being waited for.
+    package func triggerCloudSync() async throws {
+        let operation = "trigger an iCloud sync"
+        let (answer, continuation) = AsyncThrowingStream.makeStream(of: Never.self)
+        nonisolated(unsafe) let completion: CoreSimulatorInterface.CloudSyncCompletion = { error in
+            continuation.finish(throwing: error)
+        }
+        try await channel.change(operation) { [guest] in
+            try unsafe guest.messages.triggerCloudSync.unsafeInvoke(on: guest.device, .main, completion)
+        }
+        let limit = DeviceOperationLimit.cloudSync
+        let deadline = Task {
+            try await Task.sleep(for: limit)
+            continuation.finish(throwing: DeviceOperationFailure.outcomeUnknown(operation: operation, cause: .timedOut(limit)))
+        }
+        defer { deadline.cancel() }
+        for try await _ in answer {}
+        if Task.isCancelled { throw DeviceOperationFailure.outcomeUnknown(operation: operation, cause: .cancelled) }
+    }
+
+    // These three paths come from the set's path and the UDID, and wait on none of CoreSimulator's queues.
     package func logDirectory() throws -> URL {
         guard let path = try unsafe interface.logPath.unsafeInvoke(on: object) else {
             throw SimulatorError.operation("The device did not report its log folder.")
@@ -466,41 +652,40 @@ package final class SimulatorDevice {
             .appendingPathComponent("Library/Application Support/Simulator/extended_display.plist")
     }
 
-    /// Sends a counted CarPlay request serially off the main actor; each start needs one end.
-    /// Throws CarPlayRequestMoot if the device is no longer in `boot` when the request runs.
+    /// Sends a counted CarPlay request; each start needs one end. Throws CarPlayRequestMoot if the device is no longer in
+    /// `boot` when the request runs.
     package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?) async throws {
-        nonisolated(unsafe) let lastBootedAt = interface.lastBootedAt
-        try await call(interface.enableCarPlay, on: carPlayQueue) { method, device in
+        try await channel.change(enabled ? "start CarPlay on the device" : "stop CarPlay on the device") { [guest] in
             // A restart between this check and guest delivery cannot be detected here.
-            guard (try? unsafe lastBootedAt.unsafeInvoke(on: device)).flatMap({ $0 as Date? }) == boot else {
-                throw CarPlayRequestMoot()
-            }
-            try unsafe method.unsafeInvoke(on: device, enabled)
+            guard guest.lastBootDate == boot else { throw CarPlayRequestMoot() }
+            try unsafe guest.messages.enableCarPlay.unsafeInvoke(on: guest.device, enabled)
         }
     }
 
-    /// CoreSimulator drops the error of this read, so false can also mean that it failed.
-    package func caDebugOption(_ option: CADebugOption) throws -> Bool {
-        try unsafe interface.caDebugOption.unsafeInvoke(on: object, option.rawValue)
+    /// The guest values that `notifications` and `debugOptions` name, read as one step. CoreSimulator drops the error of a
+    /// debug option's read, so false can also mean that it failed.
+    package func guestState(notifications: [String], debugOptions: [CADebugOption]) async throws -> GuestStateReading {
+        try await channel.read("read the device's state") { [guest] in
+            var reading = GuestStateReading()
+            for name in notifications { reading.notifications[name] = try guest.notificationState(name) }
+            for option in debugOptions { reading.debugOptions[option] = try guest.debugOption(option) }
+            return reading
+        }
     }
 
-    /// CoreSimulator drops the error of this change; reading the option back
-    /// is the only way to learn whether it applied.
-    package func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
-        try unsafe interface.setCADebugOption.unsafeInvoke(on: object, option.rawValue, enabled)
+    /// Reads a Core Animation debug option, sets the opposite and reads it back, as one step.
+    package func toggleCADebugOption(_ option: CADebugOption) async throws -> CADebugOptionChange {
+        try await channel.change("change \(option.title) on the device") { [guest] in
+            let enabled = try !guest.debugOption(option)
+            try unsafe guest.messages.setCADebugOption.unsafeInvoke(on: guest.device, option.rawValue, enabled)
+            return CADebugOptionChange(requested: enabled, observed: try guest.debugOption(option))
+        }
     }
-    // Location calls can block after boot; serialize them off the main actor to preserve order.
-    private lazy var locationQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.location")
-    // Keyboard-language changes can block; serialize them off the main actor to preserve order.
-    private lazy var keyboardQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.keyboard")
-    // Guest notification IPC can block during boot; keep writes ordered off the main actor.
-    private lazy var notificationQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.notifications")
-    private lazy var carPlayQueue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.carplay")
 
     /// Recorded routes in runtime order; empty if none are reported.
     package func locationScenarios() async throws -> [LocationScenario] {
-        try await call(interface.availableLocationScenarios, on: locationQueue) { method, device in
-            try unsafe method.unsafeInvoke(on: device)?.compactMap { scenario in
+        try await channel.read("read the device's location scenarios") { [guest] in
+            try unsafe guest.messages.availableLocationScenarios.unsafeInvoke(on: guest.device)?.compactMap { scenario in
                 guard let name = scenario["name"] as? String else { return nil }
                 return LocationScenario(name: name, localizedName: scenario["localizedName"] as? String ?? name)
             } ?? []
@@ -508,90 +693,232 @@ package final class SimulatorDevice {
     }
 
     package func clearSimulatedLocation() async throws {
-        try await call(interface.clearSimulatedLocation, on: locationQueue) { try unsafe $0.unsafeInvoke(on: $1) }
+        try await channel.change("clear the device's simulated location") { [guest] in
+            try unsafe guest.messages.clearSimulatedLocation.unsafeInvoke(on: guest.device)
+        }
     }
 
     package func setLocation(latitude: Double, longitude: Double) async throws {
-        try await call(interface.setLocation, on: locationQueue) { try unsafe $0.unsafeInvoke(on: $1, latitude, longitude) }
+        try await channel.change("set the device's simulated location") { [guest] in
+            try unsafe guest.messages.setLocation.unsafeInvoke(on: guest.device, latitude, longitude)
+        }
     }
 
     package func setLocationScenario(_ name: String) async throws {
-        try await call(interface.setLocationScenario, on: locationQueue) { try unsafe $0.unsafeInvoke(on: $1, name) }
+        try await channel.change("run a location scenario on the device") { [guest] in
+            try unsafe guest.messages.setLocationScenario.unsafeInvoke(on: guest.device, name)
+        }
     }
 
     /// Uses the byte-sized keyboard type returned by IndigoHIDGetKeyboardType.
     package func setHardwareKeyboardEnabled(_ enabled: Bool, keyboardType: UInt8) async throws {
-        try await call(interface.setHardwareKeyboard, on: keyboardQueue) {
-            try unsafe $0.unsafeInvoke(on: $1, enabled, keyboardType)
+        try await channel.change("change the device's hardware keyboard") { [guest] in
+            try unsafe guest.messages.setHardwareKeyboard.unsafeInvoke(on: guest.device, enabled, keyboardType)
         }
     }
 
     package func setKeyboardLanguage(_ language: String) async throws {
-        try await call(interface.setKeyboardLanguage, on: keyboardQueue) { try unsafe $0.unsafeInvoke(on: $1, language) }
-    }
-
-    /// Returns a caller-owned send right. Fails unless the guest is booted.
-    package func lookUp(_ name: String) throws -> UInt32 {
-        try autoreleasepool {
-            // The method stores an autoreleased error, so the slot must not own it.
-            let slot = UnsafeMutablePointer<Int>.allocate(capacity: 1)
-            defer { slot.deallocate() }
-            unsafe slot.initialize(to: 0)
-            let error = unsafe AutoreleasingUnsafeMutablePointer<NSError?>(slot)
-            let port = try unsafe interface.lookup.unsafeInvoke(on: object, name, error)
-            // MACH_PORT_NULL and MACH_PORT_DEAD are not rights.
-            guard port != 0, port != UInt32.max else {
-                throw unsafe error.pointee ?? SimulatorError.operation("The device did not provide \(name).")
-            }
-            return port
+        try await channel.change("change the device's keyboard language") { [guest] in
+            try unsafe guest.messages.setKeyboardLanguage.unsafeInvoke(on: guest.device, language)
         }
     }
 
-    /// Queues before suspending to preserve call order. Prepared messages and SimDevice
-    /// support calls from this queue.
-    private func call<Method, Value: Sendable>(
-        _ method: Method, on queue: DispatchQueue, _ call: @escaping @Sendable (Method, AnyObject) throws -> Value
-    ) async throws -> Value {
-        nonisolated(unsafe) let method = method, device = object
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async { continuation.resume(with: Result { try call(method, device) }) }
+    /// Returns a caller-owned send right. Fails unless the guest is booted. A lookup that returns after its caller stopped
+    /// waiting releases the right it got.
+    package func lookUp(_ name: String) async throws -> UInt32 {
+        try await channel.read("look up the device's \(name) service", lateCompletion: { result in
+            if case .success(let port) = result { mach_port_deallocate(mach_task_self_, port) }
+        }) { [guest] in
+            try autoreleasepool {
+                // The method stores an autoreleased error, so the slot must not own it.
+                let slot = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+                defer { slot.deallocate() }
+                unsafe slot.initialize(to: 0)
+                let error = unsafe AutoreleasingUnsafeMutablePointer<NSError?>(slot)
+                let port = try unsafe guest.messages.lookup.unsafeInvoke(on: guest.device, name, error)
+                // MACH_PORT_NULL and MACH_PORT_DEAD are not rights.
+                guard port != 0, port != UInt32.max else {
+                    throw unsafe error.pointee ?? SimulatorError.operation("The device did not provide \(name).")
+                }
+                return port
+            }
         }
     }
 }
 
 /// Recorded location route supplied by the runtime.
-package struct LocationScenario: Equatable {
+package struct LocationScenario: Equatable, Sendable {
     /// CoreSimulator identifier.
     package let name: String
     /// Display title.
     package let localizedName: String
 }
 
-/// Device set owned by one developer directory.
+/// The owner of one device set of one developer directory, which every path to the set shares. CoreSimulator's context and
+/// set are created and read only on the worker of the set's channel, since creating them, listing their devices and
+/// reading a device's state all wait on CoreSimulator's queues or its service. What the set last reported stays readable
+/// here, also while a call is held. Reads are shared: see ``CoalescedChannelRead``.
 @MainActor
 package final class SimulatorDeviceSet {
-    package let path: String
-    /// Tool argument; nil for the default device set.
-    package let toolPath: String?
-    private let context: AnyObject
-    private let object: AnyObject
-    private let interface: CoreSimulatorInterface
+    private static var sets: [DeviceSetAddress: SimulatorDeviceSet] = [:]
 
-    package init(interface: CoreSimulatorInterface, developerDirectory: String, path: String? = nil) throws {
+    /// The set's owner. This waits for nothing: the set opens on its worker when it is first used.
+    ///
+    /// `listing` makes a set that is new here report devices of those identifiers on each read, in place of what
+    /// CoreSimulator lists, for what depends on what a read reports and not on a device. Everything else stays native.
+    package static func shared(interface: CoreSimulatorInterface, developerDirectory: String,
+                               path: String? = nil, listing: [String]? = nil) -> SimulatorDeviceSet {
+        let address = DeviceSetAddress(developerDirectory: developerDirectory, path: path)
+        if let set = sets[address] { return set }
+        let set = SimulatorDeviceSet(interface: interface, address: address, listing: listing)
+        sets[address] = set
+        return set
+    }
+
+    package let address: DeviceSetAddress
+    package let channel: SimulatorDeviceChannel
+    /// Available devices as the set last reported them, ordered by runtime, type, and name.
+    package private(set) var devices: [SimulatorDevice] = []
+    private let interface: CoreSimulatorInterface
+    private let native: NativeDeviceSet
+    private let reads: CoalescedChannelRead<[SimulatorDeviceRecord]>
+    private var known: [String: SimulatorDevice] = [:]
+
+    private init(interface: CoreSimulatorInterface, address: DeviceSetAddress, listing: [String]?) {
         self.interface = interface
-        context = try unsafe interface.sharedContext.unsafeInvoke(
-            on: interface.serviceClass as AnyObject, developerDirectory)
+        self.address = address
+        let native = NativeDeviceSet(interface: interface, address: address)
+        self.native = native
+        channel = DeviceIOHub.shared.channel(for: .deviceSet(address))
+        reads = CoalescedChannelRead(channel: channel, operation: "read the device set",
+                                     limit: DeviceOperationLimit.deviceSet) {
+            try listing?.map { SimulatorDeviceRecord(listed: $0, deviceSetPath: address.path) } ?? native.readDevices()
+        }
+        reads.onRead = { [weak self] in self?.publish($0) }
+    }
+
+    /// Reads the set again and returns its devices. `limit` ends only this caller's wait: the read goes on, and what it
+    /// finds is published when it returns.
+    @discardableResult
+    package func refresh(waitingAtMost limit: Duration? = nil) async throws -> [SimulatorDevice] {
+        try await reads.refresh(waitingAtMost: limit)
+        return devices
+    }
+
+    /// The set's path, resolved by CoreSimulator.
+    package func resolvedPath() async throws -> String {
+        try await channel.read("open the device set", limit: DeviceOperationLimit.deviceSet) { [native] in
+            try native.open().path
+        }
+    }
+
+    /// The creation catalog with every pairing CoreSimulator accepts, which it validates on the same worker.
+    package func readCatalog() async throws -> SimulatorCatalog.Snapshot {
+        try await channel.read("read the creation catalog", limit: DeviceOperationLimit.deviceSet) { [native] in
+            try native.readCatalog()
+        }
+    }
+
+    package func device(withIdentifier identifier: String) async throws -> SimulatorDevice? {
+        let record = try await channel.read("look up a device in the set", limit: DeviceOperationLimit.deviceSet) { [native] in
+            try native.record(withIdentifier: identifier)
+        }
+        return record.map(device(for:))
+    }
+
+    /// Registers `handler` for changes to the set's devices, on the main queue.
+    package func observe(_ handler: @escaping @MainActor @Sendable () -> Void) async throws -> UInt64 {
+        try await channel.read("observe the device set", limit: DeviceOperationLimit.deviceSet, lateCompletion: { [native] result in
+            if case .success(let token) = result { native.stopObservingReportingFailure(token) }
+        }) { [native] in try native.observe(handler) }
+    }
+
+    /// Removes a registration once no call holds the worker. The task ends when it has, for whoever has to report it.
+    package func stopObserving(_ token: UInt64) -> Task<Void, Never> {
+        let (removal, finished) = AsyncStream.makeStream(of: Never.self)
+        channel.cleanUp("stop observing the device set") { [native] in
+            native.stopObservingReportingFailure(token)
+            finished.finish()
+        }
+        return Task { for await _ in removal {} }
+    }
+
+    package nonisolated func healthChanges() -> AsyncStream<DeviceChannelHealth> { channel.healthChanges() }
+
+    private func publish(_ records: [SimulatorDeviceRecord]) {
+        devices = records.map(device(for:))
+        let listed = Set(records.map(\.identifier))
+        for (identifier, device) in known where !listed.contains(identifier) {
+            device.removeFromSet()
+            known[identifier] = nil
+        }
+    }
+
+    private func device(for record: SimulatorDeviceRecord) -> SimulatorDevice {
+        if let device = known[record.identifier] {
+            device.update(record)
+            return device
+        }
+        let device = SimulatorDevice(record, interface: interface)
+        known[record.identifier] = device
+        return device
+    }
+}
+
+/// CoreSimulator's context and set. Only the worker of the set's channel touches this.
+private final class NativeDeviceSet: @unchecked Sendable {
+    struct Opened {
+        let context: AnyObject
+        let object: AnyObject
+        let path: String
+        /// Tool argument; nil for the default device set.
+        let toolPath: String?
+    }
+
+    private let interface: CoreSimulatorInterface
+    private let address: DeviceSetAddress
+    private var opened: Opened?
+
+    init(interface: CoreSimulatorInterface, address: DeviceSetAddress) {
+        self.interface = interface
+        self.address = address
+    }
+
+    /// Opens the set once. A call that outlives its caller's wait still leaves it open for the next request.
+    func open() throws -> Opened {
+        if let opened { return opened }
+        let context = try unsafe interface.sharedContext.unsafeInvoke(
+            on: interface.serviceClass as AnyObject, address.developerDirectory)
         // SimServiceContext returns subscribed sets. Subscribing again replays every device's runtime policy.
-        if let path {
+        let object: AnyObject
+        if let path = address.path {
             object = try unsafe interface.deviceSetWithPath.unsafeInvoke(on: context, path)
         } else {
             object = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
         }
-        self.path = try unsafe interface.setPath.unsafeInvoke(on: object) ?? path ?? ""
-        toolPath = path == nil ? nil : self.path
+        let path = try unsafe interface.setPath.unsafeInvoke(on: object) ?? address.path ?? ""
+        let opened = Opened(context: context, object: object, path: path, toolPath: address.path == nil ? nil : path)
+        self.opened = opened
+        return opened
     }
 
-    package func readCatalog() throws -> SimulatorCatalog {
+    func readDevices() throws -> [SimulatorDeviceRecord] {
+        let opened = try open()
+        return try unsafe interface.availableDevices.unsafeInvoke(on: opened.object).compactMap {
+            try SimulatorDeviceRecord($0, deviceSetPath: opened.toolPath, interface: interface)
+        }
+    }
+
+    func record(withIdentifier identifier: String) throws -> SimulatorDeviceRecord? {
+        guard let uuid = NSUUID(uuidString: identifier) else { return nil }
+        let opened = try open()
+        let devices = try unsafe interface.devicesByUDID.unsafeInvoke(on: opened.object)
+        guard let device = devices[uuid] else { return nil }
+        return try SimulatorDeviceRecord(device as AnyObject, deviceSetPath: opened.toolPath, interface: interface)
+    }
+
+    func readCatalog() throws -> SimulatorCatalog.Snapshot {
+        let context = try open().context
         var deviceTypes: [(object: AnyObject, type: SimulatorCatalog.DeviceType)] = []
         for object in try unsafe interface.supportedDeviceTypes.unsafeInvoke(on: context) {
             guard let identifier = try unsafe interface.deviceTypeIdentifier.unsafeInvoke(on: object) else { continue }
@@ -618,9 +945,8 @@ package final class SimulatorDeviceSet {
             }.map(\.type.identifier))
         }
         let typeObjects = Dictionary(deviceTypes.map { ($0.type.identifier, $0.object) }) { first, _ in first }
-        let interface = interface
-        return SimulatorCatalog(deviceTypes: deviceTypes.map(\.type), runtimes: runtimes,
-                                supportedDeviceTypes: supported) { watchType, watchRuntime, phoneType, phoneRuntime in
+        return SimulatorCatalog.Snapshot(deviceTypes: deviceTypes.map(\.type), runtimes: runtimes,
+                                         supportedDeviceTypes: supported) { watchType, watchRuntime, phoneType, phoneRuntime in
             guard let watchType = typeObjects[watchType], let watchRuntime = runtimeObjects[watchRuntime],
                   let phoneType = typeObjects[phoneType], let phoneRuntime = runtimeObjects[phoneRuntime] else {
                 return false
@@ -631,21 +957,7 @@ package final class SimulatorDeviceSet {
         }
     }
 
-    /// Available devices ordered by runtime, type, and name.
-    package func readDevices() throws -> [SimulatorDevice] {
-        try unsafe interface.availableDevices.unsafeInvoke(on: object).compactMap {
-            try SimulatorDevice($0, deviceSetPath: toolPath, interface: interface)
-        }
-    }
-
-    package func device(withIdentifier identifier: String) throws -> SimulatorDevice? {
-        guard let uuid = NSUUID(uuidString: identifier) else { return nil }
-        let devices = try unsafe interface.devicesByUDID.unsafeInvoke(on: object)
-        guard let device = devices[uuid] else { return nil }
-        return try SimulatorDevice(device as AnyObject, deviceSetPath: toolPath, interface: interface)
-    }
-
-    package func observe(_ handler: @escaping @MainActor () -> Void) throws -> UInt64 {
+    func observe(_ handler: @escaping @MainActor @Sendable () -> Void) throws -> UInt64 {
         let block: CoreSimulatorInterface.NotificationHandler = { notification in
             switch notification["notification"] as? String {
             case "device_state", "device_added", "device_removed", "device_renamed", "device_runtime_changed", "runtime_policy_changed": break
@@ -653,11 +965,13 @@ package final class SimulatorDeviceSet {
             }
             MainActor.assumeIsolated { handler() }
         }
-        return try unsafe interface.registerHandler.unsafeInvoke(on: object, DispatchQueue.main, block)
+        return try unsafe interface.registerHandler.unsafeInvoke(on: open().object, DispatchQueue.main, block)
     }
 
-    package func stopObserving(_ token: UInt64) throws {
-        try unsafe interface.unregisterHandler.unsafeInvoke(on: object, token)
+    /// Nothing waits for a registration to leave, so its failure can only be logged.
+    func stopObservingReportingFailure(_ token: UInt64) {
+        do { try unsafe interface.unregisterHandler.unsafeInvoke(on: open().object, token) }
+        catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
     }
 }
 

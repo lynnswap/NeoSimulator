@@ -1,6 +1,7 @@
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
+import NeoSimulatorDeviceIO
 import Observation
 import Testing
 
@@ -43,6 +44,37 @@ import Testing
         #expect(received as? InventoryStreamFailure == failure)
         await observation.stop()
         #expect(source.finished)
+    }
+}
+
+@MainActor
+@Suite struct DeviceInventoryObservationDelayTests {
+    @Test(.timeLimit(.minutes(1)))
+    func aServiceThatOutlivesItsLimitStillGetsObservedWhenItFinishes() async throws {
+        let source = TestInventoryChanges()
+        let delay = DeviceOperationFailure.noAnswer(operation: "finish CoreDevice's initialization", limit: .seconds(60))
+        source.initializations = [delay, delay]
+        let observation = DeviceInventoryObservation(source: source)
+        var errors: [DeviceOperationFailure] = []
+        var changes = 0
+        observation.onError = { errors.append($0 as! DeviceOperationFailure) }
+        observation.onChange = { changes += 1 }
+        try await observation.start()
+        #expect(errors == [delay, delay])
+        #expect(source.initializations.isEmpty)
+        #expect(changes == 1)
+        await observation.stop()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aFailedInitializationIsNotAskedAgain() async throws {
+        let source = TestInventoryChanges()
+        let refused = DeviceOperationFailure.notSent(operation: "a", heldBy: "b")
+        source.initializations = [refused, refused]
+        let observation = DeviceInventoryObservation(source: source)
+        await #expect(throws: refused) { try await observation.start() }
+        #expect(source.initializations.count == 1)
+        await observation.stop()
     }
 }
 
@@ -185,8 +217,13 @@ private final class TestInventoryChanges: DeviceInventoryChangeSource {
     let events: AsyncThrowingStream<Bool, any Error>.Continuation
     private(set) var finished = false
 
+    /// What each call to `initialize()` throws, until there are no more.
+    var initializations: [any Error] = []
+
     init() { (stream, events) = AsyncThrowingStream.makeStream() }
-    func initialize() async throws {}
+    func initialize() async throws {
+        if !initializations.isEmpty { throw initializations.removeFirst() }
+    }
 
     func follow(onChange: @escaping @MainActor () -> Void) async throws {
         defer { finished = true }

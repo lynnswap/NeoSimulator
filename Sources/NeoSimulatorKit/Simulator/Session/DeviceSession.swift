@@ -88,6 +88,14 @@ package struct DeviceCapabilities {
     package static let digitalDial = "com.apple.hid.digital-dial"
     /// `SimFeatureFallDetection`: the watch takes Features ▸ Simulate Fall.
     package static let fallDetection = "com.apple.motion.fall-detection"
+
+    /// Every feature above, which connecting reads from the device once so that asking waits for nothing.
+    package static let allFeatures = [
+        displayRotation, actionButtonSting, actionButtonStaccato, siri, routableAudio, applePayAuthorization, touchID, faceID,
+        opticID, hoverboard, standBy, slowMotionStateful, graphicsQualityOverride, keyboard, touchPressure, pasteboard,
+        externalDisplay, integratedDisplay, carPlay, alwaysOnDisplay, tvRemote, watchGestures, digitalCrown, digitalDial,
+        fallDetection,
+    ]
 }
 
 /// Simulator-compatible standard-defaults keys.
@@ -132,6 +140,8 @@ package enum HostPreferences {
     package static let currentDeviceUDID = "CurrentDeviceUDID"
     /// How long quitting waits for devices to disconnect and shut down, in seconds.
     package static let terminationTimeout = "TerminationTimeout"
+    /// `TerminationTimeout` as a limit, which holds its registered default until the defaults are registered.
+    package static var terminationLimit: Duration { .seconds(defaults.object(forKey: terminationTimeout) as? Double ?? 60) }
     /// The folder Save Screen saves into.
     package static let screenShotSaveLocation = "ScreenShotSaveLocation"
     /// Whether Save Screen and Record Screen apply the device's mask.
@@ -409,6 +419,16 @@ package final class DeviceSession {
             && (isResizingApp || isStartingAppResize || appResizeEligibility == .eligible)
     }
     @ObservationIgnored package let tools: DeviceTools
+    /// What the device last reported, which every presentation of it shares.
+    @ObservationIgnored package let model: SimulatorDeviceModel
+    /// Follows the device's recoveries until this session disconnects.
+    @ObservationIgnored private var guestRecovery: Task<Void, Never>?
+    @ObservationIgnored private var isReapplyingGuestSettings = false
+    @ObservationIgnored private var needsReapplyingGuestSettings = false
+    @ObservationIgnored private var isReadingGuestState = false
+    @ObservationIgnored private var needsGuestStateRead = false
+    /// What waits for the current read's result, and runs if it changed the model.
+    @ObservationIgnored private var guestStateObservers: [@MainActor () -> Void] = []
     /// Keeps the device's keyboard preferences and the app-wide ones.
     @ObservationIgnored private let preferences: any PreferenceStore
     /// The Mac keyboard's language, which Use the Same Keyboard Language as
@@ -429,14 +449,20 @@ package final class DeviceSession {
     /// The device's pasteboard connection, from the first transfer, or while
     /// synchronizing, until the device closes it or the session disconnects.
     @ObservationIgnored private var pasteboardConnection: (any SimulatorPasteboard)?
+    @ObservationIgnored private var isConnectingPasteboard = false
+    /// Which connection's events count. A connection can report while the worker is still making it, and one that was
+    /// given up on can report after that, so closing moves this on and what is left is ignored.
+    @ObservationIgnored private var pasteboardConnectionNumber = 0
+    /// What waits for the connection that is being made.
+    @ObservationIgnored private var pasteboardWaiters: [CheckedContinuation<Void, Never>] = []
     /// Mac pasteboard generation last received from this device; nil after a failed replacement.
     @ObservationIgnored private var lastReceivedGeneration: Int?
     /// Whether the connection reported its first activation, after which each
     /// activation completes a push.
     @ObservationIgnored private var isPasteboardActive = false
-    /// The failure handlers of transfers the device has not completed, oldest first.
-    @ObservationIgnored private var pendingPulls: [(Error) -> Void] = []
-    @ObservationIgnored private var pendingPushes: [(Error) -> Void] = []
+    /// The transfers the device has not completed, oldest first.
+    @ObservationIgnored private var pendingPulls: [PendingTransfer] = []
+    @ObservationIgnored private var pendingPushes: [PendingTransfer] = []
     @ObservationIgnored private var operation: Task<Void, Never>?
     /// The delayed steps of hardware inputs, which a disconnect cancels.
     @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
@@ -474,7 +500,7 @@ package final class DeviceSession {
     /// The pasteboard is untouched until a transfer or synchronization starts.
     /// `externalScreenTimeout` defaults to the host's wait for the primary screen.
     package init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
-         tools: DeviceTools, recordings: RecordingStore = RecordingStore(),
+         tools: DeviceTools, model: SimulatorDeviceModel = SimulatorDeviceModel(), recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
          openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
          preferences: any PreferenceStore = HostPreferences.defaults,
@@ -490,6 +516,7 @@ package final class DeviceSession {
         self.capabilities = capabilities
         self.primaryDisplay = display
         self.tools = tools
+        self.model = model
         self.preferences = preferences
         self.hostKeyboardLanguage = hostKeyboardLanguage
         hostPasteboard = pasteboard
@@ -501,6 +528,13 @@ package final class DeviceSession {
         else { makeRecordingProcess = { tools.recordingProcess(to: $0, mask: $1, codec: codec, displayID: $2) } }
         self.openLog = openLog
         if let appResizeTransport { prepareAppResize(appResizeTransport) }
+        let recoveries = model.recoveries()
+        guestRecovery = Task { [weak self] in
+            for await _ in recoveries {
+                guard let self else { return }
+                self.guestRecovered()
+            }
+        }
     }
 
     private func prepareAppResize(_ make: @escaping @MainActor () async throws -> (any AppResizeTransport)?) {
@@ -880,9 +914,9 @@ package final class DeviceSession {
         }
     }
 
-    package func toggleAppearance() throws {
+    package func toggleAppearance() async throws {
         guard canPerformCommands else { return }
-        try display.toggleAppearance()
+        try await display.toggleAppearance()
     }
 
     // MARK: Guest features
@@ -903,11 +937,9 @@ package final class DeviceSession {
     private static let biometricEnrollment = "com.apple.BiometricKit.enrollmentChanged"
     private static let standBy = "com.apple.springboard.ambient.presentation"
 
-    /// Whether biometrics are enrolled. Touch ID, Face ID, and Optic ID share
-    /// this guest state.
-    package var isBiometricEnrolled: Bool {
-        canPerformCommands && (try? display.notificationState(Self.biometricEnrollment)) == 1
-    }
+    /// Whether biometrics are enrolled, as the device last reported. Touch ID, Face ID, and Optic ID share this guest
+    /// state.
+    package var isBiometricEnrolled: Bool { canPerformCommands && model.isBiometricEnrolled == true }
 
     package func toggleBiometricEnrollment() async throws {
         guard canPerformCommands else { return }
@@ -936,46 +968,52 @@ package final class DeviceSession {
         try await send(resolution.rawValue, to: "com.apple.sos.user-fell")
     }
 
-    package var showsStandBy: Bool { canPerformCommands && (try? display.notificationState(Self.standBy)) == 1 }
+    /// Whether StandBy shows, as the device last reported.
+    package var showsStandBy: Bool { canPerformCommands && model.showsStandBy == true }
 
     package func toggleStandBy() async throws {
         guard canPerformCommands else { return }
         try await toggleState(of: Self.standBy)
     }
 
-    /// Flips a guest notification's state between 0 and 1 and posts it.
+    /// Flips a guest notification's state between 0 and 1 and posts it, as one request.
     private func toggleState(of name: String) async throws {
-        try await send(display.notificationState(name) == 1 ? 0 : 1, to: name)
+        defer { refreshGuestState() }
+        try await display.updateNotificationState(name) { $0 == 1 ? 0 : 1 }
     }
 
-    /// Sets a guest notification's state and posts it. `didSet` runs once the
-    /// state is set, also when the post then fails.
+    /// Sets a guest notification's state and posts it, as one request. `didSet` runs once the state is set, also when
+    /// the post then fails.
     private func send(_ state: UInt64, to name: String, didSet: () -> Void = {}) async throws {
-        try await display.setNotificationState(name, to: state)
+        do { try await display.sendNotificationState(name, to: state) }
+        catch let error as GuestNotificationNotPosted {
+            didSet()
+            throw error
+        }
         didSet()
-        do { try await display.postNotification(name) } catch {
-            throw SimulatorError.operation("The device's state changed, but it was not notified: \(error.localizedDescription)")
+    }
+
+    /// Changes text size, clamped to the supported accessibility range, as one request.
+    package func changeTextSize(by delta: Int) async throws {
+        guard canPerformCommands else { return }
+        try await display.updateContentSizeCategory { category in
+            let sizes = 1...12
+            guard sizes.contains(category) else {
+                throw SimulatorError.operation("The device did not report its preferred text size.")
+            }
+            return sizes.contains(category + delta) ? category + delta : nil
         }
     }
 
-    /// Changes text size, clamped to the supported accessibility range.
-    package func changeTextSize(by delta: Int) throws {
+    /// Flips Increase Contrast as one request.
+    package func toggleIncreaseContrast() async throws {
         guard canPerformCommands else { return }
-        let sizes = 1...12
-        let category = try display.contentSizeCategory()
-        guard sizes.contains(category) else {
-            throw SimulatorError.operation("The device did not report its preferred text size.")
-        }
-        guard sizes.contains(category + delta) else { return }
-        try display.setContentSizeCategory(category + delta)
-    }
-
-    package func toggleIncreaseContrast() throws {
-        guard canPerformCommands else { return }
-        switch try display.increaseContrastMode() {
-        case 1: try display.setIncreaseContrast(true)
-        case 2: try display.setIncreaseContrast(false)
-        default: throw SimulatorError.operation("The device did not report whether Increase Contrast is on.")
+        try await display.updateIncreaseContrast { mode in
+            switch mode {
+            case 1: true
+            case 2: false
+            default: throw SimulatorError.operation("The device did not report whether Increase Contrast is on.")
+            }
         }
     }
 
@@ -1068,20 +1106,105 @@ package final class DeviceSession {
         }
     }
 
-    /// Whether a Core Animation debug option is on, as the device reports it.
-    package func isOn(_ option: CADebugOption) -> Bool {
-        canPerformCommands && (try? display.caDebugOption(option)) == true
+    /// Whether a Core Animation debug option is on, as the device last reported.
+    package func isOn(_ option: CADebugOption) -> Bool { canPerformCommands && model.debugOptions[option] == true }
+
+    /// Turns a Core Animation debug option on or off, as one request. CoreSimulator reports no failure of the change, so
+    /// the option is read back.
+    package func toggle(_ option: CADebugOption) async throws {
+        guard canPerformCommands else { return }
+        defer { refreshGuestState() }
+        let change = try await display.toggleCADebugOption(option)
+        guard change.observed == change.requested else {
+            throw SimulatorError.operation("The device did not turn \(change.requested ? "on" : "off") \(option.title).")
+        }
     }
 
-    /// Turns a Core Animation debug option on or off. CoreSimulator reports no
-    /// failure of the change, so the option is read back.
-    package func toggle(_ option: CADebugOption) throws {
-        guard canPerformCommands else { return }
-        let enabled = try !display.caDebugOption(option)
-        try display.setCADebugOption(option, enabled: enabled)
-        guard try display.caDebugOption(option) == enabled else {
-            throw SimulatorError.operation("The device did not turn \(enabled ? "on" : "off") \(option.title).")
+    // MARK: Held guest state
+
+    /// The guest notifications the device has, of those that the model holds.
+    private var heldNotifications: [String] {
+        var names: [String] = []
+        if [Biometric.touchID, .faceID, .opticID].contains(where: { capabilities.supportsFeature($0.feature) }) {
+            names.append(Self.biometricEnrollment)
         }
+        if capabilities.supportsFeature(DeviceCapabilities.standBy) { names.append(Self.standBy) }
+        return names
+    }
+
+    /// Reads what commands show of the guest into the model, without waiting for it. One read runs at a time, so a device
+    /// that is slow to answer gets one more read, not a queue of them, and an unresponsive device gets none until it
+    /// recovers, which reads it again. `changed` runs if the read changes the model.
+    package func refreshGuestState(changed: (@MainActor () -> Void)? = nil) {
+        guard canPerformCommands, model.unresponsiveOperation == nil else { return }
+        if let changed { guestStateObservers.append(changed) }
+        needsGuestStateRead = true
+        guard !isReadingGuestState else { return }
+        isReadingGuestState = true
+        Task.immediate { [weak self] in
+            await self?.readGuestState()
+            self?.isReadingGuestState = false
+        }
+    }
+
+    private func readGuestState() async {
+        var changed = false
+        while needsGuestStateRead, !isDisconnected {
+            needsGuestStateRead = false
+            let notifications = heldNotifications
+            do {
+                let reading = try await display.guestState(notifications: notifications, debugOptions: CADebugOption.allCases)
+                guard !isDisconnected else { break }
+                let state = { (name: String) in notifications.contains(name) ? reading.notifications[name] == 1 : nil }
+                changed = model.update(biometricEnrolled: state(Self.biometricEnrollment), showsStandBy: state(Self.standBy),
+                                       debugOptions: reading.debugOptions) || changed
+            } catch where error.isCancellation {
+                break
+            } catch {
+                let issue = "Could not read the state of \(device.name): \(error.localizedDescription)"
+                model.note(issue: issue)
+                hostLog(issue)
+                break
+            }
+        }
+        let observers = guestStateObservers
+        guestStateObservers = []
+        if changed { observers.forEach { $0() } }
+    }
+
+    /// The device has returned from a call that outlived its deadline. Nothing refused or abandoned meanwhile is sent
+    /// again: what follows is what is wanted of the guest now.
+    private func guestRecovered() {
+        guard !isDisconnected else { return }
+        needsReapplyingGuestSettings = true
+        guard !isReapplyingGuestSettings else { return }
+        isReapplyingGuestSettings = true
+        Task.immediate { [weak self] in
+            while let self, self.needsReapplyingGuestSettings, !self.isDisconnected {
+                self.needsReapplyingGuestSettings = false
+                await self.reapplyGuestSettings()
+            }
+            self?.isReapplyingGuestSettings = false
+        }
+    }
+
+    private func reapplyGuestSettings() async {
+        guard canPerformCommands else { return }
+        let report: @MainActor (any Error) -> Void = { [model, name = device.name] error in
+            let issue = "Could not apply the settings of \(name) again: \(error.localizedDescription)"
+            model.note(issue: issue)
+            hostLog(issue)
+        }
+        do { try await applyDebugSettings() } catch { report(error) }
+        await applyKeyboardSettings(failure: report)
+        do { try await reapplyLocation() } catch { report(error) }
+        if routesAudio {
+            if audioConnection == nil { connectAudioRoutes(failure: report) }
+            else { audioRoutesChanged(.availableDevices, failure: report) }
+        }
+        updatePasteboardSync()
+        reapplyExternalDisplay(failure: report)
+        refreshGuestState()
     }
 
     /// Debug ▸ Open System Log…: opens the device's `system.log` with `openLog`.
@@ -1152,15 +1275,29 @@ package final class DeviceSession {
                      savesDevicePreset: Bool = true) async throws {
         location = selection
         selection.save()
-        var savedCoordinate = coordinate
-        if savedCoordinate == nil, selection == .custom {
-            savedCoordinate = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: locationScenarios)?.coordinate
-        }
-        let coordinate = savedCoordinate ?? (HostPreferences.defaults.double(forKey: HostPreferences.locationLatitude),
-                                              HostPreferences.defaults.double(forKey: HostPreferences.locationLongitude))
+        let coordinate = try coordinate ?? savedCustomCoordinate(for: selection)
         if savesDevicePreset {
             try DeviceLocationPreset(selection: selection, coordinate: selection == .custom ? coordinate : nil).save(for: device.identity.preferenceIdentifier)
         }
+        try await send(selection, coordinate: coordinate)
+    }
+
+    /// Sends the device its current location again, whose choice is already saved; with no choice yet, restores it.
+    private func reapplyLocation() async throws {
+        guard let location else { return try await restoreLocation() }
+        try await send(location, coordinate: savedCustomCoordinate(for: location))
+    }
+
+    private func savedCustomCoordinate(for selection: LocationSelection) throws -> (latitude: Double, longitude: Double) {
+        var saved: (latitude: Double, longitude: Double)?
+        if selection == .custom {
+            saved = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: locationScenarios)?.coordinate
+        }
+        return saved ?? (HostPreferences.defaults.double(forKey: HostPreferences.locationLatitude),
+                         HostPreferences.defaults.double(forKey: HostPreferences.locationLongitude))
+    }
+
+    private func send(_ selection: LocationSelection, coordinate: (latitude: Double, longitude: Double)) async throws {
         switch selection {
         case .none: try await display.clearSimulatedLocation()
         case .custom:
@@ -1188,31 +1325,43 @@ package final class DeviceSession {
     /// The connection stays open for subsequent transfers and lazy pasteboard data.
     package func transferPasteboard(_ transfer: PasteboardTransfer, failure: @escaping @MainActor (Error) -> Void) {
         guard canTransferPasteboard else { return }
-        let report = { (reason: Error) in
+        let pending = PendingTransfer { (reason: Error) in
             failure(SimulatorError.operation(transfer == .get
                 ? "Could not get the simulator's pasteboard: \(reason.localizedDescription)"
                 : "Could not send the pasteboard to the simulator: \(reason.localizedDescription)"))
         }
-        do {
-            let connection = try pasteboardConnection ?? connectPasteboard()
-            switch transfer {
-            case .get:
-                pendingPulls.append(report)
-                do { try connection.pull() } catch { pendingPulls.removeLast(); throw error }
-            case .send:
-                pendingPushes.append(report)
-                do { try connection.push() } catch { pendingPushes.removeLast(); throw error }
+        Task.immediate { [weak self] in
+            guard let self else { return }
+            do {
+                let connection = try await self.connectedPasteboard()
+                switch transfer {
+                case .get:
+                    self.pendingPulls.append(pending)
+                    do { try await connection.pull() } catch {
+                        self.pendingPulls.removeAll { $0 === pending }
+                        throw error
+                    }
+                case .send:
+                    self.pendingPushes.append(pending)
+                    do { try await connection.push() } catch {
+                        self.pendingPushes.removeAll { $0 === pending }
+                        throw error
+                    }
+                }
+            } catch {
+                pending.report(error)
             }
-        } catch {
-            report(error)
         }
     }
 
     /// Starts synchronization on connection by sending the Mac pasteboard to the device.
     package func startPasteboardSync() {
         guard synchronizesPasteboard, exchangesPasteboard, pasteboardConnection == nil else { return }
-        do { try connectPasteboard().pushAutomatically() } catch {
-            hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
+        Task.immediate { [weak self] in
+            guard let self else { return }
+            do { try await self.connectedPasteboard().pushAutomatically() } catch {
+                self.logPasteboardSync(error)
+            }
         }
     }
 
@@ -1222,8 +1371,9 @@ package final class DeviceSession {
         if let pasteboardConnection {
             setAutomaticSync(of: pasteboardConnection)
         } else if synchronizesPasteboard, exchangesPasteboard {
-            do { _ = try connectPasteboard() } catch {
-                hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
+            Task.immediate { [weak self] in
+                guard let self else { return }
+                do { _ = try await self.connectedPasteboard() } catch { self.logPasteboardSync(error) }
             }
         }
     }
@@ -1235,31 +1385,75 @@ package final class DeviceSession {
             hostLog("The Mac pasteboard still holds the pasteboard of \(device.name); it is not sent back")
             return
         }
-        do { try pasteboardConnection.pushAutomatically() } catch {
-            hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
+        Task.immediate { [weak self] in
+            do { try await pasteboardConnection.pushAutomatically() } catch { self?.logPasteboardSync(error) }
         }
     }
 
-    private func connectPasteboard() throws -> any SimulatorPasteboard {
+    private func logPasteboardSync(_ error: any Error) {
+        guard !error.isCancellation else { return }
+        hostLog("Could not synchronize the pasteboard of \(device.name): \(error.localizedDescription)")
+    }
+
+    /// The device's pasteboard connection. What asks for it while it is being made waits, and tries itself if that fails.
+    private func connectedPasteboard() async throws -> any SimulatorPasteboard {
+        guard !isDisconnected else { throw CancellationError() }
+        if let pasteboardConnection { return pasteboardConnection }
+        guard !isConnectingPasteboard else {
+            await withCheckedContinuation { pasteboardWaiters.append($0) }
+            return try await connectedPasteboard()
+        }
+        isConnectingPasteboard = true
+        defer {
+            isConnectingPasteboard = false
+            let waiters = pasteboardWaiters
+            pasteboardWaiters = []
+            for waiter in waiters { waiter.resume() }
+        }
+        return try await connectPasteboard()
+    }
+
+    /// A connection that arrives after the session ended has no owner left, so it is let go here.
+    private func connectPasteboard() async throws -> any SimulatorPasteboard {
         let pasteboard = hostPasteboard ?? .general
-        let events: @MainActor (SimulatorPasteboardEvent) -> Void = { [weak self] in self?.handlePasteboard($0) }
+        pasteboardConnectionNumber += 1
+        let number = pasteboardConnectionNumber
+        isPasteboardActive = false
+        let events: @MainActor (SimulatorPasteboardEvent) -> Void = { [weak self] event in
+            guard let self, self.pasteboardConnectionNumber == number else { return }
+            self.handlePasteboard(event)
+        }
         let connection: any SimulatorPasteboard
         if let pasteboardTransport {
             connection = NativePasteboardConnection(transport: pasteboardTransport, managing: pasteboard, sync: pasteboardSync,
                                                     events: events)
         } else {
-            connection = try display.connectPasteboard(pasteboard, events: events)
+            do { connection = try await display.connectPasteboard(pasteboard, events: events) } catch {
+                closePasteboard()
+                throw error
+            }
+        }
+        guard !isDisconnected else {
+            connection.disconnect()
+            throw CancellationError()
+        }
+        // It closed before it arrived: its events have told everything that was waiting, and whatever asks next connects.
+        guard pasteboardConnectionNumber == number else {
+            connection.disconnect()
+            throw SimulatorError.operation("The simulator closed its pasteboard connection.")
         }
         pasteboardConnection = connection
-        isPasteboardActive = false
         setAutomaticSync(of: connection)
         return connection
     }
 
     private func setAutomaticSync(of connection: any SimulatorPasteboard) {
         let enabled = synchronizesPasteboard
-        do { try connection.setAutomaticSync(enabled) } catch {
-            hostLog("Could not turn \(enabled ? "on" : "off") pasteboard synchronization of \(device.name): \(error.localizedDescription)")
+        Task.immediate { [weak self] in
+            do { try await connection.setAutomaticSync(enabled) } catch {
+                guard let self, !error.isCancellation else { return }
+                hostLog("Could not turn \(enabled ? "on" : "off") pasteboard synchronization of \(self.device.name): \(error.localizedDescription)")
+            }
         }
     }
 
@@ -1277,13 +1471,13 @@ package final class DeviceSession {
             if pendingPulls.isEmpty {
                 hostLog("Could not apply the pasteboard of \(device.name): \(error.localizedDescription)")
             } else {
-                pendingPulls.removeFirst()(error)
+                pendingPulls.removeFirst().report(error)
             }
         case .failedToSend(let error):
             if pendingPushes.isEmpty {
                 hostLog("Could not send the pasteboard to \(device.name): \(error.localizedDescription)")
             } else {
-                pendingPushes.removeFirst()(error)
+                pendingPushes.removeFirst().report(error)
             }
         case .appliedAutomatically(let generation):
             lastReceivedGeneration = generation
@@ -1298,7 +1492,7 @@ package final class DeviceSession {
             closePasteboard()
             hostLog("The pasteboard connection of \(device.name) closed")
             let error = SimulatorError.operation("The simulator closed its pasteboard connection.")
-            for report in pending { report(error) }
+            for transfer in pending { transfer.report(error) }
             // Reconnect synchronization immediately; manual transfers reconnect on demand.
             updatePasteboardSync()
         case .synchronizationChanged(let enabled):
@@ -1314,6 +1508,7 @@ package final class DeviceSession {
     }
 
     private func closePasteboard() {
+        pasteboardConnectionNumber += 1
         pasteboardConnection?.disconnect()
         pasteboardConnection = nil
         pendingPulls.removeAll()
@@ -1332,33 +1527,66 @@ package final class DeviceSession {
     @ObservationIgnored private var audioConnection: (any SimulatorAudioRoutes)?
     /// Why the device's audio port could not connect.
     @ObservationIgnored private var audioConnectionFailure: Error?
+    @ObservationIgnored private var isConnectingAudio = false
+    /// One read of the routes runs at a time, and one more follows it for the changes reported meanwhile.
+    @ObservationIgnored private var isReadingAudioRoutes = false
+    @ObservationIgnored private var audioRoutesNeedReading = false
+    /// The next read's result also restores the device's route, since the Mac's devices changed.
+    @ObservationIgnored private var audioRoutesNeedSynchronizing = false
 
     /// Connects the audio port and restores the device's route initially and when host devices change.
     /// Routing failures go to `failure`.
     package func connectAudioRoutes(failure: @escaping @MainActor (Error) -> Void) {
-        guard routesAudio, audioConnection == nil, !isDisconnected else { return }
-        do {
-            audioConnection = try display.connectAudioRoutes { [weak self] change in
-                self?.audioRoutesChanged(change, failure: failure)
+        guard routesAudio, audioConnection == nil, !isConnectingAudio, !isDisconnected else { return }
+        isConnectingAudio = true
+        Task.immediate { [weak self] in
+            guard let self else { return }
+            defer { self.isConnectingAudio = false }
+            do {
+                let connection = try await self.display.connectAudioRoutes { [weak self] change in
+                    self?.audioRoutesChanged(change, failure: failure)
+                }
+                guard !self.isDisconnected else { return connection.disconnect() }
+                self.audioConnection = connection
+                self.audioConnectionFailure = nil
+            } catch {
+                guard !self.isDisconnected, !error.isCancellation else { return }
+                self.audioConnectionFailure = error
+                failure(error)
+                return
             }
-        } catch {
-            audioConnectionFailure = error
-            failure(error)
-            return
+            self.audioRoutesChanged(.availableDevices, failure: failure)
         }
-        audioRoutesChanged(.availableDevices, failure: failure)
     }
 
     /// Guest route reports are observations, including changes made by the manager or other tools.
     private func audioRoutesChanged(_ change: AudioRouteChange, failure: @escaping @MainActor (Error) -> Void) {
-        guard let audioConnection else { return }
-        do {
-            audioRoutes = try audioConnection.state()
-        } catch {
-            failure(SimulatorError.operation("Could not read the audio routes of \(device.name): \(error.localizedDescription)"))
-            return
+        guard audioConnection != nil else { return }
+        if case .availableDevices = change { audioRoutesNeedSynchronizing = true }
+        audioRoutesNeedReading = true
+        guard !isReadingAudioRoutes else { return }
+        isReadingAudioRoutes = true
+        Task.immediate { [weak self] in
+            await self?.readAudioRoutes(failure: failure)
+            self?.isReadingAudioRoutes = false
         }
-        if case .availableDevices = change {
+    }
+
+    private func readAudioRoutes(failure: @escaping @MainActor (Error) -> Void) async {
+        while audioRoutesNeedReading, let audioConnection, !isDisconnected {
+            audioRoutesNeedReading = false
+            do {
+                let state = try await audioConnection.state()
+                guard !isDisconnected else { return }
+                audioRoutes = state
+            } catch {
+                guard !isDisconnected, !error.isCancellation else { return }
+                failure(SimulatorError.operation("Could not read the audio routes of \(device.name): \(error.localizedDescription)"))
+                return
+            }
+        }
+        if audioRoutesNeedSynchronizing, !isDisconnected {
+            audioRoutesNeedSynchronizing = false
             synchronizeAudioRoute(in: .input, failure: failure)
             synchronizeAudioRoute(in: .output, failure: failure)
         }
@@ -1400,12 +1628,14 @@ package final class DeviceSession {
                 failure(SimulatorError.operation(
                     "Could not route the audio \(scope.noun) of \(name) to \(title): \(error.localizedDescription)"))
             }
-            do {
-                try audioConnection.route(scope, to: route) { error in
-                    if let error { report(error) }
+            Task.immediate {
+                do {
+                    try await audioConnection.route(scope, to: route) { error in
+                        if let error { report(error) }
+                    }
+                } catch {
+                    report(error)
                 }
-            } catch {
-                report(error)
             }
         }
     }
@@ -1457,7 +1687,7 @@ package final class DeviceSession {
     }
 
     /// Waits for the adapter's asynchronous enumeration, then applies the latest pending or saved choice.
-    /// A saved Disabled choice leaves an externally enabled display alone on connection.
+    /// A device with no saved choice leaves an externally enabled display alone.
     /// Late reports still connect; failures go to `failure`.
     package func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, !isDisconnected, externalScreenConnection == nil,
@@ -1520,10 +1750,25 @@ package final class DeviceSession {
         if let choice = choiceDuringWait {
             choiceDuringWait = nil
             applyExternalDisplay(choice.mode, failure: choice.failure)
-        } else if let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier)),
-                  mode != .disabled, mode != .carPlay || capabilities.supportsCarPlay {
+        } else if let mode = savedExternalDisplayMode {
+            // A display that is missing or already off has nothing to turn off.
+            if mode == .disabled, externalScreenConnection == nil || externalDisplayMode == .disabled { return }
             applyExternalDisplay(mode, failure: failure)
         }
+    }
+
+    /// Brings the display to what is wanted of it now, through the same queue as a choice.
+    private func reapplyExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
+        guard externalScreenConnection != nil, externalScreenWait == nil,
+              let mode = savedExternalDisplayMode, mode != externalDisplayMode else { return }
+        applyExternalDisplay(mode, failure: failure)
+    }
+
+    /// The device's saved choice, if it has one that this device can show.
+    private var savedExternalDisplayMode: ExternalDisplayMode? {
+        guard let tag = preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier),
+              let mode = ExternalDisplayMode(rawValue: tag), mode != .carPlay || capabilities.supportsCarPlay else { return nil }
+        return mode
     }
 
     /// Saves the choice before applying it, preserving it across restarts and failures.
@@ -1821,6 +2066,9 @@ package final class DeviceSession {
         resizeTransport = nil
         isDisconnected = true
         isConnected = false
+        guestRecovery?.cancel()
+        guestRecovery = nil
+        model.forgetGuestState()
         operation?.cancel()
         tools.cancel()
         recording?.stop()
@@ -1857,6 +2105,13 @@ package final class DeviceSession {
     }
 
     isolated deinit { disconnect() }
+}
+
+/// A pasteboard transfer the device has not completed, and the handler of its failure.
+@MainActor
+private final class PendingTransfer {
+    let report: (Error) -> Void
+    init(report: @escaping (Error) -> Void) { self.report = report }
 }
 
 /// Forwards only the first failure of an input whose events fail together.

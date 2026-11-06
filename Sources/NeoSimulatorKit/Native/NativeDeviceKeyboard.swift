@@ -46,7 +46,7 @@ package final class NativeDeviceKeyboard {
     /// services reach for a default-set simulator. A keyboard's guest service is created with its first report;
     /// connecting sends the guest nothing.
     package static func connect(guest: SimulatorGuestHID) async throws -> NativeDeviceKeyboard {
-        let connection = try guest.connection(to: CoreDeviceScreenInput.universalHIDFeature)
+        let connection = try await guest.connection(to: CoreDeviceScreenInput.universalHIDFeature)
         return NativeDeviceKeyboard(transport: try await CoreDeviceKeyboardTransport(runtime: .shared) {
             try await connection.createService($0)
         })

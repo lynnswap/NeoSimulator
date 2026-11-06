@@ -78,7 +78,7 @@ extension DeviceInspector {
 
     @concurrent package func reports() async throws -> DeviceReportsSnapshot {
         try requireReportDestination()
-        let result = try await coreDeviceResult(["device", "info", "files", "--domain-type", "systemCrashLogs", "--recurse"], operation: "Read Reports")
+        let result = try await coreDeviceResult(["device", "info", "files", "--domain-type", "systemCrashLogs", "--recurse"], operation: "Read Reports", policy: .cancellable)
         guard let files = result["files"]?.array else {
             throw failure(DeviceInspectorError.invalidResponse("devicectl omitted its report file list."), operation: "Read Reports", source: .coreDevice)
         }

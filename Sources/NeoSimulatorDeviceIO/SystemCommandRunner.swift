@@ -74,6 +74,8 @@ package enum CommandFailure: LocalizedError {
     package enum Interruption: Equatable, Sendable {
         case cancelled
         case timedOut(Duration)
+        /// The application is quitting and this command did not finish in the time it had.
+        case terminating
     }
 
     /// No child started, so the command changed nothing.
@@ -98,6 +100,8 @@ package enum CommandFailure: LocalizedError {
             "\(executable.lastPathComponent) was stopped before it finished, so what it changed is unknown."
         case .interrupted(let executable, .timedOut(let limit), _):
             "\(executable.lastPathComponent) did not finish within \(limit.formatted(.units(width: .wide))) and was stopped, so what it changed is unknown."
+        case .interrupted(let executable, .terminating, _):
+            "\(executable.lastPathComponent) was stopped because NeoSimulator is quitting, so what it changed is unknown."
         case .outputUnavailable(let executable, let status, let underlying):
             "\(executable.lastPathComponent) finished with status \(status), but its output could not be read: \(underlying.localizedDescription)"
         case .cleanupFailed(let executable, let result, let cleanupErrors):
@@ -114,10 +118,12 @@ package enum CommandFailure: LocalizedError {
 }
 
 extension Error {
-    /// Whether the caller stopped the operation. A child stopped after it started leaves its outcome unknown,
-    /// unlike a command cancelled before that, so only a caller with nothing left to account for treats them alike.
+    /// Whether the caller stopped the operation. A child stopped after it started, like a device request that had
+    /// reached its device, leaves its outcome unknown, unlike a command cancelled before that, so only a caller with
+    /// nothing left to account for treats them alike.
     package var isCancellation: Bool {
         self is CancellationError || (self as? CommandFailure)?.interruption == .cancelled
+            || (self as? DeviceOperationFailure)?.wasCancelled == true
     }
 }
 
@@ -139,14 +145,20 @@ extension CommandRunning {
 package struct SystemCommandRunner: CommandRunning, Sendable {
     /// FileManager documents that its methods can be called from any thread on a shared instance.
     private nonisolated(unsafe) let fileManager: FileManager
+    private let uninterrupted: UninterruptedCommands
 
-    package init(fileManager: FileManager = .default) {
+    package init(fileManager: FileManager = .default, uninterrupted: UninterruptedCommands = .shared) {
         self.fileManager = fileManager
+        self.uninterrupted = uninterrupted
     }
 
     package nonisolated(nonsending) func run(_ command: SystemCommand) async throws -> CommandOutput {
         let execution = CommandExecution(command: command, fileManager: fileManager)
-        guard command.policy.cancellation == .stopsChild else { return try await execution.run() }
+        guard command.policy.cancellation == .stopsChild else {
+            let registration = uninterrupted.add(execution)
+            defer { uninterrupted.remove(registration) }
+            return try await execution.run()
+        }
         return try await withTaskCancellationHandler {
             try await execution.run()
         } onCancel: {
@@ -197,6 +209,80 @@ package final class CommandReads: CommandRunning, Sendable {
     }
 }
 
+/// The commands that keep running when their callers are cancelled, which only quitting may stop. A quit waits for them
+/// first, and those it stops report an unknown outcome through their callers, so an accepted change is neither abandoned
+/// silently nor able to hold the quit forever.
+package final class UninterruptedCommands: Sendable {
+    private struct State {
+        var running: [UUID: CommandExecution] = [:]
+        var isTerminating = false
+    }
+
+    package static let shared = UninterruptedCommands()
+
+    private let state = Mutex(State())
+    private let terminationGrace: Duration
+
+    package init(terminationGrace: Duration = DeviceOperationLimit.terminationGrace) {
+        self.terminationGrace = terminationGrace
+    }
+
+    // What an execution is told only enters its queue, so it is told under the lock: it hears of a quit and of its
+    // cancellation in the order they happened, and one that starts as a quit is cancelled keeps no deadline.
+
+    fileprivate func add(_ execution: CommandExecution) -> UUID {
+        let identifier = UUID()
+        state.withLock { state in
+            state.running[identifier] = execution
+            if state.isTerminating { execution.stopForTermination(after: terminationGrace) }
+        }
+        return identifier
+    }
+
+    fileprivate func remove(_ identifier: UUID) {
+        _ = state.withLock { $0.running.removeValue(forKey: identifier) }
+    }
+
+    /// Stops the commands running now. Those that start afterwards still run, such as the rollback of a preference
+    /// transaction whose command was stopped, but each only for `terminationGrace`.
+    package func stopForTermination() {
+        state.withLock { state in
+            state.isTerminating = true
+            for execution in state.running.values { execution.stopForTermination() }
+        }
+    }
+
+    /// The quit was cancelled, so commands run until they exit again, also those that started during it. A command the
+    /// quit has already stopped stays stopped.
+    package func resumeAfterCancelledQuit() {
+        state.withLock { state in
+            state.isTerminating = false
+            for execution in state.running.values { execution.withdrawTerminationDeadline() }
+        }
+    }
+}
+
+/// What a quit leaves unfinished, from whichever layer gave up waiting for it, for the owner of the quit to report.
+package final class TerminationAccount: Sendable {
+    package static let shared = TerminationAccount()
+
+    private let notes = Mutex<[String]>([])
+
+    package init() {}
+
+    package func note(_ note: String) {
+        notes.withLock { $0.append(note) }
+    }
+
+    /// What has been noted since the last call.
+    package func take() -> [String] {
+        notes.withLock { notes in
+            defer { notes = [] }
+            return notes
+        }
+    }
+}
+
 /// Owns one child from launch until it is reaped and its output files are gone. The actor runs on its own queue,
 /// so the launch, signal and file calls never occupy the caller's executor or the cooperative pool.
 private actor CommandExecution {
@@ -209,6 +295,8 @@ private actor CommandExecution {
     private var hasExited = false
     private var interruption: CommandFailure.Interruption?
     private var timers: [DispatchWorkItem] = []
+    /// What ends a command that started while quitting, until the quit is cancelled.
+    private var terminationDeadline: DispatchWorkItem?
     private var cleanupErrors: [any Error] = []
 
     init(command: SystemCommand, fileManager: FileManager) {
@@ -219,6 +307,27 @@ private actor CommandExecution {
     /// Returns at once on any thread, because a cancellation handler can run on the main thread.
     nonisolated func cancel() {
         queue.async { self.assumeIsolated { $0.stop(.cancelled) } }
+    }
+
+    nonisolated func stopForTermination() {
+        queue.async { self.assumeIsolated { $0.stop(.terminating) } }
+    }
+
+    nonisolated func stopForTermination(after delay: Duration) {
+        queue.async {
+            self.assumeIsolated { execution in
+                execution.terminationDeadline = execution.schedule(after: delay) { $0.stop(.terminating) }
+            }
+        }
+    }
+
+    nonisolated func withdrawTerminationDeadline() {
+        queue.async {
+            self.assumeIsolated { execution in
+                execution.terminationDeadline?.cancel()
+                execution.terminationDeadline = nil
+            }
+        }
     }
 
     func run() async throws -> CommandOutput {
@@ -294,7 +403,7 @@ private actor CommandExecution {
         }
         // SIGKILL cannot produce a normal exit, so that child finished before the signal arrived.
         // A child sent SIGTERM may have exited early from its own handler, so it counts as stopped.
-        if let interruption, reason == .uncaughtSignal || command.policy.stopGrace != nil {
+        if let interruption, reason == .uncaughtSignal || stopGrace(for: interruption) != nil {
             throw CommandFailure.interrupted(executable: command.executable, cause: interruption, output: try? output.get())
         }
         do { return try output.get() }
@@ -318,12 +427,17 @@ private actor CommandExecution {
         }
         guard process.isRunning else { return }
         interruption = cause
-        if let grace = command.policy.stopGrace {
+        if let grace = stopGrace(for: cause) {
             send(SIGTERM)
             schedule(after: grace) { $0.send(SIGKILL) }
         } else {
             send(SIGKILL)
         }
+    }
+
+    /// A child that was waited for until quitting gets the chance to finish cleanly that a kill would take away.
+    private func stopGrace(for cause: CommandFailure.Interruption) -> Duration? {
+        cause == .terminating ? DeviceOperationLimit.terminationStopGrace : command.policy.stopGrace
     }
 
     /// Only the owned child is signalled; its guest may already have been forcibly stopped.
@@ -334,10 +448,12 @@ private actor CommandExecution {
         }
     }
 
-    private func schedule(after delay: Duration, _ action: @escaping @Sendable (isolated CommandExecution) -> Void) {
+    @discardableResult
+    private func schedule(after delay: Duration, _ action: @escaping @Sendable (isolated CommandExecution) -> Void) -> DispatchWorkItem {
         let timer = DispatchWorkItem { [weak self] in self?.assumeIsolated { action($0) } }
         timers.append(timer)
         let (seconds, attoseconds) = delay.components
         queue.asyncAfter(deadline: .now() + Double(seconds) + Double(attoseconds) / 1e18, execute: timer)
+        return timer
     }
 }
