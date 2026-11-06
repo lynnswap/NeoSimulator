@@ -169,8 +169,8 @@ struct NativeConnectionOwnershipTests {
     }
 }
 
-private func waitUntil(sourceLocation: SourceLocation = #_sourceLocation,
-                       _ condition: @MainActor () async -> Bool) async throws {
+func waitUntil(sourceLocation: SourceLocation = #_sourceLocation,
+               _ condition: @MainActor () async -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(10)
     while await !condition() {
         try #require(ContinuousClock.now < deadline, "The expected state did not arrive.", sourceLocation: sourceLocation)

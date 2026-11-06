@@ -10800,17 +10800,13 @@ struct InputFocusTests {
         }
     }
 
-    private func yield(until condition: @MainActor () -> Bool) async {
-        while !condition() { await Task.yield() }
-    }
-
     private func isPending(_ readiness: SimulatorServiceReadiness) -> Bool { if case .pending = readiness { true } else { false } }
     private func isReady(_ readiness: SimulatorServiceReadiness) -> Bool { if case .ready = readiness { true } else { false } }
     private func isUnsupported(_ readiness: SimulatorServiceReadiness) -> Bool { if case .unsupported = readiness { true } else { false } }
     private func isNotRouted(_ readiness: SimulatorServiceReadiness) -> Bool { if case .notRouted = readiness { true } else { false } }
 
     @Test(.timeLimit(.minutes(1)))
-    func inputConnectsAfterTheDisplayAndActivatesInPlace() async {
+    func inputConnectsAfterTheDisplayAndActivatesInPlace() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
@@ -10818,14 +10814,14 @@ struct InputFocusTests {
                                                activate: { _ in activations.value += 1 })
         #expect(isPending(services.input))
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         // Nothing the display does waits on this, and starting again joins it.
         #expect(isPending(services.input) && activations.value == 0)
         activation.start()
         services.retryInput()
         #expect(connecting.calls == 1)
         connecting.finish(.success(NativeInputServices()))
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 1)
         // A ready route has nothing to retry.
         services.retryInput()
@@ -10833,47 +10829,47 @@ struct InputFocusTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func aDeviceWithoutTheRouteIsUnsupportedWithoutActivating() async {
+    func aDeviceWithoutTheRouteIsUnsupportedWithoutActivating() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
         let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
                                                activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         connecting.finish(.success(nil))
-        await yield { isUnsupported(services.input) }
+        try await wait { isUnsupported(services.input) }
         services.retryInput()
         #expect(activations.value == 0 && connecting.calls == 1)
     }
 
     /// A transport that did not answer says nothing about the device: this is neither unsupported nor another route.
     @Test(.timeLimit(.minutes(1)))
-    func aFailedRouteStaysFailedUntilItIsRetriedOnTheSameRoute() async {
+    func aFailedRouteStaysFailedUntilItIsRetriedOnTheSameRoute() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
         let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
                                                activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         connecting.finish(.failure(DeviceIOError.temporary("fixture-timeout", "The guest did not answer.")))
-        await yield { services.input.failure != nil }
+        try await wait { services.input.failure != nil }
         #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-timeout")
         #expect(activations.value == 0 && connecting.calls == 1)
 
         services.retryInput()
         #expect(isPending(services.input))
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         #expect(connecting.calls == 2)
         connecting.finish(.success(NativeInputServices()))
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 1)
     }
 
     /// A display that could not take the services over stays on SimulatorKit, says so, and can try again.
     @Test(.timeLimit(.minutes(1)))
-    func aFailedActivationIsTheRoutesFailure() async {
+    func aFailedActivationIsTheRoutesFailure() async throws {
         let services = DeviceOptionalServices()
         let refuses = Counter(1)
         let activations = Counter()
@@ -10882,23 +10878,23 @@ struct InputFocusTests {
             if refuses.value == 1 { throw DeviceIOError.unavailable("fixture-digitizer", "The digitizer has no delegate.") }
         })
         activation.start()
-        await yield { services.input.failure != nil }
+        try await wait { services.input.failure != nil }
         refuses.value = 0
         services.retryInput()
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 2)
     }
 
     /// Connecting sends the guest nothing, so what answers after the display ended is let go without being activated.
     @Test(.timeLimit(.minutes(1)))
-    func aCancelledConnectionActivatesNothing() async {
+    func aCancelledConnectionActivatesNothing() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
         let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
                                                activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         activation.cancel()
         // A native call that ignores its cancellation holds its owner's wait, which stop() reports.
         #expect(await !activation.ends(before: ContinuousClock.now))
@@ -10915,14 +10911,14 @@ struct InputFocusTests {
         #expect(isPending(services.pasteboard))
 
         let refused = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         connecting.finish(.failure(DeviceIOError.temporary("fixture-timeout", "CoreDevice did not answer.")))
         await #expect(throws: DeviceIOError.self) { try await refused.value }
         #expect((services.pasteboard.failure as? DeviceIOError)?.identifier == "fixture-timeout")
 
         let transport = TestPasteboardTransport()
         let retried = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         #expect(isPending(services.pasteboard) && connecting.calls == 2)
         connecting.finish(.success(transport))
         #expect(try await retried.value == ObjectIdentifier(transport))
@@ -11008,19 +11004,19 @@ struct InputFocusTests {
             return NativeInputServices()
         }, activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         #expect(isPending(services.input) && services.isAwaitingDeviceRecord)
 
         let record = RecordFixture()
         source.current = record
         source.change()
-        await yield { source.followers == 2 }
+        try await wait { source.followers == 2 }
         #expect(isPending(services.input) && activations.value == 0)
 
         record.connected = true
         record.features = ["input"]
         source.change()
-        await yield { isReady(services.input) && source.followers == 0 }
+        try await wait { isReady(services.input) && source.followers == 0 }
         #expect(activations.value == 1 && !services.isAwaitingDeviceRecord)
         #expect(session.display === display)
     }
@@ -11044,19 +11040,19 @@ struct InputFocusTests {
         })
         activation.start()
         let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-        await yield { source.followers == 2 }
+        try await wait { source.followers == 2 }
         #expect(isPending(services.input) && isPending(services.pasteboard))
 
         record.connected = true
         source.change()
-        await yield { isUnsupported(services.input) && isUnsupported(services.pasteboard) }
+        try await wait { isUnsupported(services.input) && isUnsupported(services.pasteboard) }
         #expect(try await transfer.value == nil)
         #expect(activations.value == 0)
     }
 
     /// A read that fails and notifications that end say nothing about the device, and asking again goes through the same owner.
     @Test(.timeLimit(.minutes(1)))
-    func aFailureToReadTheRecordIsNotUnsupportedAndCanBeRetried() async {
+    func aFailureToReadTheRecordIsNotUnsupportedAndCanBeRetried() async throws {
         let services = DeviceOptionalServices()
         let source = RecordSourceFixture()
         let discovery = CoreDeviceRecordDiscovery(source: source)
@@ -11067,16 +11063,16 @@ struct InputFocusTests {
         }, activate: { _ in activations.value += 1 })
         source.readFailure = DeviceIOError.temporary("fixture-read", "CoreDevice did not answer.")
         activation.start()
-        await yield { services.input.failure != nil }
+        try await wait { services.input.failure != nil }
         #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-read")
         #expect(source.followers == 0)
 
         source.readFailure = nil
         services.retryInput()
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         #expect(isPending(services.input))
         source.endStreams(throwing: DeviceIOError.temporary("fixture-stream", "CoreDevice stopped reporting."))
-        await yield { services.input.failure != nil && source.followers == 0 }
+        try await wait { services.input.failure != nil && source.followers == 0 }
         #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-stream")
 
         let record = RecordFixture()
@@ -11084,13 +11080,13 @@ struct InputFocusTests {
         record.features = ["input"]
         source.current = record
         services.retryInput()
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 1)
     }
 
     /// The owner ends with its connection: what waits is cancelled, which says nothing about the device, and nothing is followed.
     @Test(.timeLimit(.minutes(1)))
-    func stoppingTheRecordsOwnerEndsWhatWaitsWithoutAnAnswer() async {
+    func stoppingTheRecordsOwnerEndsWhatWaitsWithoutAnAnswer() async throws {
         let services = DeviceOptionalServices()
         let source = RecordSourceFixture()
         let discovery = CoreDeviceRecordDiscovery(source: source)
@@ -11100,7 +11096,7 @@ struct InputFocusTests {
         })
         let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
         let cancelled = Task.immediate { _ = try await discovery.answer(for: ["input"]) }
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         // One asker's cancellation leaves the other's wait.
         cancelled.cancel()
         await #expect(throws: CancellationError.self) { try await cancelled.value }
@@ -11108,7 +11104,7 @@ struct InputFocusTests {
 
         discovery.stop()
         await #expect(throws: CancellationError.self) { _ = try await transfer.value }
-        await yield { source.followers == 0 }
+        try await wait { source.followers == 0 }
         #expect(isPending(services.pasteboard))
         await #expect(throws: CancellationError.self) { _ = try await discovery.answer(for: ["pasteboard"]) }
     }
@@ -11119,16 +11115,16 @@ struct InputFocusTests {
         let source = RecordSourceFixture()
         let discovery = CoreDeviceRecordDiscovery(source: source)
         let waiting = Task.immediate { try await discovery.record(limit: .seconds(30)) }
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         let record = RecordFixture()
         source.current = record
         source.change()
         #expect(try await waiting.value === record)
-        await yield { source.followers == 0 }
+        try await wait { source.followers == 0 }
 
         source.current = nil
         await #expect(throws: DeviceIOError.self) { _ = try await discovery.record(limit: .milliseconds(20)) }
-        await yield { source.followers == 0 }
+        try await wait { source.followers == 0 }
     }
 
     @Test func serviceStatusSaysWhatTheServicesSay() {
@@ -11161,19 +11157,19 @@ struct InputFocusTests {
         services.onRetryInput = { retries += 1 }
 
         services.setInput(.pending)
-        await yield { controller.serviceStatus?.offersRetry == false }
+        try await wait { controller.serviceStatus?.offersRetry == false }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
 
         services.setInput(.failed(DeviceIOError.temporary("fixture", "It did not answer.")))
-        await yield { controller.serviceStatus?.offersRetry == true }
+        try await wait { controller.serviceStatus?.offersRetry == true }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
         services.retryInput()
         #expect(retries == 1)
 
         services.setInput(.ready)
-        await yield { controller.serviceStatus == nil }
+        try await wait { controller.serviceStatus == nil }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
     }

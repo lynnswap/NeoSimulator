@@ -1694,18 +1694,18 @@ struct RemoteDeviceScreenTests {
         func failure() -> DeviceOperationFailure? { services.input.failure as? DeviceOperationFailure }
 
         activation.start()
-        while failure() == nil { await Task.yield() }
+        try await waitUntil { failure() != nil }
         let universalHID = CoreDeviceScreenInput.universalHIDFeature
         #expect(failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50)))
         #expect(peers.lookUps.isEmpty)
 
         services.retryInput()
-        while failure() == nil || failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50)) { await Task.yield() }
+        try await waitUntil { !(failure() == nil || failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50))) }
         #expect(failure() == .notSent(operation: "look up \(universalHID)", heldBy: "look up \(universalHID)"))
         #expect(calls.withLock { $0 } == 1 && peers.lookUps.isEmpty && activated == 0)
 
         held.signal()
-        while activated == 0 { await Task.yield() }
+        try await waitUntil { activated != 0 }
         #expect(calls.withLock { $0 } == 3)
         #expect(peers.lookUps == [universalHID, universalHID])
     }
@@ -1729,7 +1729,7 @@ struct RemoteDeviceScreenTests {
             return try await withCheckedThrowingContinuation { answer = $0 }
         }, activate: { _ in activated += 1 })
         activation.start()
-        while answer == nil { await Task.yield() }
+        try await waitUntil { answer != nil }
 
         activation.cancel()
         #expect(await !activation.ends(before: ContinuousClock.now))
@@ -1752,7 +1752,7 @@ struct RemoteDeviceScreenTests {
         let failing = NativeInputActivation(services: refusing, connect: { NativeInputServices(keyboard: refused) },
                                             activate: { _ in throw ScreenFixtureError.stream })
         failing.start()
-        while refusing.input.failure == nil { await Task.yield() }
+        try await waitUntil { refusing.input.failure != nil }
         refused.setEnabled(true, for: display)
         #expect(!refused.isEnabled(for: display))
     }
