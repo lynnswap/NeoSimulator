@@ -2,8 +2,8 @@ import Foundation
 import NeoSimulatorDeviceIO
 import Observation
 
-/// One device's settings, each its own property so that an observer is told only of what it read. A group's values
-/// publish as its read finishes. Accepted changes show at once and until their outcome is known.
+/// Observable settings for one device. Groups publish independently as reads finish.
+/// Accepted changes appear immediately and remain until their outcome is known.
 @MainActor @Observable
 public final class DeviceSettingsState {
     public private(set) var appearance: DeviceAppearance?
@@ -71,18 +71,18 @@ public final class DeviceSettingsState {
 
     package init() {}
 
-    /// What the last read of `group` answered.
+    /// The last read status of `group`.
     public func status(of group: DeviceSettingsGroup) -> DeviceReadStatus { reads[group]!.status }
 
-    /// Why groups' values may be out of date. Values that remain are from the read before.
+    /// Read failures by group. Failed reads preserve the previous values.
     public var failures: [String] {
         DeviceSettingsGroup.allCases.compactMap { group in
             if case .stale(let reason) = status(of: group) { reason } else { nil }
         }
     }
 
-    /// Accepts `change`, which shows at once, and returns when the device has applied it. Cancelling before its turn sends
-    /// nothing. Cancelling later leaves its outcome unknown, which the thrown error says and a read then settles.
+    /// Applies `change` optimistically and waits for completion. Cancellation before execution
+    /// sends nothing; cancellation after it starts reports an unknown outcome and triggers read-back.
     public func set(_ change: DeviceSettingChange) async throws {
         let write = try accept(change)
         try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }
@@ -138,8 +138,8 @@ public final class DeviceSettingsState {
         scheduleReads()
     }
 
-    /// Starts what is out of date, of what something wants. A group with a running read gets one more read when it answers,
-    /// and a group with an accepted change reads after the outcome of the last one. Neither holds up any other group.
+    /// Refreshes invalidated groups with active read interest. Reads within a group coalesce,
+    /// and accepted changes defer read-back until their final outcome. Groups proceed independently.
     package func scheduleReads() {
         guard let owner, !owner.readsStopped, owner.inventory.canInspectSettings else { return }
         let wanted = owner.wants(.settings) ? dirty : dirty.intersection(forced)
@@ -222,7 +222,7 @@ public final class DeviceSettingsState {
 
     // MARK: Observations
 
-    /// A value that a connected session knows does not need a read to be known, so the group's status does not change.
+    /// Applies a value already known by the connected session without changing the group's read status.
     package func observe(audioRoutes: AudioRouteState) {
         confirmed.updateAudioRoutes(audioRoutes)
         publish()

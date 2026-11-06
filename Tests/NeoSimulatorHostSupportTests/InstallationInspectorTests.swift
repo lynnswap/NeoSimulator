@@ -731,14 +731,13 @@ struct XcodeConnectionsTests {
         let target = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: nil)
         let renderer = RendererRegistration(processIdentifier: 1, applicationPath: "/Renderer.app", xcodePath: "/Xcode.app",
                                             sessionIdentifier: "owner-session", deviceIdentifiers: [target])
-        var rejected = true
         var requests = 0
         let waiter = RendererDeviceRequestWaiter(acknowledgements: center, scheduleTimeout: { _, _ in {} }) { info, session in
             requests += 1
             #expect(session == renderer.sessionIdentifier && info["action"] == "close-device")
             #expect(info["udid"] == "DEVICE-ID" && info["deviceSetPath"] == nil && info["keepRunning"] == "false")
             var reply = ["udid": "device-id"]
-            if rejected { reply["error"] = "Fixture guest shutdown failed" }
+            if requests == 1 { reply["error"] = "Fixture guest shutdown failed" }
             center.post(name: Notification.Name("dev.lynnswap.NeoSimulator.RendererClosed"),
                         object: info["requestIdentifier"], userInfo: reply)
         }
@@ -749,7 +748,6 @@ struct XcodeConnectionsTests {
             #expect(error.identifier == "renderer-device-request")
             #expect(error.message == "Fixture guest shutdown failed")
         }
-        rejected = false
         try await waiter.close(target, in: renderer, keepingDeviceRunning: false)
         #expect(requests == 2)
     }

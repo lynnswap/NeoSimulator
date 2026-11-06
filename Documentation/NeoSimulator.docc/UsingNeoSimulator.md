@@ -4,22 +4,18 @@ Open devices, manage their apps and profiles, and capture their screens.
 
 ## Open and create devices
 
-Open NeoSimulator.app. If you previously chose Device Hub, select **NeoSimulator**
-under **Preferred Display Host** in Settings. Select a
-device in the main window and choose **View Screen** to use its screen in the center pane. You can also
-use **Device** in the Dock menu, **File → Open Simulator**, or **View → Show Devices**
-to start a device or reopen its window. The manager's device menus group devices
-by OS version.
-The browser lists simulators, physical devices, and virtual machines in
-Available and Unavailable groups. Search by name, model, or operating system.
-Use the filter button beside the gear button to choose a device kind, availability,
-or family, change the sort order, or turn grouping off. The gear button opens Settings.
-Choose **Devices** in Settings, then choose a device family, model, and OS version
-and enter a name to create a simulator. NeoSimulator remembers the last device
-family, and the model and OS version you chose for each family, for next time.
-Open Simulator groups devices by runtime; a
-checkmark means a device has a window, and a dash means it is running without
-one. Hold Option to show its runtime and device type.
+Select **NeoSimulator** under **Settings → General → Preferred Display Host**.
+Choose a device in the main window, then **View Screen**. You can also open one
+from **Device** in the Dock, **File → Open Simulator**, or **View → Show Devices**.
+
+The browser groups simulators, physical devices, and VMs by availability. Search
+by name, model, or OS; use the filter button to select device kinds, availability,
+families, sorting, and grouping. The gear button opens Settings.
+
+Create a simulator in **Settings → Devices** by choosing its family, model, OS,
+and name. Neo remembers the last family and each family's model and OS.
+Open Simulator groups devices by runtime: a checkmark means an open window,
+a dash means running without a window. Hold Option to see runtime and device type.
 
 Select one or more devices and open **Device → Manage Selected Devices** or Control-click the
 selection for its management actions. Actions depend on the device's current
@@ -28,30 +24,25 @@ an iPhone and an Apple Watch from the same simulator set to pair them. Erase and
 Remove ask for confirmation. If an operation fails for part of a selection,
 the error identifies those devices and any completed steps.
 
-Physical devices appear automatically when CoreDevice detects their connection.
-Virtual machines offer Start, Shut Down, Pause, Resume, and Remove when their
-current CoreDevice capabilities support those operations.
+Connected physical devices appear automatically. VMs offer Start, Shut Down,
+Pause, Resume, and Remove when supported.
 
-Choose **View Screen** for a connected physical device or virtual machine to
-open its screen when the device supports it. The settings inspector shows the
-controls that the selected device supports.
+Choose **View Screen** to open a supported physical-device or VM screen.
+Its inspector shows available controls.
 
 A physical device's screen appears inside the same device frame that Device Hub
 draws, and the frame's side buttons press the device's buttons. Click or drag
 on the screen to touch it; scroll with two fingers on a trackpad to drag the
 screen's content, and pinch on the screen to pinch in the device's app.
 
-NeoSimulator shows a physical device's screen while the device is connected to
-the Mac with a cable, through a screen source that macOS presents to apps as a
-camera. macOS does not say which device a source shows, so the first time,
-choose **Choose Screen Source…** on the device's screen and select the device's
-source. NeoSimulator reconnects with that source and remembers it for the
-device. Sources with the same name are numbered; if the screen shows a
-different device, choose **Device → Choose Screen Source…** again. The first
-connection then asks for Camera access. If you
-denied it, allow NeoSimulator in **System Settings → Privacy & Security →
-Camera**, then choose **Try Again** on the screen. If the screen is not
-available, connect the device with a cable and choose **Try Again**.
+Connect physical devices by cable. On first use, choose **Choose Screen Source…**
+and select the device's source; macOS does not identify which device each source
+shows. Neo remembers the choice. Duplicate names are numbered. To correct a
+choice, use **Device → Choose Screen Source…**.
+
+Allow Camera access when prompted. If denied, enable NeoSimulator in
+**System Settings → Privacy & Security → Camera**, then choose **Try Again**.
+For an unavailable source, check the cable and try again.
 
 **File → New Simulator…** creates a device from the installed runtimes. For an
 iPhone, **Paired Apple Watch** adds a second page for a compatible watch.
@@ -62,21 +53,17 @@ Creation does not boot the new devices. If creation or pairing fails after a
 device was created, the error names the devices kept. If pairing with an existing
 simulator fails, the error includes the new device's identifier. Install runtimes in Xcode.
 
-Neo supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro. Menus show
-the controls supported by the active device. Device association with Xcode is automatic.
+Menus follow the active device's capabilities. Xcode association is automatic.
 
 ### iPhone Duo simulators
 
-The creation form's **Device** menu and the filter's **Device Family** section list
-**iPhone Duo** separately from **iPhone** because Duo uses its own simulator
-runtimes. A Duo simulator is still an iPhone for pairing and device controls.
+The creation form and device-family filter list **iPhone Duo** separately because
+it uses dedicated runtimes. Pairing and controls still treat it as an iPhone.
 
-A Duo simulator needs iOS 27.1 or later and an installed runtime that supports Duo.
-Apple provides the SDKs to build, run, and test apps for Duo in
-[Xcode 27.1](https://developer.apple.com/iphone-duo/). The OS version alone doesn't
-show whether a runtime supports Duo. For example, two runtimes are named iOS 27.2:
-`com.apple.CoreSimulator.SimRuntime.iOS-27-2` doesn't support Duo, and
-`com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4` supports only Duo.
+Duo requires iOS 27.1+ and a Duo-compatible runtime from
+[Xcode 27.1 or later](https://developer.apple.com/iphone-duo/). The OS version
+alone is insufficient: `com.apple.CoreSimulator.SimRuntime.iOS-27-2` excludes Duo,
+while `com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4` supports only Duo.
 
 **OS Version** lists only the runtimes that CoreSimulator reports as supporting the
 selected device family, and it shows each runtime's build. If it shows
@@ -90,12 +77,10 @@ the browser with the same device selected. Moving the screen preserves its
 connection, recording, and unsaved captures. Finish an open sheet or leave full
 screen before switching windows.
 
-The main toolbar provides the selected screen's supported device actions.
-Simulator controls are also available in **Device**, **I/O**, **Features**, and
-**Debug**. The main and compact windows keep separate display scales.
-Selecting a different device leaves the
-previous connection running. Closing the main window also leaves connections
-running; quitting NeoSimulator applies the app's device lifetime setting.
+The toolbar and **Device**, **I/O**, **Features**, and **Debug** menus provide
+device actions. Main and compact windows keep separate scales. Selecting another
+device or closing the main window keeps connections running; quitting applies
+the device lifetime setting.
 
 ## Inspect a device
 
@@ -109,9 +94,8 @@ right side of the toolbar:
 | Reports | Reports from physical devices and VMs that support report access. |
 | Info | Grouped device information and the Info, Apps, and Profiles categories. |
 
-In **Info → Info**, choose **Edit Visibility** to select the fields to show, then
-choose **Done**. NeoSimulator remembers these choices. The Info cards also show
-paired simulators and their pairing controls when applicable. Use **Add** to pair
+In **Info → Info**, use **Edit Visibility**, then **Done**, to save visible fields.
+The cards show paired simulators and pairing controls. Use **Add** to pair
 an existing iPhone or an unpaired Apple Watch with a simulator offered by
 CoreDevice. On a watch, **New iPhone Simulator…** creates only a compatible iPhone
 in the watch's simulator set and pairs it with that watch. Add is disabled when
@@ -126,9 +110,8 @@ device as needed, then use the inspector's refresh button.
 
 Choose **Info → Apps** and select an app to see its details. Use
 **+** to install an `.app` bundle or `.ipa` package, **−** to remove the
-selected app and its data, or the play button to launch it. The search field
-filters the installed apps. The app must be built for the selected device; the
-device's installer reports platform and signing errors.
+selected app and its data, or the play button to launch it. Search filters installed apps. Apps must target the selected device; the installer
+reports platform and signing errors.
 
 The ellipsis button opens these application actions:
 
@@ -209,13 +192,11 @@ and volume controls appear when the
 device supports them. **Reconnect** in the compact window's toolbar or in the
 menu you get by Control-clicking beside the device retries the screen.
 
-On a remote connection that supports app resizing, choose **Resize App** in
-the main or compact window's toolbar. Resize the window to request a new app
-size; the compact window's **Stop Resize** help tag shows the size accepted by
-the device. **Stop Resize** returns
-the same screen to its primary display. Moving between the main and compact
-window keeps the resize session. Finish recording before starting or stopping
-Resize App. Screenshots and recordings made while resizing use the app's display.
+Where supported, **Resize App** in the toolbar opens the app's dedicated display.
+Resize the window to request an app size; **Stop Resize** in the compact window
+shows the accepted size in its help tag and returns to the primary display.
+Moving between windows keeps the resize session. Finish recording before starting
+or stopping Resize App. Captures made while resizing use the app's display.
 
 ## Save screens and recordings
 
@@ -233,13 +214,11 @@ Screen…** or **Record Screen…** to choose a destination and device-mask opti
 Save Screen… remembers its folder and mask choice; ordinary captures use the
 saved mask choice.
 
-A capture appears as a floating thumbnail beside the window. It saves when the
-thumbnail disappears: screenshots go to the configured screenshot folder
-(initially the macOS screenshot location or Desktop), and recordings go to the
-Desktop. The thumbnail lasts five seconds for a screenshot or the movie's
-duration for a recording. Hover to keep it open, drag to export a file, or
-Control-click to save elsewhere, copy, open, or delete. The recording menu can
-also export an animated GIF.
+Captures appear as floating thumbnails and save when dismissed. Screenshots use
+the configured folder (initially the macOS screenshot location or Desktop);
+recordings use Desktop. Thumbnails last five seconds for screenshots or the
+movie's duration for recordings. Hover to keep one open, drag to export, or
+Control-click to save elsewhere, copy, open, delete, or export a recording as GIF.
 
 A new capture saves the preceding thumbnail's file. Quitting saves remaining
 captures and finalizes recordings. Existing names receive a ` #2` suffix and
@@ -293,11 +272,9 @@ when no log type is supplied. An `.ips` extension alone does not identify a
 report as a crash or hang. Select a report to view its available metadata,
 relative path, and file properties.
 
-Double-click a report file or choose the eye button (**Quick Look**) to preview
-it in a separate window. Closing the preview, selecting another report or
-device, or quitting removes its temporary copy. Use **Download Report…** to
-keep a copy: choose the download button and select a destination in the save
-panel. Confirm replacement if that destination already exists.
+Double-click a report or choose **Quick Look** to preview it. Its temporary copy
+is removed when the preview closes, selection changes, or the app quits. Use
+**Download Report…** to save a copy, confirming replacement if needed.
 
 A transfer failure preserves an existing destination. If transfer data remains
 on the Mac, the error gives its location for recovery. If saving succeeds but

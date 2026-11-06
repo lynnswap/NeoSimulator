@@ -8,9 +8,8 @@ Choose a CoreSimulator display host for Xcode 27+.
 
 ## Overview
 
-NeoSimulator.app switches between its simulator windows and Xcode's Device
-Hub through Settings. Xcode 27+ continues to handle Build & Run. Neo uses
-Xcode's private simulator frameworks to display and control devices. Its Dock menu groups available devices by OS version.
+Display and control devices using Xcode's private simulator frameworks, while
+Xcode handles Build & Run. Choose NeoSimulator or Device Hub in Settings.
 
 ## Topics
 
@@ -23,6 +22,7 @@ Xcode's private simulator frameworks to display and control devices. Its Dock me
 
 ### Develop and maintain
 
+- <doc:UsingTheSDK>
 - <doc:Architecture>
 - <doc:SimulatorIntegration>
 - <doc:Development>

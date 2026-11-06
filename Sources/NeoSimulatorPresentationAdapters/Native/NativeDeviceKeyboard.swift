@@ -4,10 +4,9 @@ import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import os
 
-/// Forwards a simulator's Mac keyboard input through guest UniversalHID keyboard services that carry each Mac keyboard's
-/// own HID properties, created through CoreDevice for a default-set simulator or with CoreDevice's requests for any
-/// simulator. The guest derives a keyboard's hardware layout, such as JIS, from those properties, as it does for Device
-/// Hub; SimulatorKit's keyboard messages carry none, so the guest reads them with a US layout.
+/// Sends keyboard input through guest UniversalHID services carrying each Mac keyboard's
+/// properties, preserving layouts such as JIS. Uses CoreDevice for default-set simulators
+/// or equivalent guest requests for other sets. SimulatorKit messages assume a US layout.
 @MainActor
 package final class NativeDeviceKeyboard {
     /// Receives failures of input that was already accepted, such as a keyboard service that could not be created.
@@ -55,10 +54,9 @@ package final class NativeDeviceKeyboard {
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
     }
 
-    /// Gives one of the device's displays the Mac's keyboard, as SimulatorKit's keyboard does while it is enabled.
-    /// Modifier changes are observed app-wide while any display has it, including synthesized ones.
-    /// When the last display loses it, the keyboards release their keys, whose key-ups reach another window.
-    /// Modifiers are left to modifier changes, such as the release `DisplayKeyboardInput` sends for lost focus.
+    /// Gives a display the Mac keyboard and observes app-wide modifier changes.
+    /// Disabling the last display releases held keys. Modifier releases come separately,
+    /// including from `DisplayKeyboardInput` on focus loss.
     package func setEnabled(_ enabled: Bool, for display: AnyObject) {
         let identifier = ObjectIdentifier(display)
         let hadDisplays = !enabledDisplays.isEmpty

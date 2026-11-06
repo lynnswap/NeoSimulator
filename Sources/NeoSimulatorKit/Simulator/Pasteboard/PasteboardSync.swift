@@ -1,10 +1,8 @@
 import Foundation
 
-/// Coordinates app-wide pasteboard synchronization across all connected devices.
-/// No connection sends a device-originated copy on by itself: SimPasteboardPlus
-/// ignores its own host writes, and the CoreDevice pasteboard skips Mac changes
-/// that originated on another pasteboard. Such a copy must be forwarded
-/// explicitly to the other devices.
+/// Synchronizes pasteboards across connected devices.
+/// Device copies must be forwarded explicitly: both native transports ignore host writes
+/// that originated from another device.
 @MainActor
 package final class PasteboardSync {
     private let preferences: any PreferenceStore
@@ -15,10 +13,8 @@ package final class PasteboardSync {
     /// The device whose pasteboard last replaced the Mac's, until the change
     /// is sent to the other devices.
     private var changedSession: DeviceSession?
-    /// The number of the latest device copy that a connection observed. A
-    /// device copy replaces the Mac pasteboard only while it is the latest, so
-    /// that an earlier copy from any device, whose write comes later, does not
-    /// replace a later one.
+    /// Latest observed device-copy sequence. Only this copy may replace the Mac pasteboard,
+    /// preventing a delayed older transfer from overwriting a newer copy.
     private var latestDeviceCopy = 0
 
     /// Reads the choice saved in `preferences`. Without one, it uses the default

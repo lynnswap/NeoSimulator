@@ -7,6 +7,43 @@ import Testing
 
 @Suite
 struct ReceiptStoreTests {
+    @MainActor @Test(arguments: [false, true])
+    func asynchronousContendersWaitOrCancelWithoutTakingTheLock(cancel: Bool) async throws {
+        let directory = try TemporaryTestDirectory()
+        let store = try ReceiptStore(directoryURL: directory.url)
+        let held = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let holder = Task {
+            try await store.withExclusiveLock {
+                held.continuation.yield(())
+                for await _ in release.stream { break }
+            }
+        }
+        defer { release.continuation.finish() }
+        var holding = held.stream.makeAsyncIterator()
+        await holding.next()
+        let entered = AsyncStream<Void>.makeStream()
+        var ran = false
+        let contender = Task {
+            entered.continuation.yield(())
+            return try await store.withExistingExclusiveLock { ran = true; return 42 }
+        }
+        var entering = entered.stream.makeAsyncIterator()
+        await entering.next()
+        #expect(await !contender.ends(before: .now + .milliseconds(50)))
+        #expect(!ran)
+        if cancel {
+            contender.cancel()
+            #expect(await contender.ends(before: .now + .seconds(1)))
+            await #expect(throws: CancellationError.self) { try await contender.value }
+            #expect(!ran)
+        }
+        release.continuation.yield(())
+        try await holder.value
+        if !cancel { #expect(try await contender.value == 42 && ran) }
+        #expect(try await store.withExclusiveLock { 7 } == 7)
+    }
+
     @Test func receiptRoundTripsAndDeletes() throws {
         let directory = try TemporaryTestDirectory()
         let store = try ReceiptStore(directoryURL: directory.url)

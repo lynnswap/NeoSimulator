@@ -164,11 +164,10 @@ package enum CaptureFile {
         close(descriptor)
     }
 
-    /// Moves a file without replacing what is at `destination`, which throws `EEXIST`. Failures leave the original where
-    /// it is, except for ``CaptureLeftBehind``: the destination is then complete and the original was to go.
-    ///
-    /// A rename cannot leave the file half moved. Another volume needs a copy, which appears at `destination` only once
-    /// it is whole, and only then does the original go. Nothing here repeats a step that failed.
+    /// Moves a file without replacing an existing destination (`EEXIST`).
+    /// Same-volume moves use rename; cross-volume moves publish a complete copy before
+    /// removing the source. Failures preserve the source, except ``CaptureLeftBehind``,
+    /// which reports a complete destination and a source that could not be removed. No retry.
     package static func relocate(_ source: URL, to destination: URL, renaming rename: (URL, URL) throws -> Void = renameExclusively,
                                  locations: Locations? = nil) throws {
         locations?.insert(destination)

@@ -1733,7 +1733,7 @@ struct RemoteDeviceScreenTests {
 
         activation.cancel()
         #expect(await !activation.ends(before: ContinuousClock.now))
-        nonisolated(unsafe) let late: NativeInputServices? = NativeInputServices(keyboard: keyboard)
+        let late: NativeInputServices? = NativeInputServices(keyboard: keyboard)
         answer?.resume(returning: late)
         #expect(await activation.ends(before: ContinuousClock.now + .seconds(30)))
         #expect(activated == 0 && service.stops == 1)

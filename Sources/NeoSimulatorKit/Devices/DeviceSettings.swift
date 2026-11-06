@@ -55,12 +55,12 @@ public enum DeviceLocationMode: String, Sendable {
     case none, custom, scenario
 }
 
-/// Settings that one read of the device answers together, and that change and fail together.
+/// Settings read as a group, sharing completion and failure status.
 public enum DeviceSettingsGroup: String, CaseIterable, Sendable {
     case appearance, textSize, contrast, displayZoom, boldText, accessibility, voiceOver, audio, location
 }
 
-/// What is known of a group: what the last read answered.
+/// A state group's last read result.
 public enum DeviceReadStatus: Equatable, Sendable {
     /// Nothing has answered yet.
     case unread

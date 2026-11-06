@@ -140,7 +140,7 @@ package struct ReceiptStore {
 
     package nonisolated(nonsending)
     func withExclusiveLock<T>(_ body: () async throws -> T) async throws -> T {
-        let descriptor = try acquireExclusiveLock(createIfNeeded: true)
+        let descriptor = try await waitForExclusiveLock(createIfNeeded: true)
         defer {
             releaseExclusiveLock(descriptor)
         }
@@ -151,7 +151,7 @@ package struct ReceiptStore {
     func withExistingExclusiveLock<T>(
         _ body: () async throws -> T
     ) async throws -> T {
-        let descriptor = try acquireExclusiveLock(createIfNeeded: false)
+        let descriptor = try await waitForExclusiveLock(createIfNeeded: false)
         defer {
             releaseExclusiveLock(descriptor)
         }
@@ -179,6 +179,42 @@ package struct ReceiptStore {
     }
 
     private func acquireExclusiveLock(createIfNeeded: Bool) throws -> Int32 {
+        let descriptor = try openLock(createIfNeeded: createIfNeeded)
+        do {
+            guard try tryLock(descriptor) else {
+                throw HostOperationError.temporary("operation-lock", "another \(ToolConstants.name) operation is in progress")
+            }
+            return descriptor
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    /// The lock protects a cross-process transaction. Contention suspends its caller instead of rejecting ordinary
+    /// concurrent status reads or blocking the caller's executor. Cancellation releases the waiting descriptor.
+    private nonisolated(nonsending) func waitForExclusiveLock(createIfNeeded: Bool) async throws -> Int32 {
+        try Task.checkCancellation()
+        let descriptor = try openLock(createIfNeeded: createIfNeeded)
+        do {
+            while try !tryLock(descriptor) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try Task.checkCancellation()
+            return descriptor
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    private func tryLock(_ descriptor: Int32) throws -> Bool {
+        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { return true }
+        if errno == EWOULDBLOCK || errno == EAGAIN { return false }
+        throw HostOperationError.io("operation-lock", "could not lock \(lockURL.path): \(String(cString: strerror(errno)))")
+    }
+
+    private func openLock(createIfNeeded: Bool) throws -> Int32 {
         if createIfNeeded {
             try createDirectoryIfNeeded()
         } else if try !stateDirectoryExists() {
@@ -226,18 +262,6 @@ package struct ReceiptStore {
                 )
             }
 
-            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-                if errno == EWOULDBLOCK || errno == EAGAIN {
-                    throw HostOperationError.temporary(
-                        "operation-lock",
-                        "another \(ToolConstants.name) operation is in progress"
-                    )
-                }
-                throw HostOperationError.io(
-                    "operation-lock",
-                    "could not lock \(lockURL.path): \(String(cString: strerror(errno)))"
-                )
-            }
             return descriptor
         } catch {
             Darwin.close(descriptor)

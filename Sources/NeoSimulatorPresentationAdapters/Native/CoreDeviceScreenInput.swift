@@ -260,11 +260,9 @@ package final class CoreDeviceScreenInput {
     }
 }
 
-/// Sends the Mac trackpads' gestures over a screen to guest services that carry each trackpad's own HID properties, as
-/// Device Hub does while clicks on the screen become touches. Mouse movements over the screen move the services' hidden
-/// pointers, where their gestures happen; a gesture sent with the screen's coordinate transform first moves its pointer
-/// to where the gesture begins. An event reaches the service created for the Mac HID service that sent it, so one that
-/// no Mac HID service sent, such as a synthesized event, reaches none.
+/// Sends gestures through a guest HID service for each originating Mac trackpad.
+/// Pointer movement and the first gesture event position the service's hidden pointer.
+/// Events without a Mac HID origin, such as synthesized events, are ignored.
 @MainActor
 package final class NativeTrackpadGestures {
     /// A trackpad's guest service, with the observer that keeps that trackpad's gesture state.
@@ -294,10 +292,9 @@ package final class NativeTrackpadGestures {
         try send(event, coordinateTransform: coordinateTransform, to: service)
     }
 
-    /// Sends `event`, a step of a scroll or pinch, to `service`, the service of the Mac HID service that sent it. When
-    /// `event` begins its gesture, the service's hidden pointer first moves to where `coordinateTransform` maps the
-    /// event's window location; without a transform, the gesture happens where the pointer already is. The gesture's
-    /// later steps stay where it began.
+    /// Sends a scroll or pinch step to its originating trackpad's service.
+    /// The first step positions the pointer using `coordinateTransform`, if supplied;
+    /// later steps retain that position.
     package func send(_ event: NSEvent, coordinateTransform: CGAffineTransform?, to service: Service) throws {
         // Panning, zooming, or turning the canvas moves the screen under a still pointer without a mouse movement, so a
         // gesture first moves the trackpad's pointer to what the screen now shows under it.
@@ -411,11 +408,9 @@ package final class NativeTrackpadGestures {
     }
 }
 
-/// Forwards the Mac trackpads' scrolling and pinches over a simulator's screen, with the mouse movements that place them,
-/// to guest UniversalHID services that carry each trackpad's own HID properties, created through CoreDevice for a
-/// default-set simulator or with CoreDevice's requests for any simulator. Device Hub gives an ordinary simulator this input
-/// through its HID view when the simulator's CoreDevice record exposes UniversalHID; SimulatorKit's digitizer drops these
-/// events unless a crown or dial takes the scrolling.
+/// Routes simulator scrolling and pinches through guest UniversalHID services carrying
+/// the Mac trackpad's properties. Uses CoreDevice for default-set simulators or equivalent
+/// guest requests for other sets. SimulatorKit drops these events unless a crown or dial uses them.
 @MainActor
 package final class NativeDeviceTrackpad {
     /// Receives failures of events that were already accepted, such as a trackpad service that could not be created.
@@ -507,11 +502,9 @@ package final class NativeDeviceTrackpad {
     }
 }
 
-/// Sends a simulator's touches on its integrated screen and its button usages to the guest's touchscreen and button
-/// services, in the order of the calls: through CoreDevice's digitizer and button services for a default-set simulator,
-/// or with the messages that those services send for a simulator of any device set. Once a guest starts the services of
-/// its native input, it drops SimulatorKit's touches and buttons on services it had not used yet; a screen whose keyboard
-/// or trackpad input is native therefore sends these natively too, as Device Hub does.
+/// Sends integrated-screen touches and buttons through native guest services in call order.
+/// Uses CoreDevice or equivalent guest messages for other device sets. Native keyboard and
+/// trackpad services make the guest reject SimulatorKit touches, so these must switch too.
 @MainActor
 package final class NativeDeviceScreenInput {
     /// Receives failures of touches that were already accepted.

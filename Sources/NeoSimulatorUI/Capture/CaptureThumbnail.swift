@@ -6,14 +6,11 @@ import NeoSimulatorKit
 import QuartzCore
 import UniformTypeIdentifiers
 
-/// Temporary screenshot or recording, owned until saved, deleted, or handed off.
+/// Owns a temporary capture until saved, deleted, or delivered.
 ///
-/// This object is the capture's one owner. File work runs away from the main actor, one operation at a time in the order
-/// they were asked for, and each reads what the one before it settled. So a save, a delete and a late delivery that race
-/// cannot move or remove the file twice, and none repeats what another attempted.
-///
-/// It also owns what became of a save nobody asked for, past its thumbnail, its window and any stop that gave up waiting.
-/// Hearing of a failure does not save the capture, so a stop of its owner goes on saying so until something settles it.
+/// File operations run serially off MainActor, preventing competing saves, deletes, and
+/// late deliveries from moving the file twice. Failed automatic saves remain owned after
+/// the thumbnail or window closes, and later stops report them until resolved.
 @MainActor
 package final class CapturedContent {
     package enum Kind { case screenshot, movie }
@@ -615,10 +612,9 @@ package final class CaptureThumbnail: NSObject {
         pending.removeAll { belongs($0.content) }
     }
 
-    /// Saves unresolved captures and waits until `deadline` for every file operation of theirs in flight, including an animated
-    /// GIF being written, then returns the failures their owner has to hear. A disk that holds them longer does not hold a
-    /// quit, which is told where each capture remains. Only this wait ends: the work carries on, cannot lose the original,
-    /// and a failure from here on goes to whoever began it, and to the next stop while the capture remains unsaved.
+    /// Waits until `deadline` for the owner's capture operations, including GIF export.
+    /// Reports failures and locations of unfinished work. Operations continue after timeout;
+    /// late failures reach their initiator and later stops while the capture remains unsaved.
     @discardableResult
     package static func finishAll(owner: UUID? = nil,
                                   before deadline: ContinuousClock.Instant = .now + HostPreferences.terminationLimit) async -> [Error] {
@@ -638,8 +634,8 @@ package final class CaptureThumbnail: NSObject {
         return failures + [SimulatorError.operation("Capture file work did not finish before the context stopped.\(detail)")]
     }
 
-    /// For an owner that has told the user what a stop returned and will not hold anything on those captures, which stay
-    /// where that said: its next stop does not repeat them.
+    /// Acknowledges reported failures so later stops can proceed without repeating them.
+    /// Captures remain at their reported locations.
     package static func acknowledgeFailures(owner: UUID? = nil) {
         guard !isFinishing(owner) else { return }
         CapturedContent.forgetFailures(owner: owner)

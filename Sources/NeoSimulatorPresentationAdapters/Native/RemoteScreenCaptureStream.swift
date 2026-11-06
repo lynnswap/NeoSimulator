@@ -5,15 +5,14 @@ import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import QuartzCore
 
-/// Receives one capture source's video frames and presents the latest through Metal.
+/// Presents a capture source's latest frame through Metal.
 ///
-/// The capture output, Metal texture cache and GPU submissions share this actor's serial
-/// queue. A frame's IOSurface-backed pixel buffer stays retained until the GPU finishes copying
-/// it into a drawable; frames that arrive while two copies are in flight replace the waiting one.
+/// Capture output, texture cache, and GPU submissions share this actor's serial queue.
+/// Pixel buffers remain retained through GPU completion. With two copies in flight,
+/// new frames replace the waiting frame.
 ///
-/// The capture session's own calls can block for seconds, so they run in order on a second queue
-/// that only this stream uses, and this actor keeps answering while they do. Stopping is accepted at
-/// once; what it ends stays retained until the session has closed and the GPU has finished.
+/// Blocking capture-session calls use a separate serial queue. Stop is accepted immediately;
+/// resources remain retained until the session and GPU work finish.
 actor RemoteScreenCaptureStream {
     package enum Event: Sendable {
         /// The first frame, or a frame whose pixel size differs from the previous one.
@@ -111,8 +110,8 @@ actor RemoteScreenCaptureStream {
                        recoverySuggestion: "Allow NeoSimulator in System Settings > Privacy & Security > Camera, then reconnect the screen.")
     }
 
-    /// Starts video-only capture from the source. Stopping or cancelling ends this wait at once. The session's
-    /// calls then finish on their queue, and only stopping the stream closes what they opened.
+    /// Starts video-only capture. Cancellation or stopping ends this wait immediately;
+    /// queued session work continues, and stopping the stream closes its resources.
     package func start(sourceID: String) async throws {
         guard !stopped else { throw CancellationError() }
         try Task.checkCancellation()
@@ -156,9 +155,8 @@ actor RemoteScreenCaptureStream {
         return try await performBlockingIO { try Self.image(from: frame) }
     }
 
-    /// Ends capture and drops queued frames at once, then waits for the session to close and for GPU copies that
-    /// still read a frame. A wait that reaches the stream's limit is reported; the shutdown keeps its frames and
-    /// carries on, and stopping again waits for it again.
+    /// Drops queued frames, then waits for session shutdown and pending GPU copies.
+    /// Timeout reports incomplete shutdown while retaining resources; another stop joins it.
     package func stop() async throws {
         let shutdown = beginShutdown()
         guard await shutdown.ends(before: .now + stopLimit) else {

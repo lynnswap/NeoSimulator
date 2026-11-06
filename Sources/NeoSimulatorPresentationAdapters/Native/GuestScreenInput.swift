@@ -45,10 +45,9 @@ package final class GuestScreenInput: NativeScreenInputTransport {
     }
 }
 
-/// Sends a simulator's button usages to the guest's button service, as the Indigo events that CoreDevice's button service
-/// sends it, for a screen whose touches DeviceKit's view owns. The buttons need only the booted guest, not CoreDevice's
-/// view of it. They prepare and connect at the first press, so neither holds the screen. A press whose connection has
-/// ended connects again; what was sent before is not sent again.
+/// Sends button usages as CoreDevice-compatible Indigo events while DeviceKit owns touches.
+/// Connects on the first press using only the booted guest, without delaying the screen.
+/// Reconnects after disconnection without replaying previous input.
 @MainActor
 package final class GuestButtonInput: NativeScreenInputTransport {
     private let prepare: @MainActor () async throws -> SimulatorGuestHID

@@ -17,7 +17,7 @@ struct ManagerModelTests {
         var reports: [any Error] = []
         let takeovers = HostTakeovers<NSObject> { reports.append($0) }
         var first: NSObject? = NSObject()
-        weak var retained = first
+        weak let retained = first
         let second = NSObject()
         takeovers.begin(try #require(first), hostName: "Simulator") {
             takeovers.begin(second, hostName: "Simulator", checkOthers: {})
@@ -1089,7 +1089,7 @@ struct ManagerModelTests {
         try await bSession.start()
         let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
         let bController = RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in })
-        let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
+        let aID = DeviceInventoryID.coreDevice(a.identifier)
         app.screens.attach(aController)
         app.screens.attach(bController)
         main.selectDevice(aID)
@@ -1622,7 +1622,8 @@ struct ManagerModelTests {
         func show(_ device: InventoryDevice) throws {
             manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
             manager.inspect(device, selectionCount: 1)
-            controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+            let selectedDevice = try #require(manager.registry.device(for: device.id))
+            controller.update(device: selectedDevice, isManaging: false, isVisible: true)
         }
         func records() -> Int {
             switch (selection.page, selection.content) {
@@ -1686,7 +1687,8 @@ struct ManagerModelTests {
         func show(_ device: InventoryDevice) throws {
             manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
             manager.inspect(device, selectionCount: 1)
-            controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+            let selectedDevice = try #require(manager.registry.device(for: device.id))
+            controller.update(device: selectedDevice, isManaging: false, isVisible: true)
         }
         controller.inspection.select(.provisioning)
         try show(original)
@@ -1786,7 +1788,8 @@ struct ManagerModelTests {
         controller.inspection.select(content)
         for device in [first, second] {
             manager.inspect(device, selectionCount: 1)
-            controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+            let selectedDevice = try #require(manager.registry.device(for: device.id))
+            controller.update(device: selectedDevice, isManaging: false, isVisible: true)
             #expect(await events.next() == .inspect(device.id))
             await finishInspectorRead(controller.inspection)
             guard device.id == first.id else { break }
@@ -1867,7 +1870,8 @@ struct ManagerModelTests {
         manager.inspect(device, selectionCount: 1)
         controller.setPage(.info)
         controller.inspection.select(.applications)
-        controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+        let selectedDevice = try #require(manager.registry.device(for: device.id))
+        controller.update(device: selectedDevice, isManaging: false, isVisible: true)
         let install = try #require(inspectorViews(controller.view).compactMap { $0 as? NSButton }.first { $0.toolTip == "Install…" })
         #expect(install.isEnabled && !install.isHidden)
 

@@ -52,8 +52,8 @@ package final class DeviceInventoryObservation {
         try await task.value
     }
 
-    /// Reports a service that outlives a caller's limit and asks again, which waits on the same initialization, since
-    /// nothing else would start the observation when it finishes. Returns whether that happened.
+    /// Reports an initialization timeout and rejoins the shared task so observation can start
+    /// when it finishes. Returns whether the timeout occurred.
     private func initializeSource() async throws -> Bool {
         var wasDelayed = false
         while true {

@@ -1,8 +1,7 @@
 import NeoSimulatorKit
 import Observation
 
-/// Which device the manager shows, and so what stays current. What is known of a device belongs to its model, so changing
-/// the selection reads only what is out of date, and returning to a device finds it as it was left.
+/// Retains read interest for the selected device. Device state stays in its shared model.
 @MainActor @Observable
 final class ManagerSelection {
     private(set) var device: DeviceModel?

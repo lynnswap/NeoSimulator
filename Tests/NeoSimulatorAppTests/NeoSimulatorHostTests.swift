@@ -904,7 +904,7 @@ struct InputFocusTests {
         func select(_ source: RemoteScreenCaptureSource) {
             let item = NSMenuItem()
             item.representedObject = source
-            #expect(NSApp.sendAction(Selector(("captureSourceSelected:")), to: controller, from: item))
+            #expect(NSApp.sendAction(NSSelectorFromString("captureSourceSelected:"), to: controller, from: item))
         }
         // Cancelling a pending capture's save prompt cancels the disconnect in the same way.
         transport.onReleaseInputs = {
@@ -4603,7 +4603,7 @@ struct InputFocusTests {
         controller.focusInput()
         #expect(window.firstResponder === overlay)
         #expect(!overlay.modifiers.isEmpty && display.input.modifiers.isEmpty)
-        #expect(overlay.tryToPerform(Selector(("homeButtonPressed:")), with: nil))
+        #expect(overlay.tryToPerform(NSSelectorFromString("homeButtonPressed:"), with: nil))
         #expect(display.buttons == [.home])
     }
 
@@ -4703,7 +4703,7 @@ struct InputFocusTests {
         let recording = try #require(controller.session.recording)
         #expect(display.announcedRecordings == [true])
         // Simulator.app's plugin uses toggleVideoRecording: to stop recording.
-        #expect(overlay.tryToPerform(Selector(("toggleVideoRecording:")), with: nil))
+        #expect(overlay.tryToPerform(NSSelectorFromString("toggleVideoRecording:"), with: nil))
         #expect(recording.isStopping)
         try await recording.waitUntilFinished()
         try await wait { controller.session.recording == nil }
@@ -7324,7 +7324,7 @@ struct InputFocusTests {
         try await wait { display.guestStateReads == 2 && changes == 5 }
         #expect(model.isBiometricEnrolled == true && model.showsStandBy == false)
         #expect(controller.session.isBiometricEnrolled)
-        DeviceCommand.command(.faceIDEnrolled).validate(enrolled, for: controller)
+        _ = DeviceCommand.command(.faceIDEnrolled).validate(enrolled, for: controller)
         #expect(enrolled.state == .on)
     }
 

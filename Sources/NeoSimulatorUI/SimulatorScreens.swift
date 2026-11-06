@@ -2,8 +2,8 @@ import AppKit
 import NeoSimulatorKit
 import NeoSimulatorPresentationAdapters
 
-/// One connected simulator screen that can move between embedded and window presentations. Its device, commands and
-/// lifetime are its ``session``'s.
+/// A connected simulator screen that moves between embedded and window presentations.
+/// Its ``session`` provides the device, commands, and lifetime.
 @MainActor
 public final class SimulatorScreen {
     /// The open device this screen presents.
@@ -61,13 +61,13 @@ public final class SimulatorScreen {
 
 /// Presents the devices of one ``SimulatorContext``.
 ///
-/// Creating this loads the process's UI toolkit, so that a context which only reads and manages devices never does. It
-/// fails when another application is displaying the simulators. A context takes one of these.
+/// Creation loads the process's UI toolkit and fails if a competing app is displaying
+/// simulators. Each context accepts one presenter.
 @MainActor
 public final class SimulatorScreens {
     public let context: SimulatorContext
     private struct Presented { weak var screen: SimulatorScreen? }
-    /// What keeps a screen is its session's own owner and whoever uses it, so this outlives neither.
+    /// Weak references; sessions and callers own the screens.
     private var presented: [SimulatorDeviceIdentifier: Presented] = [:]
 
     public init(context: SimulatorContext) async throws {
@@ -79,9 +79,9 @@ public final class SimulatorScreens {
         }
     }
 
-    /// Attaches to an already running guest and presents it. Boot it through the context first when necessary. Reopening
-    /// an attached device returns the same screen. Concurrent callers share the connection; canceling one caller only
-    /// cancels that caller's wait.
+    /// Attaches to a running guest. Use the context to boot it first if needed.
+    /// Reopening returns the same screen. Concurrent callers share the connection;
+    /// cancelling one caller ends only its wait.
     public func open(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorScreen {
         try await mappingToSimulatorError { screen(of: try await context.openSession(id)) }
     }

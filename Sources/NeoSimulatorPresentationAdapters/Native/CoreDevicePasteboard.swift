@@ -11,10 +11,9 @@ package protocol PasteboardTransport: AnyObject {
     func read(into pasteboard: NSPasteboard) async throws -> Int
     /// Replaces the device's pasteboard with `pasteboard`'s.
     func send(_ pasteboard: NSPasteboard) async throws
-    /// Observes the device's later pasteboard changes until the observation ends or the task is cancelled. For each
-    /// change that a Mac did not send, `changed` receives the transfer that replaces `pasteboard` with it. The
-    /// transfer calls `shouldReplace` just before it replaces `pasteboard`, without suspending in between, and
-    /// returns `pasteboard`'s resulting change count, or nil without replacing it when `shouldReplace` returns false.
+    /// Observes device-originated changes until stopped or cancelled.
+    /// Each `changed` transfer checks `shouldReplace` immediately before replacing `pasteboard`.
+    /// It returns the resulting change count, or nil if replacement was declined.
     func observeDeviceChanges(into pasteboard: NSPasteboard,
                               _ changed: @escaping @MainActor (_ write: @escaping @MainActor (_ shouldReplace: @escaping @MainActor () -> Bool) async throws -> Int?) -> Void) async throws
     /// Observes `pasteboard`'s later changes until the observation ends or the task is cancelled. For each change that
@@ -255,10 +254,9 @@ package final class CoreDevicePasteboardTransport: PasteboardTransport {
         }
     }
 
-    /// Writes a device change to `pasteboard` when `shouldReplace` allows it once the write is ready, and returns nil
-    /// otherwise. A send that the device acknowledged after the change was observed replaced it there, so the
-    /// change's items first go back to the device as the latest copy observed on it. `pasteboard` gets the change
-    /// itself, whose origin keeps the Mac's observation from sending it back.
+    /// Writes a device change when `shouldReplace` permits, otherwise returns nil.
+    /// If a later send already replaced it on the device, restores this latest observed copy there.
+    /// The Mac copy retains its origin so observation does not send it back.
     private func write(_ snapshot: NativeSwiftValue, version: Version?, into pasteboard: NSPasteboard,
                        shouldReplace: @MainActor () -> Bool) async throws -> Int? {
         if let version, let acknowledgedVersion, version.precedes(acknowledgedVersion) {

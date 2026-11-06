@@ -1,9 +1,8 @@
 import Foundation
 
-/// One operation's result for any number of callers, each of which waits only as long as it chooses. A caller that stops
-/// waiting, because it was cancelled or its limit passed, leaves the operation running, and nothing waits on its behalf.
-/// Whoever asks later waits on the same run and gets its result, so a pending operation is never replaced. It starts when
-/// first asked for and never starts again.
+/// Shares one lazily started operation among callers.
+/// Cancellation or timeout ends only that caller's wait. Later callers join the same
+/// operation, which is never replaced or restarted.
 @MainActor
 package final class SharedTask<Value: Sendable> {
     private let name: String
@@ -57,10 +56,9 @@ package final class SharedTask<Value: Sendable> {
     }
 }
 
-/// A value read on a channel's worker for everyone who asks, and what was last read. A read that has started answers
-/// those who asked before it. Everyone who asks meanwhile shares one more, which starts when it ends, so however many
-/// ask, at most one read is running and one waiting. No caller's cancellation or limit stops a read, whose channel still
-/// accounts for it, and a failed read leaves what was last read in place.
+/// Shares worker reads and retains the last successful value.
+/// Requests during a read coalesce into one subsequent read. Caller cancellation or timeout
+/// does not stop the channel's work; failed reads preserve the cached value.
 @MainActor
 package final class CoalescedChannelRead<Value: Sendable> {
     package private(set) var latest: Value?

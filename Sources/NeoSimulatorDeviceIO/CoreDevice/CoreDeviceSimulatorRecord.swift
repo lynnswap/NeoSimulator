@@ -8,8 +8,8 @@ package protocol CoreDeviceFeatureRecord: AnyObject, Sendable {
     func supports(_ feature: String) throws -> Bool
 }
 
-/// Where a simulator's record and the notifications of its changes come from. Each stream starts with what is current
-/// when it is followed, so a change right after a read is not missed.
+/// Supplies a simulator record and change streams that begin with current state,
+/// so subscribing after a read cannot miss an intervening change.
 @MainActor
 package protocol CoreDeviceRecordSource: AnyObject, Sendable {
     associatedtype Record: CoreDeviceFeatureRecord
@@ -30,16 +30,14 @@ package enum CoreDeviceFeatureAnswer<Record> {
     case absent
 }
 
-/// The one owner of a screen connection's view of its simulator's CoreDevice record. A missing record or one that is not
-/// connected is no answer, so what asks waits on CoreDevice's notifications for one, and a failed read is its asker's
-/// failure, not an answer. Observation starts before reading, and ends when no asker remains.
+/// Follows a screen connection's current CoreDevice record.
 ///
-/// A simulator's record lists no features until the simulator boots, and none again once it shuts down.
+/// Missing or disconnected records wait for notifications; read failures propagate.
+/// Observation starts before reading and ends when no callers remain. Simulator features
+/// are available only while booted.
 ///
-/// Each change of CoreDevice's list begins a generation, since it can replace the record. A read and its decision belong to
-/// the generation they began in. Only while that is current and this has not stopped may they change `latest` or give an
-/// answer or a failure, and otherwise the read goes out again on the list as it is now, or ends as cancelled after a stop.
-/// `recordFollower` only ever follows a record read in the current generation.
+/// List changes advance a generation and replace the record subscription. Stale reads
+/// retry against the current generation; stopping cancels pending and future waits.
 @MainActor
 package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     private let source: Source
@@ -205,8 +203,6 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
         latest = nil
     }
 }
-
-extension CoreDeviceRemoteScreenDevice: CoreDeviceFeatureRecord {}
 
 /// The record of the simulator of `udid` in CoreDevice's own list, which holds only the default device set.
 @MainActor

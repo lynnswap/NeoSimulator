@@ -25,18 +25,13 @@ The compatibility gate checks:
 - The packaged renderer and its private runtime contract, including Objective-C
   messages, Swift members, C symbols, and loaded-image provenance.
 
-The embedded renderer's internal `--validate-runtime` mode prepares the required
-Simulator interfaces without creating an application or device session. This
-required-only mode produces no stdout on success. Add `--include-native-bindings`
-to explicitly prepare optional native canvas, pose, app-resize, display-HID,
-remote display-geometry, and sidebar Active-state bindings and write their JSON
-diagnostic report to stdout after the required checks succeed. Each result records
-its preparation stage, any unavailable declaration or failure, and the remaining
-device, provider, or service checks. Successful preparation does not establish
-device support or working rendering and I/O. Optional preparation failures do
-not change the required gate's successful exit status. Normal feature operations
-prepare these bindings at their existing lazy boundaries and report their own
-failures.
+The renderer's internal `--validate-runtime` mode checks required interfaces
+without creating an app or device session. Success produces no stdout.
+`--include-native-bindings` also prepares optional bindings and emits a JSON
+report of preparation stages, failures, and checks still requiring a device or
+service. Optional failures do not change the required checks' exit status.
+Preparation alone does not establish device support or working I/O; features
+connect lazily and report their own failures.
 
 The gate inspects tool wrappers but does not execute them, avoiding their implicit first-launch setup.
 Device UI plugins such as `XROS.simdeviceui` load when SimulatorKit connects a
@@ -45,27 +40,6 @@ display; their provenance is checked then.
 Xcode 27 is the minimum generation. Later versions are accepted only when the
 required contracts still match. An unavailable required interface stops the operation;
 there is no compatibility bypass or Device Hub fallback.
-
-## Reference evidence
-
-The original behavioral analysis used Simulator.app 16.0 (1063.4) from Xcode
-26.5, with window appearance also checked against Xcode 26.6. The following
-addresses identify that reference binary only.
-
-| Reference | Observation | Neo implementation |
-| --- | --- | --- |
-| `DeviceWindow.awakeFromNib`, `0x100035B28` | DarkAqua, transparent window, disabled tabbing, shadow setup | AppKit window shell |
-| `DeviceWindowController.setShowChrome:`, `0x100048374` | Sets SimulatorKit display chrome | `SimDisplayView` chrome and key-state forwarding |
-| `windowDidResize:`, `0x10004BEF4`; `windowDidEndLiveResize:`, `0x10004C040` | Update geometry and final render scale | Shared display fitting |
-| `MainMenu.nib` and platform toolbar nibs | Menu order, actions, shortcuts, and platform variants | `DeviceCommand`, `MenuController`, `DeviceToolbar` |
-| Home, `0x1000540EC`; Lock, `0x10005411C` | Send HID button down/up | Session-owned HID input |
-| Save Screen, `0x1000570D8`; Record Screen, `0x100058EC4` | Capture options and destinations | Direct `simctl` capture and thumbnail handling |
-| Window scale, `0x100054BBC` | Display render scale and size conversion | `WindowScale`, `DisplayFitting` |
-
-The menu archive is a capability superset. Its presence alone does not establish
-that a command works for every device or is available to an ad-hoc-signed app.
-Command availability follows device capabilities and state. ABI layouts and
-callback-lifetime constraints remain documented beside their bindings.
 
 ## Boundaries that affect behavior
 
@@ -92,10 +66,6 @@ Unit and host tests validate isolated state, command handling, private-interface
 lookup, and native window/input behavior; they do not establish simulator E2E
 compatibility. See <doc:Development> for the commands.
 
-An early live probe used Xcode 27.0 build `27A5252f` with iOS 26.5 and confirmed
-rendering, accessibility, Home, software keyboard, focused typing, resizing,
-capture, and framework provenance in an ad-hoc-signed process without Device
-Hub. Subsequent development also exercised gestures, pasteboards, audio,
-external displays, CarPlay, and Watch/TV/Vision controls. These are historical
-observations, not a guarantee for every Xcode/runtime combination. Recheck the
-affected device and runtime when changing a private interface.
+Live checks have covered rendering, input, capture, pasteboards, audio, external
+displays, and platform controls. Recheck the affected device and runtime when
+changing a private interface; past checks do not cover every Xcode/runtime combination.
