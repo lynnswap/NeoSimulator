@@ -25,10 +25,9 @@ moves the screen to a separate window; **Show in Main Window** brings it back.
 You can also open **Device** in the Dock menu or **File → Open Simulator** and
 choose its OS version and name.
 
-Use Xcode for Build & Run as usual. Change **Preferred Display Host** in
-**Settings → General** to switch to Device Hub or back to NeoSimulator. Existing
-choices are preserved. Switching leaves simulator devices running, and NeoSimulator
-stays in the Dock in either mode.
+Use Xcode for Build & Run. **Settings → General → Preferred Display Host**
+switches between NeoSimulator and Device Hub, leaving devices running and
+NeoSimulator in the Dock. The choice is saved.
 
 Quitting keeps your selected display host. NeoSimulator does not launch
 automatically. Choose Device Hub in Settings to use it for future Xcode runs.
@@ -49,6 +48,5 @@ to restore the saved Xcode routing preferences. Then quit NeoSimulator and remov
 Applications. Your simulator devices are kept. See <doc:Configuration> if
 restoration reports a conflict.
 
-If you previously installed the CLI, its files remain until you remove them.
-See [Migrating from the CLI](https://github.com/lynnswap/NeoSimulator/blob/main/Documentation/MigratingFromCLI.md)
-for the cleanup commands and the settings record that should be kept.
+For old CLI files, follow the cleanup instructions in
+[Migrating from the CLI](https://github.com/lynnswap/NeoSimulator/blob/main/Documentation/MigratingFromCLI.md).

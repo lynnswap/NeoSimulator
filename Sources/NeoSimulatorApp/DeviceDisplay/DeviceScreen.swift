@@ -6,10 +6,8 @@ import NeoSimulatorUI
 import Observation
 import ObservationBridge
 
-/// One device screen open in the manager. It keeps the screen's canvas controls current, dispatches their actions,
-/// and moves the controller's presentation when the presentation owner asks.
-///
-/// The controller retains the connection; `DeviceScreens` registers the screen and ends it.
+/// An open manager screen's canvas controls, actions, and presentation.
+/// The controller retains its connection; `DeviceScreens` registers and ends the screen.
 @MainActor @Observable
 final class DeviceScreen {
     enum Controller {

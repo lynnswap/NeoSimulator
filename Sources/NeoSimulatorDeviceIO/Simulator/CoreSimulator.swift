@@ -6,9 +6,9 @@ import ObjectiveC
 import Synchronization
 import XPC
 
-/// Prepared CoreSimulator messages. NSError-out failures and Objective-C exceptions are surfaced as Swift errors. The
-/// messages can be sent from any queue, and nearly all of them wait on one of CoreSimulator's queues or on its service, so
-/// no Swift job may send them: only a `SimulatorDeviceSet`'s or a `SimulatorDevice`'s worker does.
+/// Prepared CoreSimulator messages, callable only on device or device-set workers because
+/// they block on native queues and services. NSError outputs and Objective-C exceptions
+/// become Swift errors.
 package struct CoreSimulatorInterface: @unchecked Sendable {
     /// Loads CoreSimulator and prepares its messages, which neither selects nor loads a UI toolkit.
     package static func load() async throws -> CoreSimulatorInterface {
@@ -200,9 +200,7 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
     }
 }
 
-/// A device's prepared messages that wait on its guest or on CoreSimulator's services: bridge requests, service lookups
-/// and guest notifications. They block their thread for as long as the guest takes, which can be forever, so nothing on
-/// the main actor can reach them. Prepared messages and SimDevice support being sent from another queue.
+/// Prepared guest requests that may block indefinitely. Send only from the device worker.
 private struct GuestMessages: @unchecked Sendable {
     typealias CloudSyncCompletion = CoreSimulatorInterface.CloudSyncCompletion
 
@@ -372,9 +370,8 @@ package struct GuestStateReading: Equatable, Sendable {
     }
 }
 
-/// What a SimDevice reported when it was read. Its state, name, boot date, runtime and device type all wait on one of
-/// CoreSimulator's queues, so this is captured on a worker. It holds only values, so what lists a set's devices cannot
-/// reach a guest with them: that takes the device's ``SimulatorDevice``, from ``SimulatorDeviceSet/client(withIdentifier:)``.
+/// A device snapshot captured on its worker. These values provide no guest access;
+/// use ``SimulatorDeviceSet/client(withIdentifier:)`` for a ``SimulatorDevice``.
 package struct SimulatorDeviceRecord: Sendable {
     package let identifier: String
     package let name: String
@@ -447,12 +444,12 @@ package struct SimulatorDeviceRecord: Sendable {
     }
 }
 
-/// A device's own connection to CoreSimulator, which everything that reaches the device shares, with what its set last
-/// reported. Its set makes one when it is first asked for and updates it with each report, so reading these properties
-/// waits for nothing and what holds the device sees its state change. It stays for closing and reopening a window and for
-/// rebooting the guest. It ends only when its set reports the device's deletion or CoreSimulator ends its connection,
-/// after which its requests fail unsent, and whoever asks the set next gets another. Its context and set stay until the
-/// last thing holding it lets go, since a SimDevice holds its set weakly and SimulatorKit cannot use one without it.
+/// A device's shared CoreSimulator connection and cached state.
+///
+/// The set creates it lazily and updates its values after each read. The client survives
+/// window closure and reboot. Deletion or connection invalidation ends it: old requests
+/// fail unsent, and the next lookup opens a new client.
+/// It retains its context and set while held, because SimDevice references its set weakly.
 @MainActor
 package final class SimulatorDevice {
     package private(set) var record: SimulatorDeviceRecord
@@ -583,8 +580,7 @@ package final class SimulatorDevice {
         }
     }
 
-    /// Reads Increase Contrast's mode, 1 when it is off and 2 when it is on and 0 when unknown, and sets whether it is on
-    /// as `change` decides, as one step.
+    /// Atomically reads Increase Contrast (0 unknown, 1 off, 2 on) and applies `change`.
     package func updateIncreaseContrast(_ change: @escaping @Sendable (Int) throws -> Bool) async throws {
         try await channel.change("change the device's Increase Contrast") { [guest] in
             let enabled = try change(try unsafe guest.messages.increaseContrastMode.unsafeInvoke(on: guest.device))
@@ -745,20 +741,18 @@ package struct LocationScenario: Equatable, Sendable {
     }
 }
 
-/// The owner of one device set of one developer directory, which every path to the set shares. CoreSimulator's context and
-/// set are created and read only on the worker of the set's channel, since creating them, listing their devices and
-/// reading a device's state all wait on CoreSimulator's queues or its service. What the set last reported stays readable
-/// here as values, also while a call is held. Reads are shared: see ``CoalescedChannelRead``.
+/// Owns one developer directory's device set and its cached records.
 ///
-/// It also owns one ``SimulatorDevice`` per device that something asked to reach. Listing devices makes none.
+/// Opening, listing, and state reads run on the set's channel worker. Cached values stay
+/// readable during blocked calls; ``CoalescedChannelRead`` shares refreshes.
+/// The set creates a ``SimulatorDevice`` only when guest access is requested.
 @MainActor
 package final class SimulatorDeviceSet {
     private static var sets: [DeviceSetAddress: SimulatorDeviceSet] = [:]
 
-    /// The set's owner. This waits for nothing: the set opens on its worker when it is first used.
-    ///
-    /// `listing` makes a set that is new here report devices of those identifiers on each read, in place of what
-    /// CoreSimulator lists, for what depends on what a read reports and not on a device. Everything else stays native.
+    /// Returns the set owner; native opening is deferred to its first worker request.
+    /// `listing` overrides reported identifiers for a newly created owner, leaving other native
+    /// behavior intact.
     package static func shared(interface: CoreSimulatorInterface, developerDirectory: String,
                                path: String? = nil, listing: [String]? = nil) -> SimulatorDeviceSet {
         let address = DeviceSetAddress(developerDirectory: developerDirectory, path: path)
@@ -826,10 +820,9 @@ package final class SimulatorDeviceSet {
         }
     }
 
-    /// The device's own connection to CoreSimulator, opened on the device's worker when first asked for, and nil if the
-    /// set does not hold the device. Whoever asks while it opens shares that opening, each for as long as it waits. A failure
-    /// goes to those waiting, and the next request tries again on the same worker, so no two openings or their
-    /// connections' requests ever overlap.
+    /// Opens a device client on its worker, or returns nil if the device is absent.
+    /// Concurrent callers share the opening. Failure permits retry on the same worker,
+    /// preventing overlapping openings or native requests.
     package func client(withIdentifier identifier: String) async throws -> SimulatorDevice? {
         let key = identifier.uppercased()
         var client = clients[key] ?? DeviceClient(native: makeClient(key))
@@ -1015,16 +1008,12 @@ private func allocate(_ type: AnyClass) -> AnyObject? {
     (type as? NSObject.Type)?.perform(NSSelectorFromString("alloc"))?.takeRetainedValue()
 }
 
-/// One device's own CoreSimulator context and set, whose connection to CoreSimulatorService no other device's calls wait
-/// on. The worker of the device's channel opens and releases them and alone touches `opened`.
+/// Owns a device's private CoreSimulator context and set on its channel worker.
 ///
-/// A context and its set retain each other, the connection retains the context, and each device and pair of the set holds a
-/// handler that retains the set. So nothing frees them unless the connection is cancelled and the set lets go of its
-/// context, devices and pairs. Whatever ends the connection, CoreSimulator reports it once, and only after that report and
-/// after whatever holds the device has let go can they be released: a release before the report can leave the context
-/// allocated, and one before the device is let go leaves SimulatorKit a SimDevice without a set, which throws when used.
-/// Cancelling this connection ends only this client: it returns a lookup that the connection holds, but not a bridge call,
-/// which keeps the worker until it returns.
+/// Native retain cycles require cancelling the connection and clearing the set's context,
+/// devices, and pairs. Release waits for the connection-end notification and all device
+/// holders; earlier release can leak the context or leave SimulatorKit without a set.
+/// Cancellation returns held lookups, but bridge calls occupy the worker until they return.
 private final class NativeDeviceClient: @unchecked Sendable {
     struct OpenedDevice: @unchecked Sendable {
         let object: AnyObject

@@ -2,11 +2,10 @@ import AppKit
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 
-/// A device's CoreDevice pasteboard connection. Transfers run one at a time in the order they were requested or
-/// observed. A queued automatic send yields to a change that the connection observes later, and a device copy's
-/// write to a later copy from any device or a later Mac change. Requested transfers report the events
-/// SimPasteboardPlus reports, and automatic ones their own, so that a requested transfer queued behind an automatic
-/// one, as after synchronization turns off, keeps its own result.
+/// Serializes requested and observed CoreDevice pasteboard transfers.
+/// Later observed changes supersede queued automatic sends; later Mac or device copies
+/// supersede pending device writes. Requested transfers retain their own completion result,
+/// including when queued behind automatic transfers.
 @MainActor
 package final class NativePasteboardConnection: SimulatorPasteboard {
     private let transport: any PasteboardTransport

@@ -45,10 +45,8 @@ package final class SimulatorConnection: SimulatorDisplay {
     /// and owns it; external and app-resizing displays keep SimulatorKit's input.
     private var trackpad: NativeDeviceTrackpad?
     private var trackpadInput: NativeTrackpadInput?
-    /// The device's native touchscreen and buttons, which take the touches that SimulatorKit's digitizer interprets on the
-    /// integrated screen and the device's buttons and HID usages, instead of SimulatorKit's Indigo messages. This
-    /// connection owns them; external and app-resizing displays keep SimulatorKit's input. A native canvas has only the
-    /// buttons here, since its touches go through DeviceKit's view.
+    /// Native touches and buttons for the integrated screen. External and resized-app displays
+    /// keep SimulatorKit input; native canvases send their own touches and use only these buttons.
     private var screenInput: NativeDeviceScreenInput?
     private var digitizerTouches: NativeDigitizerTouches?
     /// The buttons sent down through SimulatorKit and not yet up, whose releases must also go through it.
@@ -118,9 +116,9 @@ package final class SimulatorConnection: SimulatorDisplay {
         self.nativeKeyboard.add(self)
     }
 
-    /// Gives the display the native input that became ready, in place. The guest drops SimulatorKit's touches and buttons
-    /// once native keyboard or trackpad input starts, so what SimulatorKit holds finishes first, the touches change over
-    /// before anything else, and a digitizer that cannot take them leaves all of it with SimulatorKit.
+    /// Hands over after SimulatorKit's held inputs finish, activating native touches first.
+    /// Native keyboard or trackpad input makes the guest reject SimulatorKit touches and buttons.
+    /// If the digitizer cannot hand over touches, all input stays with SimulatorKit.
     package func activateNativeInput(_ services: NativeInputServices) async throws {
         guard let digitizerView else { return }
         var touches: NativeDigitizerTouches?

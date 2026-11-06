@@ -34,18 +34,15 @@ package enum DeviceInspectionSupport {
     case unsupported
 }
 
-/// What a device reports of itself: its details, its installed applications and profiles, and its reports.
+/// Cached device details, applications, profiles, and reports.
 ///
-/// Each part is read independently, only while something holds it through ``DeviceModel/keepCurrent(_:)``, and keeps what it
-/// last answered until a later answer replaces it. A failed read leaves the values and reports its reason in ``status(of:)``.
-/// ``DeviceReadStatus/unsupported`` means that the device never has this part, and clears it; a device that might answer
-/// later keeps what it has, and ``canRead(_:)`` says that it cannot answer now.
-///
-/// A change made through this object or a screen's import marks only what it can have changed as out of date. A change made
-/// elsewhere stays unknown until ``DeviceModel/revalidate(_:)``.
+/// Groups refresh independently while retained through ``DeviceModel/keepCurrent(_:)``.
+/// Failed reads preserve values and report through ``status(of:)``; unsupported groups clear
+/// them. Temporary unavailability preserves values and makes ``canRead(_:)`` return false.
+/// Local changes invalidate affected groups; external changes require ``DeviceModel/revalidate(_:)``.
 @MainActor @Observable
 public final class DeviceInspectionState {
-    /// The device's details under the names its tools use, so a name that one device has another can lack.
+    /// Device details keyed by the names its tools report. Available keys vary by device.
     public var info: [String: DeviceInfoValue] { infoRead.value }
     public var applications: [DeviceApplication] { applicationsRead.value }
     public var configurationProfiles: [DeviceProfile] { configurationRead.value }
@@ -94,7 +91,7 @@ public final class DeviceInspectionState {
         for read in reads { read.attach(to: owner) }
     }
 
-    /// What the last read of `group`, one group of ``DeviceStateGroups/inspection``, answered.
+    /// The last read status for one group in ``DeviceStateGroups/inspection``.
     public func status(of group: DeviceStateGroups) -> DeviceReadStatus {
         reads.first { $0.group == group }?.status ?? .unread
     }
@@ -104,8 +101,8 @@ public final class DeviceInspectionState {
         reads.contains { groups.contains($0.group) && $0.isReading }
     }
 
-    /// Whether the device can answer for `group`, one group of ``DeviceStateGroups/inspection``, now. A stopped simulator
-    /// cannot list its applications, for example, but keeps what it last listed.
+    /// Whether the device can currently read one inspection group.
+    /// Temporary unavailability, such as a stopped simulator, preserves cached values.
     public func canRead(_ group: DeviceStateGroups) -> Bool {
         guard let owner, !owner.isRetired else { return false }
         return owner.inventory.inspectionSupport(of: group) == .available
@@ -252,7 +249,7 @@ private final class InspectionRead<Value: Equatable & Sendable>: InspectionReadi
 
     func markDirty() { dirty = true }
 
-    /// A later read follows any read that is running, and a part with an accepted change reads after its outcome.
+    /// Coalesces reads, waiting for pending changes before read-back.
     func scheduleRead() {
         guard let owner, !owner.readsStopped, dirty, readTask == nil, changes == 0, owner.wants(group),
               owner.inventory.inspectionSupport(of: group) == .available else { return }

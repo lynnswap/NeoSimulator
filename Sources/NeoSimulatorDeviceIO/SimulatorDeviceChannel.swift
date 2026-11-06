@@ -121,10 +121,10 @@ package struct UnresolvedDeviceOperation: Equatable, Sendable {
     }
 }
 
-/// The one owner of the native requests of a device, or of a device set: their order, deadlines, queued cancellation and
-/// what is still in flight. The channel never runs a native call on its own queue, so it stays able to answer while one
-/// is held. The calls run one at a time on a serial worker, and a held call is never given a replacement thread. Being
-/// unresponsive ends only when the held call returns, whose late result then gets its cleanup.
+/// Serializes a device's or device set's native requests, deadlines, and cancellation.
+///
+/// Calls run on a separate serial worker so the actor remains responsive. An overdue call
+/// gets no replacement worker; the channel recovers when it returns and cleans up its result.
 package actor SimulatorDeviceChannel {
     package nonisolated let scope: DeviceChannelScope
     private let queue: DispatchSerialQueue
@@ -148,12 +148,8 @@ package actor SimulatorDeviceChannel {
 
     // MARK: Requests
 
-    /// Runs a call that changes nothing on the worker. Stopping a read needs no accounting, so cancelling one ends it
-    /// as `CancellationError`, whether it was running or waiting. Requests are queued before suspending, so a caller's
-    /// requests keep the order it made them in.
-    ///
-    /// `lateCompletion` receives the result of a call whose caller stopped waiting, on the worker, so that what the call
-    /// created still has an owner.
+    /// Queues a read in call order. Cancellation throws `CancellationError` whether queued or running.
+    /// `lateCompletion` receives abandoned results on the worker to clean up their resources.
     package nonisolated(nonsending) func read<Value: Sendable>(
         _ operation: String, limit: Duration = DeviceOperationLimit.bridge,
         lateCompletion: (@Sendable (Result<Value, any Error>) -> Void)? = nil,
@@ -162,9 +158,9 @@ package actor SimulatorDeviceChannel {
         try await perform(operation, changesDevice: false, limit: limit, lateCompletion: lateCompletion, body)
     }
 
-    /// Runs one step that changes what the channel owns on the worker, with everything that must not interleave with another
-    /// request in `body`. Cancelling it before it starts ends it as `CancellationError` without sending anything;
-    /// afterwards it ends as ``DeviceOperationFailure/outcomeUnknown(operation:cause:)``.
+    /// Runs an atomic change on the worker. Cancellation before execution throws
+    /// `CancellationError`; after execution starts, it reports
+    /// ``DeviceOperationFailure/outcomeUnknown(operation:cause:)``.
     package nonisolated(nonsending) func change<Value: Sendable>(
         _ operation: String, limit: Duration = DeviceOperationLimit.bridge,
         lateCompletion: (@Sendable (Result<Value, any Error>) -> Void)? = nil,
@@ -173,9 +169,8 @@ package actor SimulatorDeviceChannel {
         try await perform(operation, changesDevice: true, limit: limit, lateCompletion: lateCompletion, body)
     }
 
-    /// Releases what a native resource's owner left behind, on the worker, once no call holds it. Unlike a request it
-    /// is not refused while the channel is unresponsive, and nothing waits for it. What has not run by the end of the
-    /// process is in ``unresolvedOperations()``.
+    /// Queues resource release on the worker, even while the channel is unresponsive.
+    /// Does not wait; cleanup pending at process exit appears in ``unresolvedOperations()``.
     package nonisolated func cleanUp(_ operation: String, _ body: @escaping @Sendable () -> Void) {
         let request = DeviceRequest(cleanup: operation, body: body)
         queue.async { self.assumeIsolated { $0.accept(cleanup: request) } }
@@ -420,8 +415,8 @@ private func waitUntil(_ deadline: ContinuousClock.Instant, _ wait: @escaping @S
     }
 }
 
-/// The channel of each device and device set this process has used. A channel lives as long as the process, so that an
-/// object made again for the same device or set finds the worker, and any held call, of the first.
+/// Retains each device and device-set channel for the process lifetime.
+/// Recreated owners reuse the worker, including any blocked request.
 package final class DeviceIOHub: Sendable {
     package static let shared = DeviceIOHub()
 

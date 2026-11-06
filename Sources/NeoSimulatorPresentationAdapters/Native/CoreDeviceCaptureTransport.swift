@@ -152,11 +152,8 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         events?(.attributes(value))
     }
 
-    /// Describes a whole captured frame in the framebuffer's video terms.
-    ///
-    /// Screen-capture frames follow the interface orientation, as the media stream's reported
-    /// orientation does. A frame that keeps the display's native shape during a quarter turn
-    /// is still unrotated, so it is shown without counter-rotation.
+    /// Describes a captured frame's orientation. Capture follows the interface orientation;
+    /// a frame retaining native dimensions during a quarter turn needs no counter-rotation.
     package static func videoAttributes(frame: CGSize, display: RemoteScreenFramebuffer.Display?) -> RemoteDeviceVideoAttributes {
         var orientation = RemoteDeviceOrientation.portrait
         if let display {

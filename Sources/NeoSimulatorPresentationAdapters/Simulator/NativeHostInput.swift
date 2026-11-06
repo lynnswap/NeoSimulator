@@ -59,10 +59,8 @@ package final class SimulatorKeyboardInput {
     isolated deinit { stop() }
 }
 
-/// Follows a SimulatorKit display's digitizer in its responder chain. The digitizer passes key-downs and key-ups
-/// it does not handle to its next responder, including those `DisplayKeyboardInput` forwards and those AppKit
-/// delivers after menu key equivalents. `handle` takes them for the native keyboard; events it declines continue
-/// along the chain, as they did before.
+/// Intercepts unhandled key-downs and key-ups after the SimulatorKit digitizer.
+/// Events declined by `handle` continue through the original responder chain.
 @MainActor
 package final class NativeKeyboardResponder: NSResponder {
     private let handle: (NSEvent) -> Bool
@@ -96,10 +94,8 @@ package final class NativeKeyboardResponder: NSResponder {
     }
 }
 
-/// Takes the Mac trackpads' scrolling and pinches that begin over a SimulatorKit display's framebuffer, before its
-/// digitizer drops them, and the mouse movements over the framebuffer that place them, for the device's native trackpad.
-/// Events that begin elsewhere, such as over the bezel or a bar above the canvas, and Option-scrolling, which pans the
-/// canvas, continue as before.
+/// Routes trackpad gestures and pointer placement over the framebuffer to native input.
+/// Gestures starting outside it and Option-scrolling continue through the responder chain.
 @MainActor
 package final class NativeTrackpadInput: NSResponder {
     private weak var display: NSView?

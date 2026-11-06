@@ -4,12 +4,11 @@ import AppKit
 import Observation
 import ObservationBridge
 
-/// The manager's center pane, which shows the selected device's live screen or its preview.
-/// The manager window owns the selection and toolbar, and attaches `canvasAccessory` to this pane's split view item.
-/// The pane returns to the preview when `DeviceScreens` closes or replaces the screen it shows.
+/// Shows the selected device's screen or preview in the manager's center pane.
+/// The window owns selection, toolbar, and the attached `canvasAccessory`.
+/// Closing or replacing the screen restores the preview.
 ///
-/// The pane runs screen moves in the order the window accepts them. The window passes each move a check of its
-/// latest choice; the move repeats the check after each await and stops once it fails.
+/// Screen moves follow acceptance order and recheck the window's latest choice after each await.
 @MainActor
 final class DeviceScreenViewController: NSViewController {
     private let model: SimulatorManagerModel
@@ -273,8 +272,8 @@ final class DeviceScreenViewController: NSViewController {
         _ = await screenMove?.result
     }
 
-    /// Embeds the device's open screen in place of the live screen. With `preservingFocus`, the window keeps its
-    /// first responder. If the screen cannot embed, the previous screen returns while the move is still current.
+    /// Embeds the screen, optionally preserving the first responder.
+    /// On failure, restores the previous screen if this move is still current.
     func embedScreen(for identifier: DeviceInventoryID, preservingFocus: Bool,
                      while isCurrent: @escaping @MainActor () -> Bool) async throws {
         try await performScreenMove { [self] in

@@ -577,9 +577,8 @@ final class SimulatorManagerModel {
         }
     }
 
-    /// Runs a change of what `device` reports of itself in its turn among the device's changes, while the device shows as
-    /// busy. Afterwards `groups` of the device are out of date, which reads again what shows. A quit that reaches the change
-    /// before it has started reports it as not run.
+    /// Queues an inspector change for `device`, marks it busy, then invalidates `groups`.
+    /// Quit reports a change that has not started as not run.
     func performInspectorChange(on device: DeviceModel, affecting groups: DeviceStateGroups,
                                 operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
         guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
@@ -827,8 +826,8 @@ final class SimulatorManagerModel {
         }
     }
 
-    /// What a change to `identifier` must follow: work accepted before it that changes every device or connects that one.
-    /// An attaching screen holds only what it restores or what would disturb it. Another device's work does not hold it.
+    /// Waits for earlier global work and conflicting work on this device.
+    /// An attaching screen blocks only operations that restore or disturb its state.
     private func hold(of identifier: DeviceInventoryID, waitsForAttach: Bool) -> Task<Void, Never>? {
         func holds(_ deviceID: DeviceInventoryID?, attaches: Bool) -> Bool {
             deviceID == nil || (deviceID == identifier && (waitsForAttach || !attaches))
@@ -880,10 +879,10 @@ final class SimulatorManagerModel {
         if let failure = await preparation.value { throw failure }
     }
 
-    /// Waits for what was accepted before the quit for `TerminationTimeout`. Then what has not started is reported as not
-    /// run and what is still running is stopped, which its own transaction and rollback then finish and report; what does
-    /// not finish in the time left is reported as unknown. Commands that start from here on are bounded, so that the rest
-    /// of the quit cannot be held by them either. Returns why an opening that ended failed.
+    /// Waits up to `TerminationTimeout` for accepted work, then rejects queued work and stops
+    /// running commands. Transactions and rollbacks finish within the remaining grace period;
+    /// unfinished outcomes are reported as unknown. Later commands are bounded too.
+    /// Returns any opening failure.
     private func finishAcceptedWork(openings: [Task<Void, any Error>]) async -> (any Error)? {
         let limit = terminationLimit ?? HostPreferences.terminationLimit
         let deadline = ContinuousClock.now + limit
@@ -976,9 +975,8 @@ final class SimulatorManagerModel {
         enqueue(PendingOperation(activity: activity, deviceID: device, openDevice: openDevice) { _ in try await operation() })
     }
 
-    /// Admits operations on different devices together, each device's in accepted order. An operation without a device
-    /// follows all accepted before it and holds all accepted after it. Each follows the changes accepted before it for
-    /// the devices it concerns.
+    /// Orders work per device while allowing different devices to proceed together.
+    /// Global operations wait for all prior work and block all later work.
     private func enqueue(_ operation: PendingOperation) {
         guard !stopping else { return }
         var operation = operation

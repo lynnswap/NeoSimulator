@@ -10,14 +10,13 @@ When disconnected, the Mac keyboard does not type into the device, and the
 software keyboard appears. **Toggle Software Keyboard** (Command-K) controls
 its visibility while the hardware keyboard is connected.
 
-Simulators in the default device set, other than Apple Vision Pro and iPhone or
-iPad simulators with 3D Touch, receive each Mac keyboard as its own hardware
-keyboard with that keyboard's properties, as in Device Hub, so the device uses
-its layout, such as JIS. In other device sets, which CoreDevice does not list,
-iPhone and iPad simulators without 3D Touch receive keyboards the same way
-through the guest's own HID services. iPhone and iPad simulators with 3D Touch,
-other simulators in other device sets, and Apple Vision Pro receive keys
-through SimulatorKit, which the device reads with a US layout.
+Keyboard layout depends on the simulator:
+
+| Simulator | Layout |
+| --- | --- |
+| Default set, except Vision and 3D Touch devices | Each Mac keyboard's hardware layout, including JIS |
+| Other sets: iPhone and iPad without 3D Touch | Each Mac keyboard's hardware layout |
+| Vision, 3D Touch devices, and remaining simulators | US layout through SimulatorKit |
 
 Choose **Capture Keyboard** above the device screen or in **I/O → Keyboard**
 to send Mac shortcuts to the device. Click the button again or hold Escape for
@@ -43,18 +42,9 @@ the mouse. Releasing Control alone does not lift it. Release the mouse before
 Option during a two-finger gesture; the reverse order leaves the fingers down
 until the next click.
 
-Once an iPhone or iPad simulator without 3D Touch receives native keyboard or
-trackpad input, its guest stops accepting SimulatorKit's touches and buttons.
-Its touches and button presses then go to the guest's native touchscreen and
-buttons, as in Device Hub, and SimulatorKit still interprets the pointer and
-the gestures above.
-
-iPhone and iPad simulators with 3D Touch keep SimulatorKit's keyboard, touches,
-and buttons, so their touches keep their pressure. NeoSimulator does not send
-them native keyboard or trackpad input, which would stop their guest from
-accepting those touches and buttons. This does not restore a guest that has
-already stopped accepting them, for example after another app or an earlier
-NeoSimulator version started its native input.
+3D Touch simulators keep SimulatorKit input to preserve touch pressure. Native
+input started by another app or an earlier NeoSimulator version can leave the
+guest unable to accept those touches; NeoSimulator cannot restore them.
 
 SimulatorKit retains touches through focus changes. Finish gestures and lift
 pinned fingers before closing a window that will leave its device running;
@@ -63,24 +53,22 @@ preserves a pinned finger's device position, but rotation preserves its window
 position, so click that window position to release it. Three-finger and larger
 arbitrary gestures are unavailable.
 
-In the active device window, two-finger scrolling and pinches on a Mac trackpad
-over the screen reach iPhone and iPad simulators without 3D Touch, and other
-simulators in the default device set, as trackpad gestures, as in Device Hub.
-Each gesture happens where the pointer is on the device screen, including after
-you pan or zoom the canvas. **Connect Hardware Keyboard** does not affect them.
-Option-scrolling pans the canvas instead of scrolling the device. Trackpad
-gestures are unavailable on iPhone and iPad simulators with 3D Touch, on
-devices with a Digital Crown or Digital Dial, where scrolling turns the crown
-or dial, and on Apple Vision Pro, other simulators in other device sets, and
-external displays.
+Two-finger scrolling and pinches work over the active screen on iPhone and iPad
+simulators without 3D Touch, including custom device sets, and other default-set
+simulators. Gestures use the pointer's screen position after canvas pan or zoom
+and work independently of **Connect Hardware Keyboard**. Option-scrolling pans
+the canvas.
+
+Trackpad gestures are unavailable on 3D Touch devices, Vision, external displays,
+and remaining custom-set simulators. On devices with a Digital Crown or Digital
+Dial, scrolling turns the crown or dial instead.
 
 **I/O → Touch Pressure** appears for devices with 3D Touch. **Use Trackpad
 Force** needs a Force Touch trackpad. Shallow Press and Deep Press select click
 pressure on supported watches. These settings apply across device windows.
 
-Keyboard capture uses a macOS accessibility event tap. Simulator.app's
-**I/O → Input** facilities, including pointer capture, remain unavailable;
-those facilities require Apple-only entitlements. See <doc:SimulatorIntegration>.
+Simulator.app's **I/O → Input** controls, including pointer capture, require
+Apple-only entitlements and remain unavailable. See <doc:SimulatorIntegration>.
 
 ## Physical-device and VM input
 
@@ -93,10 +81,8 @@ pointer input when available. Right clicks, other mouse buttons, and pointer
 movement require pointer support. Keyboard input is available when the device
 supports it. NeoSimulator releases held inputs when the window loses focus.
 
-On connections that support trackpad gestures, two-finger scrolling and pinches
-over the screen reach the device through its native trackpad input. Scrolling
-continues beyond a screen's width or height, including momentum after the
-fingers lift.
+Supported connections forward two-finger scrolling and pinches, including
+scrolling beyond screen edges and momentum after the fingers lift.
 
 Simulator's Option and Control gestures described above apply only to simulator
 windows.

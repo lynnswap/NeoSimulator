@@ -103,10 +103,10 @@ package struct ManagedGuestLifetime {
     }
 }
 
-/// One device's open session: its model, guest commands and lifetime, without any of its presentation.
+/// An open device's model, guest commands, and lifetime.
 ///
-/// NeoSimulatorUI's `SimulatorScreens` opens these and presents them. Every call on a closed session throws, and
-/// `onEnd` tells when and why it ended.
+/// `SimulatorScreens` in NeoSimulatorUI opens and presents sessions. ``onEnd`` reports when
+/// and why a session ends. Guest commands throw after the session closes.
 @MainActor
 public final class SimulatorDeviceSession {
     /// The device snapshot taken when this session opened.
@@ -133,13 +133,13 @@ public final class SimulatorDeviceSession {
         session.send(button.input, failure: onFailure)
     }
 
-    /// What is known of the device, held so that reading it asks the device nothing. It is the same model that the
-    /// context's device registry lists, and its command state updates through ``DeviceModel/revalidate(_:)``.
+    /// The cached model shared with the context's device registry.
+    /// Use ``DeviceModel/revalidate(_:)`` to refresh command state.
     public var deviceModel: DeviceModel { session.model }
 
-    /// The device's native keyboard, trackpad and touches. While they are not ready, SimulatorKit's input stays live.
+    /// Native input readiness. SimulatorKit input remains active while native input prepares.
     public var inputReadiness: SimulatorServiceReadiness { session.optionalServices.input }
-    /// The device's routed pasteboard transport, which a transfer waits for and whose failure it reports.
+    /// Pasteboard readiness. Transfers wait for this service and report connection failures.
     public var pasteboardReadiness: SimulatorServiceReadiness { session.optionalServices.pasteboard }
     /// Connects the native input again after ``inputReadiness`` failed.
     public func retryInput() { session.optionalServices.retryInput() }
@@ -161,7 +161,7 @@ public final class SimulatorDeviceSession {
         try await mappingToSimulatorError { try await session.toggleIncreaseContrast() }
     }
 
-    /// Flips whether biometrics are enrolled, where the device has them. Touch ID, Face ID, and Optic ID share this state.
+    /// Toggles the enrollment state shared by Touch ID, Face ID, and Optic ID, where supported.
     public func toggleBiometricEnrollment() async throws {
         try checkOpen()
         try await mappingToSimulatorError { try await session.toggleBiometricEnrollment() }
@@ -226,9 +226,10 @@ public final class SimulatorContext {
         try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: url)
     }
 
-    /// Loads the selected Xcode's runtime, or the process's selected display Xcode when omitted.
-    /// Loading does not boot devices or open windows, and loads no UI toolkit. Sessions share the device state of `deviceRegistry`, which an
-    /// application that also reads devices should own and pass here; by default the context has its own.
+    /// Loads `xcodeURL`, or the process's selected display Xcode when omitted.
+    ///
+    /// Loading neither boots devices nor loads a UI toolkit. Pass your application's registry
+    /// to share device models with other views; otherwise the context creates its own.
     public static func load(xcodeURL: URL? = nil, deviceRegistry: DeviceRegistry? = nil) async throws -> SimulatorContext {
         var configuration = SimulatorContextConfiguration()
         configuration.deviceRegistry = deviceRegistry
@@ -499,12 +500,12 @@ public final class SimulatorContext {
         return task
     }
 
-    /// Releases every screen without shutting down guests.
-    /// A failed call can be retried to finish resources that could not be released.
-    /// Recording and capture file work that outlasts the wait goes on: the error names its files, `onError` receives a
-    /// failure that comes after this returned, and the next call joins that work and throws such a failure too.
-    /// A capture that could not be saved is not attempted again: it stays at the location the error names, and every call
-    /// throws until it has been moved away from there or ``acknowledgeCaptureFailures()`` has been called.
+    /// Releases all screens without shutting down guests. Retry to finish incomplete cleanup.
+    ///
+    /// Recording and capture work may outlast the wait; the error identifies its files.
+    /// ``onError`` reports late failures, and the next call joins unfinished work.
+    /// Failed capture saves are not retried automatically. Each call reports them until the
+    /// file is moved from the reported location or ``acknowledgeCaptureFailures()`` is called.
     public func invalidate() async throws {
         try await mappingToSimulatorError { try await invalidateResources() }
     }

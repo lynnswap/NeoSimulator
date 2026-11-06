@@ -25,16 +25,13 @@ package struct DeviceActiveStates: Equatable, Sendable {
     }
 }
 
-/// Reports DeviceKit's sidebar Active values in this process as their native inputs change.
+/// Observes DeviceKit sidebar activity for views in this process.
 ///
-/// DeviceKit computes each value from the device's state and from the interaction and activation of DeviceKit
-/// views in this process, such as a native device canvas. Screens shown through SimulatorKit or Neo's remote-screen
-/// transports, and other processes such as Device Hub, do not request that interaction. Starting reads DeviceKit's
-/// device list, which starts its observation of every device. Evaluating a device's value creates a DeviceKit
-/// coordinator for that device, which can start the device's native HID services; a simulator whose screen keeps
-/// SimulatorKit's touches and buttons then stops accepting them. ``init(limitedTo:)`` evaluates only the devices it
-/// requests. DeviceKit exports no API to stop its observation or a coordinator, so they stay with DeviceKit for the
-/// rest of the process. ``stop()`` ends only this object's reads and callbacks.
+/// Evaluating a device can create its coordinator and native HID services, interfering
+/// with SimulatorKit touches and buttons. ``init(limitedTo:)`` restricts evaluation to
+/// requested native canvases. Other processes and non-DeviceKit views contribute no activity.
+/// DeviceKit's observation and coordinators last for the process; ``stop()`` ends only
+/// this object's reads and callbacks.
 @MainActor
 package final class DeviceActiveStateObservation {
     package var onChange: ((DeviceActiveStates) -> Void)?

@@ -6,11 +6,9 @@ import NeoSimulatorUI
 import Observation
 import ObservationBridge
 
-/// The device screens open in the manager and their simulator contexts and remote connections.
-///
-/// Each `SimulatorScreens` owns its simulator screens; this registry indexes their controllers
-/// by inventory identity. Remote screens have no other owner, so the registry also owns their lifetimes. Screens
-/// enter and leave only through `insert(_:)` and `remove(_:)`, which publish the open set to posture observation.
+/// Indexes open screens by inventory identity and owns their contexts and remote connections.
+/// `SimulatorScreens` owns simulator screen lifetimes; this registry owns remote lifetimes.
+/// `insert(_:)` and `remove(_:)` publish the open set to posture observation.
 @MainActor @Observable
 final class DeviceScreens {
     private var entries: [DeviceInventoryID: DeviceScreen] = [:]
@@ -65,8 +63,8 @@ final class DeviceScreens {
 
     func screen(for identifier: DeviceInventoryID) -> DeviceScreen? { entries[identifier] }
 
-    /// The CoreDevice identifiers of the open screens that show DeviceKit's native device canvas. DeviceKit's Active
-    /// value depends on its views, and evaluating it for another device can start that device's native HID services.
+    /// CoreDevice identifiers of open native canvases. Evaluating DeviceKit activity for
+    /// other devices can start their native HID services and interfere with SimulatorKit input.
     var nativeCanvasDeviceIdentifiers: Set<UUID> {
         Set(entries.values.filter(\.usesNativeCanvas).compactMap { screen in
             guard case .simulator(let simulator) = model.inventory.first(where: { $0.id == screen.id }) else { return nil }
@@ -269,8 +267,7 @@ final class DeviceScreens {
     }
 
 
-    /// Every caller presents what this throws, which says where any unsaved capture remains. Having told the user, the
-    /// retry that quitting or opening a screen depends on does not stop on that capture again.
+    /// Reports unsaved capture locations, then acknowledges them so subsequent cleanup can proceed.
     private func invalidate(_ context: SimulatorContext) async throws {
         do { try await context.invalidate() }
         catch {
@@ -285,8 +282,8 @@ final class DeviceScreens {
         retiredContexts.removeAll { $0 === context }
     }
 
-    /// Prepares the open screens of simulators that a management action stops or restarts. A booted simulator keeps
-    /// its screen through a restart; the others release it. A failure finishes the restarts it already prepared.
+    /// Prepares screens before stopping or restarting simulators, retaining booted screens for
+    /// restart. On failure, finishes already-prepared restarts.
     func prepareSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
         var prepared: [InventoryDevice] = []
         do {
@@ -421,8 +418,8 @@ final class DeviceScreens {
         publishOpenScreens()
     }
 
-    /// Stops every screen without shutting devices down: simulator contexts leave guest lifetime to the backend, and
-    /// remote screens end only their connections. Screens left open by a failure resume posture observation.
+    /// Disconnects all screens without stopping guests. Screens still open after a failure
+    /// resume posture observation.
     func stopAll() async throws {
         do {
             await model.stopDevicePostures()
