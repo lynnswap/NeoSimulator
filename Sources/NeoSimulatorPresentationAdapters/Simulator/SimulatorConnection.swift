@@ -497,7 +497,6 @@ package final class SimulatorConnection: SimulatorDisplay {
         // Releasing the registration ends the screen events.
         screenEvents = nil
         onPropertiesChange = nil
-        hidClient?.release(on: device.channel)
         hidClient = nil
         keyboardResponder?.detach()
         keyboard?.setEnabled(false, for: self)

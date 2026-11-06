@@ -526,14 +526,13 @@ package struct SimulatorInputInterface {
     }
 
     package func connect(to device: SimulatorDevice) async throws -> WorkerOwned<AnyObject> {
-        guard let allocated = allocate(clientClass) else {
-            throw SimulatorError.unavailable("Could not allocate simulator input")
-        }
-        nonisolated(unsafe) let makeClient = makeClient, instance = allocated, object = device.handle.object
-        return try await device.channel.read("connect the device's input", lateCompletion: { result in
-            if case .success(let client) = result { client.releaseNow() }
-        }) {
-            WorkerOwned(try unsafe makeClient.unsafeInvoke(on: instance, object))
+        nonisolated(unsafe) let makeClient = makeClient, clientClass = clientClass, object = device.handle.object
+        let channel = device.channel
+        return try await channel.read("connect the device's input") {
+            guard let instance = allocate(clientClass) else {
+                throw SimulatorError.unavailable("Could not allocate simulator input")
+            }
+            return WorkerOwned(try unsafe makeClient.unsafeInvoke(on: instance, object), channel: channel)
         }
     }
 
@@ -711,6 +710,10 @@ package struct SimulatorPasteboardInterface {
               let listenerClass = NSClassFromString("SimPasteboardPlus.SimPasteboardInterfaceListener") else {
             throw SimulatorError.unavailable("SimPasteboardPlus pasteboard classes are unavailable")
         }
+        try await self.init(runtime: runtime, interfaceClass: interfaceClass, listenerClass: listenerClass)
+    }
+
+    package init(runtime: ABIRuntime, interfaceClass: AnyClass, listenerClass: AnyClass) async throws {
         self.interfaceClass = interfaceClass
         makeInterface = try await runtime.resolve(
             .objc(.method("initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:",
@@ -733,29 +736,25 @@ package struct SimulatorPasteboardInterface {
     /// Connects without transferring. Synchronization requires `enableRemoteAutosync`.
     package func connect(to device: SimulatorDevice, managing pasteboard: NSPasteboard,
                  events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> SimulatorPasteboardConnection {
-        let port = try await device.lookUp(serviceName)
-        guard let allocated = allocate(interfaceClass) else {
-            mach_port_deallocate(mach_task_self_, port)
-            throw SimulatorError.unavailable("Could not allocate the simulator's pasteboard connection")
-        }
+        let port = OwnedSendRight(try await device.lookUp(serviceName))
+        return try await connect(port, on: device.channel, managing: pasteboard, events: events)
+    }
+
+    /// The request owns `port` from here on. Its caller can stop waiting between the channel starting the request and
+    /// the worker reaching it, so only the request knows whether the initializer, which consumes the right, will run.
+    package func connect(_ port: OwnedSendRight, on channel: SimulatorDeviceChannel, managing pasteboard: NSPasteboard,
+                 events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> SimulatorPasteboardConnection {
         // The interface calls the delegate on the main queue; the connection keeps it.
         let delegate = SimulatorPasteboardDelegate(events)
-        nonisolated(unsafe) let makeInterface = makeInterface, instance = allocated, pasteboard = pasteboard
-        let target = delegate
-        // Connecting consumes the right, so it stays this caller's only until then.
-        let connecting = Mutex(false)
-        do {
-            let object = try await device.channel.read("connect the device's pasteboard", lateCompletion: { result in
-                if case .success(let object) = result { object.releaseNow() }
-            }) { () throws -> WorkerOwned<AnyObject> in
-                connecting.withLock { $0 = true }
-                return WorkerOwned(try unsafe makeInterface.unsafeInvoke(on: instance, port, pasteboard, target, .main))
+        nonisolated(unsafe) let makeInterface = makeInterface, interfaceClass = interfaceClass, pasteboard = pasteboard, target = delegate
+        let object = try await channel.read("connect the device's pasteboard") { () throws -> WorkerOwned<AnyObject> in
+            guard let instance = allocate(interfaceClass) else {
+                throw SimulatorError.unavailable("Could not allocate the simulator's pasteboard connection")
             }
-            return SimulatorPasteboardConnection(object: object, delegate: delegate, interface: self, channel: device.channel)
-        } catch {
-            if !connecting.withLock({ $0 }) { mach_port_deallocate(mach_task_self_, port) }
-            throw error
+            let right = port.take()
+            return WorkerOwned(try unsafe makeInterface.unsafeInvoke(on: instance, right, pasteboard, target, .main), channel: channel)
         }
+        return SimulatorPasteboardConnection(object: object, delegate: delegate, interface: self, channel: channel)
     }
 }
 
@@ -773,8 +772,6 @@ package final class SimulatorPasteboardConnection: SimulatorPasteboard {
         self.interface = interface
         self.channel = channel
     }
-
-    isolated deinit { object.release(on: channel) }
 
     package func pull() async throws { try await send("get the device's pasteboard", interface.pull) }
     package func push() async throws { try await send("send the pasteboard to the device", interface.push) }
@@ -818,8 +815,8 @@ package final class SimulatorPasteboardDelegate: NSObject {
     }
 }
 
-/// An uninitialized instance for an Objective-C initializer, which consumes it.
-@MainActor
+/// An uninitialized instance for an Objective-C initializer, which consumes it. A request makes it on the worker just
+/// before that, so that no request that never runs has one to dispose of.
 private func allocate(_ type: AnyClass) -> AnyObject? {
     (type as? NSObject.Type)?.perform(NSSelectorFromString("alloc"))?.takeRetainedValue()
 }

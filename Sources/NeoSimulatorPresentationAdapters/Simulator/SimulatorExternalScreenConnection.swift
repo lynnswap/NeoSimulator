@@ -2,6 +2,7 @@ import ABIBridge
 import AppKit
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
+import Synchronization
 
 /// The external display of one device, through SimulatorKit's
 /// `SimDeviceScreen` and CoreSimDeviceIO's `SimScreen`.
@@ -64,10 +65,7 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
             on: screen.object, display.screenPropertyEvents, .main, handler)
     }
 
-    isolated deinit {
-        disconnect()
-        hidClient?.release(on: device.channel)
-    }
+    isolated deinit { disconnect() }
 
     package var deviceBootDate: Date? { device.lastBootDate }
 
@@ -183,8 +181,13 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         try runtime.display.screenMessages.send("supportedScreenModes", to: try properties(), as: [AnyObject]?.self) ?? []
     }
 
-    // CoreSimDeviceIO may ignore the completion queue. Bridge back to the main actor explicitly.
+    // CoreSimDeviceIO may ignore the completion queue. Bridge back to the main actor explicitly. It also keeps the block
+    // after calling it, so the block gives up the completion, which holds this connection and so its device.
     private nonisolated static func completed(_ completion: @escaping @MainActor (Error?) -> Void) -> Completion {
-        { error in DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } } }
+        let pending = Mutex<(@MainActor (Error?) -> Void)?>(completion)
+        return { error in
+            guard let completion = pending.withLock({ $0.take() }) else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+        }
     }
 }

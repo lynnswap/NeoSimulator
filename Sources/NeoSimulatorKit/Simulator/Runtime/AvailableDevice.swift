@@ -24,6 +24,10 @@ extension SimulatorDevice {
     package var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
 }
 
+extension SimulatorDeviceRecord {
+    package var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
+}
+
 package struct AvailableDevice: Identifiable {
     package let identifier: String
     package let deviceSetPath: String?

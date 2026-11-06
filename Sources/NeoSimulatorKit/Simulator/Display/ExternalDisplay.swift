@@ -238,10 +238,10 @@ package enum ExternalDisplayLimit: LocalizedError, Equatable {
 private let externalDisplayKey = "SimulatorExternalDisplay"
 
 extension PreferenceStore {
-    /// Persisted SimulatorExternalDisplay tag; malformed or missing values mean Disabled.
+    /// Persisted SimulatorExternalDisplay tag, or nil if the device has no choice saved or what is saved is malformed.
     /// Unknown integer tags are preserved.
-    package func externalDisplayTag(forDevice identifier: String) -> Int {
-        preferences(forDevice: identifier)?[externalDisplayKey] as? Int ?? ExternalDisplayMode.disabled.rawValue
+    package func externalDisplayTag(forDevice identifier: String) -> Int? {
+        preferences(forDevice: identifier)?[externalDisplayKey] as? Int
     }
 
     /// Saves the device's External Displays choice, keeping its other
