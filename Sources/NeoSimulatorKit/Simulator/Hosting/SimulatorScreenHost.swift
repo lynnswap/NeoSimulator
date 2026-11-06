@@ -39,7 +39,7 @@ package final class SimulatorScreenHost: NSObject {
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
     private var observationRemovals: [Task<Void, Never>] = []
-    private var healthFollowers: [Task<Void, Never>] = []
+    private var healthFollowers: [DeviceSetAddress: Task<Void, Never>] = [:]
     private var isStarted = false
     private var rescanning: Task<Void, Never>?
     /// Whether another rescan was requested, and whether any request came from the testing devices' visibility changing.
@@ -118,7 +118,7 @@ package final class SimulatorScreenHost: NSObject {
             testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
                 self?.applyTestingDeviceVisibility()
             }
-            healthFollowers.append(rescanWhenAnsweringAgain(deviceSet))
+            rescanWhenAnsweringAgain(deviceSet)
             let token = try await deviceSet.observe { [weak self] in self?.rescan() }
             guard !stopped else {
                 observationRemovals.append(deviceSet.stopObserving(token))
@@ -133,6 +133,8 @@ package final class SimulatorScreenHost: NSObject {
             }
             // Until here a rescan could attach a device that this start leaves alone.
             isStarted = true
+            // Until here asking for a rescan did nothing, also for a set that answered again meanwhile.
+            if testingSetNeedsOpening { rescan() }
             if !isManaged && !isInProcess { try await scanDevices() }
         } catch {
             shutdown()
@@ -258,6 +260,7 @@ package final class SimulatorScreenHost: NSObject {
     // MARK: Parallel testing devices
 
     package var showsTestingDevices: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.showTestingDevices) }
+    package var isObservingTestingSet: Bool { testingNotificationToken != nil }
 
     /// Debug ▸ Show Parallel Testing Devices. Hiding closes the testing
     /// devices' windows without shutting the devices down.
@@ -290,11 +293,13 @@ package final class SimulatorScreenHost: NSObject {
     private func openTestingSet() async {
         guard !stopped, testingSet == nil, !isOpeningTestingSet else { return }
         isOpeningTestingSet = true
+        testingSetNeedsOpening = false
         defer { isOpeningTestingSet = false }
         let path = HostPreferences.defaults.string(forKey: HostPreferences.testingDeviceSetPath)
             .map { NSString(string: $0).expandingTildeInPath }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer/XCTestDevices").path
         let url = URL(fileURLWithPath: path).standardizedFileURL
+        var asked = deviceSet
         do {
             guard url != URL(fileURLWithPath: try await deviceSet.resolvedPath()).standardizedFileURL else {
                 hostLog("TestingDeviceSetPath names the default device set; parallel testing devices are not shown")
@@ -308,6 +313,8 @@ package final class SimulatorScreenHost: NSObject {
             testingSetWatcher?.cancel()
             testingSetWatcher = nil
             let set = runtime.openDeviceSet(at: url.path)
+            asked = set
+            rescanWhenAnsweringAgain(set)
             let token = try await set.observe { [weak self] in self?.rescan() }
             guard !stopped else {
                 observationRemovals.append(set.stopObserving(token))
@@ -315,18 +322,22 @@ package final class SimulatorScreenHost: NSObject {
             }
             testingNotificationToken = token
             testingSet = set
-            healthFollowers.append(rescanWhenAnsweringAgain(set))
         } catch is CancellationError {
         } catch {
             hostLog("Could not open the parallel testing device set: \(error.localizedDescription)")
-            // A call that held its worker is no reason to give the set up. The next rescan tries again.
-            testingSetNeedsOpening = error is DeviceOperationFailure
+            // A call that held its worker is no reason to give the set up. The rescan once it returns tries again.
+            guard error is DeviceOperationFailure else { return }
+            testingSetNeedsOpening = true
+            // The call can return before its failure gets here, and then that rescan has already been and gone.
+            if await asked.channel.currentHealth == .ready { rescan() }
         }
     }
 
-    /// A set that answers again may have changed while its call was held, without a rescan being able to see that.
-    private func rescanWhenAnsweringAgain(_ set: SimulatorDeviceSet) -> Task<Void, Never> {
-        Task { [weak self] in
+    /// A set that answers again may have changed while its call was held, without a rescan being able to see that. A
+    /// request that outlived its deadline has ended by then, so nothing else follows its call: this has to be in place first.
+    private func rescanWhenAnsweringAgain(_ set: SimulatorDeviceSet) {
+        guard healthFollowers[set.address] == nil else { return }
+        healthFollowers[set.address] = Task { [weak self] in
             var wasHeld = false
             for await health in set.healthChanges() {
                 if case .unresponsive = health { wasHeld = true }
@@ -571,10 +582,7 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     private func performRescan(testingVisibilityChanged: Bool) async {
-        if testingSetNeedsOpening {
-            testingSetNeedsOpening = false
-            await openTestingSet()
-        }
+        if testingSetNeedsOpening { await openTestingSet() }
         do { try await scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
         catch is CancellationError {}
         catch let failure as DeviceOperationFailure {
@@ -1256,7 +1264,7 @@ package final class SimulatorScreenHost: NSObject {
             observationRemovals.append(testingSet.stopObserving(testingNotificationToken))
         }
         testingNotificationToken = nil
-        for follower in healthFollowers { follower.cancel() }
+        for follower in healthFollowers.values { follower.cancel() }
         healthFollowers.removeAll()
         rescanRequest = nil
         rescanning?.cancel()
@@ -1278,8 +1286,8 @@ package final class SimulatorScreenHost: NSObject {
 
 
 /// Why a booted device's integrated screen did not appear in time: what reading its screens last failed with, and which
-/// native requests had still not returned then. Another device's unanswered request can be the reason, since CoreSimulator
-/// serves a process's requests one at a time.
+/// native requests had still not returned then. Another device's unanswered request can be the reason, since the devices
+/// read from one set currently share its `SimServiceContext` connection. A separately initialized context has its own.
 package struct IntegratedScreenUnavailable: LocalizedError {
     package let deviceName: String
     package let lastFailure: (any Error)?
@@ -1329,11 +1337,13 @@ package enum QuitReport {
         let alert = NSAlert()
         alert.messageText = "Some operations did not finish before NeoSimulator quit."
         alert.informativeText = notes.joined(separator: "\n\n")
-        let timer = Task {
-            guard (try? await Task.sleep(for: limit)) != nil else { return }
-            NSApp.abortModal()
+        // Not a task: a job that presents this runs inside a drain of the main queue, and until it returns the modal's run
+        // loop does not serve that queue, so nothing on the main actor would run to end it.
+        let timer = Timer(timeInterval: limit / .seconds(1), repeats: false) { _ in
+            MainActor.assumeIsolated { NSApp.abortModal() }
         }
+        RunLoop.main.add(timer, forMode: .modalPanel)
         alert.runModal()
-        timer.cancel()
+        timer.invalidate()
     }
 }

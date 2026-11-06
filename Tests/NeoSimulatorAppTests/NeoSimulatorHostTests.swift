@@ -3295,6 +3295,39 @@ struct InputFocusTests {
         #expect(!lookup.canPair("no watch", "no runtime", "no phone", "no runtime"))
     }
 
+    /// Reads, and registers with a set this test owns. A headless in-process host connects to no device and stops none.
+    @Test(.timeLimit(.minutes(1)))
+    func aTestingSetHeldWhileItOpensOpensOnceItAnswersAgain() async throws {
+        let runtime = try await makeRuntime()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        HostPreferences.defaults.set(directory.path, forKey: HostPreferences.testingDeviceSetPath)
+        defer { HostPreferences.defaults.removeObject(forKey: HostPreferences.testingDeviceSetPath) }
+
+        // A raw call that outlives its deadline holds the set's worker, as a native call does.
+        let channel = runtime.openDeviceSet(at: directory.path).channel
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        await #expect(throws: DeviceOperationFailure.noAnswer(operation: "hold the set", limit: .milliseconds(20))) {
+            try await channel.read("hold the set", limit: .milliseconds(20)) { release.wait() }
+        }
+
+        let host = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), headless: true, inProcess: true)
+        let scans = AsyncStream<Void>.makeStream()
+        host.onOwnershipChange = { _ in scans.continuation.yield() }
+        try await host.start(attachingBootedDevices: false)
+        // The start asks again, and is refused too, so only the set answering again is left to end this.
+        var scan = scans.stream.makeAsyncIterator()
+        await scan.next()
+        #expect(!host.isObservingTestingSet)
+
+        release.signal()
+        for _ in 0..<3000 where !host.isObservingTestingSet { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(host.isObservingTestingSet)
+        try await host.stop()
+    }
+
     @Test func pasteboardDelegateAnswersSimPasteboardPlus() async throws {
         let runtime = try await makeRuntime()
         #expect(runtime.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
