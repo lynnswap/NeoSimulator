@@ -1181,52 +1181,34 @@ struct HostModeControllerTests {
 
     @Test func neoHostOpenHoldsTheOperationLockAgainstAnotherSwitch() async throws {
         let fixture = try ControllerFixture()
+        var switching: Task<Void, any Error>?
         fixture.workspace.onOpenNeoHost = { _ in
-            do {
-                _ = try await fixture.controller.use(.deviceHub)
-                Issue.record("expected concurrent switch to be serialized")
-            } catch let error as HostOperationError {
-                #expect(error.identifier == "operation-lock")
-                #expect(error.category == .temporary)
-            }
+            switching = Task { _ = try await fixture.controller.use(.deviceHub) }
+            #expect(await !switching!.ends(before: .now + .milliseconds(50)))
+            #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         }
 
         let report = try await fixture.controller.use(.neo)
-
         #expect(report.didChangePreferences)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
-        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
+        try await #require(switching).value
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
     @Test func deviceHubTerminationHoldsTheOperationLockAgainstNewMutations() async throws {
         let fixture = try ControllerFixture()
+        var restoring: Task<Void, any Error>?
         fixture.workspace.onTerminateDeviceHubs = {
-            do {
-                _ = try await fixture.controller.use(.deviceHub)
-                Issue.record("expected concurrent switch to be serialized")
-            } catch let error as HostOperationError {
-                #expect(error.identifier == "operation-lock")
-                #expect(error.category == .temporary)
-            } catch {
-                Issue.record("unexpected switch error: \(error)")
-            }
-
-            do {
-                _ = try await fixture.controller.restore()
-                Issue.record("expected concurrent restore to be serialized")
-            } catch let error as HostOperationError {
-                #expect(error.identifier == "operation-lock")
-                #expect(error.category == .temporary)
-            } catch {
-                Issue.record("unexpected restore error: \(error)")
-            }
+            fixture.workspace.onTerminateDeviceHubs = nil
+            restoring = Task { _ = try await fixture.controller.restore() }
+            #expect(await !restoring!.ends(before: .now + .milliseconds(50)))
         }
 
         let report = try await fixture.controller.use(.neo)
-
         #expect(report.didChangePreferences)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
-        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
+        try await #require(restoring).value
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
     @Test func neoHostLaunchFailureWithoutAReceiptDoesNotSuggestRestore() async throws {
@@ -1292,24 +1274,16 @@ struct HostModeControllerTests {
     @Test func neoHostTerminationHoldsTheOperationLockAgainstRestore() async throws {
         let fixture = try ControllerFixture()
         _ = try await fixture.controller.use(.neo)
-        var checkedRestore = false
+        var restoring: Task<Void, any Error>?
         fixture.workspace.onTerminateNeoHosts = {
-            checkedRestore = true
-            do {
-                _ = try await fixture.controller.restore()
-                Issue.record("expected restore to observe the active operation lock")
-            } catch let error as HostOperationError {
-                #expect(error.identifier == "operation-lock")
-                #expect(error.category == .temporary)
-            } catch {
-                Issue.record("unexpected restore error: \(error)")
-            }
+            fixture.workspace.onTerminateNeoHosts = nil
+            restoring = Task { _ = try await fixture.controller.restore() }
+            #expect(await !restoring!.ends(before: .now + .milliseconds(50)))
         }
 
         let report = try await fixture.controller.use(.deviceHub)
-
-        #expect(checkedRestore)
         #expect(report.didChangePreferences)
+        try await #require(restoring).value
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
