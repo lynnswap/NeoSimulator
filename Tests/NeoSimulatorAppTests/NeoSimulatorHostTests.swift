@@ -10981,6 +10981,7 @@ struct InputFocusTests {
         var heldReads: HeldCalls<RecordFixture?>?
         private(set) var reads = 0
         private(set) var recordFollows = 0
+        private(set) var listNotifications = 0
         /// What each stream follows: a record, or CoreDevice's list for nil.
         private var streams: [Int: (record: RecordFixture?, continuation: AsyncThrowingStream<Void, any Error>.Continuation)] = [:]
         private var nextStream = 0
@@ -11001,6 +11002,13 @@ struct InputFocusTests {
         func change() { for stream in streams.values { stream.continuation.yield() } }
         func change(of record: RecordFixture?) { for stream in streams.values where stream.record === record { stream.continuation.yield() } }
         func endStreams(throwing error: any Error) { for stream in streams.values { stream.continuation.finish(throwing: error) } }
+        /// Changes CoreDevice's list, and returns once what follows the list has heard of it.
+        func changeList(to record: RecordFixture?) async throws {
+            current = record
+            let heard = listNotifications
+            change(of: nil)
+            try await wait { listNotifications > heard }
+        }
 
         private func follow(_ record: RecordFixture?, _ changed: @MainActor () -> Void) async throws {
             let (stream, continuation) = AsyncThrowingStream.makeStream(of: Void.self)
@@ -11009,7 +11017,10 @@ struct InputFocusTests {
             streams[number] = (record, continuation)
             defer { streams[number] = nil }
             continuation.yield()
-            for try await _ in stream { changed() }
+            for try await _ in stream {
+                changed()
+                if record == nil { listNotifications += 1 }
+            }
         }
     }
 
@@ -11077,6 +11088,86 @@ struct InputFocusTests {
         new.features = ["input"]
         source.change(of: new)
         #expect(try await waiting.value == ObjectIdentifier(new))
+        try await wait { source.followers == 0 }
+    }
+
+    /// A decision on a record that the list has since replaced is no answer, even a connected record's lack of the feature,
+    /// which a route would keep for the connection's lifetime. The list as it is now decides, also for an asker whose first
+    /// read it was, which no notification wakes because it waits on none yet.
+    @Test(.timeLimit(.minutes(1)))
+    func aDecisionOnARecordThatTheListReplacedIsNoAnswer() async throws {
+        for byAnotherAsker in [false, true] {
+            let services = DeviceOptionalServices()
+            let source = RecordSourceFixture()
+            let discovery = CoreDeviceRecordDiscovery(source: source)
+            defer { discovery.stop() }
+            let route = SimulatorPasteboardRoute(services: services, make: {
+                guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+                return TestPasteboardTransport()
+            })
+            let old = RecordFixture()
+            source.current = old
+            let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+            try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+            let connection = HeldCalls<Bool>()
+            old.heldConnection = connection
+            var asker: Task<ObjectIdentifier?, any Error>?
+            if byAnotherAsker {
+                asker = Task.immediate { () -> ObjectIdentifier? in
+                    guard case .supported(let record) = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+                    return ObjectIdentifier(record)
+                }
+            } else {
+                source.change(of: old)
+            }
+            try await wait { connection.isHolding }
+
+            let new = RecordFixture()
+            try await source.changeList(to: new)
+            connection.finish(.success(true))
+            try await wait { source.followers(of: new) == 1 || !isPending(services.pasteboard) }
+            #expect(isPending(services.pasteboard))
+
+            new.connected = true
+            new.features = ["pasteboard"]
+            source.change(of: new)
+            #expect(try await transfer.value != nil)
+            if let asker { #expect(try await asker.value == ObjectIdentifier(new)) }
+            #expect(isReady(services.pasteboard))
+            try await wait { source.followers == 0 }
+        }
+    }
+
+    /// A read that fails after the list changed failed on what the list no longer holds, so the next read decides, and a
+    /// failure of a read of the list as it is now is told.
+    @Test(.timeLimit(.minutes(1)))
+    func aFailedReadOfAListThatChangedLeavesTheNextReadToDecide() async throws {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        defer { discovery.stop() }
+        let route = SimulatorPasteboardRoute(services: services, make: {
+            guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+            return TestPasteboardTransport()
+        })
+        let old = RecordFixture()
+        source.current = old
+        let transfer = Task.immediate { _ = try await route.transport() }
+        try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+        let reads = HeldCalls<RecordFixture?>()
+        source.heldReads = reads
+        source.change(of: old)
+        try await wait { reads.isHolding }
+        try await source.changeList(to: RecordFixture())
+        reads.finish(.failure(DeviceIOError.temporary("fixture-old", "The list no longer holds it.")))
+        try await wait { reads.calls == 2 && reads.isHolding || !isPending(services.pasteboard) }
+        #expect(isPending(services.pasteboard))
+
+        reads.finish(.failure(DeviceIOError.temporary("fixture-current", "CoreDevice did not answer.")))
+        await #expect(throws: DeviceIOError.self) { try await transfer.value }
+        #expect((services.pasteboard.failure as? DeviceIOError)?.identifier == "fixture-current")
         try await wait { source.followers == 0 }
     }
 
