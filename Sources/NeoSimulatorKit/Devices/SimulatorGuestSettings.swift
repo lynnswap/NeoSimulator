@@ -8,37 +8,41 @@ import XPC
 package final class SimulatorGuestSettings {
     private let source: SimulatorHostDevice
     private let xcodeURL: URL
-    private var devicePreparation: Task<SimulatorDevice, any Error>?
-    private var actionPreparation: Task<GuestSettingsActions, any Error>?
+    private var deviceSet: SimulatorDeviceSet?
+    private var actionPreparation: (device: SimulatorDevice, task: Task<GuestSettingsActions, any Error>)?
 
     nonisolated package init(device: SimulatorHostDevice, xcodeURL: URL) {
         source = device
         self.xcodeURL = xcodeURL
     }
 
+    /// The set shares the device's connection with its screen, and a failure stays only with those who were waiting for it.
     private func selectedDevice() async throws -> SimulatorDevice {
-        if let devicePreparation { return try await devicePreparation.value }
-        let preparation = Task { [source, xcodeURL] in
+        let set: SimulatorDeviceSet
+        if let deviceSet { set = deviceSet } else {
             try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator")
             let interface = try await CoreSimulatorInterface(runtime: .shared)
-            let set = SimulatorDeviceSet.shared(interface: interface,
+            set = SimulatorDeviceSet.shared(interface: interface,
                 developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: source.deviceSetPath)
-            guard let device = try await set.device(withIdentifier: source.identifier) else {
-                throw CLIError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
-            }
-            return device
+            deviceSet = set
         }
-        devicePreparation = preparation
-        return try await preparation.value
+        guard let device = try await set.client(withIdentifier: source.identifier) else {
+            throw CLIError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
+        }
+        return device
     }
 
     private func service(device: SimulatorDevice) async throws -> GuestSettingsActions {
-        if let actionPreparation { return try await actionPreparation.value }
+        if let actionPreparation, actionPreparation.device === device { return try await actionPreparation.task.value }
         let preparation = Task { [device] in
             try await GuestSettingsActions(guest: SimulatorGuestHID(lookUp: device.lookUp), identifier: device.identifier)
         }
-        actionPreparation = preparation
-        return try await preparation.value
+        actionPreparation = (device, preparation)
+        do { return try await preparation.value } catch {
+            // The next request prepares them again, which waits behind whatever call this one left on the device's worker.
+            if actionPreparation?.task == preparation { actionPreparation = nil }
+            throw error
+        }
     }
 
     /// Reads one group. A value that fails names itself and keeps what is known of it; the rest of the group still applies.
