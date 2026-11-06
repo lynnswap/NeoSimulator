@@ -21,7 +21,9 @@ package final class VideoRecording {
     private var timer: Task<Void, Never>?
     private var forcedError: Error?
 
-    package init(process: Process, startupTimeout: Duration = DeviceOperationLimit.recordingStart) throws {
+    /// Launches `process` on `lane`, because launching waits for the system to read its executable.
+    package init(process: Process, startupTimeout: Duration = DeviceOperationLimit.recordingStart,
+                 lane: any CaptureLane = BlockingIOLane()) async throws {
         self.process = process
         let pipe = Pipe()
         process.standardInput = FileHandle.nullDevice
@@ -31,7 +33,8 @@ package final class VideoRecording {
         process.terminationHandler = { process in
             continuation.yield(.exited(process.terminationStatus, process.terminationReason))
         }
-        do { try process.run() }
+        nonisolated(unsafe) let launching = process
+        do { try await lane.run { try launching.run() } }
         catch { process.terminationHandler = nil; continuation.finish(); throw error }
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -115,38 +118,45 @@ package final class VideoRecording {
 @MainActor
 package final class RecordingStore {
     private struct Entry {
-        let recording: VideoRecording
+        /// Nil until its process has launched.
+        var recording: VideoRecording?
         /// The chosen file, which another recording must not save to.
         let destinationKey: String?
-        let completion: Task<Void, Never>
     }
+    private let lane: any CaptureLane
     private var entries: [UUID: Entry] = [:]
+    private var emptied: [CheckedContinuation<Void, Never>] = []
     private var isFinishing = false
     package var onError: (Error) -> Void = { hostLog($0.localizedDescription) }
     package var hasActiveRecordings: Bool { !entries.isEmpty }
+
+    package init(lane: any CaptureLane = BlockingIOLane()) { self.lane = lane }
 
     /// Where a finished recording is saved.
     package enum Destination {
         /// A file chosen in a save panel, replaced when the recording finishes.
         case file(URL)
         /// Hands off a finalized temporary movie; handoff failures are reported as save failures.
-        case capture(@MainActor (URL) throws -> Void)
+        case capture(@MainActor (URL) async throws -> Void)
     }
 
     /// Whether a recording to a chosen file will replace `file` when it finishes.
-    package func isReserved(_ file: URL) -> Bool {
-        guard let key = try? Self.destinationKey(for: file) else { return false }
+    package func isReserved(_ file: URL) async -> Bool {
+        guard let key = try? await lane.run({ try Self.destinationKey(for: file) }) else { return false }
         return entries.values.contains { $0.destinationKey == key }
     }
 
-    package func start(to destination: Destination, process: (URL) -> Process,
-               onFinished: @escaping @MainActor () -> Void) throws -> VideoRecording {
-        guard !isFinishing else { throw SimulatorError.operation("Recordings are finishing before NeoSimulator quits") }
+    /// Reserves the destination, then creates its temporary file and launches the process away from the caller.
+    /// The entry exists from the reservation on, so that quitting waits for a recording that is still launching.
+    package func start(to destination: Destination, process: @MainActor (URL) -> Process,
+               onFinished: @escaping @MainActor () -> Void) async throws -> VideoRecording {
+        try checkNotFinishing()
         let identifier = UUID()
         let temporary: URL, destinationKey: String?
         switch destination {
         case .file(let file):
-            let key = try Self.destinationKey(for: file)
+            let key = try await lane.run { try Self.destinationKey(for: file) }
+            try checkNotFinishing()
             guard !entries.values.contains(where: { $0.destinationKey == key }) else {
                 throw SimulatorError.operation("Another recording is saving to \(file.path). Choose a different filename.")
             }
@@ -158,20 +168,25 @@ package final class RecordingStore {
             temporary = FileManager.default.temporaryDirectory
                 .appendingPathComponent("simulator_recording_\(identifier.uuidString).mov")
         }
-        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
-        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        close(descriptor)
+        entries[identifier] = Entry(destinationKey: destinationKey)
         let recording: VideoRecording
-        do { recording = try VideoRecording(process: process(temporary)) }
-        catch {
-            do { try Self.removeTemporaryFile(at: temporary) }
-            catch let cleanup {
-                throw SimulatorError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
-            }
+        do {
+            try await lane.run { try CaptureFile.createExclusively(temporary) }
+        } catch {
+            remove(identifier)
             throw error
         }
+        do {
+            recording = try await VideoRecording(process: process(temporary), lane: lane)
+        } catch {
+            let reported = await CaptureFile.removing(temporary, after: error, lane: lane)
+            remove(identifier)
+            throw reported
+        }
+        entries[identifier]?.recording = recording
+        if isFinishing { recording.stop() }
 
-        let completion = Task { [self] in
+        Task { [self] in
             var readyToSave = false
             do {
                 try await recording.waitUntilFinished()
@@ -184,32 +199,32 @@ package final class RecordingStore {
                 readyToSave = true
                 switch destination {
                 case .file(let file):
-                    guard rename(temporary.path, file.path) == 0 else {
-                        throw SimulatorError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
+                    try await lane.run {
+                        guard rename(temporary.path, file.path) == 0 else {
+                            throw SimulatorError.operation("Could not save \(file.lastPathComponent). The recording is available at \(temporary.path): \(String(cString: strerror(errno)))")
+                        }
                     }
                 case .capture(let handOver):
-                    try handOver(temporary)
+                    try await handOver(temporary)
                 }
             } catch {
-                var reported: Error = error
-                if !readyToSave {
-                    do { try Self.removeTemporaryFile(at: temporary) }
-                    catch let cleanup {
-                        reported = SimulatorError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
-                    }
-                }
-                onError(reported)
+                onError(readyToSave ? error : await CaptureFile.removing(temporary, after: error, lane: lane))
             }
-            entries.removeValue(forKey: identifier)
+            remove(identifier)
             onFinished()
         }
-        entries[identifier] = Entry(recording: recording, destinationKey: destinationKey, completion: completion)
         return recording
     }
 
-    private static func removeTemporaryFile(at url: URL) throws {
-        do { try FileManager.default.removeItem(at: url) }
-        catch let error as CocoaError where error.code == .fileNoSuchFile {}
+    private func checkNotFinishing() throws {
+        guard !isFinishing else { throw SimulatorError.operation("Recordings are finishing before NeoSimulator quits") }
+    }
+
+    private func remove(_ identifier: UUID) {
+        entries.removeValue(forKey: identifier)
+        guard entries.isEmpty else { return }
+        for waiter in emptied { waiter.resume() }
+        emptied.removeAll()
     }
 
     /// Identifies a file however its folder is spelled, and ignoring case on
@@ -224,10 +239,10 @@ package final class RecordingStore {
         return caseSensitive ? path : path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
     }
 
+    /// Stops every recording, including one that is still launching, and waits until each is saved or reported.
     package func finishAll() async {
         isFinishing = true
-        let pending = Array(entries.values)
-        for entry in pending { entry.recording.stop() }
-        for entry in pending { await entry.completion.value }
+        for entry in entries.values { entry.recording?.stop() }
+        if !entries.isEmpty { await withCheckedContinuation { emptied.append($0) } }
     }
 }

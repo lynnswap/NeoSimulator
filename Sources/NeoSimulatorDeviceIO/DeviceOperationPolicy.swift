@@ -49,6 +49,9 @@ package enum DeviceOperationLimit {
     package static let recordingStart: Duration = .seconds(30)
     package static let recordingFinish: Duration = .seconds(30)
     package static let recordingStopGrace: Duration = .seconds(2)
+    /// How long stopping a screen capture stream waits for its session and GPU work to end before saying that they have
+    /// not. They keep running, and the stream keeps its frames until they end.
+    package static let captureStreamStop: Duration = .seconds(10)
     /// How long a device's channel waits for one native call before it stops answering for the device.
     /// The call itself keeps running; see ``SimulatorDeviceChannel``.
     package static let bridge: Duration = .seconds(10)

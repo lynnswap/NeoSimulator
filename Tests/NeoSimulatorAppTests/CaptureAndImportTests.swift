@@ -6,7 +6,9 @@ import AppKit
 import AVFoundation
 import Foundation
 import ImageIO
+import NeoSimulatorDeviceIO
 import QuartzCore
+import Synchronization
 import Testing
 
 @Suite @MainActor
@@ -22,7 +24,7 @@ struct CaptureAndImportTests {
             printf 'started\\n' >&2
             while :; do sleep 0.1; done
             """]
-        let recording = try VideoRecording(process: process, startupTimeout: .seconds(3))
+        let recording = try await VideoRecording(process: process, startupTimeout: .seconds(3))
         #expect(recording.startDate == nil)
         recording.stop()
         try await recording.waitUntilFinished()
@@ -36,21 +38,21 @@ struct CaptureAndImportTests {
         let rejected = Process()
         rejected.executableURL = URL(fileURLWithPath: "/bin/sh")
         rejected.arguments = ["-c", "echo denied >&2; exit 7"]
-        let recording = try VideoRecording(process: rejected)
+        let recording = try await VideoRecording(process: rejected)
         await #expect(throws: (any Error).self) { try await recording.waitUntilFinished() }
         #expect(recording.startDate == nil)
 
         let interrupted = Process()
         interrupted.executableURL = URL(fileURLWithPath: "/bin/sh")
         interrupted.arguments = ["-c", "echo 'Recording started' >&2; exit 7"]
-        let started = try VideoRecording(process: interrupted)
+        let started = try await VideoRecording(process: interrupted)
         await #expect(throws: (any Error).self) { try await started.waitUntilFinished() }
         #expect(started.hasStarted && started.startDate == nil)
 
         let stalled = Process()
         stalled.executableURL = URL(fileURLWithPath: "/bin/sleep")
         stalled.arguments = ["30"]
-        let timeout = try VideoRecording(process: stalled, startupTimeout: .milliseconds(30))
+        let timeout = try await VideoRecording(process: stalled, startupTimeout: .milliseconds(30))
         await #expect(throws: (any Error).self) { try await timeout.waitUntilFinished() }
         #expect(!stalled.isRunning)
     }
@@ -94,10 +96,10 @@ struct CaptureAndImportTests {
             process.arguments = ["-c", "exit 1"]
             return process
         }
-        _ = try store.start(to: .file(destination), process: process, onFinished: {})
+        _ = try await store.start(to: .file(destination), process: process, onFinished: {})
         var secondProcessCreated = false
-        #expect(throws: (any Error).self) {
-            try store.start(to: .file(alias.appendingPathComponent("movie.mov")), process: { url in
+        await #expect(throws: (any Error).self) {
+            _ = try await store.start(to: .file(alias.appendingPathComponent("movie.mov")), process: { url in
                 secondProcessCreated = true
                 return process(url)
             }, onFinished: {})
@@ -107,15 +109,199 @@ struct CaptureAndImportTests {
             .volumeSupportsCaseSensitiveNames ?? true
         let differentlyCased = directory.appendingPathComponent("Movie.mov")
         if caseSensitive {
-            _ = try store.start(to: .file(differentlyCased), process: process, onFinished: {})
+            _ = try await store.start(to: .file(differentlyCased), process: process, onFinished: {})
         } else {
-            #expect(throws: (any Error).self) {
-                try store.start(to: .file(differentlyCased), process: process, onFinished: {})
+            await #expect(throws: (any Error).self) {
+                _ = try await store.start(to: .file(differentlyCased), process: process, onFinished: {})
             }
         }
         await store.finishAll()
         #expect(!store.hasActiveRecordings)
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["alias"])
+    }
+
+    @Test func aHeldRecordingStartLeavesTheCallerResponsiveAndKeepsOneOwnerOfItsDestination() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane()
+        let store = RecordingStore(lane: lane)
+        store.onError = { _ in }
+        var processes = 0
+        func process(_ url: URL) -> Process {
+            processes += 1
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "exit 1"]
+            return process
+        }
+        let destination = directory.appendingPathComponent("movie.mov")
+        let first = Task.immediate { try await store.start(to: .file(destination), process: process, onFinished: {}) }
+        let second = Task.immediate { try await store.start(to: .file(destination), process: process, onFinished: {}) }
+        // Both are resolving their destination off the main actor, which still runs, and nothing has been created.
+        await lane.untilHeld(2)
+        #expect(processes == 0 && !store.hasActiveRecordings)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        lane.open()
+        let outcomes = [await first.result, await second.result]
+        #expect(outcomes.filter { (try? $0.get()) != nil }.count == 1)
+        #expect(processes == 1)
+        await store.finishAll()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test func quittingWaitsForARecordingThatIsStillLaunchingAndStopsIt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let movie = directory.appendingPathComponent("fixture.mov")
+        try await writeMovie(to: movie)
+        let lane = HeldCaptureLane()
+        let store = RecordingStore(lane: lane)
+        var errors: [Error] = []
+        store.onError = { errors.append($0) }
+        var finished = false
+        var handedOver: [URL] = []
+        let start = Task.immediate {
+            try await store.start(to: .capture { handedOver.append($0) }, process: { url in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", """
+                    trap 'cp "$1" "$2"; exit 0' INT
+                    echo 'Recording started' >&2
+                    while :; do sleep 0.05; done
+                    """, "sh", movie.path, url.path]
+                return process
+            }, onFinished: { finished = true })
+        }
+        await lane.untilHeld(1)
+        #expect(store.hasActiveRecordings)
+        let finishing = Task.immediate { await store.finishAll() }
+        // A new recording cannot begin once quitting has.
+        await #expect(throws: SimulatorError.self) {
+            _ = try await store.start(to: .file(directory.appendingPathComponent("Late.mov")), process: { _ in Process() }, onFinished: {})
+        }
+        #expect(!finished)
+        lane.open()
+        let recording = try await start.value
+        #expect(recording.isStopping)
+        await finishing.value
+        #expect(finished && errors.isEmpty && !store.hasActiveRecordings)
+        #expect(handedOver.count == 1)
+        try FileManager.default.removeItem(at: try #require(handedOver.first))
+    }
+
+    @Test func aFailedLaunchRemovesItsFileAndReportsWhatCouldNotBeRemoved() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let store = RecordingStore()
+        func unlaunchable(_ url: URL) -> Process {
+            let process = Process()
+            process.executableURL = directory.appendingPathComponent("missing")
+            return process
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await store.start(to: .file(directory.appendingPathComponent("movie.mov")), process: unlaunchable, onFinished: {})
+        }
+        #expect(!store.hasActiveRecordings)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        do {
+            _ = try await store.start(to: .file(directory.appendingPathComponent("kept.mov")), process: { url in
+                try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+                return unlaunchable(url)
+            }, onFinished: {})
+            Issue.record("Expected the launch to fail")
+        } catch {
+            #expect(error.localizedDescription.contains("Temporary file remains"))
+        }
+        #expect(!store.hasActiveRecordings)
+    }
+
+    @Test func aFailedCaptureWriteLeavesTheDestinationAndReportsWhatCouldNotBeRemoved() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let destination = directory.appendingPathComponent("capture.png")
+        try Data("original".utf8).write(to: destination)
+        // The move is one attempt, which is reported rather than repeated.
+        var attempts = 0
+        do {
+            try await CaptureFile.write(to: destination, extension: "png") { temporary in
+                attempts += 1
+                try Data("new".utf8).write(to: temporary)
+                try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+            }
+            Issue.record("Expected the replacement to fail")
+        } catch {
+            #expect(error.localizedDescription.contains("Temporary file remains"))
+        }
+        #expect(attempts == 1)
+        #expect(try Data(contentsOf: destination) == Data("original".utf8))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try await CaptureFile.write(to: destination, extension: "png") { try Data("new".utf8).write(to: $0) }
+        #expect(try Data(contentsOf: destination) == Data("new".utf8))
+    }
+
+    @Test func movingAcrossVolumesPublishesAWholeCopyBeforeRemovingTheOriginal() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = directory.appendingPathComponent("folder"), other = directory.appendingPathComponent("other")
+        for path in [folder, other] { try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true) }
+        defer {
+            for path in [folder, other] { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path.path) }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        func names(_ url: URL) throws -> [String] { try FileManager.default.contentsOfDirectory(atPath: url.path).sorted() }
+        func capture() throws -> URL {
+            let url = folder.appendingPathComponent(UUID().uuidString)
+            try Data("capture".utf8).write(to: url)
+            return url
+        }
+        // Only the first rename crosses volumes; the copy's own rename stays on its volume.
+        func across(_ original: URL) -> (URL, URL) throws -> Void {
+            { from, to in
+                if from == original { throw POSIXError(.EXDEV) }
+                try CaptureFile.renameExclusively(from, to: to)
+            }
+        }
+        let moved = try capture()
+        let destination = other.appendingPathComponent("Shot.png")
+        try CaptureFile.relocate(moved, to: destination, renaming: across(moved))
+        #expect(!FileManager.default.fileExists(atPath: moved.path))
+        #expect(try Data(contentsOf: destination) == Data("capture".utf8))
+        #expect(try names(other) == ["Shot.png"])
+
+        // A taken name is refused whole, whichever way the file would have travelled.
+        let refused = try capture()
+        #expect(throws: POSIXError.self) { try CaptureFile.relocate(refused, to: destination, renaming: across(refused)) }
+        #expect(throws: POSIXError.self) { try CaptureFile.relocate(refused, to: destination) }
+        #expect(FileManager.default.fileExists(atPath: refused.path))
+        #expect(try names(other) == ["Shot.png"])
+
+        // A destination that takes no copy leaves the original and no partial file.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: other.path)
+        let kept = try capture()
+        #expect(throws: (any Error).self) {
+            try CaptureFile.relocate(kept, to: other.appendingPathComponent("Kept.png"), renaming: across(kept))
+        }
+        #expect(FileManager.default.fileExists(atPath: kept.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: other.path)
+        #expect(try names(other) == ["Shot.png"])
+
+        // An original that cannot be removed is reported, and the destination is whole.
+        let stuck = try capture()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        let left = other.appendingPathComponent("Left.png")
+        #expect(throws: CaptureLeftBehind.self) { try CaptureFile.relocate(stuck, to: left, renaming: across(stuck)) }
+        #expect(FileManager.default.fileExists(atPath: stuck.path))
+        #expect(try Data(contentsOf: left) == Data("capture".utf8))
+        #expect(try names(other) == ["Left.png", "Shot.png"])
     }
 
     @Test func captureNamesAndFoldersFollowSimulatorApp() throws {
@@ -142,7 +328,7 @@ struct CaptureAndImportTests {
         }
     }
 
-    @Test func capturesTakeTheNextFreeNumberAndStayPutWhenSavingFails() throws {
+    @Test func capturesTakeTheNextFreeNumberAndStayPutWhenSavingFails() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let folder = directory.appendingPathComponent("folder")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -153,13 +339,13 @@ struct CaptureAndImportTests {
             try Data("capture".utf8).write(to: url)
             return url
         }
-        let saved = try CaptureFile.move(try capture(), into: folder, named: "Shot.png")
+        let saved = try await CaptureFile.move(try capture(), into: folder, named: "Shot.png")
         #expect(saved.lastPathComponent == "Shot #3.png")
         #expect(try Data(contentsOf: saved) == Data("capture".utf8))
 
         let kept = try capture()
         do {
-            _ = try CaptureFile.move(kept, into: directory.appendingPathComponent("missing"), named: "Shot.png")
+            _ = try await CaptureFile.move(kept, into: directory.appendingPathComponent("missing"), named: "Shot.png")
             Issue.record("Expected the move to fail")
         } catch {
             #expect(error.localizedDescription.contains(kept.path))
@@ -177,7 +363,7 @@ struct CaptureAndImportTests {
         let store = RecordingStore()
         var errors: [Error] = []
         store.onError = { errors.append($0) }
-        _ = try store.start(to: .file(directory.appendingPathComponent("Recording #2.mov")), process: { _ in
+        _ = try await store.start(to: .file(directory.appendingPathComponent("Recording #2.mov")), process: { _ in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", "trap 'exit 0' INT; echo 'Recording started' >&2; while :; do sleep 0.05; done"]
@@ -187,7 +373,7 @@ struct CaptureAndImportTests {
         @MainActor final class StopState { var stopped = false }
         let state = StopState()
         var finished = false
-        let recording = try store.start(to: .capture { handedOver.append(($0, state.stopped)) }, process: { url in
+        let recording = try await store.start(to: .capture { handedOver.append(($0, state.stopped)) }, process: { url in
             // simctl finalizes the movie on SIGINT.
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -212,7 +398,7 @@ struct CaptureAndImportTests {
         #expect(handedOver.count == 1 && temporary.afterStop)
         let capture = CapturedContent(.movie, file: temporary.url, name: "Recording.mov", defaultFolder: directory,
                                       isReserved: store.isReserved)
-        #expect(try capture.saveToDefaultLocation().lastPathComponent == "Recording #3.mov")
+        #expect(try await capture.saveToDefaultLocation().lastPathComponent == "Recording #3.mov")
         #expect(try Data(contentsOf: directory.appendingPathComponent("Recording #3.mov")) == Data(contentsOf: movie))
         await store.finishAll()
     }
@@ -305,7 +491,7 @@ struct CaptureAndImportTests {
         var reported = false
         var finished = false
         store.onError = { _ in reported = true }
-        _ = try store.start(to: .file(destination), process: { _ in
+        _ = try await store.start(to: .file(destination), process: { _ in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", "echo failed >&2; exit 1"]
@@ -331,7 +517,7 @@ struct CaptureAndImportTests {
         var errors: [Error] = []
         var output: URL?
         store.onError = { errors.append($0) }
-        _ = try store.start(to: .file(directory.appendingPathComponent("movie.mov")), process: { url in
+        _ = try await store.start(to: .file(directory.appendingPathComponent("movie.mov")), process: { url in
             output = url
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -376,12 +562,12 @@ struct CaptureThumbnailTests {
     }
 
     private func capture(_ kind: CapturedContent.Kind = .screenshot, named name: String = "Shot.png",
-                         in directory: URL, owner: UUID? = nil) throws -> CapturedContent {
+                         in directory: URL, owner: UUID? = nil, lane: any CaptureLane = BlockingIOLane()) throws -> CapturedContent {
         let file = directory.appendingPathComponent(UUID().uuidString)
         try Data(name.utf8).write(to: file)
         let folder = directory.appendingPathComponent("Saved", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return CapturedContent(kind, file: file, name: name, defaultFolder: folder, owner: owner)
+        return CapturedContent(kind, file: file, name: name, defaultFolder: folder, owner: owner, lane: lane)
     }
 
     /// Fits within the test machine's screen, which may be small.
@@ -400,7 +586,7 @@ struct CaptureThumbnailTests {
         try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("Saved").path).sorted()
     }
 
-    @Test func aNewCaptureEndsTheShownThumbnailAndSavesIt() throws {
+    @Test func aNewCaptureEndsTheShownThumbnailAndSavesIt() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -415,9 +601,11 @@ struct CaptureThumbnailTests {
         let second = CaptureThumbnail(try capture(named: "Second.png", in: directory), image: nil, parent: other,
                                       source: source, spacing: .zero) { _ in }
         second.show()
+        await first.content.settled()
         #expect(try savedNames(in: directory) == ["First.png"])
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(second)])
         other.setFrame(other.frame.insetBy(dx: -20, dy: -20), display: false)
+        await second.content.settled()
         #expect(try savedNames(in: directory) == ["First.png", "Second.png"])
         #expect(CaptureThumbnail.active.isEmpty)
 
@@ -425,15 +613,15 @@ struct CaptureThumbnailTests {
         let third = CaptureThumbnail(try capture(named: "Third.png", in: directory, owner: owner), image: nil, parent: window,
                                      source: source, spacing: .zero) { _ in }
         third.show()
-        #expect(CaptureThumbnail.finishAll(owner: UUID()).isEmpty)
+        #expect(await CaptureThumbnail.finishAll(owner: UUID()).isEmpty)
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(third)])
         #expect(try savedNames(in: directory) == ["First.png", "Second.png"])
-        #expect(CaptureThumbnail.finishAll(owner: owner).isEmpty)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
         #expect(try savedNames(in: directory) == ["First.png", "Second.png", "Third.png"])
         #expect(CaptureThumbnail.active.isEmpty)
     }
 
-    @Test func thumbnailMenusOfferSimulatorAppsActions() throws {
+    @Test func thumbnailMenusOfferSimulatorAppsActions() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -466,20 +654,21 @@ struct CaptureThumbnailTests {
         #expect(Array(titles(screenshot.menu()).prefix(3)) == ["Save to Desktop", "Save to Documents", "Copy to Clipboard"])
         UserDefaults.standard.set(shots.path, forKey: key)
 
-        func choose(_ title: String, in thumbnail: CaptureThumbnail) throws {
+        func choose(_ title: String, in thumbnail: CaptureThumbnail) async throws {
             let item = try #require(thumbnail.menu().items.first { $0.title == title })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+            await thumbnail.action?.value
         }
         let deleted = try capture(in: directory)
-        try choose("Delete", in: thumbnail(deleted))
+        try await choose("Delete", in: thumbnail(deleted))
         #expect(!FileManager.default.fileExists(atPath: deleted.file.path))
-        try choose("Save to Shots", in: thumbnail(try capture(named: "Custom.png", in: directory)))
+        try await choose("Save to Shots", in: thumbnail(try capture(named: "Custom.png", in: directory)))
         #expect(FileManager.default.fileExists(atPath: shots.appendingPathComponent("Custom.png").path))
-        try choose("Close", in: thumbnail(try capture(named: "Closed.png", in: directory)))
+        try await choose("Close", in: thumbnail(try capture(named: "Closed.png", in: directory)))
         #expect(try savedNames(in: directory) == ["Closed.png"])
     }
 
-    @Test func aCompletedDragDeliversTheCaptureAndACancelledOneSavesIt() throws {
+    @Test func aCompletedDragDeliversTheCaptureAndACancelledOneSavesIt() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -497,24 +686,333 @@ struct CaptureThumbnailTests {
         let taken = try capture(named: "Taken.png", in: directory)
         CaptureThumbnail(taken, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded(.move)
         try FileManager.default.moveItem(at: taken.file, to: directory.appendingPathComponent("Taken.png"))
-        #expect(CaptureThumbnail.finishAll().isEmpty)
+        #expect(await CaptureThumbnail.finishAll().isEmpty)
         #expect(try savedNames(in: directory) == ["Dragged.png", "Unclaimed.png"])
         let destination = directory.appendingPathComponent("Dragged.png")
-        try delivered.deliver(to: destination)
+        try await delivered.deliver(to: destination)
         #expect(FileManager.default.fileExists(atPath: destination.path))
         let late = try capture(named: "Late.png", in: directory)
-        try late.saveToDefaultLocation()
-        try late.deliver(to: directory.appendingPathComponent("Late.png"))
+        try await late.saveToDefaultLocation()
+        try await late.deliver(to: directory.appendingPathComponent("Late.png"))
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Late.png").path))
         #expect(try savedNames(in: directory) == ["Dragged.png", "Late.png", "Unclaimed.png"])
         try Data().write(to: directory.appendingPathComponent("Saved/Movie.gif"))
-        #expect(try CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif").lastPathComponent
+        #expect(try await CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif").lastPathComponent
                 == "Movie #2.gif")
-        #expect(try CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif",
-                                           isReserved: { $0.lastPathComponent == "Movie #2.gif" }).lastPathComponent == "Movie #3.gif")
+        #expect(try await CaptureFile.unusedFile(in: directory.appendingPathComponent("Saved"), named: "Movie.gif",
+                                                 claim: { $0.lastPathComponent != "Movie #2.gif" }).lastPathComponent == "Movie #3.gif")
         let cancelled = try capture(named: "Cancelled.png", in: directory)
         CaptureThumbnail(cancelled, image: nil, parent: window, source: .zero, spacing: .zero) { _ in }.dragEnded([])
+        await cancelled.settled()
         #expect(try savedNames(in: directory) == ["Cancelled.png", "Dragged.png", "Late.png", "Movie.gif", "Unclaimed.png"])
+    }
+
+    @Test func aHeldSaveKeepsOneOwnerAcrossADeleteAndALateDelivery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane()
+        let content = try capture(named: "Raced.png", in: directory, lane: lane)
+        let saving = Task.immediate { try await content.saveToDefaultLocation() }
+        let deleting = Task.immediate { try await content.delete() }
+        let destination = directory.appendingPathComponent("Dropped.png")
+        let delivering = Task.immediate { try await content.deliver(to: destination) }
+        await lane.untilHeld(1)
+        // The main actor runs while the move is held, and the capture is still where it was.
+        #expect(!content.isResolved)
+        #expect(FileManager.default.fileExists(atPath: content.file.path))
+        #expect(try savedNames(in: directory).isEmpty)
+        lane.open()
+        let saved = try await saving.value
+        try await deleting.value
+        try await delivering.value
+        #expect(content.isResolved)
+        #expect(!FileManager.default.fileExists(atPath: content.file.path))
+        #expect(try Data(contentsOf: saved) == Data("Raced.png".utf8))
+        #expect(try Data(contentsOf: destination) == Data("Raced.png".utf8))
+        #expect(try savedNames(in: directory) == ["Raced.png"])
+    }
+
+    @Test func aHeldDeleteDecidesWhatASaveAndADeliveryThenFind() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane()
+        let content = try capture(named: "Deleted.png", in: directory, lane: lane)
+        let deleting = Task.immediate { try await content.delete() }
+        let saving = Task.immediate { try await content.saveToDefaultLocation() }
+        let destination = directory.appendingPathComponent("Dropped.png")
+        let delivering = Task.immediate { try await content.deliver(to: destination) }
+        await lane.untilHeld(1)
+        #expect(!content.isResolved && FileManager.default.fileExists(atPath: content.file.path))
+        lane.open()
+        try await deleting.value
+        await #expect(throws: SimulatorError.self) { _ = try await saving.value }
+        await #expect(throws: SimulatorError.self) { try await delivering.value }
+        #expect(content.isResolved)
+        #expect(try savedNames(in: directory).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test func aFailedSaveIsNotRepeatedUnlessAskedAgain() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane()
+        lane.open()
+        let content = try capture(named: "Kept.png", in: directory, lane: lane)
+        let missing = directory.appendingPathComponent("missing")
+        do {
+            try await content.save(into: missing)
+            Issue.record("Expected the save to fail")
+        } catch {
+            #expect(error.localizedDescription.contains(content.file.path))
+        }
+        #expect(lane.runs == 1)
+        #expect(!content.isResolved && FileManager.default.fileExists(atPath: content.file.path))
+        try await content.saveIfUnresolved()
+        #expect(lane.runs == 2 && content.isResolved)
+        #expect(try savedNames(in: directory) == ["Kept.png"])
+
+        // A save nobody asked for is attempted once, whichever of a drag's timer, a delivery or a quit comes next.
+        let file = directory.appendingPathComponent("Unsaved.png")
+        try Data("unsaved".utf8).write(to: file)
+        let unsaved = CapturedContent(.screenshot, file: file, name: "Unsaved.png", defaultFolder: missing, lane: lane)
+        let before = lane.runs
+        await #expect(throws: SimulatorError.self) { try await unsaved.saveIfUnresolved() }
+        #expect(lane.runs == before + 1)
+        try await unsaved.saveIfUnresolved()
+        try await unsaved.settleAfterDrop()
+        #expect(lane.runs == before + 1)
+        #expect(!unsaved.isResolved && FileManager.default.fileExists(atPath: file.path))
+        // Someone asking still can.
+        try await unsaved.save(into: directory.appendingPathComponent("Saved"))
+        #expect(unsaved.isResolved)
+        #expect(try savedNames(in: directory) == ["Kept.png", "Unsaved.png"])
+    }
+
+    @Test func aCaptureSavedWithItsOriginalLeftBehindIsResolvedAndServesLateDeliveries() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let whole = directory.appendingPathComponent("Whole.png")
+        try Data("whole".utf8).write(to: whole)
+        // Its first work reports what a move across volumes reports when it cannot remove the original.
+        final class LeavingBehind: CaptureLane, Sendable {
+            let whole: URL
+            let runs = Mutex(0)
+            init(whole: URL) { self.whole = whole }
+            @concurrent func run<Value: Sendable>(_ work: @escaping @Sendable () throws -> Value) async throws -> Value {
+                let run = runs.withLock { $0 += 1; return $0 }
+                if run == 1 { throw CaptureLeftBehind(destination: whole, original: whole, cleanup: CocoaError(.fileWriteNoPermission)) }
+                return try await performBlockingIO(work)
+            }
+        }
+        let lane = LeavingBehind(whole: whole)
+        let content = try capture(named: "Whole.png", in: directory, lane: lane)
+        await #expect(throws: CaptureLeftBehind.self) { try await content.saveToDefaultLocation() }
+        #expect(content.isResolved)
+        // Nothing moves it again, and it stays where the failure said it is.
+        try await content.saveIfUnresolved()
+        try await content.settleAfterDrop()
+        #expect(lane.runs.withLock { $0 } == 1)
+        #expect(FileManager.default.fileExists(atPath: content.file.path))
+        let destination = directory.appendingPathComponent("Dropped.png")
+        try await content.deliver(to: destination)
+        #expect(try Data(contentsOf: destination) == Data("whole".utf8))
+        #expect(try savedNames(in: directory).isEmpty)
+    }
+
+    @Test func aHeldDeliveryAnswersItsPromiseOnlyWhenItsFileIsThere() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane()
+        let content = try capture(named: "Held.png", in: directory, lane: lane)
+        let provider = CaptureThumbnail.dragProvider(for: content) { Issue.record($0) }
+        let delegate = try #require(provider.delegate)
+        let destination = directory.appendingPathComponent("Held.png")
+        var answers: [(any Error)?] = []
+        let answered = AsyncStream<Void>.makeStream()
+        delegate.filePromiseProvider(provider, writePromiseTo: destination) { [answered] failure in
+            MainActor.assumeIsolated { answers.append(failure) }
+            answered.continuation.yield()
+        }
+        await lane.untilHeld(1)
+        #expect(answers.isEmpty && !FileManager.default.fileExists(atPath: destination.path))
+        lane.open()
+        var iterator = answered.stream.makeAsyncIterator()
+        #expect(await iterator.next() != nil)
+        #expect(answers.count == 1 && answers.first.map { $0 == nil } == true)
+        #expect(try Data(contentsOf: destination) == Data("Held.png".utf8))
+        #expect(content.isResolved)
+    }
+
+    @Test func aFailedDeliveryKeepsTheCaptureAtItsDefaultLocationAndAnswersWithTheFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let content = try capture(named: "Failed.png", in: directory)
+        var reported: [any Error] = []
+        let provider = CaptureThumbnail.dragProvider(for: content) { reported.append($0) }
+        let delegate = try #require(provider.delegate)
+        let failure = await withCheckedContinuation { continuation in
+            delegate.filePromiseProvider(provider, writePromiseTo: directory.appendingPathComponent("missing/Failed.png")) {
+                continuation.resume(returning: $0)
+            }
+        }
+        #expect(failure != nil && reported.isEmpty && content.isResolved)
+        #expect(try savedNames(in: directory) == ["Failed.png"])
+        // A later delivery copies it from where it was saved.
+        let destination = directory.appendingPathComponent("Failed.png")
+        try await content.deliver(to: destination)
+        #expect(try Data(contentsOf: destination) == Data("Failed.png".utf8))
+        #expect(try savedNames(in: directory) == ["Failed.png"])
+    }
+
+    @Test func quittingEndsThumbnailsAtOnceAndWaitsForTheirFilesAndReportsFailures() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (window, source) = deviceWindow()
+        defer { window.close() }
+        let owner = UUID()
+        // A timer already began saving this one; quitting finds it in flight and must not save it twice.
+        let lane = HeldCaptureLane()
+        let earlier = try capture(named: "Earlier.png", in: directory, owner: owner, lane: lane)
+        var reported: [any Error] = []
+        CaptureThumbnail(earlier, image: nil, parent: window, source: source, spacing: .zero) { reported.append($0) }.hide(animated: false)
+        await lane.untilHeld(1)
+        let shown = try capture(named: "Shown.png", in: directory, owner: owner, lane: lane)
+        let thumbnail = CaptureThumbnail(shown, image: nil, parent: window, source: source, spacing: .zero) { reported.append($0) }
+        thumbnail.show()
+        let quitting = Task.immediate { await CaptureThumbnail.finishAll(owner: owner) }
+        // The thumbnail is gone before the first wait, while its capture is still being saved.
+        #expect(CaptureThumbnail.active.isEmpty)
+        #expect(window.childWindows?.isEmpty != false)
+        #expect(try savedNames(in: directory).isEmpty)
+        await lane.untilHeld(2)
+        lane.open()
+        #expect(await quitting.value.isEmpty)
+        #expect(reported.isEmpty)
+        #expect(try savedNames(in: directory) == ["Earlier.png", "Shown.png"])
+
+        let failing = CapturedContent(.screenshot, file: directory.appendingPathComponent("Gone.png"), name: "Gone.png",
+                                      defaultFolder: directory.appendingPathComponent("Saved"), owner: owner)
+        let gone = CaptureThumbnail(failing, image: nil, parent: window, source: source, spacing: .zero) { reported.append($0) }
+        gone.show()
+        let failures = await CaptureThumbnail.finishAll(owner: owner)
+        #expect(failures.count == 1 && reported.isEmpty)
+        #expect(!failing.isResolved)
+    }
+
+    @Test func aQuitThatADiskHoldsPastItsLimitSaysWhereTheCaptureRemainsAndTheSaveCarriesOn() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (window, source) = deviceWindow()
+        defer { window.close() }
+        let owner = UUID()
+        let lane = HeldCaptureLane()
+        let content = try capture(named: "Held.png", in: directory, owner: owner, lane: lane)
+        CaptureThumbnail(content, image: nil, parent: window, source: source, spacing: .zero) { _ in }.show()
+        let finishing = Task.immediate { await CaptureThumbnail.finishAll(owner: owner) }
+        await lane.untilHeld(1)
+        _ = TerminationAccount.shared.take()
+        #expect(await CaptureThumbnail.failures(of: finishing, before: .now + .milliseconds(50)).isEmpty)
+        #expect(TerminationAccount.shared.take().contains { $0.contains(content.file.path) })
+        #expect(CaptureThumbnail.unfinishedCaptures().contains(content.file))
+        #expect(FileManager.default.fileExists(atPath: content.file.path))
+        lane.open()
+        #expect(await CaptureThumbnail.failures(of: finishing, before: .now + .seconds(30)).isEmpty)
+        #expect(TerminationAccount.shared.take().isEmpty)
+        #expect(content.isResolved && !CaptureThumbnail.unfinishedCaptures().contains(content.file))
+        #expect(try savedNames(in: directory) == ["Held.png"])
+    }
+
+    @Test func aMenuActionOwnsTheCaptureUntilItEndsEvenIfItsThumbnailEnds() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (window, source) = deviceWindow()
+        defer { window.close() }
+        let lane = HeldCaptureLane()
+        let content = try capture(named: "Used.png", in: directory, lane: lane)
+        let timing = ControlledThumbnailTiming()
+        let thumbnail = CaptureThumbnail(content, image: nil, parent: window, source: source,
+                                         spacing: NSSize(width: 10, height: 10), timing: timing) { _ in }
+        thumbnail.show()
+        timing.completeAnimations()
+        let delete = try #require(thumbnail.menu().items.first { $0.title == "Delete" })
+        #expect(NSApp.sendAction(try #require(delete.action), to: delete.target, from: delete))
+        await lane.untilHeld(1)
+        // Choosing again does nothing, the timer waits, and the window's end does not save what is being deleted.
+        #expect(NSApp.sendAction(try #require(delete.action), to: delete.target, from: delete))
+        #expect(timing.deadlineDurations.isEmpty)
+        thumbnail.hide(animated: false)
+        #expect(CaptureThumbnail.active.isEmpty)
+        lane.open()
+        await thumbnail.action?.value
+        #expect(content.isResolved && !FileManager.default.fileExists(atPath: content.file.path))
+        #expect(lane.runs == 1)
+        #expect(try savedNames(in: directory).isEmpty)
+    }
+
+    @Test func aFailedActionOnAnEndedThumbnailSavesTheCaptureAndReportsTheFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (window, source) = deviceWindow()
+        defer { window.close() }
+        // The screenshot folder is gone by the time its menu item is used.
+        let folder = directory.appendingPathComponent("Shots", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let key = HostPreferences.screenShotSaveLocation
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(previous, forKey: key) }
+        UserDefaults.standard.set(folder.path, forKey: key)
+        let lane = HeldCaptureLane()
+        let content = try capture(named: "Failed.png", in: directory, lane: lane)
+        var reported: [any Error] = []
+        let thumbnail = CaptureThumbnail(content, image: nil, parent: window, source: source, spacing: .zero,
+                                         timing: ControlledThumbnailTiming()) { reported.append($0) }
+        thumbnail.show()
+        let save = try #require(thumbnail.menu().items.first { $0.title == "Save to Shots" })
+        try FileManager.default.removeItem(at: folder)
+        #expect(NSApp.sendAction(try #require(save.action), to: save.target, from: save))
+        await lane.untilHeld(1)
+        thumbnail.hide(animated: false)
+        lane.open()
+        await thumbnail.action?.value
+        #expect(reported.count == 1)
+        #expect(content.isResolved)
+        #expect(try savedNames(in: directory) == ["Failed.png"])
+    }
+
+    @Test func aScreenshotsPreviewAndBytesAreLoadedOffTheMainActor() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let context = try #require(CGContext(data: nil, width: 3, height: 2, bitsPerComponent: 8, bytesPerRow: 12,
+                                             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let data = NSMutableData()
+        let output = try #require(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(output, try #require(context.makeImage()), nil)
+        #expect(CGImageDestinationFinalize(output))
+        let file = directory.appendingPathComponent("capture")
+        try (data as Data).write(to: file)
+        let lane = HeldCaptureLane()
+        let content = CapturedContent(.screenshot, file: file, name: "Shot.png", defaultFolder: directory, lane: lane)
+        let loading = Task.immediate { await content.loadPreview() }
+        await lane.untilHeld(1)
+        #expect(content.png == nil)
+        lane.open()
+        let image = try #require(await loading.value)
+        #expect(image.size == NSSize(width: 3, height: 2))
+        #expect(content.png == data as Data)
+        let provider = CaptureThumbnail.dragProvider(for: content) { _ in }
+        #expect(provider.pasteboardPropertyList(forType: .png) as? Data == data as Data)
+        #expect(FileManager.default.fileExists(atPath: file.path))
     }
 
     /// Completes the real presentation pipeline without depending on WindowServer rendering.
@@ -531,7 +1029,7 @@ struct CaptureThumbnailTests {
         return (thumbnail, window, shown, timing)
     }
 
-    @Test func aThumbnailStaysWithItsWindowWhenTheWindowMoves() throws {
+    @Test func aThumbnailStaysWithItsWindowWhenTheWindowMoves() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -546,11 +1044,11 @@ struct CaptureThumbnailTests {
         #expect(shown.frame == expected)
         #expect(try savedNames(in: directory).isEmpty)
         thumbnail.resume()
-        CaptureThumbnail.finishAll()
+        await CaptureThumbnail.finishAll()
         #expect(try savedNames(in: directory) == ["Moved.png"])
     }
 
-    @Test func aHoverDoesNotBringBackAThumbnailTheUserDismissed() throws {
+    @Test func aHoverDoesNotBringBackAThumbnailTheUserDismissed() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -558,13 +1056,14 @@ struct CaptureThumbnailTests {
         defer { window.close() }
         let delete = try #require(thumbnail.menu().items.first { $0.title == "Delete" })
         #expect(NSApp.sendAction(try #require(delete.action), to: delete.target, from: delete))
+        await thumbnail.action?.value
         thumbnail.pause()
         timing.completeAnimations()
         #expect(CaptureThumbnail.active.isEmpty)
         #expect(try savedNames(in: directory).isEmpty)
     }
 
-    @Test func aNewCaptureEndsAThumbnailThatIsHiding() throws {
+    @Test func aNewCaptureEndsAThumbnailThatIsHiding() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -574,22 +1073,23 @@ struct CaptureThumbnailTests {
         let next = CaptureThumbnail(try capture(named: "Next.png", in: directory), image: nil, parent: window,
                                     source: window.frame.insetBy(dx: 20, dy: 40), spacing: .zero, timing: timing) { _ in }
         next.show()
+        await previous.content.settled()
         #expect(try savedNames(in: directory) == ["Previous.png"])
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(next)])
         previous.pause()
         timing.completeAnimations()
         #expect(CaptureThumbnail.active.map(ObjectIdentifier.init) == [ObjectIdentifier(next)])
-        CaptureThumbnail.finishAll()
+        await CaptureThumbnail.finishAll()
     }
 
-    @Test func quittingSavesAThumbnailThatIsHiding() throws {
+    @Test func quittingSavesAThumbnailThatIsHiding() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let (thumbnail, window, _, timing) = try shownThumbnail(named: "Hiding.png", in: directory)
         defer { window.close() }
         thumbnail.hide(animated: true)
-        #expect(CaptureThumbnail.finishAll().isEmpty)
+        #expect(await CaptureThumbnail.finishAll().isEmpty)
         timing.completeAnimations()
         #expect(try savedNames(in: directory) == ["Hiding.png"])
         #expect(CaptureThumbnail.active.isEmpty)
@@ -600,6 +1100,7 @@ struct CaptureThumbnailTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let content = try capture(named: "Promised.png", in: directory)
+        #expect(await content.loadPreview() == nil)
         let provider = CaptureThumbnail.dragProvider(for: content) { _ in }
         #expect(provider.writableTypes(for: .general).contains(.fileURL))
         #expect(provider.pasteboardPropertyList(forType: .png) as? Data == Data("Promised.png".utf8))
@@ -612,7 +1113,7 @@ struct CaptureThumbnailTests {
         #expect(try Data(contentsOf: destination) == Data("Promised.png".utf8))
     }
 
-    @Test func aShownScreenshotShrinksBesideItsWindowAndSavesItselfWhenItsTimerEnds() throws {
+    @Test func aShownScreenshotShrinksBesideItsWindowAndSavesItselfWhenItsTimerEnds() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -639,9 +1140,61 @@ struct CaptureThumbnailTests {
         #expect(try savedNames(in: directory).isEmpty)
         timing.completeAnimations()
         #expect(CaptureThumbnail.active.isEmpty)
+        await thumbnail.content.settled()
         #expect(try savedNames(in: directory) == ["Timed.png"])
     }
 
+}
+
+/// Holds capture work at the lane until it is opened, then runs the real work on the real lane.
+private final class HeldCaptureLane: CaptureLane, Sendable {
+    private struct State {
+        var isOpen = false
+        var runs = 0
+        var held: [CheckedContinuation<Void, Never>] = []
+        var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    }
+    private let state = Mutex(State())
+
+    /// How many pieces of work have reached the lane.
+    var runs: Int { state.withLock { $0.runs } }
+
+    @concurrent func run<Value: Sendable>(_ work: @escaping @Sendable () throws -> Value) async throws -> Value {
+        await withCheckedContinuation { (passed: CheckedContinuation<Void, Never>) in
+            let (proceed, ready) = state.withLock { state -> (Bool, [CheckedContinuation<Void, Never>]) in
+                state.runs += 1
+                if !state.isOpen { state.held.append(passed) }
+                let count = state.held.count
+                let ready = state.watchers.filter { $0.count <= count }.map(\.continuation)
+                state.watchers.removeAll { $0.count <= count }
+                return (state.isOpen, ready)
+            }
+            for watcher in ready { watcher.resume() }
+            if proceed { passed.resume() }
+        }
+        return try await performBlockingIO(work)
+    }
+
+    /// Waits until `count` pieces of work are held at the lane.
+    nonisolated(nonsending) func untilHeld(_ count: Int) async {
+        await withCheckedContinuation { (watcher: CheckedContinuation<Void, Never>) in
+            let ready = state.withLock { state -> Bool in
+                if state.held.count >= count { return true }
+                state.watchers.append((count, watcher))
+                return false
+            }
+            if ready { watcher.resume() }
+        }
+    }
+
+    func open() {
+        let held = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            state.isOpen = true
+            defer { state.held.removeAll() }
+            return state.held
+        }
+        for work in held { work.resume() }
+    }
 }
 
 /// Models completion and deadlines; window/layer changes still use the production thumbnail pipeline.

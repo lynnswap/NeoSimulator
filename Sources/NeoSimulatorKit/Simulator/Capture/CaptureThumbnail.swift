@@ -2,10 +2,15 @@ import AppKit
 import AVFoundation
 import CoreImage
 import ImageIO
+import NeoSimulatorDeviceIO
 import QuartzCore
 import UniformTypeIdentifiers
 
 /// Temporary screenshot or recording, owned until saved, deleted, or handed off.
+///
+/// This object is the capture's one owner. File work runs away from the main actor, one operation at a time in the order
+/// they were asked for, and each reads what the one before it settled. So a save, a delete and a late delivery that race
+/// cannot move or remove the file twice, and none repeats what another attempted.
 @MainActor
 package final class CapturedContent {
     package enum Kind { case screenshot, movie }
@@ -19,66 +24,179 @@ package final class CapturedContent {
     /// Where dismissing the thumbnail saves it, chosen when it was captured.
     package let defaultFolder: URL
     /// Names another capture will take, which saving skips.
-    private let isReserved: (URL) -> Bool
-    /// Whether the capture has been saved, deleted, or handed to another app.
+    private let isReserved: @MainActor (URL) async -> Bool
+    private let lane: any CaptureLane
+    /// Whether the capture has been saved, deleted, or handed to another app. Set once that has succeeded.
     package private(set) var isResolved = false
     /// Where it was saved, from which a late drag delivery copies it.
     private var saved: URL?
+    /// Whether a save nobody asked for has failed and been reported. Only someone asking moves the capture after that.
+    private var automaticSaveFailed = false
+    /// A screenshot's bytes, read before its thumbnail appears, because a drag cannot wait to offer them.
+    package private(set) var png: Data?
+    private var lastOperation: Task<Void, Never>?
+    private var operations = 0
+    /// Captures with file work in flight, which quitting waits for.
+    private static var working: [ObjectIdentifier: CapturedContent] = [:]
 
-    package init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, owner: UUID? = nil,
-         isReserved: @escaping (URL) -> Bool = { _ in false }) {
+    package init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, owner: UUID? = nil, lane: any CaptureLane = BlockingIOLane(),
+         isReserved: @escaping @MainActor (URL) async -> Bool = { _ in false }) {
         self.kind = kind
         self.owner = owner
         self.file = file
         self.name = name
         self.defaultFolder = defaultFolder
+        self.lane = lane
         self.isReserved = isReserved
+    }
+
+    /// Runs after the operations asked for so far. It goes on if its caller is cancelled, because its outcome decides
+    /// who owns the file.
+    private func inOrder<Value: Sendable>(_ operation: @escaping @MainActor () async throws -> Value) async throws -> Value {
+        let previous = lastOperation
+        let task = Task { @MainActor in
+            await previous?.value
+            return try await operation()
+        }
+        operations += 1
+        Self.working[ObjectIdentifier(self)] = self
+        lastOperation = Task { @MainActor [self] in
+            _ = await task.result
+            operations -= 1
+            if operations == 0 { Self.working.removeValue(forKey: ObjectIdentifier(self)) }
+        }
+        return try await task.value
+    }
+
+    /// Waits for the operations asked for so far.
+    package func settled() async { await lastOperation?.value }
+
+    /// Waits for captures' file work in flight.
+    package static func finishOperations(owner: UUID?) async {
+        for content in working.values where owner == nil || content.owner == owner { await content.settled() }
+    }
+
+    /// The captures with file work in flight.
+    fileprivate static var inFlight: [CapturedContent] { Array(working.values) }
+
+    /// Reads a screenshot and returns its decoded image, away from the main actor, and holds its bytes.
+    package func loadPreview() async -> NSImage? {
+        let file = file, lane = lane
+        let loaded = try? await inOrder {
+            try await lane.run { () -> (Data, CGImage?) in
+                let png = try Data(contentsOf: file)
+                let image = CGImageSourceCreateWithData(png as CFData, nil).flatMap {
+                    CGImageSourceCreateImageAtIndex($0, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+                }
+                return (png, image)
+            }
+        }
+        guard let loaded else { return nil }
+        png = loaded.0
+        return loaded.1.map { NSImage(cgImage: $0, size: .zero) }
+    }
+
+    /// The temporary file's bytes.
+    package func read() async throws -> Data {
+        let file = file, lane = lane
+        return try await inOrder { try await lane.run { try Data(contentsOf: file) } }
     }
 
     /// Moves the capture into `folder`, numbering a taken name. A failure
     /// keeps the capture where it is and names that location.
     @discardableResult
-    package func save(into folder: URL) throws -> URL {
-        guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
-        let saved = try CaptureFile.move(file, into: folder, named: name, isReserved: isReserved)
-        isResolved = true
-        self.saved = saved
-        return saved
+    package func save(into folder: URL) async throws -> URL {
+        try await inOrder { [self] in
+            guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
+            return try await move(into: folder)
+        }
     }
 
     @discardableResult
-    package func saveToDefaultLocation() throws -> URL { try save(into: defaultFolder) }
+    package func saveToDefaultLocation() async throws -> URL { try await save(into: defaultFolder) }
 
-    /// Settles a capture a drop took through its file URL, which moved the
-    /// temporary file away, and returns whether it did.
-    package func settleIfTaken() -> Bool {
-        guard !isResolved, !FileManager.default.fileExists(atPath: file.path) else { return isResolved }
-        isResolved = true
-        return true
+    /// Saves the capture where dismissing would, once, unless something has resolved it by the time this runs.
+    package func saveIfUnresolved() async throws {
+        try await inOrder { [self] in
+            guard !isResolved, !automaticSaveFailed else { return }
+            try await saveAutomatically()
+        }
     }
 
-    package func delete() throws {
-        guard !isResolved else { return }
-        try FileManager.default.removeItem(at: file)
-        isResolved = true
+    /// Does the same for a capture that a drop may have taken through its file URL, which moved the temporary file away
+    /// and resolves it.
+    package func settleAfterDrop() async throws {
+        try await inOrder { [self] in
+            guard !isResolved, !automaticSaveFailed else { return }
+            let file = file
+            guard try await lane.run({ FileManager.default.fileExists(atPath: file.path) }) else {
+                isResolved = true
+                return
+            }
+            try await saveAutomatically()
+        }
+    }
+
+    private func saveAutomatically() async throws {
+        do { _ = try await move(into: defaultFolder) }
+        catch {
+            automaticSaveFailed = !isResolved
+            throw error
+        }
+    }
+
+    private func move(into folder: URL) async throws -> URL {
+        do {
+            let saved = try await CaptureFile.move(file, into: folder, named: name, lane: lane, isReserved: isReserved)
+            isResolved = true
+            self.saved = saved
+            return saved
+        } catch let failure as CaptureLeftBehind {
+            isResolved = true
+            saved = failure.destination
+            throw failure
+        }
+    }
+
+    package func delete() async throws {
+        try await inOrder { [self] in
+            guard !isResolved else { return }
+            let file = file
+            try await lane.run { try FileManager.default.removeItem(at: file) }
+            isResolved = true
+        }
     }
 
     /// Writes the capture to `destination`, which a drag or another app asked
     /// for, and gives up the temporary file.
-    package func deliver(to destination: URL) throws {
-        if let saved { return try FileManager.default.copyItem(at: saved, to: destination) }
-        guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
-        try FileManager.default.moveItem(at: file, to: destination)
-        isResolved = true
+    package func deliver(to destination: URL) async throws {
+        try await inOrder { [self] in
+            if let saved {
+                return try await lane.run { try CaptureFile.copy(saved, to: destination) }
+            }
+            guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
+            let file = file
+            do {
+                try await lane.run { try CaptureFile.relocate(file, to: destination) }
+                isResolved = true
+            } catch let failure as CaptureLeftBehind {
+                isResolved = true
+                throw failure
+            }
+        }
     }
 
     /// Hands the screenshot to another app as a file of its own, and removes
     /// the temporary capture.
-    fileprivate func handOff() throws -> URL {
+    fileprivate func handOff() async throws -> URL {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try await lane.run { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
         let copy = folder.appendingPathComponent(name)
-        try deliver(to: copy)
+        do {
+            try await deliver(to: copy)
+        } catch {
+            throw await CaptureFile.removing(folder, after: error, lane: lane)
+        }
         return copy
     }
 }
@@ -145,6 +263,8 @@ package final class CaptureThumbnail: NSObject {
     private static var pending: [CapturedContent] = []
     /// Animated GIFs being written, whose names other exports must not take.
     private static var exportingGIFs: Set<URL> = []
+    /// Thumbnails whose menu action is using their capture, which quitting waits for.
+    private static var performing: Set<CaptureThumbnail> = []
     /// Reports a failure of a thumbnail whose device window has closed.
     package static var reportDetached: (Error) -> Void = { hostLog($0.localizedDescription) }
     /// Set while NeoSimulator quits: captures are saved instead of shown.
@@ -177,6 +297,8 @@ package final class CaptureThumbnail: NSObject {
     private var observers: [any NSObjectProtocol] = []
     private var moveCount = 0
     private var moveWatch: Task<Void, Never>?
+    /// The menu action last chosen, which owns the capture until it ends.
+    package private(set) var action: Task<Void, Never>?
 
     /// Animates from `source` in screen coordinates. `rotation` corrects the unrotated framebuffer.
     /// `spacing` is the offset from the device window; `report` receives save/use failures.
@@ -350,8 +472,10 @@ package final class CaptureThumbnail: NSObject {
         hide(animated: true)
     }
 
+    /// Ends the thumbnail now. Saving what it holds has then begun, in the order asked for, and the returned task ends with
+    /// its failure. A menu action in progress keeps the capture instead, and saves it if it fails.
     @discardableResult
-    private func finish(reporting: Bool = true) -> Error? {
+    private func finish(reporting: Bool = true) -> Task<(any Error)?, Never>? {
         guard !finished else { return nil }
         finished = true
         hiding = true
@@ -364,28 +488,53 @@ package final class CaptureThumbnail: NSObject {
         window.orderOut(nil)
         window.close()
         Self.active.removeAll { $0 === self }
-        guard !dismissedExplicitly, !content.isResolved else { return nil }
-        do {
-            try content.saveToDefaultLocation()
-            return nil
-        } catch {
-            hostLog(error.localizedDescription)
-            if reporting { report(error) }
-            return error
+        guard !dismissedExplicitly, !Self.performing.contains(self), !content.isResolved else { return nil }
+        let content = content, report = report
+        return Task.immediate {
+            do {
+                try await content.saveIfUnresolved()
+                return nil
+            } catch {
+                hostLog(error.localizedDescription)
+                if reporting { report(error) }
+                return error
+            }
         }
     }
 
-    /// Saves unresolved captures before quitting, including those awaiting GIF export.
+    /// Ends thumbnails before it first waits, then saves unresolved captures before quitting, including those awaiting
+    /// GIF export, and waits for every file operation of theirs in flight. Failures of what it began are returned; those
+    /// of what was already running go to whoever asked for it.
     @discardableResult
-    package static func finishAll(owner: UUID? = nil) -> [Error] {
-        let thumbnails = active.filter { owner == nil || $0.content.owner == owner }
-        var failures = thumbnails.compactMap { $0.finish(reporting: false) }
-        let captures = pending.filter { owner == nil || $0.owner == owner }
-        for content in captures where !content.settleIfTaken() {
-            do { try content.saveToDefaultLocation() } catch { failures.append(error) }
+    package static func finishAll(owner: UUID? = nil) async -> [Error] {
+        func belongs(_ content: CapturedContent) -> Bool { owner == nil || content.owner == owner }
+        let saves = active.filter { belongs($0.content) }.compactMap { $0.finish(reporting: false) }
+        let settling = pending.filter(belongs).map { content in
+            Task.immediate { () -> (any Error)? in
+                do { try await content.settleAfterDrop(); return nil } catch { return error }
+            }
         }
-        pending.removeAll { owner == nil || $0.owner == owner }
+        pending.removeAll(where: belongs)
+        for thumbnail in performing where belongs(thumbnail.content) { await thumbnail.action?.value }
+        var failures: [Error] = []
+        for task in saves + settling { if let failure = await task.value { failures.append(failure) } }
+        await CapturedContent.finishOperations(owner: owner)
         return failures
+    }
+
+    /// What `finishing` reports if it ends before `deadline`. A disk that holds it longer does not hold a quit, which then
+    /// says where each capture remains; the work carries on until the process ends, and cannot lose the original.
+    package static func failures(of finishing: Task<[Error], Never>, before deadline: ContinuousClock.Instant) async -> [Error] {
+        if await finishing.ends(before: deadline) { return await finishing.value }
+        for file in unfinishedCaptures() {
+            TerminationAccount.shared.note("A capture had not finished saving when NeoSimulator quit. It remains at \(file.path).")
+        }
+        return []
+    }
+
+    /// The temporary files of captures that are still unresolved.
+    package static func unfinishedCaptures() -> [URL] {
+        Set((active.map(\.content) + pending + CapturedContent.inFlight).filter { !$0.isResolved }.map(\.file)).sorted { $0.path < $1.path }
     }
 
     // MARK: Device window
@@ -430,49 +579,49 @@ package final class CaptureThumbnail: NSObject {
 
     package func menu() -> NSMenu {
         let menu = NSMenu()
-        func add(_ title: String, _ action: @escaping (CaptureThumbnail) throws -> Void) -> NSMenuItem {
+        func add(_ title: String, _ action: @escaping @MainActor (CaptureThumbnail) async throws -> Void) -> NSMenuItem {
             let item = menu.addItem(withTitle: title, action: #selector(performAction(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = CaptureThumbnailAction(action)
             return item
         }
         if let custom = Self.customFolder() {
-            _ = add("Save to \(custom.lastPathComponent)") { try $0.content.save(into: custom) }
+            _ = add("Save to \(custom.lastPathComponent)") { try await $0.content.save(into: custom) }
         }
         if let desktop = CaptureFile.desktop {
-            _ = add("Save to Desktop") { try $0.content.save(into: desktop) }
+            _ = add("Save to Desktop") { try await $0.content.save(into: desktop) }
         }
         if let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            _ = add("Save to Documents") { try $0.content.save(into: documents) }
+            _ = add("Save to Documents") { try await $0.content.save(into: documents) }
         }
         switch content.kind {
         case .screenshot:
             _ = add("Copy to Clipboard") { thumbnail in
-                let png = try Data(contentsOf: thumbnail.content.file)
+                let png = try await thumbnail.content.read()
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setData(png, forType: .png)
-                try thumbnail.content.delete()
+                try await thumbnail.content.delete()
             }
             menu.addItem(.separator())
-            _ = add("Open in Mail") { try $0.open(handingOffTo: "com.apple.mail") }
-            _ = add("Open in Preview") { try $0.open(handingOffTo: "com.apple.Preview") }
+            _ = add("Open in Mail") { try await $0.open(handingOffTo: "com.apple.mail") }
+            _ = add("Open in Preview") { try await $0.open(handingOffTo: "com.apple.Preview") }
             _ = add("Open in Photos") { thumbnail in
-                try thumbnail.open(thumbnail.content.saveToDefaultLocation(), with: "com.apple.Photos")
+                try thumbnail.open(try await thumbnail.content.saveToDefaultLocation(), with: "com.apple.Photos")
             }
         case .movie:
-            _ = add("Save as Animated GIF") { try $0.saveAnimatedGIF(keepingMovie: false) }
-            let copy = add("Save Copy as Animated GIF") { try $0.saveAnimatedGIF(keepingMovie: true) }
+            _ = add("Save as Animated GIF") { try await $0.saveAnimatedGIF(keepingMovie: false) }
+            let copy = add("Save Copy as Animated GIF") { try await $0.saveAnimatedGIF(keepingMovie: true) }
             copy.isAlternate = true
             copy.keyEquivalentModifierMask = .option
         }
         menu.addItem(.separator())
         _ = add("Show in Finder") { thumbnail in
-            NSWorkspace.shared.activateFileViewerSelecting([try thumbnail.content.saveToDefaultLocation()])
+            NSWorkspace.shared.activateFileViewerSelecting([try await thumbnail.content.saveToDefaultLocation()])
         }
         menu.addItem(.separator())
-        _ = add("Delete") { try $0.content.delete() }
+        _ = add("Delete") { try await $0.content.delete() }
         menu.addItem(.separator())
-        _ = add("Close") { try $0.content.saveToDefaultLocation() }
+        _ = add("Close") { try await $0.content.saveToDefaultLocation() }
         return menu
     }
 
@@ -484,20 +633,36 @@ package final class CaptureThumbnail: NSObject {
         return folder.lastPathComponent.caseInsensitiveCompare(desktop ?? "") == .orderedSame ? nil : folder
     }
 
+    /// The chosen action owns the capture until it ends, and its file work starts before this returns. Its timer waits,
+    /// and the thumbnail stays up for an alert about a failure; if the thumbnail has ended by then, the capture is saved
+    /// where dismissing would have, and the failure is reported instead.
     @objc private func performAction(_ sender: NSMenuItem) {
-        guard let action = sender.representedObject as? CaptureThumbnailAction, !finished else { return }
-        do {
-            try action.body(self)
-            dismiss()
-        } catch {
-            NSAlert(presenting: error).runModal()
+        guard let action = sender.representedObject as? CaptureThumbnailAction, !finished, !Self.performing.contains(self) else { return }
+        Self.performing.insert(self)
+        pause()
+        self.action = Task.immediate { [self] in
+            defer {
+                Self.performing.remove(self)
+                resume()
+            }
+            do {
+                try await action.body(self)
+                dismiss()
+            } catch {
+                guard finished else {
+                    NSAlert(presenting: error).runModal()
+                    return
+                }
+                report(error)
+                do { try await content.saveIfUnresolved() } catch { report(error) }
+            }
         }
     }
 
-    private func open(handingOffTo bundleIdentifier: String) throws {
+    private func open(handingOffTo bundleIdentifier: String) async throws {
         let application = try Self.application(bundleIdentifier, toOpen: content.name)
-        NSWorkspace.shared.open([try content.handOff()], withApplicationAt: application,
-                                configuration: NSWorkspace.OpenConfiguration())
+        NSWorkspace.shared.open([try await content.handOff()], withApplicationAt: application,
+                                configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
     }
 
     private func open(_ file: URL, with bundleIdentifier: String) throws {
@@ -514,21 +679,20 @@ package final class CaptureThumbnail: NSObject {
 
     /// Exports beside the movie's save location. Deletes the temporary movie only after
     /// successful export; a failed export saves it instead.
-    private func saveAnimatedGIF(keepingMovie: Bool) throws {
+    private func saveAnimatedGIF(keepingMovie: Bool) async throws {
         let content = content
         let movie: URL, gif: URL
         if keepingMovie {
-            movie = try content.saveToDefaultLocation()
-            gif = try CaptureFile.unusedFile(in: movie.deletingLastPathComponent(),
-                                             named: movie.deletingPathExtension().appendingPathExtension("gif").lastPathComponent,
-                                             isReserved: Self.exportingGIFs.contains)
+            movie = try await content.saveToDefaultLocation()
+            gif = try await CaptureFile.unusedFile(in: movie.deletingLastPathComponent(),
+                                                   named: movie.deletingPathExtension().appendingPathExtension("gif").lastPathComponent,
+                                                   claim: { Self.exportingGIFs.insert($0).inserted })
         } else {
             movie = content.file
-            gif = try CaptureFile.unusedFile(in: content.defaultFolder,
-                                             named: (content.name as NSString).deletingPathExtension + ".gif",
-                                             isReserved: Self.exportingGIFs.contains)
+            gif = try await CaptureFile.unusedFile(in: content.defaultFolder,
+                                                   named: (content.name as NSString).deletingPathExtension + ".gif",
+                                                   claim: { Self.exportingGIFs.insert($0).inserted })
         }
-        Self.exportingGIFs.insert(gif)
         let report = report
         if !keepingMovie { Self.pending.append(content) }
         Task {
@@ -537,13 +701,14 @@ package final class CaptureThumbnail: NSObject {
                 Self.exportingGIFs.remove(gif)
             }
             do {
-                try await AnimatedGIF.export(movie, to: gif, options: .preferred)
-                if !keepingMovie { try content.delete() }
+                do { try await AnimatedGIF.export(movie, to: gif, options: .preferred) }
+                catch { throw await CaptureFile.removing(gif, after: error, lane: BlockingIOLane()) }
+                if !keepingMovie { try await content.delete() }
             } catch {
                 hostLog("Could not save an animated GIF: \(error.localizedDescription)")
                 var failure = error
-                if !keepingMovie, !content.isResolved {
-                    do { try content.saveToDefaultLocation() }
+                if !keepingMovie {
+                    do { try await content.saveIfUnresolved() }
                     catch { failure = SimulatorError.operation("\(failure.localizedDescription) \(error.localizedDescription)") }
                 }
                 report(failure)
@@ -562,7 +727,7 @@ package final class CaptureThumbnail: NSObject {
         // file after the thumbnail has gone.
         provider.delivery = delivery
         provider.file = content.file
-        if content.kind == .screenshot { provider.png = try? Data(contentsOf: content.file) }
+        if content.kind == .screenshot { provider.png = content.png }
         return provider
     }
 
@@ -582,8 +747,7 @@ package final class CaptureThumbnail: NSObject {
             Task {
                 try? await Task.sleep(for: .seconds(5))
                 Self.pending.removeAll { $0 === content }
-                guard !content.settleIfTaken() else { return }
-                do { try content.saveToDefaultLocation() } catch { report(error) }
+                do { try await content.settleAfterDrop() } catch { report(error) }
             }
         }
         finish()
@@ -592,8 +756,8 @@ package final class CaptureThumbnail: NSObject {
 
 /// A thumbnail menu item's action.
 private final class CaptureThumbnailAction {
-    let body: (CaptureThumbnail) throws -> Void
-    init(_ body: @escaping (CaptureThumbnail) throws -> Void) { self.body = body }
+    let body: @MainActor (CaptureThumbnail) async throws -> Void
+    init(_ body: @escaping @MainActor (CaptureThumbnail) async throws -> Void) { self.body = body }
 }
 
 /// The thumbnail's content: the image or playing movie inside a black frame,
@@ -792,17 +956,24 @@ private final class CaptureDelivery: NSObject, NSFilePromiseProviderDelegate {
 
     nonisolated func filePromiseProvider(_ provider: NSFilePromiseProvider, writePromiseTo url: URL,
                                          completionHandler: @escaping ((any Error)?) -> Void) {
-        // A failed delivery keeps the capture by saving it where dismissing would.
-        let failure: (any Error)? = MainActor.assumeIsolated {
-            do { try content.deliver(to: url) } catch {
-                if !content.isResolved {
-                    do { try content.saveToDefaultLocation() } catch { report(error) }
+        nonisolated(unsafe) let completionHandler = completionHandler
+        MainActor.assumeIsolated {
+            // The destination waits for the completion handler, while the main actor goes on.
+            _ = Task.immediate { [content, report] in
+                do {
+                    try await content.deliver(to: url)
+                    completionHandler(nil)
+                } catch let failure as CaptureLeftBehind {
+                    // The destination has the whole file, so its promise is kept.
+                    report(failure)
+                    completionHandler(nil)
+                } catch {
+                    // A failed delivery keeps the capture by saving it where dismissing would.
+                    do { try await content.saveIfUnresolved() } catch { report(error) }
+                    completionHandler(error)
                 }
-                return error
             }
-            return nil
         }
-        completionHandler(failure)
     }
 }
 
@@ -830,7 +1001,7 @@ private final class CaptureFilePromiseProvider: NSFilePromiseProvider {
 
 /// Exports looping GIFs from movie sample times, with frame-rate and size limits and optional dithering.
 package enum AnimatedGIF {
-    package struct Options {
+    package struct Options: Sendable {
         package var maximumFrameRate: Double
         package var maximumFrameSize: Double
         package var dithers: Bool
@@ -854,6 +1025,12 @@ package enum AnimatedGIF {
             throw SimulatorError.operation("The recording contains no video track")
         }
         let duration = try await track.load(.timeRange).duration.seconds
+        // Reading and encoding every frame blocks for as long as the movie takes. Only that work uses the track from here.
+        nonisolated(unsafe) let videoTrack = track
+        try await performBlockingIO { try encode(asset, track: videoTrack, duration: duration, to: gif, options: options) }
+    }
+
+    private static func encode(_ asset: AVURLAsset, track: AVAssetTrack, duration: Double, to gif: URL, options: Options) throws {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,

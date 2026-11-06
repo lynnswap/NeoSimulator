@@ -186,6 +186,10 @@ Hub mode.
 | `HostApplication` | Compose the renderer's application lifecycle, menus, manager requests, and ownership registration around a `SimulatorScreenHost`. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
 | `DeviceWindowController` | Present the device and forward user actions. |
+| `CapturedContent` | Own one temporary capture until it is saved, deleted or delivered. Its file work runs off MainActor, one operation at a time in the order asked for, so racing saves, deletes and late drag deliveries cannot move or remove the file twice. |
+| `CaptureThumbnail` | Present a capture on MainActor. Ending one is immediate and begins saving what it holds; quitting waits up to its limit for that file work, reports its failures, and names where a capture remains if a disk holds it longer. |
+| `RecordingStore`, `VideoRecording` | Reserve a recording's destination on MainActor, and create its file, launch its process and finalize it away from there. Quitting waits for a recording that is still launching and stops it. |
+| `RemoteScreenCaptureStream` | Keep frames and control on its actor's queue and the blocking `AVCaptureSession` calls on a queue of their own. Stopping is accepted at once, each frame stays retained until the GPU finishes with it, and a stop that outlasts its limit is reported while it carries on. |
 | `RemoteDeviceScreenSession` | Own one active physical-device or VM screen transport, its resize assertion and input resources, and unfinished or completed recordings. |
 | `CoreDeviceAppResizeTransport` | Bridge native app-resize eligibility and assertions for Simulator and remote sessions. |
 | `CoreDevicePasteboardTransport` | Transfer a default-set simulator's pasteboard and observe both pasteboards' changes through CoreDevice. Simulators that CoreDevice does not list keep SimPasteboardPlus. |
@@ -348,8 +352,10 @@ in `TerminationAccount`; the quit's owner reports those notes and what
 
 Preference or host-switch failures appear in the manager with their remaining
 recovery state. Device errors stay with the relevant window. A failed
-capture keeps its recoverable file; partial imports and device creation retain
-and report completed work. None of these failures changes the selected route
+capture keeps its recoverable file and is not attempted again by itself. A
+capture that reached another volume whole but whose original could not be removed
+counts as saved, and both locations are reported. Partial imports and device
+creation retain and report completed work. None of these failures changes the selected route
 or launches Device Hub as a fallback.
 
 VMs use Screen Sharing when a VNC endpoint is available, with its pasteboard

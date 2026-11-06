@@ -165,7 +165,7 @@ package final class SimulatorScreenHost: NSObject {
         await restart?.value
         await closing?.value
         if let controller = sessions[identifier] {
-            if let recording = controller.session.recording {
+            if let recording = await controller.session.activeRecording() {
                 recording.stop()
                 do { try await recording.waitUntilFinished() }
                 catch { suppressed.remove(identifier); throw error }
@@ -443,7 +443,7 @@ package final class SimulatorScreenHost: NSObject {
         }
         presentationRestarts.insert(identifier)
         do {
-            if let recording = controller.session.recording {
+            if let recording = await controller.session.activeRecording() {
                 recording.stop()
                 try await recording.waitUntilFinished()
             }
@@ -1193,7 +1193,8 @@ package final class SimulatorScreenHost: NSObject {
     package func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
         if let stoppingTask { return stoppingTask }
         isTerminating = true
-        recordingTerminationErrors += CaptureThumbnail.finishAll(owner: captureOwner)
+        // Thumbnails end before this returns; what they hold is saved while the rest of stopping goes on.
+        let endingCaptures = Task.immediate { [captureOwner] in await CaptureThumbnail.finishAll(owner: captureOwner) }
         let retryingCleanup = stopped
         let keepsRunning = isInProcess || (keepingDevicesRunning
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
@@ -1204,17 +1205,18 @@ package final class SimulatorScreenHost: NSObject {
             defer { stoppingTask = nil }
             if retryingCleanup {
                 let inputFailures = await finishDisconnectedInput()
-                let failures = inputFailures + (await finishExternalDisplayChanges())
+                let captureFailures = await CaptureThumbnail.failures(of: endingCaptures, before: .now + HostPreferences.terminationLimit)
+                let failures = inputFailures + (await finishExternalDisplayChanges()) + captureFailures.map(\.localizedDescription)
                 if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
             } else {
-                try await finishStopping(devices: devices)
+                try await finishStopping(devices: devices, endingCaptures: endingCaptures)
             }
         }
         stoppingTask = task
         return task
     }
 
-    private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
+    private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)], endingCaptures: Task<[any Error], Never>) async throws {
         let pending = Array(connections.values) + Array(restarting.values)
         pending.forEach { $0.cancel() }
         bootOperations.values.forEach { $0.cancel() }
@@ -1231,7 +1233,13 @@ package final class SimulatorScreenHost: NSObject {
         let inputFailures = await finishDisconnectedInput()
         let displayFailures = await finishExternalDisplayChanges()
         let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
-        let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll(owner: captureOwner)
+        let captureDeadline = ContinuousClock.now + HostPreferences.terminationLimit
+        let endedCaptures = await CaptureThumbnail.failures(of: endingCaptures, before: captureDeadline)
+        // Captures may have been handed over since stopping began.
+        let lastCaptures = await CaptureThumbnail.failures(of: Task.immediate { [captureOwner] in
+            await CaptureThumbnail.finishAll(owner: captureOwner)
+        }, before: captureDeadline)
+        let captureFailures = recordingTerminationErrors + endedCaptures + lastCaptures
         recordingTerminationErrors.removeAll()
         shutdown()
         // Registrations leave on the sets' workers, and a quit reports what has not finished: this should not be that.
