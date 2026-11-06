@@ -209,7 +209,7 @@ final class DeviceScreens {
         }
         // A failed cleanup must finish before another context attaches input to the same devices.
         for retired in retiredContexts where retired.xcodeURL == sourceURL {
-            try await retired.invalidate()
+            try await invalidate(retired)
             retiredContexts.removeAll { $0 === retired }
         }
 
@@ -261,9 +261,19 @@ final class DeviceScreens {
     }
 
 
+    /// Every caller presents what this throws, which says where any unsaved capture remains. Having told the user, the
+    /// retry that quitting or opening a screen depends on does not stop on that capture again.
+    private func invalidate(_ context: SimulatorContext) async throws {
+        do { try await context.invalidate() }
+        catch {
+            context.acknowledgeCaptureFailures()
+            throw error
+        }
+    }
+
     private func retire(_ context: SimulatorContext) async throws {
         retiredContexts.append(context)
-        try await context.invalidate()
+        try await invalidate(context)
         retiredContexts.removeAll { $0 === context }
     }
 
@@ -413,7 +423,7 @@ final class DeviceScreens {
             var failures: [String] = []
             for context in retiredContexts {
                 do {
-                    try await context.invalidate()
+                    try await invalidate(context)
                     retiredContexts.removeAll { $0 === context }
                 } catch { failures.append(error.localizedDescription) }
             }

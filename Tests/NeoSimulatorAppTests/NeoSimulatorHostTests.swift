@@ -26,6 +26,25 @@ func wait(timeout: Duration = .seconds(2), sourceLocation: SourceLocation = #_so
     }
 }
 
+@MainActor
+func loadTestRuntime() async throws -> SimulatorRuntime {
+    let selection = Process()
+    let output = Pipe()
+    selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+    selection.arguments = ["-p"]
+    selection.standardOutput = output
+    try selection.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    selection.waitUntilExit()
+    let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+        ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
+    return try await SimulatorRuntime.load(xcodeURL: xcode)
+}
+
+@MainActor
+func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostName == nil }
+
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
     @MainActor private final class RemoteTarget {
@@ -1374,15 +1393,15 @@ struct InputFocusTests {
         for id in [DeviceCommand.ID.recordScreen, .recordScreenAs] {
             #expect(!DeviceCommand.command(id).isEnabled(controller))
         }
-        #expect(throws: SimulatorError.self) {
-            try session.startRecording(to: .file(directory.appendingPathComponent("pending.mov")), mask: .ignored)
+        await #expect(throws: SimulatorError.self) {
+            try await session.startRecording(to: .file(directory.appendingPathComponent("pending.mov")), mask: .ignored)
         }
         if let unexpected = session.recording { unexpected.stop(); try await unexpected.waitUntilFinished() }
         #expect(session.recording == nil && !FileManager.default.fileExists(atPath: log.path))
         primary.completeAppDisplayConnection()
         try await wait { session.isResizingApp }
         #expect(DeviceCommand.command(.recordScreen).isEnabled(controller))
-        try session.startRecording(to: .file(directory.appendingPathComponent("app.mov")), mask: .ignored)
+        try await session.startRecording(to: .file(directory.appendingPathComponent("app.mov")), mask: .ignored)
         let recording = try #require(session.recording)
         try await wait { FileManager.default.fileExists(atPath: log.path) }
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").contains("--display=47"))
@@ -1757,6 +1776,34 @@ struct InputFocusTests {
         try await retrying.value
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func releasingAScreenReportsUnfinishedToolCleanupAndCanFinishItLater(_ failsCleanup: Bool) async throws {
+        let controller = try makeController(TestDisplay())
+        var release: CheckedContinuation<Void, Never>?
+        var cleanedUp = false
+        controller.session.run({
+            await withCheckedContinuation { release = $0 }
+            cleanedUp = true
+            if failsCleanup { throw SimulatorError.operation("The capture's temporary file could not be removed") }
+        }, failure: { _ in })
+        try await wait { release != nil }
+        let stopping = Task.immediate { try await controller.session.stop() }
+        await #expect(throws: SimulatorError.self) { try await stopping.value }
+        #expect(!cleanedUp)
+        release?.resume()
+        if failsCleanup {
+            do {
+                try await controller.session.stop()
+                Issue.record("The stopped screen lost its cleanup failure")
+            } catch {
+                #expect(error.localizedDescription.contains("temporary file could not be removed"))
+            }
+        } else {
+            try await controller.session.stop()
+        }
+        #expect(cleanedUp)
+    }
+
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -1981,6 +2028,7 @@ struct InputFocusTests {
         try #require(session.canStartRecording)
         let idleControlsSize = controls.fittingSize
         controller.perform(.recordScreen)
+        try await wait { session.recording != nil }
         let recording = try #require(session.recording)
         let firstFrame = AsyncStream<Void>.makeStream()
         withObservationTracking { _ = recording.hasStarted } onChange: {
@@ -2733,7 +2781,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         try await wait { shows("stop.circle", "Stop Recording") }
         #expect(shows("stop.circle", "Stop Recording"))
@@ -2752,13 +2800,120 @@ struct InputFocusTests {
         #expect(shows("camera.on.rectangle", "Save Screen"))
         #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
 
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
         try await wait { shows("stop.circle", "Stop Recording") }
         #expect(shows("stop.circle", "Stop Recording"))
         try await wait { controller.session.recording == nil }
         #expect(controller.session.recording == nil)
         try await wait { shows("camera.on.rectangle", "Save Screen") }
         #expect(shows("camera.on.rectangle", "Save Screen"))
+    }
+
+    @Test func aRecordingThatIsStartingBlocksAnotherAndIsFoundByWhatFinishesIt() async throws {
+        var recordings = 0
+        let display = TestDisplay()
+        let controller = try makeController(display) { _, _ in
+            recordings += 1
+            return Self.recorder(then: "while :; do sleep 0.05; done")
+        }
+        defer { controller.invalidate() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = controller.session
+        let destination = directory.appendingPathComponent("Recording.mov")
+        let start = Task.immediate { try await session.startRecording(to: .file(destination), mask: .ignored) }
+        // It is reserved before the first wait, while there is no recording to stop yet.
+        #expect(session.recording == nil && !session.canStartRecording)
+        try await session.startRecording(to: .file(directory.appendingPathComponent("Second.mov")), mask: .ignored)
+        try await session.finishRecording()
+        try await start.value
+        try await wait { session.recording == nil }
+        #expect(recordings == 1)
+        #expect(display.announcedRecordings == [true, false])
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("Second.mov").path))
+    }
+
+    @Test func aRecordingThatStartsAfterItsSessionDisconnectsStopsAtOnce() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display) { _, _ in
+            Self.recorder(then: "while :; do sleep 0.05; done")
+        }
+        defer { controller.invalidate() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = controller.session
+        let start = Task.immediate {
+            try await session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        }
+        session.disconnect()
+        try await start.value
+        let recording = try #require(try await session.activeRecording())
+        #expect(recording.isStopping)
+        try await session.finishRecording()
+        try await wait { session.recording == nil }
+    }
+
+    @Test func finishingARecordingThatDoesNotStartGivesUpWhileTheStartGoesOnAndStopsItself() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane(passing: 1)
+        let store = RecordingStore(lane: lane)
+        store.onError = { _ in }
+        let session = try makeSession(TestDisplay(), recordingProcess: { _, _ in
+            Self.recorder(then: "while :; do sleep 0.05; done")
+        }, recordings: store)
+        let start = Task.immediate {
+            try await session.startRecording(to: .file(directory.appendingPathComponent("Held.mov")), mask: .ignored)
+        }
+        await lane.untilHeld(1)
+        await #expect(throws: SimulatorError.self) { try await session.finishRecording(startLimit: .milliseconds(50)) }
+        #expect(store.hasActiveRecordings)
+        session.disconnect()
+        lane.open()
+        try await start.value
+        #expect(session.recording?.isStopping == true)
+        try await session.finishRecording()
+        try await wait { session.recording == nil && !store.hasActiveRecordings }
+    }
+
+    /// A real host in this process, with no device and no window. It stops as a public context's does.
+    @Test(.enabled("Another host would refuse this one.") { await noOtherHostIsDisplaying() })
+    func stoppingDoesNotWaitOnAHeldRecordingOutlivesItWithItsFilesNamedAndTheNextStopReturnsItsLateFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane(passing: 1)
+        let store = RecordingStore(lane: lane, finishLimit: .milliseconds(50))
+        let host = try SimulatorScreenHost(runtime: try await makeRuntime(), conflicts: HostConflictMonitor(), inProcess: true,
+                                           recordings: store)
+        var reported: [String] = []
+        host.onError = { reported.append($0.localizedDescription) }
+        let destination = directory.appendingPathComponent("Held.mov")
+        // It exits without a frame, so the recording fails once it has been let go.
+        let start = Task.immediate {
+            try await store.start(to: .file(destination), process: { _ in Self.recorder(then: "exit 0") }, onFinished: {})
+        }
+        await lane.untilHeld(1)
+        do {
+            try await host.stop(keepingDevicesRunning: true)
+            Issue.record("Expected the stop to report the unfinished recording")
+        } catch {
+            #expect(error.localizedDescription.contains(destination.path))
+            #expect(error.localizedDescription.contains("\(directory.path)/.neo-simulator-"))
+        }
+        #expect(store.hasActiveRecordings && reported.isEmpty && host.isStopped)
+        lane.open()
+        let recording = try await start.value
+        #expect(recording.isStopping)
+        try await wait { !store.hasActiveRecordings }
+        #expect(reported.count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        await #expect(throws: SimulatorError.self) { try await host.stop(keepingDevicesRunning: true) }
+        try await host.stop(keepingDevicesRunning: true)
+        #expect(reported.count == 1)
     }
 
     @Test func theToolbarsButtonsShowTheirOptionAlternatesWhileThePointerIsOverTheToolbar() async throws {
@@ -2818,6 +2973,7 @@ struct InputFocusTests {
         pointer.hold(.option)
         #expect(pointer.faces == ButtonFace.optionAlternates)
         #expect(try pointer.click(.saveScreen))
+        try await wait { controller.session.recording != nil }
         let recording = try #require(controller.session.recording)
         try await wait { pointer.faces[2] == .stopRecording }
         #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotateLeft])
@@ -4479,7 +4635,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         #expect(display.announcedRecordings == [true])
         // Simulator.app's plugin uses toggleVideoRecording: to stop recording.
@@ -4488,7 +4644,7 @@ struct InputFocusTests {
         try await recording.waitUntilFinished()
         try await wait { controller.session.recording == nil }
         #expect(display.announcedRecordings == [true, false])
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
         try await wait { controller.session.recording == nil }
         #expect(display.announcedRecordings == [true, false, true, false])
     }
@@ -6080,7 +6236,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         let saveScreen = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
         for _ in 0..<200 where saveScreen.toolTip != "Stop Recording" { try await Task.sleep(for: .milliseconds(10)) }
@@ -6743,7 +6899,7 @@ struct InputFocusTests {
             return process
         })
         defer { controller.invalidate() }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         // SIGINT is safe only after the first-frame acknowledgement.
         let recording = try #require(controller.session.recording)
         while !recording.hasStarted {
@@ -10547,20 +10703,7 @@ struct InputFocusTests {
     }
 
     /// Loads the selected Xcode's private runtime.
-    private func makeRuntime() async throws -> SimulatorRuntime {
-        let selection = Process()
-        let output = Pipe()
-        selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        selection.arguments = ["-p"]
-        selection.standardOutput = output
-        try selection.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        selection.waitUntilExit()
-        let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
-            ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
-        return try await SimulatorRuntime.load(xcodeURL: xcode)
-    }
+    private func makeRuntime() async throws -> SimulatorRuntime { try await loadTestRuntime() }
 
     private func makeController(_ display: TestDisplay,
                                 family: DeviceCapabilities.Family = .iPhone,
@@ -10706,6 +10849,7 @@ struct InputFocusTests {
                              simctl: URL = URL(fileURLWithPath: "/usr/bin/false"),
                              devicectl: URL = URL(fileURLWithPath: "/usr/bin/false"),
                              recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+                             recordings: RecordingStore = RecordingStore(),
                              openLog: @escaping (URL) async throws -> Void = { _ in },
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
@@ -10733,7 +10877,7 @@ struct InputFocusTests {
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
-            model: model, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
+            model: model, recordings: recordings, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
             pasteboardTransport: pasteboardTransport,
             externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100),

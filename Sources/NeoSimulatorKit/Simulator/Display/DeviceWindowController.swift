@@ -637,7 +637,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         if let window = presentationWindow, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }
-        await session.finishRecording()
+        do { try await session.finishRecording() } catch { hostLog(error.localizedDescription) }
         guard !closed else { return }
         customLocation?.close()
         closeExternalDisplayWindow()
@@ -1015,24 +1015,34 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
     /// thumbnail, which saves it to the screenshot folder when dismissed.
     package func saveScreen() {
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
-        let folder = CaptureFile.screenshotFolder()
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
-        session.run({ [weak self, session] in
+        let report = reportCapture
+        session.run({ [weak self, session, captureOwner] in
+            let folder = try await performBlockingIO { CaptureFile.screenshotFolder() }
             let file = try await session.screenshot(mask: mask)
-            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: self?.captureOwner)
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: captureOwner,
+                                          claim: session.claimCaptureDestination)
+            let image = await capture.loadPreview()
             guard let self else {
-                try capture.saveToDefaultLocation()
+                await capture.saveIfUnresolved(report: report)
                 return
             }
-            try self.showThumbnail(of: capture, image: NSImage(contentsOf: file))
-        }, failure: { [weak self] in self?.present($0) })
+            await self.showThumbnail(of: capture, image: image)
+        }, failure: { report($0) })
+    }
+
+    /// Where a capture's failure goes: to this window while it can present it, and after that to its owner.
+    private var reportCapture: (Error) -> Void {
+        { [weak self, reportDetachedCapture] error in
+            if let self, !self.closed { self.present(error) } else { reportDetachedCapture(error) }
+        }
     }
 
     /// Shows a capture's thumbnail beside this window, or saves the capture
     /// when the window has closed.
-    private func showThumbnail(of capture: CapturedContent, image: NSImage?) throws {
+    private func showThumbnail(of capture: CapturedContent, image: NSImage?) async {
         guard !closed, let window = presentationWindow, window.isVisible, !CaptureThumbnail.savesImmediately else {
-            try capture.saveToDefaultLocation()
+            await capture.saveIfUnresolved(report: reportCapture)
             return
         }
         let display = session.display.view, screen = session.display.inputView
@@ -1048,9 +1058,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
                                          rotation: session.isResizingApp ? 0 : session.displayAngle,
                                          cornerRadius: (session.appResizeGeometry?.cornerRadius ?? CGFloat(session.capabilities.screenCornerRadius)) * scale,
-                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self, reportDetachedCapture] error in
-            if let self, !self.closed { self.present(error) } else { reportDetachedCapture(error) }
-        }
+                                         spacing: NSSize(width: horizontal, height: ceil(scale * base)), report: reportCapture)
         thumbnail.show()
     }
 
@@ -1062,7 +1070,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
-        panel.directoryURL = CaptureFile.screenshotFolder()
+        panel.directoryURL = CaptureFile.preferredScreenshotFolder
         panel.nameFieldStringValue = CaptureFile.screenshotName(device: session.device.name, date: Date())
         let applyMask = NSButton(checkboxWithTitle: "Apply device mask to screenshot", target: nil, action: nil)
         applyMask.toolTip = "Apply device mask to non-rectangular screens when taking screenshots."
@@ -1104,13 +1112,15 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
             return
         }
         let device = session.device.name
-        let isReserved = session.isRecordingDestination
-        run {
-            try session.startRecording(to: .capture { [weak self] file in
+        let claim = session.claimCaptureDestination
+        let mask: DeviceTools.ScreenMask = usesDeviceMask ? .black : .ignored
+        let report = reportCapture
+        runAsync { [weak self, session, captureOwner] in
+            try await session.startRecording(to: .capture { [weak self] file in
                 let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
-                                              defaultFolder: desktop, owner: self?.captureOwner, isReserved: isReserved)
-                if let self { try self.showThumbnail(of: capture, image: nil) } else { try capture.saveToDefaultLocation() }
-            }, mask: usesDeviceMask ? .black : .ignored)
+                                              defaultFolder: desktop, owner: captureOwner, claim: claim)
+                if let self { await self.showThumbnail(of: capture, image: nil) } else { await capture.saveIfUnresolved(report: report) }
+            }, mask: mask)
         }
     }
 
@@ -1130,7 +1140,8 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
             guard let self else { return }
             self.session.release()
             guard response == .OK, let destination = panel.url, !self.closed else { return }
-            self.run { try self.session.startRecording(to: .file(destination), mask: applyMask.state == .on ? .black : .ignored) }
+            let mask: DeviceTools.ScreenMask = applyMask.state == .on ? .black : .ignored
+            self.runAsync { [session = self.session] in try await session.startRecording(to: .file(destination), mask: mask) }
         }
     }
 
@@ -2364,99 +2375,6 @@ private final class CanvasOverlayView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let view = super.hitTest(point)
         return view === self ? nil : view
-    }
-}
-
-package enum CaptureFile {
-    /// Screenshot filename in local time.
-    package static func screenshotName(device: String, date: Date) -> String {
-        name("Simulator Screenshot", device: device, date: date, extension: "png")
-    }
-
-    /// Recording filename in local time.
-    package static func recordingName(device: String, date: Date) -> String {
-        name("Simulator Screen Recording", device: device, date: date, extension: "mov")
-    }
-
-    // `:` and `/` become `.`, so a date reads `2026-10-21 at 23.17.05`.
-    private static func name(_ kind: String, device: String, date: Date, extension suffix: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd 'at' HH:mm:ss"
-        return "\(kind) - \(device) - \(formatter.string(from: date)).\(suffix)"
-            .replacingOccurrences(of: ":", with: ".")
-            .replacingOccurrences(of: "/", with: ".")
-    }
-
-    package static var desktop: URL? { FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first }
-
-    /// Uses an existing ScreenShotSaveLocation, then Desktop, then /private/tmp.
-    package static func screenshotFolder() -> URL {
-        if let location = HostPreferences.defaults.string(forKey: HostPreferences.screenShotSaveLocation) {
-            let path = NSString(string: location).expandingTildeInPath
-            var isDirectory: ObjCBool = false
-            if !path.isEmpty, FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-               isDirectory.boolValue {
-                return URL(fileURLWithPath: path, isDirectory: true)
-            }
-        }
-        return desktop ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-    }
-
-    /// The first of `name`, "name #2" through "name #99" that is free in
-    /// `folder` and not reserved.
-    package static func unusedFile(in folder: URL, named name: String, isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
-        let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
-        for number in 1...99 {
-            let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
-            if !FileManager.default.fileExists(atPath: candidate.path), !isReserved(candidate) { return candidate }
-        }
-        throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
-    }
-
-    /// Moves the capture without overwriting, trying suffixes #2 through #99.
-    /// A failure preserves the original file and reports its location.
-    package static func move(_ capture: URL, into folder: URL, named name: String,
-                     isReserved: (URL) -> Bool = { _ in false }) throws -> URL {
-        let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
-        for number in 1...99 {
-            let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
-            if isReserved(candidate) { continue }
-            do {
-                try FileManager.default.moveItem(at: capture, to: candidate)
-                return candidate
-            } catch CocoaError.fileWriteFileExists {
-                continue
-            } catch {
-                throw SimulatorError.operation("Could not save \(name) in \(folder.path): \(error.localizedDescription) The capture is at \(capture.path).")
-            }
-        }
-        throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99. The capture is at \(capture.path).")
-    }
-
-    @MainActor
-    package static func write(to destination: URL, extension suffix: String,
-                      produce: (URL) async throws -> Void) async throws {
-        let temporary = destination.deletingLastPathComponent()
-            .appendingPathComponent(".neo-simulator-\(UUID().uuidString).\(suffix)")
-        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
-        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        close(descriptor)
-        do {
-            try await produce(temporary)
-            try Task.checkCancellation()
-            guard rename(temporary.path, destination.path) == 0 else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
-        } catch {
-            if FileManager.default.fileExists(atPath: temporary.path) {
-                do { try FileManager.default.removeItem(at: temporary) }
-                catch let cleanup {
-                    throw SimulatorError.operation("\(error.localizedDescription) Temporary file remains at \(temporary.path): \(cleanup.localizedDescription)")
-                }
-            }
-            throw error
-        }
     }
 }
 

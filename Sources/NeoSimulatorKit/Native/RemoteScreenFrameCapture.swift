@@ -1,11 +1,13 @@
 import AppKit
 import ImageIO
+import NeoSimulatorDeviceIO
 
 /// Owns untagged native frame requests separately from their cancellable callers.
 @MainActor
 package final class RemoteScreenFrameCapture {
     package typealias Request = @MainActor () async throws -> Void
     package typealias ScheduleTimeout = @MainActor (Duration, @escaping @MainActor () -> Void) -> () -> Void
+    package typealias Decode = @Sendable (Data) async throws -> CGImage
 
     private struct Caller {
         let identifier: UUID
@@ -20,13 +22,18 @@ package final class RemoteScreenFrameCapture {
     }
     private let timeout: Duration
     private let scheduleTimeout: ScheduleTimeout
+    private let decode: Decode
     private var outstanding: NativeRequest?
     private var queued: Caller?
+    /// Callers whose reply has arrived and is being decoded off the main actor.
+    private var decoding: [UUID: Caller] = [:]
     private var requiresReconnect = false
 
-    package init(timeout: Duration = .seconds(10), scheduleTimeout: @escaping ScheduleTimeout = RemoteScreenFrameCapture.scheduleDeadline) {
+    package init(timeout: Duration = .seconds(10), scheduleTimeout: @escaping ScheduleTimeout = RemoteScreenFrameCapture.scheduleDeadline,
+                 decode: @escaping Decode = RemoteScreenFrameCapture.decodeImage) {
         self.timeout = timeout
         self.scheduleTimeout = scheduleTimeout
+        self.decode = decode
     }
 
     /// Reserves the startup frame request before the connected state exposes capture controls.
@@ -58,11 +65,12 @@ package final class RemoteScreenFrameCapture {
         current.task?.cancel()
         current.cancelTimeout?()
         if let caller = current.caller {
-            if let source = CGImageSourceCreateWithData(data as CFData, nil),
-               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-                caller.continuation.resume(returning: image)
-            } else {
-                caller.continuation.resume(throwing: CLIError.io("remote-screen-image", "The remote screen supplied an image that could not be decoded."))
+            decoding[caller.identifier] = caller
+            let decode = decode
+            Task { [self] in
+                let result: Result<CGImage, any Error>
+                do { result = .success(try await decode(data)) } catch { result = .failure(error) }
+                finishDecoding(caller.identifier, result)
             }
         }
         // A startup or canceled caller's reply is drained, never given to its successor.
@@ -82,6 +90,10 @@ package final class RemoteScreenFrameCapture {
         current?.cancelTimeout?()
         current?.caller?.continuation.resume(throwing: error)
         waiting?.continuation.resume(throwing: error)
+    }
+
+    private func finishDecoding(_ identifier: UUID, _ result: Result<CGImage, any Error>) {
+        decoding.removeValue(forKey: identifier)?.continuation.resume(with: result)
     }
 
     private func begin(request: @escaping Request, caller: Caller?) {
@@ -112,6 +124,8 @@ package final class RemoteScreenFrameCapture {
         } else if let caller = queued, caller.identifier == identifier {
             queued = nil
             caller.continuation.resume(throwing: CancellationError())
+        } else {
+            finishDecoding(identifier, .failure(CancellationError()))
         }
     }
 
@@ -123,6 +137,17 @@ package final class RemoteScreenFrameCapture {
 
     private func busyError() -> CLIError {
         CLIError.unavailable("remote-screen-capture-busy", "A screenshot is already being captured.")
+    }
+
+    /// Decodes fully here, because a lazily decoded image would otherwise be decoded where it is first drawn.
+    private static func decodeImage(_ data: Data) async throws -> CGImage {
+        try await performBlockingIO {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else {
+                throw CLIError.io("remote-screen-image", "The remote screen supplied an image that could not be decoded.")
+            }
+            return image
+        }
     }
 
     private static func scheduleDeadline(_ duration: Duration, action: @escaping @MainActor () -> Void) -> () -> Void {
