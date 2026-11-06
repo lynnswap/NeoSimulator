@@ -12,6 +12,8 @@ import IOKit.hidsystem
 import Observation
 import Synchronization
 import Testing
+import SwiftUI
+import Combine
 import XCTest
 import Synchronization
 import IOKit.hidsystem
@@ -50,6 +52,43 @@ func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostNa
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func nativeCanvasRetainsItsViewStateWhenReturningToTheSameWindow() throws {
+        final class Creations { var count = 0 }
+        final class Identity: ObservableObject {
+            init(_ creations: Creations) { creations.count += 1 }
+        }
+        struct Content: View {
+            @StateObject var identity: Identity
+            init(_ creations: Creations) { _identity = StateObject(wrappedValue: Identity(creations)) }
+            var body: some View {
+                let _ = identity
+                Color.clear.frame(width: 200, height: 300)
+            }
+        }
+        let creations = Creations()
+        let host = NativeCanvasHostingView(rootView: AnyView(Content(creations)))
+        let window = KeyPresentationWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 500),
+                                           styleMask: .titled, backing: .buffered, defer: false)
+        let other = KeyPresentationWindow(contentRect: window.frame, styleMask: .titled, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        other.isReleasedWhenClosed = false
+        defer { window.close(); other.close() }
+        window.contentView = host
+        _ = host.fittingSize
+        host.layoutSubtreeIfNeeded()
+        let initial = creations.count
+        #expect(initial > 0)
+        window.contentView = NSView()
+        window.contentView = host
+        _ = host.fittingSize
+        host.layoutSubtreeIfNeeded()
+        #expect(creations.count == initial)
+        other.contentView = host
+        _ = host.fittingSize
+        host.layoutSubtreeIfNeeded()
+        #expect(creations.count > initial)
+    }
+
     @Test func simulatorKeyboardKeepsCapturedReleasesWithTheirOriginalInput() throws {
         _ = NSApplication.shared
         let view = InputView()
