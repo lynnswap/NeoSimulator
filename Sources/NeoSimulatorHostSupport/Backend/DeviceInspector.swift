@@ -542,7 +542,7 @@ package struct DeviceInspectorTransport: Sendable {
 }
 
 extension SimulatorHostController {
-    /// Resolves a destination without acquiring the renderer-operation FIFO.
+    /// Resolves a destination without joining the operation order.
     /// A simulator uses its running renderer's Xcode, then the inventory's owner or catalog Xcode;
     /// installed Xcodes are searched only when the inventory records neither.
     package func inspector(for device: InventoryDevice) async throws -> DeviceInspector {

@@ -25,7 +25,7 @@ struct DeviceManagementTests {
         var events = fixture.events.makeAsyncIterator()
         let normal = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: preparedBackend) }
         #expect(await requests.next() != nil)
-        let queued = Task { try await controller.operation { @Sendable in await release.finished } }
+        let queued = Task { try await controller.operation(.hostTransition) { @Sendable in await release.finished } }
         let force = Task { await controller.manage(.forceShutdown, devices: [.simulator(device)], using: preparedBackend) }
         #expect(await events.next() == .native(device.inventoryID))
         if outcome == .cancelledCaller { force.cancel() }
@@ -149,7 +149,7 @@ struct DeviceManagementTests {
         #expect(await force.value.results[0].error == nil)
     }
 
-    @Test(.timeLimit(.minutes(1))) func aHeldChangeToOneDeviceHoldsOtherOperationsButNotAnotherDevice() async throws {
+    @Test(.timeLimit(.minutes(1))) func aHeldChangeToOneDeviceDelaysNeitherAnotherDeviceNorAnyRead() async throws {
         let first = Self.simulator("A", state: "Booted")
         let second = Self.simulator("B", state: "Booted")
         let fixture = ManagementFixture(holdsShutdown: true)
@@ -157,19 +157,196 @@ struct DeviceManagementTests {
         var events = fixture.events.makeAsyncIterator()
         let restartingFirst = Task { await controller.manage(.restart, devices: [.simulator(first)], using: fixture.backend) }
         #expect(await events.next() == .command("shutdown", "A"))
-        // What is only waiting for its turn, such as a read, does not hold the other device's change either.
-        let later = Task.immediate { try await controller.operation { @Sendable in await fixture.commands.map(\.arguments) } }
+
+        // Each of these returns while A stays held. Stopped reads end them without running a process.
+        controller.stopReads()
+        _ = try? await controller.status()
+        _ = try? await controller.installedXcodes()
+        _ = try? await controller.devices()
+        _ = try? await controller.creationCatalog()
+        _ = try? await controller.xcodeURL(forDevice: second.inventoryID)
+        try await controller.closeDevice(second.inventoryID, keepingDeviceRunning: true)
+        try? await controller.openDevice(second.inventoryID)
+        try await controller.testingDeviceVisibilityDidChange()
+        #expect(try await controller.operation(.devices([second.inventoryID])) { @Sendable in true })
+        #expect(try await controller.operation(.independent) { @Sendable in true })
+
         let restartingSecond = Task { await controller.manage(.restart, devices: [.simulator(second)], using: fixture.backend) }
         #expect(await events.next() == .command("shutdown", "B"))
         await fixture.completeShutdown("B")
         #expect(await events.next() == .command("boot", "B"))
         #expect(await restartingSecond.value.results[0].error == nil)
+        #expect(await !fixture.commands.map(\.arguments).contains(["boot", "A"]))
+
         await fixture.completeShutdown("A")
         #expect(await events.next() == .command("boot", "A"))
         #expect(await restartingFirst.value.results[0].error == nil)
-        // It saw the end of both changes, so neither ran beside it.
-        let seen = try await later.value
-        #expect(seen.contains(["boot", "A"]) && seen.contains(["boot", "B"]))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func workOnADeviceUnderChangeFollowsItInAcceptedOrder() async throws {
+        let first = Self.simulator("A", state: "Booted")
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let restarting = Task { await controller.manage(.restart, devices: [.simulator(first)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        let (a, b) = (first.inventoryID, DeviceInventoryID.simulator(udid: "B", deviceSetPath: nil))
+        let order = Mutex<[String]>([])
+
+        let overlapping = Task {
+            try await controller.operation(.devices([a, b])) { @Sendable in
+                order.withLock { $0.append("overlapping") }
+                return await fixture.commands.map(\.arguments)
+            }
+        }
+        try await Self.waitForWaitingOperations(1, on: controller)
+        let closing = Task { try await controller.closeDevice(a, keepingDeviceRunning: true) }
+        try await Self.waitForWaitingOperations(2, on: controller)
+        // B itself is free, but what overlaps it was accepted first.
+        let other = Task { try await controller.operation(.devices([b])) { @Sendable in order.withLock { $0.append("other") } } }
+        try await Self.waitForWaitingOperations(3, on: controller)
+        // Only this overlaps nothing that is ahead of it.
+        #expect(try await controller.operation(.devices([.simulator(udid: "C", deviceSetPath: nil)])) { @Sendable in true })
+
+        await fixture.completeShutdown("A")
+        #expect(await events.next() == .command("boot", "A"))
+        #expect(await restarting.value.results[0].error == nil)
+        #expect(try await overlapping.value.contains(["boot", "A"]))
+        try await closing.value
+        try await other.value
+        #expect(order.withLock { $0 } == ["overlapping", "other"])
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aQueuedHostTransitionFollowsEarlierWorkAndFencesLaterCalls() async throws {
+        let first = Self.simulator("A", state: "Booted")
+        let second = Self.simulator("B", state: "Booted")
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let restartingFirst = Task { await controller.manage(.restart, devices: [.simulator(first)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+
+        let transition = Task {
+            try await controller.operation(.hostTransition) { @Sendable in await fixture.commands.map(\.arguments) }
+        }
+        try await Self.waitForWaitingOperations(1, on: controller)
+        let ending = Task { try await controller.endSession() }
+        try await Self.waitForWaitingOperations(2, on: controller)
+        let restartingSecond = Task { await controller.manage(.restart, devices: [.simulator(second)], using: fixture.backend) }
+        try await Self.waitForWaitingOperations(3, on: controller)
+        let closing = Task { try await controller.closeDevice(.simulator(udid: "C", deviceSetPath: nil), keepingDeviceRunning: true) }
+        try await Self.waitForWaitingOperations(4, on: controller)
+        let read = Task { try await controller.operation(.independent) { @Sendable in true } }
+        try await Self.waitForWaitingOperations(5, on: controller)
+        #expect(await !fixture.commands.contains { $0.arguments.contains("B") })
+
+        await fixture.completeShutdown("A")
+        #expect(await events.next() == .command("boot", "A"))
+        #expect(await restartingFirst.value.results[0].error == nil)
+        // The transition saw the end of A's change and nothing of what was accepted after it.
+        let seen = try await transition.value
+        #expect(seen.contains(["boot", "A"]) && !seen.contains { $0.contains("B") })
+        try await ending.value
+        #expect(await events.next() == .command("shutdown", "B"))
+        try await closing.value
+        #expect(try await read.value)
+        await fixture.completeShutdown("B")
+        #expect(await events.next() == .command("boot", "B"))
+        #expect(await restartingSecond.value.results[0].error == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancellingAQueuedHostTransitionReleasesWhatItFenced() async throws {
+        let first = Self.simulator("A", state: "Booted")
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let restarting = Task { await controller.manage(.restart, devices: [.simulator(first)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        let transition = Task { try await controller.operation(.hostTransition) { @Sendable in true } }
+        try await Self.waitForWaitingOperations(1, on: controller)
+        let read = Task { try await controller.operation(.independent) { @Sendable in true } }
+        try await Self.waitForWaitingOperations(2, on: controller)
+
+        transition.cancel()
+        await #expect(throws: CancellationError.self) { try await transition.value }
+        #expect(try await read.value)
+        #expect(await controller.waitingOperations == 0)
+
+        await fixture.completeShutdown("A")
+        #expect(await events.next() == .command("boot", "A"))
+        #expect(await restarting.value.results[0].error == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aCatalogReadDuringAChangeAttachesNothingFromThatChange() async throws {
+        @Sendable func device(_ identifier: String, _ state: String) -> SimulatorHostDevice {
+            SimulatorHostDevice(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime",
+                                runtimeName: "iOS", productFamily: "iPhone", state: state)
+        }
+        let xcode = XcodeInstallation(applicationURL: URL(fileURLWithPath: "/Xcode.app"), version: try ToolVersion("27.2"), buildVersion: "fixture")
+        let (a, b) = (device("A", "Booted").inventoryID, device("B", "Booted").inventoryID)
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let opened = Mutex<[DeviceInventoryID]>([])
+        @Sendable func synchronize(_ catalog: ScreenOpenCatalogObservation) async throws {
+            _ = try await controller.synchronizeBootedDevices(catalog, attachInitially: false, ownedIdentifiers: { [] }) { identifier in
+                opened.withLock { $0.append(identifier) }
+            }
+        }
+        @Sendable func poll(_ devices: [SimulatorHostDevice]) async throws {
+            try await synchronize(controller.readScreenOpenCatalog { [(xcode, devices)] })
+        }
+        try await poll([device("A", "Booted"), device("B", "Shutdown")])
+
+        // The steps of A's restart are not a stop and a new boot. B, which nothing is changing, attaches meanwhile.
+        var events = fixture.events.makeAsyncIterator()
+        let restarting = Task { await controller.manage(.restart, devices: [.simulator(device("A", "Booted"))], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        try await poll([device("A", "Shutdown"), device("B", "Shutdown")])
+        try await poll([device("A", "Booted"), device("B", "Booted")])
+        #expect(opened.withLock { $0 } == [b])
+
+        // A read that began during the change is a step of it even when the change has ended by the time the read returns.
+        let (entered, enteredContinuation) = AsyncStream<Void>.makeStream()
+        let (release, releaseContinuation) = AsyncStream<Void>.makeStream()
+        let reading = Task {
+            try await controller.readScreenOpenCatalog {
+                enteredContinuation.yield(())
+                for await _ in release { break }
+                return [(xcode, [device("A", "Shutdown"), device("B", "Booted")])]
+            }
+        }
+        var started = entered.makeAsyncIterator()
+        await started.next()
+        await fixture.completeShutdown("A")
+        #expect(await events.next() == .command("boot", "A"))
+        #expect(await restarting.value.results[0].error == nil)
+        releaseContinuation.yield(())
+        try await synchronize(reading.value)
+        try await poll([device("A", "Booted"), device("B", "Booted")])
+        #expect(opened.withLock { $0 } == [b])
+
+        // So is a read during which a change started and ended.
+        let (restarted, restartedContinuation) = AsyncStream<Void>.makeStream()
+        let (finish, finishContinuation) = AsyncStream<Void>.makeStream()
+        let spanning = Task {
+            try await controller.readScreenOpenCatalog {
+                restartedContinuation.yield(())
+                for await _ in finish { break }
+                return [(xcode, [device("A", "Shutdown"), device("B", "Booted")])]
+            }
+        }
+        var spanned = restarted.makeAsyncIterator()
+        await spanned.next()
+        try await controller.operation(.devices([a])) { @Sendable in }
+        finishContinuation.yield(())
+        try await synchronize(spanning.value)
+        try await poll([device("A", "Booted"), device("B", "Booted")])
+        #expect(opened.withLock { $0 } == [b])
+
+        // A stop that no change explains is still one, and the next boot attaches.
+        try await poll([device("A", "Shutdown"), device("B", "Booted")])
+        try await poll([device("A", "Booted"), device("B", "Booted")])
+        #expect(opened.withLock { $0 } == [b, a])
     }
 
     @Test(.timeLimit(.minutes(1))) func aChangeFollowsTheOperationRunningWhenItArrives() async throws {
@@ -179,7 +356,7 @@ struct DeviceManagementTests {
         let holding = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
         var held = holding.stream.makeAsyncIterator()
         let transition = Task {
-            try await controller.operation { @Sendable in
+            try await controller.operation(.hostTransition) { @Sendable in
                 await withCheckedContinuation { holding.continuation.yield($0) }
                 return await fixture.commands.isEmpty
             }
@@ -512,6 +689,11 @@ struct DeviceManagementTests {
         #expect(report.results[1].error == nil && report.results[1].completedSteps == ["Paused"])
         #expect(await fixture.virtualOperations == ["ready-vm"])
         #expect(await fixture.commands.isEmpty)
+    }
+
+    /// Waits until that many operations have been accepted behind what is held.
+    private static func waitForWaitingOperations(_ count: Int, on controller: SimulatorHostController) async throws {
+        while await controller.waitingOperations != count { try await Task.sleep(for: .milliseconds(10)) }
     }
 
     private static func simulator(_ identifier: String, state: String = "Shutdown", path: String? = nil,

@@ -255,6 +255,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         managementObservation = withPortableContinuousObservation { [weak self, model] event in
             _ = model.managingDeviceIDs
             _ = model.isBusy
+            _ = model.holdsAllEdits
+            _ = model.queuedDeviceIDs
             _ = model.openingDeviceIDs
             guard event.kind != .initial else { return }
             Task { @MainActor [weak self] in
@@ -668,7 +670,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
             }
             deviceScreenViewController.updatePreview(for: device, details: details, artwork: artwork(for: device),
-                                                     canViewScreen: canViewScreen(device))
+                                                     canViewScreen: model.canViewScreen(device))
         } else {
             deviceScreenViewController.updatePreview(selectionCount: selections.count)
         }
@@ -1075,20 +1077,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func canViewScreen(_ device: InventoryDevice) -> Bool {
-        if model.openingDeviceIDs.contains(device.id) { return true }
-        guard !model.managingDeviceIDs.contains(device.id) else { return false }
-        switch device {
-        case .simulator(let simulator):
-            return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
-        case .remote(let remote):
-            return !model.isBusy && remote.isAvailable && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
-        }
-    }
-
     @objc private func openSelectedDevice(_ sender: Any?) {
         let selection = sender is NSOutlineView ? visibleSelectedDevices : selectedDevices
-        guard selection.count == 1, let device = selection.first, canViewScreen(device) else { return }
+        guard selection.count == 1, let device = selection.first, model.canViewScreen(device) else { return }
         if model.openingDeviceIDs.contains(device.id) { model.cancelOpening(device.id) }
         else { model.openScreen(for: device) }
     }
@@ -1317,7 +1308,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
-        if includesViewScreen, devices.count == 1, canViewScreen(devices[0]) {
+        if includesViewScreen, devices.count == 1, model.canViewScreen(devices[0]) {
             let title = model.openingDeviceIDs.contains(devices[0].id) ? "Cancel Opening" : "View Screen"
             let item = NSMenuItem(title: title, action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
@@ -1342,7 +1333,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             ("Erase Content and Settings…", .erase), ("Remove…", .remove),
         ]
         var addedDestructiveSection = false
-        for (title, action) in operations where supports(action, devices: devices) {
+        for (title, action) in operations where model.supports(action, devices: devices) {
             if !menu.items.isEmpty, case .rename = action { menu.addItem(.separator()) }
             switch action {
             case .unpair, .erase, .remove:
@@ -1415,19 +1406,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
-        guard !devices.isEmpty, devices.allSatisfy({ $0.supports(action) }) else { return false }
-        switch action {
-        case .rename, .clone: return devices.count == 1
-        case .pair:
-            guard devices.count == 2,
-                  case .simulator(let first) = devices[0], case .simulator(let second) = devices[1] else { return false }
-            return Set([first.productFamily, second.productFamily]) == Set(["iPhone", "Apple Watch"])
-                && first.deviceSetPath == second.deviceSetPath
-        default: return true
-        }
-    }
-
     func pairingMenu(for device: SimulatorHostDevice) -> NSMenu {
         SimulatorPairingMenu.make(for: device, model: model, target: self, action: #selector(performPairingMenuAction(_:)))
     }
@@ -1436,7 +1414,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         switch sender.representedObject as? SimulatorPairingMenu.Action {
         case .pair(let identifiers):
             let devices = model.inventory.filter { identifiers.contains($0.id) }
-            guard supports(.pair, devices: devices),
+            guard model.supports(.pair, devices: devices),
                   let phone = devices.compactMap({ if case .simulator(let device) = $0, device.productFamily == "iPhone" { device } else { nil } }).first,
                   model.pairingCandidates(for: phone).contains(where: { identifiers.contains($0.inventoryID) }),
                   model.canManage(.pair, deviceIDs: identifiers) else { return }
@@ -1452,7 +1430,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? DeviceInventoryID,
-              let device = model.inventory.first(where: { $0.id == id }), canViewScreen(device) else { return }
+              let device = model.inventory.first(where: { $0.id == id }), model.canViewScreen(device) else { return }
         if model.openingDeviceIDs.contains(id) { model.cancelOpening(id) }
         else { model.openScreen(for: device) }
     }
@@ -1466,7 +1444,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     @objc private func performManagement(_ sender: NSMenuItem) {
         guard let request = sender.representedObject as? ManagementRequest else { return }
         let devices = model.inventory.filter { request.identifiers.contains($0.id) }
-        guard devices.count == request.identifiers.count, supports(request.action, devices: devices),
+        guard devices.count == request.identifiers.count, model.supports(request.action, devices: devices),
               model.canManage(request.action, deviceIDs: request.identifiers) else { return }
         switch request.action {
         case .rename: presentNameEditor(for: devices[0], cloning: false)

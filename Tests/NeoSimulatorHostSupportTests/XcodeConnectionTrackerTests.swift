@@ -6,6 +6,27 @@ import Testing
 
 @Suite
 struct XcodeConnectionTrackerTests {
+    @Test func aDeviceUnderChangeKeepsItsPendingConnectionForTheNextObservation() async throws {
+        let device = DeviceInventoryID.simulator(udid: "A", deviceSetPath: nil)
+        let connection = XcodeSimulatorConnection(event: .init(processIdentifier: 1, startSeconds: 10, startMicroseconds: 0),
+                                                  deviceIdentifier: "A", xcodeURL: URL(fileURLWithPath: "/Xcode.app"))
+        let tracker = XcodeConnectionTracker()
+        _ = try? await tracker.synchronize(observations: [connection], runningDeviceIdentifiers: [device]) { _ in
+            throw CLIError.io("test", "retry")
+        }
+        var transfers: [XcodeSimulatorConnection] = []
+        // A restart passes through a stopped state, which is not the stop that retires a failed handoff.
+        #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: [], changingDeviceIdentifiers: [device]) {
+            transfers.append($0)
+        })
+        #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: [device], changingDeviceIdentifiers: [device]) {
+            transfers.append($0)
+        })
+        #expect(transfers.isEmpty && tracker.hasPendingConnection(forDevice: device))
+        #expect(try await tracker.synchronize(observations: [], runningDeviceIdentifiers: [device]) { transfers.append($0) })
+        #expect(transfers == [connection])
+    }
+
     @Test func bootObservedByLaterXcodeRefreshesEarlierSourceBeforeHandlingConnection() async throws {
         let source = URL(fileURLWithPath: "/SourceXcode.app")
         let previousOwner = URL(fileURLWithPath: "/OtherXcode.app")

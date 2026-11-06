@@ -2297,6 +2297,64 @@ struct ManagerModelTests {
         #expect(manager.managingDeviceIDs.isEmpty)
     }
 
+    @Test func aHeldCloseOfOneDeviceHoldsOnlyThatDevicesWork() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let data = try JSONSerialization.data(withJSONObject: ["result": ["devices": [["identifier": "remote",
+            "properties": ["hardware": ["fidelity": "physical"], "state": ["name": "Remote"], "connection": ["state": "connected"]],
+            "capabilities": [["featureIdentifier": "com.apple.coredevice.feature.viewdevicescreen"]]]]]])
+        let remote = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        let source = ManagerModelSource(devices: [first, second, remote], holdsManagement: true)
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.registry.stopReading()
+        await manager.refresh()
+        let remoteOpens = AsyncStream<DeviceInventoryID>.makeStream()
+        manager.onOpenRemoteDevice = { remoteOpens.continuation.yield(.coreDevice($0.identifier)) }
+        var remoteOpened = remoteOpens.stream.makeAsyncIterator()
+
+        // The screen's cleanup holds A's close. Everything on another device starts and finishes behind it.
+        let cleanup = AsyncStream<Void>.makeStream()
+        manager.closeDevice(first.id, keepingDeviceRunning: true, after: Task { for await _ in cleanup.stream { break } })
+        #expect(manager.queuedDeviceIDs == [first.id] && !manager.holdsAllEdits)
+        #expect(!manager.canManage(.restart, deviceIDs: [first.id]) && manager.canManage(.restart, deviceIDs: [second.id]))
+        #expect(manager.canViewScreen(remote))
+        manager.closeDevice(second.id, keepingDeviceRunning: true, after: Task {})
+        #expect(await events.next() == .close(second.id))
+        try await wait { manager.queuedDeviceIDs == [first.id] }
+        manager.openScreen(for: second)
+        #expect(await events.next() == .open(second.id))
+        await source.completeOpen(for: second.id)
+        try await wait { manager.queuedDeviceIDs == [first.id] }
+        manager.openScreen(for: remote)
+        #expect(await remoteOpened.next() == remote.id)
+        try await wait { manager.queuedDeviceIDs == [first.id] }
+        manager.manage(.restart, devices: [second])
+        #expect(await events.next() == .manage(.restart, [second.id]))
+        await source.completeManagement(.restart, for: second.id)
+        try await wait { manager.managingDeviceIDs.isEmpty }
+
+        // A's later open follows its close, and work that concerns every device follows both and holds what comes after.
+        let access = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+        var accesses = access.stream.makeAsyncIterator()
+        manager.requestHostPreferenceAccess = { await withCheckedContinuation { access.continuation.yield($0) } }
+        manager.openScreen(for: first)
+        manager.restoreDefaults()
+        #expect(manager.holdsAllEdits && !manager.canManage(.restart, deviceIDs: [second.id]) && !manager.canViewScreen(remote))
+        manager.openScreen(for: second)
+        cleanup.continuation.yield(())
+        #expect(await events.next() == .close(first.id))
+        #expect(await events.next() == .open(first.id))
+        await source.completeOpen(for: first.id)
+        let transition = try #require(await accesses.next())
+        #expect(manager.queuedDeviceIDs == [second.id])
+        transition.resume()
+        #expect(await events.next() == .open(second.id))
+        await source.completeOpen(for: second.id)
+        try await wait { !manager.isBusy }
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test(arguments: [DeviceManagementAction.restart, .erase, .remove])
     func forceCannotJoinOtherManagementRequests(_ action: DeviceManagementAction) async throws {
         let device = simulator()

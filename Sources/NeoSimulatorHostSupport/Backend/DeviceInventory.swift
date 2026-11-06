@@ -3,7 +3,7 @@ import NeoSimulatorKit
 import Foundation
 
 extension SimulatorHostController {
-    /// Reads simulator catalogs and one CoreDevice snapshot without joining the renderer-operation FIFO.
+    /// Reads simulator catalogs and one CoreDevice snapshot without joining the operation order.
     /// Inventory I/O executes outside this actor; existing renderer registrations remain the ownership source.
     /// Only cancellation throws: a stopped read observed nothing, so it has no devices or issues to publish.
     package func inventory() async throws -> DeviceInventorySnapshot {

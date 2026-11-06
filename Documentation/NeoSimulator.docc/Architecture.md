@@ -170,7 +170,7 @@ Hub mode.
 
 | Owner | Responsibility |
 | --- | --- |
-| `SimulatorHostController` | Serialize route changes, track renderer ownership, and resolve the Xcode for each device. |
+| `SimulatorHostController` | Order route changes and per-device work, track renderer ownership, and resolve the Xcode for each device. |
 | `SimulatorManagerModel` | Own observable inventory and its DeviceKit Active values, loading state, and the accepted operation queue. |
 | `DeviceRegistry` | Keep one stable `DeviceModel` for each device for as long as the inventory lists it. A record leaves only when a source that lists it read successfully without it. An application owns its registry, and each process has its own. |
 | `DeviceModel`, `DeviceSettingsState`, `BackgroundServicesState` | Hold what one device last answered, for everything in the process that presents it: its settings field by field, its background services, its command state, audio routes and location, its health and its last issue. Own that device's accepted changes and their order, independently of other devices. See [Device state](#Device-state). |
@@ -220,10 +220,15 @@ Cancelled reads cannot replace the current selection's snapshot, and a refresh
 interrupted by an edit resumes after the operation queue finishes.
 
 `SimulatorHostController` retains shared ownership state and operation ordering.
-A change to a simulator through device management runs beside changes to other
-devices, so a long restart of one does not hold another. Every other operation
-in its order, including route changes, waits for those changes to end, and the
-manager accepts no such change while work that concerns every device is queued.
+Each operation declares what it concerns. Work on devices, including management,
+screen opens and closes, follows only earlier work on those devices. Reads and
+creation of a new simulator follow no device. Changes of the host, its preferences
+or a renderer's lifetime follow everything accepted before them and hold everything
+accepted after them, so that nothing overtakes one. A screen open prepares in its
+device's order and becomes such a change only when it must start a renderer. A
+catalog read that runs during a change to a device leaves that device's automatic
+attachment to the next read. The manager's queue applies the same rule in its own
+order and owns the availability that the browser displays.
 Synchronous discovery, catalog decoding, process scans, and host preference I/O
 run in `@concurrent` helpers. Initial native bindings resolve asynchronously
 while UI receivers and framework loading stay on MainActor. Concurrent loads of
