@@ -88,7 +88,8 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
         }
     }
 
-    /// Ends every wait as cancelled, and any later one, with the connection this belongs to.
+    /// Ends every wait as cancelled, and any later one, with the connection this belongs to. A read in flight then ends
+    /// its wait as cancelled too, whatever it found.
     package func stop() {
         stopped = true
         for waiter in waiters.values { waiter.finish() }
@@ -109,12 +110,12 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
                 onAwaitingChange?(false)
             }
         }
-        followChanges()
+        try followChanges()
         if let failure { throw failure }
         for await _ in changes {
             if let failure { throw failure }
             if let value = try await read(decide) { return value }
-            followChanges()
+            try followChanges()
         }
         throw CancellationError()
     }
@@ -122,19 +123,28 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     private func read<Value>(_ decide: @MainActor (Source.Record) async throws -> Value?) async throws -> Value? {
         try Task.checkCancellation()
         guard !stopped else { throw CancellationError() }
-        let listChangesSeen = listChanges
-        let record = try await source.record()
-        // What another read found after a later change of the list stays the latest.
-        if listChangesSeen >= latestListChanges {
-            latest = record
-            latestListChanges = listChangesSeen
+        do {
+            let listChangesSeen = listChanges
+            let record = try await source.record()
+            guard !stopped else { throw CancellationError() }
+            // What another read found after a later change of the list stays the latest.
+            if listChangesSeen >= latestListChanges {
+                latest = record
+                latestListChanges = listChangesSeen
+            }
+            guard let record else { return nil }
+            let value = try await decide(record)
+            guard !stopped else { throw CancellationError() }
+            return value
+        } catch {
+            guard !stopped else { throw CancellationError() }
+            throw error
         }
-        guard let record else { return nil }
-        return try await decide(record)
     }
 
-    private func followChanges() {
-        guard !stopped else { return }
+    /// Nothing but this wakes a wait, so a stop that refuses it ends the wait.
+    private func followChanges() throws {
+        guard !stopped else { throw CancellationError() }
         if inventoryFollower == nil {
             inventoryFollower = follow { [weak self, source] changed in
                 try await source.followInventory { [weak self] in

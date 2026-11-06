@@ -10965,7 +10965,11 @@ struct InputFocusTests {
     private final class RecordFixture: CoreDeviceFeatureRecord {
         var connected = false
         var features: Set<String> = []
-        func isConnected() async throws -> Bool { connected }
+        var heldConnection: HeldCalls<Bool>?
+        func isConnected() async throws -> Bool {
+            if let heldConnection { return try await heldConnection.call() }
+            return connected
+        }
         func supports(_ feature: String) throws -> Bool { features.contains(feature) }
     }
 
@@ -10974,6 +10978,7 @@ struct InputFocusTests {
     private final class RecordSourceFixture: CoreDeviceRecordSource {
         var current: RecordFixture?
         var readFailure: (any Error)?
+        var heldReads: HeldCalls<RecordFixture?>?
         private(set) var reads = 0
         private(set) var recordFollows = 0
         /// What each stream follows: a record, or CoreDevice's list for nil.
@@ -10984,6 +10989,7 @@ struct InputFocusTests {
 
         func record() async throws -> RecordFixture? {
             reads += 1
+            if let heldReads { return try await heldReads.call() }
             if let readFailure { throw readFailure }
             return current
         }
@@ -11184,6 +11190,49 @@ struct InputFocusTests {
         try await wait { source.followers == 0 }
         #expect(isPending(services.pasteboard))
         await #expect(throws: CancellationError.self) { _ = try await discovery.answer(for: ["pasteboard"]) }
+    }
+
+    /// A stop is terminal while a read is out, before anything waits on notifications, and nothing but a transfer's own
+    /// wait would end that transfer: whatever the read then finds, it ends as cancelled, says nothing and follows nothing.
+    @Test(.timeLimit(.minutes(1)))
+    func aStopDuringAReadEndsTheWaitWhateverTheReadThenFinds() async throws {
+        func stopping(_ source: RecordSourceFixture, isHeld: () -> Bool, then finish: () -> Void) async throws {
+            let services = DeviceOptionalServices()
+            let discovery = CoreDeviceRecordDiscovery(source: source)
+            let route = SimulatorPasteboardRoute(services: services, make: {
+                guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+                return TestPasteboardTransport()
+            })
+            let transfer = Task.immediate { _ = try await route.transport() }
+            try await wait(until: isHeld)
+            discovery.stop()
+            finish()
+            #expect(await transfer.ends(before: .now + .seconds(5)))
+            transfer.cancel()
+            await #expect(throws: CancellationError.self) { try await transfer.value }
+            #expect(isPending(services.pasteboard) && source.followers == 0)
+        }
+        let connected = RecordFixture()
+        connected.connected = true
+        connected.features = ["pasteboard"]
+        let failure = DeviceIOError.temporary("fixture-read", "CoreDevice did not answer.")
+        // While the source finds no record, one that is not connected, one that answers, or fails.
+        for result in [.success(nil), .success(RecordFixture()), .success(connected), .failure(failure)] as [Result<RecordFixture?, any Error>] {
+            let reads = HeldCalls<RecordFixture?>()
+            let source = RecordSourceFixture()
+            source.heldReads = reads
+            try await stopping(source, isHeld: { reads.isHolding }, then: { reads.finish(result) })
+        }
+        // While the record says whether it is connected.
+        for isConnected in [false, true] {
+            let connection = HeldCalls<Bool>()
+            let record = RecordFixture()
+            record.features = ["pasteboard"]
+            record.heldConnection = connection
+            let source = RecordSourceFixture()
+            source.current = record
+            try await stopping(source, isHeld: { connection.isHolding }, then: { connection.finish(.success(isConnected)) })
+        }
     }
 
     /// A screen that cannot exist without the record waits for it in any state, and a record that does not come is a failure.
