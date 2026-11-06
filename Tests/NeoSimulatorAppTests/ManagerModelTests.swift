@@ -1069,7 +1069,7 @@ struct ManagerModelTests {
         try await backgroundSession.stop()
     }
 
-    @Test func contextMenuSelectionStartsMainIntentWithoutChangingRefreshOrSameRowIntent() async throws {
+    @Test func aContextMenuLeavesTheSelectionAndPresentationOfAnyRow() async throws {
         _ = NSApplication.shared
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
@@ -1118,15 +1118,72 @@ struct ManagerModelTests {
             row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
         })
         main.updateDeviceMenu(for: bRow)
-        try await wait(timeout: .seconds(5)) {
-            pane.liveDeviceIdentifier == bID && bController.presentationViewController.parent === pane.liveScreenContainer
-        }
-        try await main.presentConnectedScreen(bID, purpose: .automatic)
-        #expect(main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == bID)
-        #expect(bController.presentationViewController.parent === pane.liveScreenContainer)
-        #expect(model.selection.device?.id == bID && main.deviceInspector.inspection.device?.id == bID)
+        #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
+        #expect(main.selectedIdentifiers == [aID] && outline.selectedRow == aRow)
+        #expect(pane.liveDeviceIdentifier == nil && !bController.isEmbedded)
+        #expect(model.selection.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
         try await aSession.stop()
         try await bSession.stop()
+    }
+
+    @Test func aContextMenuActsOnItsRowOrTheSelectionThatIncludesIt() async throws {
+        _ = NSApplication.shared
+        let first = simulator(deviceSet: "/first", name: "First")
+        let second = simulator(deviceSet: "/second", name: "Second")
+        let third = simulator(deviceSet: "/third", name: "Third")
+        let source = ManagerModelSource(devices: [first, second, third])
+        var events = source.events.makeAsyncIterator()
+        let model = SimulatorManagerModel(source: source)
+        model.registry.stopReading()
+        await model.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        defer { main.window?.close() }
+        main.update()
+        let content = try #require(main.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let menu = try #require(outline.menu)
+        func row(of device: InventoryDevice) throws -> Int {
+            try #require((0..<outline.numberOfRows).first { row in
+                guard let item = outline.item(atRow: row) else { return false }
+                return main.outlineView(outline, viewFor: outline.tableColumns.first, item: item)?.accessibilityLabel()?.hasPrefix("\(device.name),") == true
+            })
+        }
+        func restart(fromMenuOf row: Int) async throws {
+            try await wait { model.managingDeviceIDs.isEmpty }
+            main.updateDeviceMenu(for: row)
+            menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Restart" }))
+        }
+
+        main.selectDevice(first.id)
+        let selection = main.presentationIntent
+        // A row outside the selection is the only target, and stays unselected.
+        try await restart(fromMenuOf: try row(of: second))
+        #expect(await events.next() == .manage(.restart, [second.id]))
+        #expect(main.selectedIdentifiers == [first.id] && model.selection.device?.id == first.id)
+        #expect(main.presentationIntent.revision == selection.revision)
+
+        // A row inside a multiple selection stands for all of it.
+        outline.selectRowIndexes(IndexSet([try row(of: first), try row(of: third)]), byExtendingSelection: false)
+        #expect(main.selectedIdentifiers == [first.id, third.id])
+        let group = main.presentationIntent
+        try await restart(fromMenuOf: try row(of: third))
+        #expect(await events.next() == .manage(.restart, [first.id, third.id]))
+        // A row outside it does not change it.
+        try await restart(fromMenuOf: try row(of: second))
+        #expect(await events.next() == .manage(.restart, [second.id]))
+        #expect(main.selectedIdentifiers == [first.id, third.id] && main.presentationIntent.revision == group.revision)
+        // No row means the selection, and a row that is no device has no menu.
+        try await restart(fromMenuOf: -1)
+        #expect(await events.next() == .manage(.restart, [first.id, third.id]))
+        let header = try #require((0..<outline.numberOfRows).first { outline.item(atRow: $0).map { main.outlineView(outline, shouldSelectItem: $0) } == false })
+        main.updateDeviceMenu(for: header)
+        #expect(menu.items.isEmpty)
+        #expect(main.selectedIdentifiers == [first.id, third.id] && main.presentationIntent.revision == group.revision)
+        try await model.quitRenderer(keepingDevicesRunning: true)
     }
 
     @Test(arguments: [false, true])
