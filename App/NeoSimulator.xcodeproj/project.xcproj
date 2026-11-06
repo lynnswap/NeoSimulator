@@ -59,6 +59,7 @@
           "kind": "group",
           "path": "Sources",
           "children": [
+            { "kind": "folder", "path": "NeoSimulatorDeviceIO" },
             {
               "kind": "group",
               "path": "NeoSimulatorKit",
@@ -177,7 +178,6 @@
                 { "path": "ErrorAlert.swift" },
                 { "kind": "folder", "path": "Native" },
                 { "kind": "folder", "path": "Installations" },
-                { "kind": "folder", "path": "System" },
               ],
             }, {
               "kind": "group",

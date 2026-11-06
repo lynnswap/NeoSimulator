@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -50,7 +51,8 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
     private(set) var mutationCount = 0
     private var preferenceReadCount = 0
 
-    func run(executable: URL, arguments: [String]) throws -> CommandOutput {
+    nonisolated(nonsending) func run(_ command: SystemCommand) async throws -> CommandOutput {
+        let executable = command.executable, arguments = command.arguments
         let call = Call(executable: executable, arguments: arguments)
         calls.append(call)
         beforeRun?(call)
@@ -80,7 +82,7 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
         }
     }
 
-    func readDomain(_ domain: String, keys: [String]) throws -> [String: Any] {
+    nonisolated(nonsending) func readDomain(_ domain: String, keys: [String]) async throws -> [String: Any] {
         recordPreferenceAccess(["read", domain])
         if failPreferenceReads { throw CLIError.io("preference-read", "injected domain read failure") }
         guard let values = domains[domain] else { return [:] }
@@ -95,7 +97,7 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
         return values.filter { keys.contains($0.key) }
     }
 
-    func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {
+    nonisolated(nonsending) func write(_ value: StoredBoolean, to preference: ManagedPreference) async throws {
         recordPreferenceAccess(["write", preference.domain, preference.key])
         mutationCount += 1
         if failMutationNumbers.contains(mutationCount), failureTiming == .beforeMutation {
@@ -280,7 +282,7 @@ struct InstallationFixture {
             binaryContent: ["fixture-core-simulator"]
         )
         let simctlBinaryURL = coreSimulatorFrameworkURL.appendingPathComponent(
-            ToolConstants.simctlBinaryPath
+            DeviceToolPaths.simctlBinary
         )
         try Self.writeExecutable(
             content: "fixture-simctl",
@@ -301,7 +303,7 @@ struct InstallationFixture {
             binaryContent: ["fixture-core-device"]
         )
         let devicectlBinaryURL = coreDeviceFrameworkURL.appendingPathComponent(
-            ToolConstants.devicectlBinaryPath
+            DeviceToolPaths.devicectlBinary
         )
         try Self.writeExecutable(
             content: "fixture-devicectl",
@@ -343,13 +345,13 @@ struct InstallationFixture {
 
     var simctlBinaryURL: URL {
         coreSimulatorFrameworkURL.appendingPathComponent(
-            ToolConstants.simctlBinaryPath
+            DeviceToolPaths.simctlBinary
         )
     }
 
     var devicectlBinaryURL: URL {
         coreDeviceFrameworkURL.appendingPathComponent(
-            ToolConstants.devicectlBinaryPath
+            DeviceToolPaths.devicectlBinary
         )
     }
 

@@ -95,19 +95,23 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
                 })
             }
             let developerDirectory = context.xcodeURL.appending(path: "Contents/Developer").path
-            try await Task.detached {
-                let process = Process()
-                process.executableURL = URL(filePath: "/usr/bin/xcrun")
-                process.arguments = ["simctl", "shutdown", id.identifier]
-                var environment = ProcessInfo.processInfo.environment
-                environment["DEVELOPER_DIR"] = developerDirectory
-                process.environment = environment
-                try process.run()
-                process.waitUntilExit()
-                guard process.terminationStatus == 0 else {
-                    throw SimulatorError.operation("The external simctl shutdown failed.")
+            let process = Process()
+            process.executableURL = URL(filePath: "/usr/bin/xcrun")
+            process.arguments = ["simctl", "shutdown", id.identifier]
+            var environment = ProcessInfo.processInfo.environment
+            environment["DEVELOPER_DIR"] = developerDirectory
+            process.environment = environment
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                process.terminationHandler = {
+                    if $0.terminationStatus == 0 { continuation.resume() }
+                    else { continuation.resume(throwing: SimulatorError.operation("The external simctl shutdown failed.")) }
                 }
-            }.value
+                do { try process.run() }
+                catch {
+                    process.terminationHandler = nil
+                    continuation.resume(throwing: error)
+                }
+            }
             let deadline = ContinuousClock.now + .seconds(5)
             while ended == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
             guard let (reason, observed) = ended else {

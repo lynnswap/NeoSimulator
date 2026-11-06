@@ -1,5 +1,7 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import Foundation
+import Synchronization
 
 /// A launchd job in a simulator that NeoSimulator can stop and start.
 package struct SimulatorBackgroundService: Sendable, Hashable, Identifiable {
@@ -211,7 +213,6 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
     package static let transitionWorkers = 8
     /// Keeps one `launchctl load` / `unload` argument list far below ARG_MAX.
     package static let batchSize = 64
-    package static let commandLimit: Duration = .seconds(120)
 
     package func read() async throws -> SimulatorBackgroundServices {
         async let disabled = readLaunchd(["print-disabled", "system"])
@@ -220,17 +221,23 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
                                            loaded: Self.parseLoaded(try await loaded), productFamily: productFamily)
     }
 
-    /// A failure other than cancellation is a `SimulatorBackgroundServicesUpdateFailure` with the state read afterwards.
+    /// Cancellation before any launchctl change ran throws `CancellationError`, since nothing changed. Any other failure,
+    /// including cancellation after one may have run, is a `SimulatorBackgroundServicesUpdateFailure` with the state read afterwards,
+    /// which is nil when that read fails or is cancelled too.
     package func update(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) async throws -> SimulatorBackgroundServicesUpdate {
-        do { return try await apply(targets, enabled: enabled) }
-        catch is CancellationError { throw CancellationError() }
+        let attempt = ServiceChangeAttempt()
+        do { return try await apply(targets, enabled: enabled, attempt: attempt) }
         catch {
+            let cancelled = error is CancellationError
+            if cancelled, !attempt.mayHaveChanged { throw CancellationError() }
             let services = try? await read()
-            throw SimulatorBackgroundServicesUpdateFailure(services: services, underlyingError: SimulatorHostFailure(error))
+            throw SimulatorBackgroundServicesUpdateFailure(services: services, underlyingError: SimulatorHostFailure(
+                cancelled ? Self.failure("background-service-stopped", attempt.stoppedDescription) : error))
         }
     }
 
-    private func apply(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) async throws -> SimulatorBackgroundServicesUpdate {
+    private func apply(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
+                       attempt: ServiceChangeAttempt) async throws -> SimulatorBackgroundServicesUpdate {
         var categories: [SimulatorBackgroundServiceCategory] = []
         var labels: [String] = []
         for target in targets {
@@ -248,22 +255,23 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
             }
         }
         let covered = Set(categories.flatMap { $0.services.map(\.label) }).union(labels).sorted()
-        return enabled ? try await start(covered) : try await stop(covered, categories: categories, named: labels)
+        return enabled ? try await start(covered, attempt: attempt)
+            : try await stop(covered, categories: categories, named: labels, attempt: attempt)
     }
 
-    private func stop(_ covered: [String], categories: [SimulatorBackgroundServiceCategory],
-                      named: [String]) async throws -> SimulatorBackgroundServicesUpdate {
+    private func stop(_ covered: [String], categories: [SimulatorBackgroundServiceCategory], named: [String],
+                      attempt: ServiceChangeAttempt) async throws -> SimulatorBackgroundServicesUpdate {
         let before = try await read()
         let kept = before.labelsKeptEnabled(disabling: categories, named: named)
         let stopping = covered.filter { before.canDisable($0) && !kept.contains($0) }
         let stillEnabled = covered.filter { !stopping.contains($0) }
         var pending = Self.stillRunning(stopping, in: before)
         if !pending.isEmpty, let plists = await jobPlists(pending), !plists.isEmpty {
-            await batch("unload", pending.compactMap { plists[$0] })
+            await batch("unload", pending.compactMap { plists[$0] }, attempt: attempt)
             // A failed read only means every label takes the per-label path.
             if let after = try? await read() { pending = Self.stillRunning(pending, in: after) }
         }
-        try await transition(pending, disabling: true)
+        try await transition(pending, disabling: true, attempt: attempt)
         let after = try await read()
         let missing = stopping.filter(after.isEnabled)
         guard missing.isEmpty else {
@@ -273,7 +281,7 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
         return SimulatorBackgroundServicesUpdate(services: after, stillEnabledLabels: stillEnabled, notStartedLabels: [])
     }
 
-    private func start(_ covered: [String]) async throws -> SimulatorBackgroundServicesUpdate {
+    private func start(_ covered: [String], attempt: ServiceChangeAttempt) async throws -> SimulatorBackgroundServicesUpdate {
         var state = try await read()
         let candidates = covered.filter { !state.isEnabled($0) || !state.loadedLabels.contains($0) }
         let plists = candidates.isEmpty ? [:] : await jobPlists(candidates)
@@ -286,16 +294,18 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
         }
         let paths = pending.compactMap { plists?[$0] }
         if !paths.isEmpty {
-            await batch("load", paths)
+            await batch("load", paths, attempt: attempt)
             state = try await read()
         }
         let enabling = pending.filter { !state.isEnabled($0) }
         let unloaded = pending.compactMap { label in
             plists?[label].flatMap { state.loadedLabels.contains(label) ? nil : $0 }
         }
-        try await transition(enabling, disabling: false)
+        try await transition(enabling, disabling: false, attempt: attempt)
         // An already-loaded job exits 37, so the status is not trusted; the read-back decides.
-        for path in unloaded { _ = try? await launchctl(["bootstrap", "system", path]) }
+        for path in unloaded {
+            _ = try? await change(["bootstrap", "system", path], summary: "bootstrap \(URL(fileURLWithPath: path).lastPathComponent)", attempt: attempt)
+        }
         if !enabling.isEmpty || !unloaded.isEmpty { state = try await read() }
         let still = pending.filter { !state.isEnabled($0) }
         guard still.isEmpty else {
@@ -312,14 +322,15 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
 
     /// The exit status is not trusted: launchctl reports one job's failure for the whole call, so the
     /// caller reads the state back. A chunk that fails to finish ends the batch.
-    private func batch(_ verb: String, _ paths: [String]) async {
+    private func batch(_ verb: String, _ paths: [String], attempt: ServiceChangeAttempt) async {
         for start in stride(from: 0, to: paths.count, by: Self.batchSize) {
-            do { _ = try await launchctl([verb, "-w"] + paths[start..<min(start + Self.batchSize, paths.count)]) }
+            let chunk = paths[start..<min(start + Self.batchSize, paths.count)]
+            do { _ = try await change([verb, "-w"] + chunk, summary: "\(verb) \(chunk.count) services", attempt: attempt) }
             catch { return }
         }
     }
 
-    private func transition(_ labels: [String], disabling: Bool) async throws {
+    private func transition(_ labels: [String], disabling: Bool, attempt: ServiceChangeAttempt) async throws {
         var pending = labels
         var failures: [String] = []
         for pass in 0..<Self.transitionPasses where !pending.isEmpty {
@@ -329,12 +340,12 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
                 var queued = pending[...]
                 for _ in 0..<min(Self.transitionWorkers, queued.count) {
                     let label = queued.removeFirst()
-                    group.addTask { await change(label, disabling: disabling) }
+                    group.addTask { await change(label, disabling: disabling, attempt: attempt) }
                 }
                 var failed: [(label: String, message: String)] = []
                 while let result = await group.next() {
                     if let result { failed.append(result) }
-                    if let label = queued.popFirst() { group.addTask { await change(label, disabling: disabling) } }
+                    if let label = queued.popFirst() { group.addTask { await change(label, disabling: disabling, attempt: attempt) } }
                 }
                 return failed.sorted { $0.label < $1.label }
             }
@@ -348,18 +359,32 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
         }
     }
 
-    private func change(_ label: String, disabling: Bool) async -> (label: String, message: String)? {
+    private func change(_ label: String, disabling: Bool, attempt: ServiceChangeAttempt) async -> (label: String, message: String)? {
         let verb = disabling ? "disable" : "enable"
         do {
-            let output = try await launchctl([verb, "system/" + label])
+            let output = try await change([verb, "system/" + label], summary: "\(verb) \(label)", attempt: attempt)
             guard output.terminationStatus == 0 else { return (label, Self.describe(verb, label, output)) }
             guard disabling else { return nil }
             // `disable` only blocks the next bootstrap; `bootout` stops the running job. Status 3 means it was not loaded.
-            let bootout = try await launchctl(["bootout", "system/" + label])
+            let bootout = try await change(["bootout", "system/" + label], summary: "bootout \(label)", attempt: attempt)
             guard [0, 3].contains(bootout.terminationStatus) else { return (label, Self.describe("bootout", label, bootout)) }
             return nil
         } catch {
             return (label, "\(verb) \(label): \(error.localizedDescription)")
+        }
+    }
+
+    /// Runs a launchctl command that changes state. One cancelled before its child started changed nothing and leaves no record.
+    private func change(_ arguments: [String], summary: String, attempt: ServiceChangeAttempt) async throws -> CommandOutput {
+        do {
+            let output = try await launchctl(arguments)
+            attempt.record(finished: output.terminationStatus == 0 ? summary : nil)
+            return output
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            attempt.record(failed: "\(summary): \(error.localizedDescription)")
+            throw error
         }
     }
 
@@ -373,7 +398,10 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
             case .success(let output):
                 failure = CLIError.io("background-service-read", Self.describe(arguments[0], nil, output))
                 guard Self.isSettling(output) else { throw failure }
-            case .failure(let timeout as BackgroundServiceCommandTimeout):
+            case .failure(let stopped as CommandFailure) where stopped.interruption == .cancelled:
+                // A read leaves nothing to account for, and the caller's state stays as it was.
+                throw CancellationError()
+            case .failure(let timeout as CommandFailure) where timeout.interruption != nil:
                 failure = timeout
             case .failure(let error):
                 throw error
@@ -421,26 +449,46 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
     }
 }
 
-package struct BackgroundServiceCommandTimeout: LocalizedError {
-    package var errorDescription: String? { "launchctl did not finish in time." }
+/// What one background service change has asked launchctl to do, so a change stopped partway can report it.
+/// The change's own workers record into it concurrently.
+private final class ServiceChangeAttempt: Sendable {
+    private struct State {
+        var mayHaveChanged = false
+        var finished: [String] = []
+        var failed: [String] = []
+    }
+    private let state = Mutex(State())
+
+    var mayHaveChanged: Bool { state.withLock(\.mayHaveChanged) }
+
+    /// A nil `finished` is a command that ran and reported a failure, so it may still have changed something.
+    func record(finished: String?) {
+        state.withLock { state in
+            state.mayHaveChanged = true
+            if let finished { state.finished.append(finished) }
+        }
+    }
+
+    func record(failed: String) {
+        state.withLock { state in
+            state.mayHaveChanged = true
+            state.failed.append(failed)
+        }
+    }
+
+    var stoppedDescription: String {
+        state.withLock { state in
+            let finished = state.finished.isEmpty ? [] : ["Finished: \(state.finished.joined(separator: ", "))."]
+            return (["The background service change was stopped before it finished."] + state.failed + finished).joined(separator: " ")
+        }
+    }
 }
 
 extension SimulatorBackgroundServiceBackend {
     package static func live(device: SimulatorHostDevice, xcodeURL: URL) -> Self {
         let simctl = { @Sendable (arguments: [String]) async throws -> CommandOutput in
-            try await withThrowingTaskGroup(of: CommandOutput.self) { group in
-                group.addTask {
-                    try await SystemCommandRunner.runSimctlCancellable(xcodeURL: xcodeURL, arguments: arguments,
-                                                                       deviceSetPath: device.deviceSetPath)
-                }
-                group.addTask {
-                    try await Task.sleep(for: Self.commandLimit)
-                    throw BackgroundServiceCommandTimeout()
-                }
-                defer { group.cancelAll() }
-                guard let output = try await group.next() else { throw CancellationError() }
-                return output
-            }
+            try await SystemCommandRunner().run(.simctl(xcodeURL: xcodeURL, arguments: arguments,
+                                                        deviceSetPath: device.deviceSetPath, policy: .backgroundServiceCommand))
         }
         return Self(launchctl: { try await simctl(["spawn", device.identifier, "launchctl"] + $0) },
                     jobPlists: { labels in

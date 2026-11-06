@@ -110,7 +110,7 @@ package enum CoreDeviceRuntime {
     @concurrent
     private static func resolveUIXcode(override: URL?) async throws -> URL {
         let inspector = XcodeInstallationInspector()
-        return try inspector.xcodeForUIFrameworks(override: override).applicationURL
+        return try await inspector.xcodeForUIFrameworks(override: override).applicationURL
     }
 
     /// Returns the retained, shared manager for default devices and simulators.

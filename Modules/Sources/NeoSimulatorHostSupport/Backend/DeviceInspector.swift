@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import Foundation
 import CoreFoundation
@@ -245,7 +246,7 @@ package struct DeviceInspector: Sendable {
             let result: Result<Data, any Error>
             do {
                 let image = directory.appendingPathComponent("Icon.png")
-                _ = try await coreDevice(["device", "info", "appIcon", "--app-bundle-id", bundleIdentifier, "--destination", image.path], operation: "Read Application Icon", timeout: 30)
+                _ = try await coreDevice(["device", "info", "appIcon", "--app-bundle-id", bundleIdentifier, "--destination", image.path], operation: "Read Application Icon", timeout: DeviceOperationLimit.devicectlInspection)
                 result = .success(try Data(contentsOf: image))
             } catch { result = .failure(error) }
             do { try FileManager.default.removeItem(at: directory) }
@@ -510,7 +511,7 @@ package struct DeviceInspector: Sendable {
 
     @concurrent package func coreDeviceResult(_ arguments: [String], operation: String) async throws -> DeviceInspectorValue {
         do {
-            let data = try await coreDevice(arguments, operation: operation, timeout: 30)
+            let data = try await coreDevice(arguments, operation: operation, timeout: DeviceOperationLimit.devicectlInspection)
             let response = try JSONDecoder().decode(DeviceInspectorValue.self, from: data)
             guard let result = response["result"] else { throw DeviceInspectorError.invalidResponse("devicectl omitted the result object.") }
             return result
@@ -519,7 +520,8 @@ package struct DeviceInspector: Sendable {
 
     /// `trailingArguments` follow the device and output options, because commands such as
     /// `device process launch` pass every argument after their bundle identifier to the app.
-    @concurrent package func coreDevice(_ arguments: [String], trailingArguments: [String] = [], operation: String, timeout: Int? = nil) async throws -> Data {
+    @concurrent package func coreDevice(_ arguments: [String], trailingArguments: [String] = [], operation: String, timeout: Int? = nil,
+                                        policy: CommandPolicy = .uninterrupted) async throws -> Data {
         do {
             let identifier: String
             switch device {
@@ -532,7 +534,7 @@ package struct DeviceInspector: Sendable {
             }
             let options = ["--device", identifier, "--json-output", "-", "--quiet"]
                 + (timeout.map { ["--timeout", String($0)] } ?? [])
-            let command = DeviceInspectorCommand(source: .coreDevice, arguments: arguments + options + trailingArguments)
+            let command = DeviceInspectorCommand(source: .coreDevice, arguments: arguments + options + trailingArguments, policy: policy)
             return try await run(command, operation: operation)
         } catch { throw failure(error, operation: operation, source: .coreDevice) }
     }
@@ -565,6 +567,8 @@ package struct DeviceInspector: Sendable {
 package struct DeviceInspectorCommand: Equatable, Sendable {
     package let source: DeviceInspectorFailure.Source
     package let arguments: [String]
+    /// Only a command that can stop at any point without changing the device opts out of finishing.
+    package var policy: CommandPolicy = .uninterrupted
 }
 
 package struct DeviceInspectorTransport: Sendable {
@@ -575,9 +579,9 @@ package struct DeviceInspectorTransport: Sendable {
         try Task.checkCancellation()
         let runner = SystemCommandRunner()
         switch command.source {
-        case .simulator(let xcode, let path): return try runner.runSimctl(xcodeURL: xcode, arguments: command.arguments, deviceSetPath: path)
+        case .simulator(let xcode, let path): return try await runner.run(.simctl(xcodeURL: xcode, arguments: command.arguments, deviceSetPath: path, policy: command.policy))
         case .coreDevice:
-            return try runner.run(executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"), arguments: command.arguments)
+            return try await runner.run(.devicectl(arguments: command.arguments, policy: command.policy))
         case .file: throw DeviceInspectorError.invalidResponse("A file operation cannot be executed as a device command.")
         }
     }
@@ -593,25 +597,26 @@ extension SimulatorHostController {
             let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(simulator.inventoryID) }
             preferred = owner.map { URL(fileURLWithPath: $0.xcodePath) } ?? simulator.ownerXcodeURL ?? simulator.catalogXcodeURL
         } else { preferred = nil }
-        return try await makeDeviceInspector(device: device, preferredXcodeURL: preferred)
+        return try await makeDeviceInspector(device: device, preferredXcodeURL: preferred, reads: reads)
     }
 }
 
-@concurrent private func makeDeviceInspector(device: InventoryDevice, preferredXcodeURL: URL?) async throws -> DeviceInspector {
+@concurrent private func makeDeviceInspector(device: InventoryDevice, preferredXcodeURL: URL?, reads: CommandReads) async throws -> DeviceInspector {
     guard case .simulator(let simulator) = device else { return DeviceInspector(device: device, simulatorXcodeURL: nil) }
     if let preferredXcodeURL { return DeviceInspector(device: device, simulatorXcodeURL: preferredXcodeURL) }
-    let installations = try XcodeInstallationInspector().discoverXcodes()
+    let installations = try await XcodeInstallationInspector(runner: reads).discoverXcodes()
     var failures: [any Error] = []
     for installation in installations {
         do {
-            let result = try SystemCommandRunner().runSimctl(xcodeURL: installation.applicationURL,
-                arguments: ["list", "--json"], deviceSetPath: simulator.deviceSetPath)
+            let result = try await reads.run(.simctl(xcodeURL: installation.applicationURL,
+                arguments: ["list", "--json"], deviceSetPath: simulator.deviceSetPath, policy: .cancellable))
             guard result.terminationStatus == 0 else { throw DeviceInspectorError.commandFailed(status: result.terminationStatus, stdout: result.stdoutText, stderr: result.stderrText) }
             let devices = try SimulatorDeviceCatalog.decode(result.stdout, deviceSetPath: simulator.deviceSetPath, includeUnavailable: true)
             if devices.contains(where: { $0.identifier == simulator.identifier && $0.isAvailable }) {
                 return DeviceInspector(device: device, simulatorXcodeURL: installation.applicationURL)
             }
-        } catch { failures.append(error) }
+        } catch is CancellationError { throw CancellationError() }
+        catch { failures.append(error) }
     }
     if let failure = failures.first { throw failure }
     throw DeviceInspectorError.unsupported("No installed Xcode can use this simulator's runtime.")

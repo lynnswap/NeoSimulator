@@ -2,9 +2,9 @@ import NeoSimulatorKit
 import Foundation
 
 extension XcodeInstallationInspector {
-    package func discoverXcodes() throws -> [XcodeInstallation] {
+    package nonisolated(nonsending) func discoverXcodes() async throws -> [XcodeInstallation] {
         var urls = Set<URL>()
-        if let selected = try? selectedXcode() { urls.insert(selected.applicationURL) }
+        if let selected = try await selectedXcodeIfUsable() { urls.insert(selected.applicationURL) }
         for root in [URL(fileURLWithPath: "/Applications"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")] {
             let entries: [URL]
             do { entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) }

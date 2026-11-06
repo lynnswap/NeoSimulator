@@ -124,6 +124,8 @@ private actor BackgroundServicesPreviewSource: SimulatorManagerSource {
     }
 
     func inventory() -> DeviceInventorySnapshot { .init(devices: [device], issues: []) }
+    nonisolated func stopReads() {}
+    nonisolated func resumeReads() {}
     func status() -> SimulatorHostStatus {
         .init(host: .neo, preferredHost: .neo, restorationAvailable: false, rendererRunning: false)
     }

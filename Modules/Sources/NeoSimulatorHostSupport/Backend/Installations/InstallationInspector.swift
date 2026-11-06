@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import Darwin
 import Foundation
@@ -22,11 +23,11 @@ package struct InstallationInspector {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         rendererApplicationURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/NeoSimulatorRenderer.app", isDirectory: true),
         coreSimulatorFrameworkURL: URL = URL(
-            fileURLWithPath: ToolConstants.coreSimulatorFrameworkPath,
+            fileURLWithPath: DeviceToolPaths.coreSimulatorFramework,
             isDirectory: true
         ),
         coreDeviceFrameworkURL: URL = URL(
-            fileURLWithPath: ToolConstants.coreDeviceFrameworkPath,
+            fileURLWithPath: DeviceToolPaths.coreDeviceFramework,
             isDirectory: true
         ),
         signatureValidator: CodeSignatureValidator = .live
@@ -40,8 +41,8 @@ package struct InstallationInspector {
         self.signatureValidator = signatureValidator
     }
 
-    package func validatedTargetXcode(at explicitURL: URL? = nil) throws -> XcodeInstallation {
-        let xcode = try xcodes.xcodeForUIFrameworks(override: explicitURL)
+    package nonisolated(nonsending) func validatedTargetXcode(at explicitURL: URL? = nil) async throws -> XcodeInstallation {
+        let xcode = try await xcodes.xcodeForUIFrameworks(override: explicitURL)
         try signatureValidator.validateAppleApplication(
             xcode.applicationURL,
             ToolConstants.xcodeBundleIdentifier
@@ -104,9 +105,9 @@ package struct InstallationInspector {
         return xcode
     }
 
-    package func validatedNeoHost(
+    package nonisolated(nonsending) func validatedNeoHost(
         for xcode: XcodeInstallation
-    ) throws -> NeoHostInstallation {
+    ) async throws -> NeoHostInstallation {
         let simctlWrapperURL = xcode.applicationURL.appendingPathComponent(
             ToolConstants.simctlWrapperPath
         )
@@ -144,7 +145,7 @@ package struct InstallationInspector {
             identifier: "core-simulator"
         )
         let simctlBinaryURL = coreSimulatorFrameworkURL.appendingPathComponent(
-            ToolConstants.simctlBinaryPath
+            DeviceToolPaths.simctlBinary
         )
         try validateAppleExecutable(
             at: simctlBinaryURL,
@@ -158,7 +159,7 @@ package struct InstallationInspector {
             identifier: "core-device"
         )
         let devicectlBinaryURL = coreDeviceFrameworkURL.appendingPathComponent(
-            ToolConstants.devicectlBinaryPath
+            DeviceToolPaths.devicectlBinary
         )
         try validateAppleExecutable(
             at: devicectlBinaryURL,
@@ -190,7 +191,7 @@ package struct InstallationInspector {
             expectedBundleIdentifier: ToolConstants.neoHostBundleIdentifier,
             identifier: "neo-host"
         )
-        try validateNeoHostRuntime(
+        try await validateNeoHostRuntime(
             executableURL: applicationExecutableURL,
             xcode: xcode
         )
@@ -440,18 +441,19 @@ package struct InstallationInspector {
         }
     }
 
-    private func validateNeoHostRuntime(
+    private nonisolated(nonsending) func validateNeoHostRuntime(
         executableURL: URL,
         xcode: XcodeInstallation
-    ) throws {
-        let output = try runner.run(
+    ) async throws {
+        let output = try await runner.runCancellable(SystemCommand(
             executable: executableURL,
             arguments: [
                 "--validate-runtime",
                 "--xcode",
                 xcode.applicationURL.path,
-            ]
-        )
+            ],
+            policy: .cancellable
+        ))
         guard output.terminationStatus == 0 else {
             let detail = if !output.stderrText.isEmpty {
                 output.stderrText

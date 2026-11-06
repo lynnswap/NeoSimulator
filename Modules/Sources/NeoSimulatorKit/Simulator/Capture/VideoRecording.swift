@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import NeoSimulatorDeviceIO
 import Observation
 import Darwin
 
@@ -20,7 +21,7 @@ package final class VideoRecording {
     private var timer: Task<Void, Never>?
     private var forcedError: Error?
 
-    package init(process: Process, startupTimeout: Duration = .seconds(30)) throws {
+    package init(process: Process, startupTimeout: Duration = DeviceOperationLimit.recordingStart) throws {
         self.process = process
         let pipe = Pipe()
         process.standardInput = FileHandle.nullDevice
@@ -90,7 +91,7 @@ package final class VideoRecording {
         // simctl documents its first-frame acknowledgement as the safe point
         // for SIGINT. A Stop during startup waits for that acknowledgement.
         if hasStarted, process.isRunning { process.interrupt() }
-        armTimeout(.seconds(30), message: "Video recording did not finish")
+        armTimeout(DeviceOperationLimit.recordingFinish, message: "Video recording did not finish")
     }
 
     package func waitUntilFinished() async throws {
@@ -105,7 +106,7 @@ package final class VideoRecording {
             guard let self, self.completion == nil, self.process.isRunning else { return }
             self.forcedError = SimulatorError.operation(message)
             self.process.terminate()
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: DeviceOperationLimit.recordingStopGrace)
             if self.process.isRunning { kill(self.process.processIdentifier, SIGKILL) }
         }
     }

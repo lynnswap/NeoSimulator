@@ -127,8 +127,9 @@ extension DeviceInspector {
             stagingDirectory = directory
             let staged = directory.appendingPathComponent((report.relativePath as NSString).lastPathComponent, isDirectory: report.resources.isDirectory)
             stagedReport = staged
+            // The copy only reads the device and writes to staging, and quitting waits for a preview's copy to end.
             _ = try await coreDevice(["device", "copy", "from", "--domain-type", "systemCrashLogs", "--source", report.relativePath,
-                "--destination", staged.path], operation: "Download Report")
+                "--destination", staged.path], operation: "Download Report", policy: .cancellable)
             try Task.checkCancellation()
             if replacingExistingFile && manager.fileExists(atPath: destination.path) {
                 _ = try manager.replaceItemAt(destination, withItemAt: staged)

@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 @testable import NeoSimulatorApp
@@ -2971,6 +2972,23 @@ struct InputFocusTests {
         for _ in 0..<3000 where controller.session.isBusy { try await Task.sleep(for: .milliseconds(10)) }
         #expect(failure != nil)
         #expect(controller.session.canPerformCommands)
+    }
+
+    /// Only disconnecting stops a running tool, and the window that could show its outcome goes with the session.
+    @Test(.timeLimit(.minutes(1))) func onlyAToolStoppedByItsCallerSkipsTheFailureHandler() async throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        var failure: Error?
+        func run(_ cause: CommandFailure.Interruption) async {
+            controller.session.run({
+                throw CommandFailure.interrupted(executable: URL(fileURLWithPath: "/simctl"), cause: cause, output: nil)
+            }, failure: { failure = $0 })
+            while controller.session.isBusy { await Task.yield() }
+        }
+        await run(.cancelled)
+        #expect(failure == nil)
+        await run(.timedOut(.seconds(30)))
+        #expect((failure as? CommandFailure)?.interruption == .timedOut(.seconds(30)))
     }
 
     @Test func refusedFocusDoesNotSendModifierEvents() throws {
@@ -11326,7 +11344,6 @@ struct DeviceToolTests {
         await #expect(throws: (any Error).self) {
             try await runner.run(URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "echo rejected >&2; exit 7"])
         }
-        #expect(runner.process == nil)
     }
 
     @Test func toolsAddressADeviceOutsideTheDefaultSet() async throws {
@@ -11389,17 +11406,135 @@ struct DeviceToolTests {
         ])
     }
 
+    /// Each stop ends with the runner free for the next command, which it refuses while one is still running.
     @Test func timeoutAndCancellationReapTheChildProcess() async throws {
         let runner = DeviceToolRunner()
-        await #expect(throws: (any Error).self) {
-            try await runner.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], timeout: .milliseconds(30))
+        let timeout = try await #require(throws: CommandFailure.self) {
+            try await runner.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"],
+                                 policy: CommandPolicy(limit: .milliseconds(30), cancellation: .stopsChild, stopGrace: .seconds(2)))
         }
-        #expect(runner.process == nil)
+        #expect(timeout.interruption == .timedOut(.milliseconds(30)))
         let task = Task { try await runner.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"]) }
         await Task.yield()
         task.cancel()
-        await #expect(throws: CancellationError.self) { try await task.value }
-        #expect(runner.process == nil)
+        // Whether its child has started by now is up to the scheduler.
+        let stopped = try await #require(throws: (any Error).self) { try await task.value }
+        #expect(stopped.isCancellation)
+        _ = try await runner.run(URL(fileURLWithPath: "/usr/bin/true"), arguments: [])
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancellingTheToolsStopsTheirRunningCommandAndRefusesASecondMeanwhile() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ready = directory.appendingPathComponent("ready")
+        try #require(mkfifo(ready.path, 0o600) == 0)
+        let child = Task { try await performBlockingIO { try FileHandle(forReadingFrom: ready).readToEnd() ?? Data() } }
+        let runner = DeviceToolRunner()
+        let running = Task {
+            try await runner.run(URL(fileURLWithPath: "/bin/sh"),
+                                 arguments: ["-c", "printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path])
+        }
+        let identifier = try #require(Int32(String(decoding: try await child.value, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        await #expect(throws: SimulatorError.self) { try await runner.run(URL(fileURLWithPath: "/usr/bin/true"), arguments: []) }
+        runner.cancel()
+        let failure = try await #require(throws: CommandFailure.self) { try await running.value }
+        #expect(failure.interruption == .cancelled)
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+    }
+
+    /// Erasing can have removed anything by the time it stops, so the restart reports that with what already finished and goes no further.
+    @Test(.timeLimit(.minutes(1))) func stoppingAnEraseReportsItsUnknownOutcomeAndEndsTheRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = try toolsHolding("erase", in: directory)
+        let restart = Task { try await fixture.tools.restart(erasing: true) }
+        _ = try await fixture.started.value
+        fixture.tools.cancel()
+        let failure = try await #require(throws: DeviceRestartInterruption.self) { try await restart.value }
+        #expect((failure.cause as? CommandFailure)?.interruption == .cancelled)
+        #expect(failure.errorDescription == "Erase All Content and Settings stopped while erasing: simctl was stopped before it finished, so what it changed is unknown. The device was shut down.")
+        #expect(try String(contentsOf: fixture.calls, encoding: .utf8).split(separator: "\n") == ["shutdown", "erase"])
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [
+        (held: "shutdown", erasing: false, calls: ["shutdown"], description: "Restart stopped while shutting down: simctl was stopped before it finished, so what it changed is unknown."),
+        (held: "boot", erasing: false, calls: ["shutdown", "boot"], description: "Restart stopped while booting: simctl was stopped before it finished, so what it changed is unknown. The device was shut down."),
+        (held: "boot", erasing: true, calls: ["shutdown", "erase", "boot"], description: "Erase All Content and Settings stopped while booting: simctl was stopped before it finished, so what it changed is unknown. The device was shut down and erased."),
+    ])
+    func stoppingARestartKeepsItsStageAndWhatItCompleted(_ stage: (held: String, erasing: Bool, calls: [String], description: String)) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = try toolsHolding(stage.held, in: directory)
+        let restart = Task { try await fixture.tools.restart(erasing: stage.erasing) }
+        _ = try await fixture.started.value
+        fixture.tools.cancel()
+        let failure = try await #require(throws: DeviceRestartInterruption.self) { try await restart.value }
+        #expect((failure.cause as? CommandFailure)?.interruption == .cancelled)
+        #expect(failure.errorDescription == stage.description)
+        #expect(try String(contentsOf: fixture.calls, encoding: .utf8).split(separator: "\n").map(String.init) == stage.calls)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func stoppingABootAfterAFailedEraseKeepsBothOutcomes() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = try toolsHolding("boot", failing: "erase", in: directory)
+        let restart = Task { try await fixture.tools.restart(erasing: true) }
+        _ = try await fixture.started.value
+        fixture.tools.cancel()
+        let failure = try await #require(throws: DeviceRestartInterruption.self) { try await restart.value }
+        #expect(failure.errorDescription == "Erase All Content and Settings failed while erasing: erase failed Restarting also stopped while booting: simctl was stopped before it finished, so what it changed is unknown. The device was shut down.")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aRestartCancelledBeforeItsShutdownStartedChangedNothing() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = try toolsHolding("shutdown", in: directory)
+        let restart = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await fixture.tools.restart(erasing: false)
+        }
+        await #expect(throws: CancellationError.self) { try await restart.value }
+        #expect(!FileManager.default.fileExists(atPath: fixture.calls.path))
+        // No child will open the pipe, so end the wait for one.
+        try Data().write(to: directory.appendingPathComponent("ready"))
+        _ = try await fixture.started.value
+    }
+
+    /// A boot's callers read the device's state next and a screenshot changes nothing, so neither has an outcome to report.
+    @Test(.timeLimit(.minutes(1)), arguments: ["boot", "io"])
+    func stoppingABootOrAReadEndsAsPlainCancellation(_ subcommand: String) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = try toolsHolding(subcommand, in: directory)
+        let running = Task {
+            if subcommand == "boot" { try await fixture.tools.boot() }
+            else { try await fixture.tools.screenshot(to: directory.appendingPathComponent("screen.png"), mask: .ignored) }
+        }
+        _ = try await fixture.started.value
+        fixture.tools.cancel()
+        await #expect(throws: CancellationError.self) { try await running.value }
+    }
+
+    /// Tools whose simctl records each subcommand and holds the named one until it is stopped. `started` ends once it is held.
+    private func toolsHolding(_ subcommand: String, failing: String = "", in directory: URL) throws -> (tools: DeviceTools, calls: URL, started: Task<Data, any Error>) {
+        let calls = directory.appendingPathComponent("calls"), ready = directory.appendingPathComponent("ready")
+        let simctl = directory.appendingPathComponent("simctl")
+        try #require(mkfifo(ready.path, 0o600) == 0)
+        try """
+            #!/bin/sh
+            echo "$1" >> "\(calls.path)"
+            if [ "$1" = \(subcommand) ]; then printf started > "\(ready.path)"; exec /bin/sleep 300; fi
+            if [ "$1" = "\(failing)" ]; then echo "$1 failed" >&2; exit 1; fi
+            """.write(to: simctl, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
+        let tools = try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), simctl: simctl)
+        return (tools, calls, Task { try await performBlockingIO { try FileHandle(forReadingFrom: ready).readToEnd() ?? Data() } })
     }
 }
 

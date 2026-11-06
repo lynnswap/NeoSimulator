@@ -1,94 +1,44 @@
 import Foundation
-import Darwin
+import NeoSimulatorDeviceIO
 
+/// Runs one tool at a time for a device and lets its owner cancel the running one. A command stopped after its child
+/// started throws ``CommandFailure``, because what it changed is unknown; one cancelled before that throws `CancellationError`.
 @MainActor
 package final class DeviceToolRunner {
-    package private(set) var process: Process?
-    private var cancellationRequested = false
-    private var timedOut = false
+    private var current: Task<CommandOutput, any Error>?
 
     package func run(_ executable: URL, arguments: [String], environment: [String: String] = [:],
-             timeout: Duration = .seconds(30)) async throws -> Data {
+                     policy: CommandPolicy = .deviceTool) async throws -> Data {
         try Task.checkCancellation()
-        guard process == nil else { throw SimulatorError.operation("Another device operation is in progress") }
-        let task = Process()
-        task.executableURL = executable
-        task.arguments = arguments
-        task.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
-        task.standardInput = FileHandle.nullDevice
-        let output = Pipe()
-        let diagnostic = Pipe()
-        task.standardOutput = output
-        task.standardError = diagnostic
-        process = task
-        cancellationRequested = false
-        timedOut = false
-        var timeoutTask: Task<Void, Never>?
-        defer {
-            timeoutTask?.cancel()
-            task.terminationHandler = nil
-            process = nil
-        }
-
-        let outputReader = Task.detached { try output.fileHandleForReading.readToEnd() ?? Data() }
-        let diagnosticReader = Task.detached { try diagnostic.fileHandleForReading.readToEnd() ?? Data() }
-        let exit: Result<Int32, Error> = await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                task.terminationHandler = { process in
-                    continuation.resume(returning: .success(process.terminationStatus))
-                }
-                do {
-                    try task.run()
-                    timeoutTask = Task { [weak self] in
-                        do { try await Task.sleep(for: timeout) } catch { return }
-                        guard let self, self.process === task, task.isRunning else { return }
-                        self.timedOut = true
-                        self.terminate(task)
-                    }
-                } catch {
-                    task.terminationHandler = nil
-                    output.fileHandleForWriting.closeFile()
-                    diagnostic.fileHandleForWriting.closeFile()
-                    continuation.resume(returning: .failure(error))
-                }
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in self?.cancel() }
-        }
-        let data = try await outputReader.value
-        let errors = try await diagnosticReader.value
-        if timedOut { throw SimulatorError.operation("Device operation timed out") }
-        if cancellationRequested || Task.isCancelled { throw CancellationError() }
-        let status = try exit.get()
-        guard status == 0, task.terminationReason == .exit else {
-            let text = String(decoding: errors + data, as: UTF8.self)
+        guard current == nil else { throw SimulatorError.operation("Another device operation is in progress") }
+        let command = SystemCommand(executable: executable, arguments: arguments,
+                                    environment: ProcessInfo.processInfo.environment.merging(environment) { _, new in new }, policy: policy)
+        let task = Task { try await SystemCommandRunner().run(command) }
+        current = task
+        defer { current = nil }
+        let output = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        guard output.terminationStatus == 0 else {
+            let text = String(decoding: output.stderr + output.stdout, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw SimulatorError.operation(text.isEmpty ? "Device operation failed with status \(status)" : String(text.suffix(4096)))
+            throw SimulatorError.operation(text.isEmpty ? "Device operation failed with status \(output.terminationStatus)" : String(text.suffix(4096)))
         }
-        return data
+        return output.stdout
     }
 
-    package func cancel() {
-        guard let process else { return }
-        cancellationRequested = true
-        terminate(process)
-    }
+    package func cancel() { current?.cancel() }
+}
 
-    private func terminate(_ process: Process) {
-        if process.isRunning { process.terminate() }
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            if self?.process === process, process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
-        }
-    }
+/// A restart that cancellation stopped after it began changing the device, with how far it got.
+package struct DeviceRestartInterruption: LocalizedError {
+    /// A ``CommandFailure`` when a running stage was stopped, or `CancellationError` when one never started.
+    package let cause: any Error
+    package let errorDescription: String?
 }
 
 @MainActor
 package final class DeviceTools {
-    package static let simctl = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl")
-    package static let devicectl = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl")
+    package static let simctl = DeviceToolPaths.simctl
+    package static let devicectl = DeviceToolPaths.devicectl
     package let identifier: String
     /// The device's set when it is not the default set.
     package let deviceSetPath: String?
@@ -138,20 +88,23 @@ package final class DeviceTools {
         try await DeviceToolRunner().run(
             simctl, arguments: (deviceSetPath.map { ["--set", $0] } ?? []) + arguments,
             environment: ["DEVELOPER_DIR": xcodeURL.appendingPathComponent("Contents/Developer").path],
-            timeout: .seconds(300))
+            policy: .deviceLifecycleTool)
     }
 
-    // Booting can migrate data first, and erasing removes the whole device.
-    package func boot() async throws { _ = try await simctl(["boot", identifier], timeout: .seconds(300)) }
-    package func shutdown() async throws { _ = try await simctl(["shutdown", identifier], timeout: .seconds(300)) }
-    package func erase() async throws { _ = try await simctl(["erase", identifier], timeout: .seconds(300)) }
+    package func boot() async throws {
+        _ = try await endingOnCancellation { try await bootTool() }
+    }
+    package func shutdown() async throws { _ = try await simctl(["shutdown", identifier], policy: .deviceLifecycleTool) }
+    package func erase() async throws { _ = try await simctl(["erase", identifier], policy: .deviceLifecycleTool) }
     /// How `simctl io` renders the area outside the device's screen shape:
     /// not at all, transparent, or black.
     package enum ScreenMask: String { case ignored, alpha, black }
     package enum VideoCodec: String { case h264, hevc }
 
     package func screenshot(to url: URL, mask: ScreenMask, displayID: UInt32? = nil) async throws {
-        _ = try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=\(mask.rawValue)"] + (displayID.map { ["--display=\($0)"] } ?? []) + [url.path])
+        _ = try await endingOnCancellation {
+            try await simctl(["io", identifier, "screenshot", "--type=png", "--mask=\(mask.rawValue)"] + (displayID.map { ["--display=\($0)"] } ?? []) + [url.path])
+        }
     }
     package func rotate(left: Bool) async throws -> OrientationReading {
         if let guest = try await orientationConnection() { return try await guest.rotate(left: left) }
@@ -169,9 +122,11 @@ package final class DeviceTools {
     }
     package func orientation() async throws -> OrientationReading {
         if let guest = try await orientationConnection() { return try await guest.read() }
-        return try OrientationReading(devicectlOutput: await runner.run(devicectlURL,
-            arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
-            environment: environment))
+        return try OrientationReading(devicectlOutput: await endingOnCancellation {
+            try await runner.run(devicectlURL,
+                arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],
+                environment: environment)
+        })
     }
 
     private func orientationConnection() async throws -> GuestDeviceOrientation? {
@@ -182,30 +137,41 @@ package final class DeviceTools {
         guestOrientation = orientation
         return orientation
     }
-    /// Shutdown failure stops the restart; erase failure is reported but still allows boot.
+    /// Shutdown failure stops the restart; erase failure is reported but still allows boot. Cancellation stops it at any stage
+    /// and throws ``DeviceRestartInterruption``, unless it arrived before the shutdown started and nothing changed.
     package func restart(erasing: Bool) async throws {
         let operation = erasing ? "Erase All Content and Settings" : "Restart"
+        var eraseFailure: Error?
+        func progress(_ completed: [String]) -> String {
+            completed.isEmpty ? "" : " The device was \(completed.joined(separator: " and "))."
+        }
         func failure(_ stage: String, completed: [String], _ error: Error) -> SimulatorError {
-            let progress = completed.isEmpty ? "" : " The device was \(completed.joined(separator: " and "))."
-            return SimulatorError.operation("\(operation) failed while \(stage): \(error.localizedDescription)\(progress)")
+            SimulatorError.operation("\(operation) failed while \(stage): \(error.localizedDescription)\(progress(completed))")
+        }
+        func interruption(_ stage: String, completed: [String], _ error: Error) -> DeviceRestartInterruption {
+            let subject = eraseFailure.map { "\(operation) failed while erasing: \($0.localizedDescription) Restarting also" } ?? operation
+            let outcome = error is CancellationError ? "stopped before \(stage)." : "stopped while \(stage): \(error.localizedDescription)"
+            return DeviceRestartInterruption(cause: error, errorDescription: "\(subject) \(outcome)\(progress(completed))")
         }
         do { try await shutdown() } catch {
             if error is CancellationError { throw error }
+            if error.isCancellation { throw interruption("shutting down", completed: [], error) }
             throw failure("shutting down", completed: [], error)
         }
-        var eraseFailure: Error?
         if erasing {
             do { try await erase() } catch {
-                if error is CancellationError { throw error }
+                if error.isCancellation { throw interruption("erasing", completed: ["shut down"], error) }
                 eraseFailure = error
             }
         }
-        do { try await boot() } catch {
-            if error is CancellationError { throw error }
+        // Unlike a boot on its own, whose callers read the device's state next, a restart reports how its boot ended.
+        do { _ = try await bootTool() } catch {
+            let completed = erasing && eraseFailure == nil ? ["shut down", "erased"] : ["shut down"]
+            if error.isCancellation { throw interruption("booting", completed: completed, error) }
             if let eraseFailure {
                 throw SimulatorError.operation("\(operation) failed while erasing: \(eraseFailure.localizedDescription) Restarting also failed while booting: \(error.localizedDescription) The device was shut down.")
             }
-            throw failure("booting", completed: erasing ? ["shut down", "erased"] : ["shut down"], error)
+            throw failure("booting", completed: completed, error)
         }
         if let eraseFailure { throw failure("erasing", completed: ["shut down", "booted again"], eraseFailure) }
     }
@@ -234,8 +200,16 @@ package final class DeviceTools {
         return process
     }
     package func cancel() { runner.cancel() }
+    /// For a read, or a boot whose callers all read the device's state next, where a stopped child leaves nothing to account for.
+    private func endingOnCancellation(_ command: @MainActor () async throws -> Data) async throws -> Data {
+        do { return try await command() }
+        catch let failure as CommandFailure where failure.interruption == .cancelled { throw CancellationError() }
+    }
+    private func bootTool() async throws -> Data {
+        try await simctl(["boot", identifier], policy: .deviceLifecycleTool)
+    }
     private var simctlSet: [String] { deviceSetPath.map { ["--set", $0] } ?? [] }
-    private func simctl(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> Data {
-        try await runner.run(simctlURL, arguments: simctlSet + arguments, environment: environment, timeout: timeout)
+    private func simctl(_ arguments: [String], policy: CommandPolicy = .deviceTool) async throws -> Data {
+        try await runner.run(simctlURL, arguments: simctlSet + arguments, environment: environment, policy: policy)
     }
 }

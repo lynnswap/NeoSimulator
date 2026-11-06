@@ -6,29 +6,47 @@ import Testing
 
 @Suite
 struct DefaultsStoreTests {
-    @Test func systemPreferencesPreserveThreeStatesAtExactUserScope() throws {
+    @Test func systemPreferencesPreserveThreeStatesAtExactUserScope() async throws {
         let domains = SystemPreferenceDomains()
         let preference = ManagedPreference(domain: "dev.lynnswap.NeoSimulator.tests.\(UUID().uuidString)", key: "Boolean")
-        defer { try? domains.write(.absent, to: preference) }
-        #expect(try domains.readDomain(preference.domain, keys: [preference.key]).isEmpty)
-        try domains.write(.falseValue, to: preference)
-        #expect(try domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == false)
-        try domains.write(.trueValue, to: preference)
-        #expect(try domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == true)
-        try domains.write(.absent, to: preference)
-        #expect(try domains.readDomain(preference.domain, keys: [preference.key]).isEmpty)
+        do {
+            #expect(try await domains.readDomain(preference.domain, keys: [preference.key]).isEmpty)
+            try await domains.write(.falseValue, to: preference)
+            #expect(try await domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == false)
+            try await domains.write(.trueValue, to: preference)
+            #expect(try await domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == true)
+            try await domains.write(.absent, to: preference)
+            #expect(try await domains.readDomain(preference.domain, keys: [preference.key]).isEmpty)
+        } catch {
+            try? await domains.write(.absent, to: preference)
+            throw error
+        }
     }
 
-    @Test func absentFalseAndTrueRemainDistinct() throws {
+    /// Rollback runs after a failed write, so a transaction whose caller was cancelled must still reach the preferences.
+    @Test func preferenceTransactionsReachTheDomainAfterTheirCallerIsCancelled() async throws {
+        let domains = SystemPreferenceDomains()
+        let preference = ManagedPreference(domain: "dev.lynnswap.NeoSimulator.tests.\(UUID().uuidString)", key: "Boolean")
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await domains.write(.trueValue, to: preference)
+            let stored = try await domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool
+            try await domains.write(.absent, to: preference)
+            return stored
+        }
+        #expect(try await cancelled.value == true)
+    }
+
+    @Test func absentFalseAndTrueRemainDistinct() async throws {
         let runner = FakeSystemCommandRunner()
         let store = DefaultsStore(domains: runner)
 
-        #expect(try store.readState() == .deviceHub)
+        #expect(try await store.readState() == .deviceHub)
 
         runner.setStoredValue(false, for: ToolConstants.xcodePreference)
         runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
         #expect(
-            try store.readState()
+            try await store.readState()
                 == ManagedPreferenceState(
                     xcodeSession: .falseValue,
                     deviceHubAutoStartSuppression: .trueValue
@@ -36,22 +54,22 @@ struct DefaultsStoreTests {
         )
     }
 
-    @Test func missingDomainsAreReadAsAbsent() throws {
+    @Test func missingDomainsAreReadAsAbsent() async throws {
         let runner = FakeSystemCommandRunner()
         let store = DefaultsStore(domains: runner)
 
-        #expect(try store.readState() == .deviceHub)
+        #expect(try await store.readState() == .deviceHub)
 
     }
 
-    @Test func domainReadFailureIsNotTreatedAsAbsent() {
+    @Test func domainReadFailureIsNotTreatedAsAbsent() async {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue(false, for: ToolConstants.xcodePreference)
         runner.failPreferenceReadNumber = 1
         let store = DefaultsStore(domains: runner)
 
         do {
-            _ = try store.readState()
+            _ = try await store.readState()
             Issue.record("expected export failure")
         } catch let error as CLIError {
             #expect(error.identifier == "preference-read")
@@ -61,13 +79,13 @@ struct DefaultsStoreTests {
         }
     }
 
-    @Test func preferenceReadFailureIsNotTreatedAsAbsent() {
+    @Test func preferenceReadFailureIsNotTreatedAsAbsent() async {
         let runner = FakeSystemCommandRunner()
         runner.failPreferenceReads = true
         let store = DefaultsStore(domains: runner)
 
         do {
-            _ = try store.readState()
+            _ = try await store.readState()
             Issue.record("expected domain listing failure")
         } catch let error as CLIError {
             #expect(error.identifier == "preference-read")
@@ -77,30 +95,30 @@ struct DefaultsStoreTests {
         }
     }
 
-    @Test func applyWritesAndVerifiesBothPreferences() throws {
+    @Test func applyWritesAndVerifiesBothPreferences() async throws {
         let runner = FakeSystemCommandRunner()
         let store = DefaultsStore(domains: runner)
 
-        #expect(try store.apply(.coreSimulator, from: .deviceHub))
+        #expect(try await store.apply(.coreSimulator, from: .deviceHub))
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
         #expect(runner.mutationCount == 2)
 
-        #expect(!(try store.apply(.coreSimulator, from: .coreSimulator)))
+        #expect(!(try await store.apply(.coreSimulator, from: .coreSimulator)))
         #expect(runner.mutationCount == 2)
 
-        #expect(try store.apply(.deviceHub, from: .coreSimulator))
+        #expect(try await store.apply(.deviceHub, from: .coreSimulator))
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
-    @Test func nonBooleanValueIsRejectedBeforeMutation() {
+    @Test func nonBooleanValueIsRejectedBeforeMutation() async {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue("true", for: ToolConstants.xcodePreference)
         let store = DefaultsStore(domains: runner)
 
         do {
-            _ = try store.apply(.coreSimulator, from: .deviceHub)
+            _ = try await store.apply(.coreSimulator, from: .deviceHub)
             Issue.record("expected invalid preference type")
         } catch let error as CLIError {
             #expect(error.identifier == "preference-value-type")
@@ -111,25 +129,25 @@ struct DefaultsStoreTests {
         #expect(runner.mutationCount == 0)
     }
 
-    @Test func failedMutationLeavesVerificationToTheTransactionOwner() {
+    @Test func failedMutationLeavesVerificationToTheTransactionOwner() async {
         let runner = FakeSystemCommandRunner()
         runner.failMutationNumbers = [2]
         let store = DefaultsStore(domains: runner)
 
-        #expect(throws: CLIError.self) {
-            try store.apply(.coreSimulator, from: .deviceHub)
+        await #expect(throws: CLIError.self) {
+            try await store.apply(.coreSimulator, from: .deviceHub)
         }
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
-    @Test func unexpectedCurrentStateIsNeverOverwritten() throws {
+    @Test func unexpectedCurrentStateIsNeverOverwritten() async throws {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue(false, for: ToolConstants.xcodePreference)
         let store = DefaultsStore(domains: runner)
 
         do {
-            _ = try store.apply(.coreSimulator, from: .deviceHub)
+            _ = try await store.apply(.coreSimulator, from: .deviceHub)
             Issue.record("expected stale state to fail")
         } catch let mismatch as DefaultsStore.StateMismatch {
             #expect(mismatch.expected == [.deviceHub])
@@ -144,7 +162,7 @@ struct DefaultsStoreTests {
         #expect(runner.mutationCount == 0)
     }
 
-    @Test func externalChangeBeforeTheSecondWriteIsNotOverwritten() {
+    @Test func externalChangeBeforeTheSecondWriteIsNotOverwritten() async {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue(true, for: ToolConstants.xcodePreference)
         runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
@@ -163,7 +181,7 @@ struct DefaultsStoreTests {
         let store = DefaultsStore(domains: runner)
 
         do {
-            _ = try store.apply(.deviceHub, from: .coreSimulator)
+            _ = try await store.apply(.deviceHub, from: .coreSimulator)
             Issue.record("expected external change to stop the transition")
         } catch let mismatch as DefaultsStore.StateMismatch {
             #expect(
@@ -183,7 +201,7 @@ struct DefaultsStoreTests {
         #expect(runner.storedBoolean(ToolConstants.deviceHubPreference) == .falseValue)
     }
 
-    @Test func externalChangeDuringRollbackIsNotOverwritten() {
+    @Test func externalChangeDuringRollbackIsNotOverwritten() async {
         let runner = FakeSystemCommandRunner()
         runner.setStoredValue(true, for: ToolConstants.xcodePreference)
         runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
@@ -202,7 +220,7 @@ struct DefaultsStoreTests {
         let store = DefaultsStore(domains: runner)
 
         do {
-            _ = try store.rollback(
+            _ = try await store.rollback(
                 to: .deviceHub,
                 fromAttemptedTarget: .coreSimulator
             )

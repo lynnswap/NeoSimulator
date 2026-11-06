@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import Foundation
 import CoreAudio
@@ -260,7 +261,8 @@ extension SimulatorHostController {
         do {
             let inspector = try await inspector(for: device)
             return await readDeviceSettings(device: device, xcodeURL: inspector.simulatorXcodeURL)
-        } catch let error as SimulatorHostFailure { throw error }
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
 
@@ -269,7 +271,8 @@ extension SimulatorHostController {
         do {
             let inspector = try await inspector(for: device)
             try await applyDeviceSetting(setting, device: device, xcodeURL: inspector.simulatorXcodeURL)
-        } catch let error as SimulatorHostFailure { throw error }
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
 
@@ -294,7 +297,8 @@ extension SimulatorHostController {
                 throw SimulatorDeviceSettingsUpdateFailure(settings: updated, underlyingError: failure)
             }
             return updated
-        } catch let error as SimulatorDeviceSettingsUpdateFailure { throw error }
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as SimulatorDeviceSettingsUpdateFailure { throw error }
         catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
@@ -307,7 +311,8 @@ extension SimulatorHostController {
         do {
             let (device, xcodeURL) = try await settingsDevice(deviceID)
             return await readDeviceSettings(device: .simulator(device), xcodeURL: xcodeURL)
-        } catch let error as SimulatorHostFailure { throw error }
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
 
@@ -319,7 +324,8 @@ extension SimulatorHostController {
         do {
             let (device, xcodeURL) = try await settingsDevice(deviceID)
             try await applyDeviceSetting(setting, device: .simulator(device), xcodeURL: xcodeURL)
-        } catch let error as SimulatorHostFailure { throw error }
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
     }
 
@@ -440,10 +446,10 @@ extension SimulatorHostController {
                 guard case .simulator(let simulator) = device, let xcodeURL else {
                     throw CLIError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
                 }
-                result = try await SystemCommandRunner.runSimctlCancellable(
-                    xcodeURL: xcodeURL, arguments: try settingsArguments(tool, arguments), deviceSetPath: simulator.deviceSetPath)
+                result = try await SystemCommandRunner().run(.simctl(
+                    xcodeURL: xcodeURL, arguments: try settingsArguments(tool, arguments), deviceSetPath: simulator.deviceSetPath, policy: .cancellable))
             } else {
-                result = try await SystemCommandRunner.runDevicectlCancellable(xcodeURL: xcodeURL, arguments: arguments)
+                result = try await SystemCommandRunner().run(.devicectl(xcodeURL: xcodeURL, arguments: arguments, policy: .cancellable))
             }
             guard result.terminationStatus == 0 || (tool == .guestSettings && !result.stdout.isEmpty) else {
                 throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
@@ -826,7 +832,7 @@ package struct SimulatorSettingsBackend: Sendable {
     private static let boldTextNotification = "com.apple.accessibility.cache.enhance.text.legibility"
 
     private func command(_ arguments: [String], _ identifier: String) -> [String] {
-        arguments + ["--device", identifier, "--quiet", "--timeout", "10", "--json-output", "-"]
+        arguments + ["--device", identifier, "--quiet", "--timeout", String(DeviceOperationLimit.devicectlQuery), "--json-output", "-"]
     }
 
     private func query<T: Decodable>(_ type: T.Type, _ arguments: [String], _ identifier: String) async throws -> T {

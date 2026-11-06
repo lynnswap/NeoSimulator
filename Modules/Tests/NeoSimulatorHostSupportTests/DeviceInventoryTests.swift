@@ -1,5 +1,7 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
+import Darwin
 import Foundation
 import Testing
 
@@ -56,7 +58,7 @@ struct DeviceInventoryTests {
             await calls.recordCoreDeviceRead()
             return Self.coreDeviceJSON
         })
-        let snapshot = await reader.read()
+        let snapshot = try await reader.read()
         #expect(snapshot.issues.isEmpty)
         #expect(snapshot.devices.count == 5)
         #expect(Set(snapshot.devices.map(\.id)).count == 5)
@@ -109,7 +111,7 @@ struct DeviceInventoryTests {
     @Test(arguments: [true, false])
     func sourceFailuresRetainSuccessfulDevicesAndOriginalError(_ failCoreDevice: Bool) async throws {
         let sourceError = CLIError.io("inventory-fixture", "fixture query failed")
-        let snapshot = await DeviceInventoryReader(readSimulators: {
+        let snapshot = try await DeviceInventoryReader(readSimulators: {
             failCoreDevice
                 ? DeviceInventorySnapshot(devices: [.simulator(Self.simulator("simulator-udid"))], issues: [])
                 : DeviceInventorySnapshot(devices: [], issues: [.init(source: .simulators(xcodeURL: nil, deviceSetPath: nil), error: sourceError)])
@@ -156,7 +158,7 @@ struct DeviceInventoryTests {
         let decoded = try SimulatorDeviceCatalog.decode(JSONSerialization.data(withJSONObject: catalog))
         let device = try #require(decoded.first)
         #expect(device.lastUsedAt == nil && device.createdAt == createdAt)
-        let snapshot = await DeviceInventoryReader(
+        let snapshot = try await DeviceInventoryReader(
             readSimulators: { .init(devices: [.simulator(device)], issues: []) },
             readCoreDevices: { Data(#"{"result":{"devices":[]}}"#.utf8) }).read()
         #expect(snapshot.devices.first?.lastActivityDate == createdAt)
@@ -186,10 +188,65 @@ struct DeviceInventoryTests {
             .allSatisfy { $0.activePairedDeviceID == nil })
     }
 
-    @Test func testingCatalogFailurePreservesNormalDevicesAndReportsItsExactSource() throws {
+    /// The other source has devices to offer, but publishing them would make the stopped source's devices look removed.
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false])
+    func aHeldChildStoppedByItsReadsEndsTheInventoryWithNothingToPublish(_ holdsCoreDevice: Bool) async throws {
+        let directory = try TemporaryTestDirectory()
+        let held = try HeldChildren(in: directory.url)
+        defer { held.release() }
+        let reads = CommandReads()
+        let command = try held.command(then: "", policy: .cancellable)
+        let simulator = Self.simulator("simulator-udid")
+        let reader = DeviceInventoryReader(readSimulators: {
+            if holdsCoreDevice { return DeviceInventorySnapshot(devices: [.simulator(simulator)], issues: []) }
+            return try await SimulatorInventoryReader(installations: [URL(fileURLWithPath: "/Applications/Xcode.app")], testingDeviceSetPath: nil) { _, _ in
+                try await reads.run(command).stdout
+            }.read()
+        }, readCoreDevices: {
+            holdsCoreDevice ? try await reads.run(command).stdout : Self.coreDeviceJSON
+        })
+        let reading = Task { try await reader.read() }
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+        reads.stop()
+        await #expect(throws: CancellationError.self) { try await reading.value }
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+    }
+
+    /// Runs the real controller and Xcode discovery with a substitute for the embedded host, whose catalog read holds the operation queue.
+    @Test(.timeLimit(.minutes(1))) func stoppingAHeldCreationCatalogReadFreesTheOperationQueue() async throws {
+        let directory = try TemporaryTestDirectory()
+        let held = try HeldChildren(in: directory.url)
+        defer { held.release() }
+        let bundle = directory.url.appendingPathComponent("Host.app", isDirectory: true)
+        let executables = bundle.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: executables, withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: [
+            "CFBundleIdentifier": ToolConstants.neoHostBundleIdentifier, "CFBundleExecutable": "host", "CFBundlePackageType": "APPL",
+        ], format: .xml, options: 0).write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+        try held.writeExecutable(to: executables.appendingPathComponent("host"))
+        let controller = SimulatorHostController(rendererApplicationURL: bundle)
+        let catalog = Task { try await controller.creationCatalog() }
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+        controller.stopReads()
+        await #expect(throws: CancellationError.self) { try await catalog.value }
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+        #expect(try await controller.operation { true })
+    }
+
+    @Test func cancellingTheSelectedXcodeReadEndsDiscoveryInsteadOfSkippingThatXcode() async throws {
+        struct CancelledRunner: CommandRunning {
+            nonisolated(nonsending) func run(_ command: SystemCommand) async throws -> CommandOutput { throw CancellationError() }
+        }
+        let inspector = XcodeInstallationInspector(runner: CancelledRunner(), environment: [:])
+        await #expect(throws: CancellationError.self) { _ = try await inspector.selectedXcodeIfUsable() }
+        await #expect(throws: CancellationError.self) { _ = try await inspector.discoverXcodes() }
+        #expect(try await XcodeInstallationInspector(runner: FakeSystemCommandRunner(), environment: [:]).selectedXcodeIfUsable() == nil)
+    }
+
+    @Test func testingCatalogFailurePreservesNormalDevicesAndReportsItsExactSource() async throws {
         let newer = URL(fileURLWithPath: "/Applications/Xcode-New.app")
         let older = URL(fileURLWithPath: "/Applications/Xcode-Old.app")
-        let snapshot = SimulatorInventoryReader(installations: [newer, older], testingDeviceSetPath: "/testing") { xcode, path in
+        let snapshot = try await SimulatorInventoryReader(installations: [newer, older], testingDeviceSetPath: "/testing") { xcode, path in
             if xcode == newer, path != nil { throw CLIError.io("testing-inventory", "fixture testing set unavailable") }
             if xcode == older, path == nil {
                 return Data(String(decoding: Self.simulatorJSON, as: UTF8.self).replacingOccurrences(

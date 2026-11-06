@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -162,6 +163,19 @@ struct DeviceManagementTests {
         #expect(report.results[0].completedSteps == ["Shut down"] && report.results[0].error == nil)
     }
 
+    /// The child may have shut the device down already, unlike a shutdown cancelled before it ran.
+    @Test(.timeLimit(.minutes(1))) func aShutdownStoppedAfterItStartedReportsItsUnknownOutcome() async throws {
+        let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let running = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        running.cancel()
+        let result = await running.value.results[0]
+        #expect((result.error as? CommandFailure)?.interruption == .cancelled)
+    }
+
     @Test(.timeLimit(.minutes(1))) func cancelledEscalationDoesNotSendAForceRequest() async throws {
         let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
         let fixture = ManagementFixture(holdsShutdown: true,
@@ -194,8 +208,9 @@ struct DeviceManagementTests {
         let launched = Mutex(false)
         let command = Task {
             try await SimulatorHostController.openDeviceHub(boot: {
-                _ = try await SystemCommandRunner.runCancellable(executable: URL(fileURLWithPath: "/bin/sh"),
-                    arguments: ["-c", "trap '' TERM; printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path])
+                _ = try await SystemCommandRunner().runCancellable(SystemCommand(executable: URL(fileURLWithPath: "/bin/sh"),
+                    arguments: ["-c", "trap '' TERM; printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path],
+                    policy: .cancellable))
             }, launch: { launched.withLock { $0 = true } })
         }
         defer { command.cancel() }
@@ -204,6 +219,48 @@ struct DeviceManagementTests {
         await #expect(throws: CancellationError.self) { _ = try await command.value }
         #expect(kill(child, 0) == -1 && errno == ESRCH)
         #expect(!launched.withLock { $0 })
+    }
+
+    /// An unavailable match from the first catalog must not pass for the answer once the next read is stopped.
+    @Test(.timeLimit(.minutes(1))) func aHeldCatalogChildStoppedByItsReadsEndsTheSelection() async throws {
+        let directory = try TemporaryTestDirectory()
+        let held = try HeldChildren(in: directory.url)
+        defer { held.release() }
+        let reads = CommandReads()
+        let command = try held.command(then: "", policy: .cancellable)
+        let first = URL(fileURLWithPath: "/First.app"), second = URL(fileURLWithPath: "/Second.app")
+        let device = Self.simulator("A", isAvailable: false)
+        let selection = Task {
+            try await SimulatorHostController.managementDevice(for: device, xcodeURLs: [first, second]) { xcode, _ in
+                if xcode == first { return [device] }
+                _ = try await reads.run(command)
+                return []
+            }
+        }
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+        reads.stop()
+        await #expect(throws: CancellationError.self) { _ = try await selection.value }
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+    }
+
+    @Test func aContextReadStoppedBeforeTheChangeLeavesTheDeviceUntouched() async throws {
+        let fixture = ManagementFixture()
+        var backend = fixture.backend
+        backend.context = { _, _ in throw CancellationError() }
+        let report = await backend.manage(.rename("Renamed"), devices: [.simulator(Self.simulator("A"))])
+        #expect(report.results[0].error is CancellationError && report.results[0].completedSteps.isEmpty)
+        #expect(await fixture.commands.isEmpty)
+    }
+
+    /// Display cleanup follows a native request that already took effect, so a stopped catalog read must not skip it.
+    @Test func cleanupAfterAForceShutdownDoesNotDependOnACatalogRead() async throws {
+        let device = Self.simulator("A", features: ["com.apple.dt.coredevice.device.shutdown"])
+        let fixture = ManagementFixture(hasRenderer: true, nativeFeatures: [device.inventoryID: ["com.apple.dt.coredevice.device.shutdown"]])
+        var backend = fixture.backend
+        backend.context = { _, _ in throw CancellationError() }
+        let report = await backend.forceShutdown([.simulator(device)])
+        #expect(report.results[0].error == nil)
+        #expect(await fixture.releasedDevices == [device.inventoryID])
     }
 
     @Test func batchPreservesPartialSuccessAndUsesNamespacedCommandDestinations() async throws {
@@ -509,7 +566,11 @@ private actor ManagementFixture {
     }
 
     nonisolated var backend: DeviceManagementBackend {
-        DeviceManagementBackend(context: { device, requiresRenderer in try await self.context(device, requiresRenderer: requiresRenderer) }, runSimctl: { xcode, arguments, path in
+        DeviceManagementBackend(context: { device, requiresRenderer in try await self.context(device, requiresRenderer: requiresRenderer) }, renderer: { device in
+            try await self.context(device, requiresRenderer: true).renderer
+        }, readPairs: { xcode, path in
+            try await self.run(["list", "pairs", "--json"], path: path, xcodeURL: xcode)
+        }, runSimctl: { xcode, arguments, path in
             try await self.run(arguments, path: path, xcodeURL: xcode)
         }, runDevicectl: { try await self.run($0, path: nil) }, shutdownSimulator: { xcode, identifier, path in
             _ = try await self.run(["shutdown", identifier], path: path, xcodeURL: xcode)
@@ -600,6 +661,6 @@ private actor ManagementFixture {
     private func cancelShutdown(_ identifier: String) {
         guard let waiter = shutdownWaiters.removeValue(forKey: identifier) else { return }
         continuation.yield(.cancelledShutdown(identifier))
-        waiter.resume(throwing: CancellationError())
+        waiter.resume(throwing: CommandFailure.interrupted(executable: URL(fileURLWithPath: "/simctl"), cause: .cancelled, output: nil))
     }
 }

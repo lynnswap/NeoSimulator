@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -7,18 +8,18 @@ import Testing
 
 @Suite
 struct InstallationInspectorTests {
-    @Test func UIFrameworksUseSelectedXcodeUnlessExplicitlyOverridden() throws {
+    @Test func UIFrameworksUseSelectedXcodeUnlessExplicitlyOverridden() async throws {
         let selected = try InstallationFixture(targetVersion: "27.1")
         let alternate = try InstallationFixture(targetVersion: "27.2")
         let inspector = makeInspector(selected).xcodes
-        #expect(try inspector.xcodeForUIFrameworks(override: nil).applicationURL == selected.targetXcodeURL)
-        #expect(try inspector.xcodeForUIFrameworks(override: alternate.targetXcodeURL).applicationURL == alternate.targetXcodeURL)
-        #expect(throws: (any Error).self) {
-            try inspector.xcodeForUIFrameworks(override: alternate.targetXcodeURL.appendingPathComponent("Missing.app"))
+        #expect(try await inspector.xcodeForUIFrameworks(override: nil).applicationURL == selected.targetXcodeURL)
+        #expect(try await inspector.xcodeForUIFrameworks(override: alternate.targetXcodeURL).applicationURL == alternate.targetXcodeURL)
+        await #expect(throws: (any Error).self) {
+            try await inspector.xcodeForUIFrameworks(override: alternate.targetXcodeURL.appendingPathComponent("Missing.app"))
         }
     }
 
-    @Test func simulatorCommandsPreserveXcodeSelectionWithoutInvokingInstallingWrapper() throws {
+    @Test func simulatorCommandsPreserveXcodeSelectionWithoutInvokingInstallingWrapper() async throws {
         let fixture = try InstallationFixture(simctlExpectedVersion: "9999", coreSimulatorBundleVersion: "1174.9.2")
         try Data(#"""
         #!/bin/sh
@@ -29,36 +30,36 @@ struct InstallationInspectorTests {
         #!/bin/sh
         printf '%s\n' "$DEVELOPER_DIR" "$@"
         """#.utf8).write(to: fixture.simctlBinaryURL)
-        let output = try SystemCommandRunner().runSimctl(
-            xcodeURL: fixture.targetXcodeURL, arguments: ["list", "--json"],
+        let output = try await SystemCommandRunner().run(.simctl(
+            xcodeURL: fixture.targetXcodeURL, arguments: ["list", "--json"], policy: .uninterrupted,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL
-        )
+        ))
         #expect(output.terminationStatus == 0)
         #expect(output.stdoutText == "\(fixture.developerDirectoryURL.path)\nlist\n--json")
         #expect(!FileManager.default.fileExists(atPath: fixture.simctlWrapperURL.path + ".install"))
     }
 
     @Test(arguments: [["boot", "clone"], ["create", "My Watch", "watch-type", "watch-runtime"], ["pair", "watch", "phone"]])
-    func simulatorCommandsUseTheRecordedDeviceSet(_ arguments: [String]) throws {
+    func simulatorCommandsUseTheRecordedDeviceSet(_ arguments: [String]) async throws {
         let fixture = try InstallationFixture()
         try Data(#"""
         #!/bin/sh
         printf '%s\n' "$@"
         """#.utf8).write(to: fixture.simctlBinaryURL)
-        let output = try SystemCommandRunner().runSimctl(
-            xcodeURL: fixture.targetXcodeURL, arguments: arguments, deviceSetPath: "/custom/XCTestDevices",
+        let output = try await SystemCommandRunner().run(.simctl(
+            xcodeURL: fixture.targetXcodeURL, arguments: arguments, deviceSetPath: "/custom/XCTestDevices", policy: .uninterrupted,
             coreSimulatorFrameworkURL: fixture.coreSimulatorFrameworkURL
-        )
+        ))
         #expect(output.terminationStatus == 0)
         #expect(output.stdoutText == (["--set", "/custom/XCTestDevices"] + arguments).joined(separator: "\n"))
     }
 
-    @Test func validatesSelectedXcode27AndNeoHostComponents() throws {
+    @Test func validatesSelectedXcode27AndNeoHostComponents() async throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(fixture)
 
-        let xcode = try inspector.validatedTargetXcode()
-        let host = try inspector.validatedNeoHost(for: xcode)
+        let xcode = try await inspector.validatedTargetXcode()
+        let host = try await inspector.validatedNeoHost(for: xcode)
 
         #expect(xcode.applicationURL == fixture.targetXcodeURL)
         #expect(xcode.version == (try ToolVersion("27.0")))
@@ -84,14 +85,14 @@ struct InstallationInspectorTests {
         )
     }
 
-    @Test func rejectsXcode26() throws {
+    @Test func rejectsXcode26() async throws {
         let fixture = try InstallationFixture(
             targetVersion: "26.4",
             targetBuild: "17E214"
         )
 
         do {
-            _ = try makeInspector(fixture).validatedTargetXcode()
+            _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected Xcode 26 to be rejected")
         } catch let error as CLIError {
             #expect(error.identifier == "unsupported-xcode")
@@ -99,7 +100,7 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func acceptsXcode28WhenTheVerifiedSurfaceMatches() throws {
+    @Test func acceptsXcode28WhenTheVerifiedSurfaceMatches() async throws {
         let fixture = try InstallationFixture(
             targetVersion: "28.0",
             targetBuild: "28A100",
@@ -108,8 +109,8 @@ struct InstallationInspectorTests {
         )
         let inspector = makeInspector(fixture)
 
-        let xcode = try inspector.validatedTargetXcode()
-        let host = try inspector.validatedNeoHost(for: xcode)
+        let xcode = try await inspector.validatedTargetXcode()
+        let host = try await inspector.validatedNeoHost(for: xcode)
 
         #expect(xcode.version == (try ToolVersion("28.0")))
         #expect(host.xcode == xcode)
@@ -117,7 +118,7 @@ struct InstallationInspectorTests {
         #expect(host.coreDeviceVersion == "700.2")
     }
 
-    @Test func selectedXcodeMustBeIntactAppleSignedCode() throws {
+    @Test func selectedXcodeMustBeIntactAppleSignedCode() async throws {
         let fixture = try InstallationFixture()
         let inspector = InstallationInspector(
             runner: FakeSystemCommandRunner(),
@@ -135,12 +136,12 @@ struct InstallationInspectorTests {
             }
         )
 
-        #expect(throws: CLIError.self) {
-            _ = try inspector.validatedTargetXcode()
+        await #expect(throws: CLIError.self) {
+            _ = try await inspector.validatedTargetXcode()
         }
     }
 
-    @Test func loadedPrivateFrameworksMustBeIntactAppleSignedCode() throws {
+    @Test func loadedPrivateFrameworksMustBeIntactAppleSignedCode() async throws {
         let fixture = try InstallationFixture()
         let inspector = InstallationInspector(
             runner: FakeSystemCommandRunner(),
@@ -157,28 +158,28 @@ struct InstallationInspectorTests {
                 }
             }
         )
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid SimulatorKit signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
         }
     }
 
-    @Test func rejectsXcodeWhenThePreferenceSurfaceDisappears() throws {
+    @Test func rejectsXcodeWhenThePreferenceSurfaceDisappears() async throws {
         let fixture = try InstallationFixture(includeHiddenKey: false)
 
         do {
-            _ = try makeInspector(fixture).validatedTargetXcode()
+            _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected missing key to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "xcode-preference-key")
         }
     }
 
-    @Test func rejectsXcodeWhenDeviceHubIsNotLaunchable() throws {
+    @Test func rejectsXcodeWhenDeviceHubIsNotLaunchable() async throws {
         let fixture = try InstallationFixture()
         let executableURL = fixture.targetXcodeURL
             .appendingPathComponent(ToolConstants.deviceHubPath, isDirectory: true)
@@ -186,25 +187,25 @@ struct InstallationInspectorTests {
         try FileManager.default.removeItem(at: executableURL)
 
         do {
-            _ = try makeInspector(fixture).validatedTargetXcode()
+            _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected missing Device Hub executable to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "device-hub-executable")
         }
     }
 
-    @Test func rejectsXcodeWhenTheDeviceHubPreferenceSurfaceDisappears() throws {
+    @Test func rejectsXcodeWhenTheDeviceHubPreferenceSurfaceDisappears() async throws {
         let fixture = try InstallationFixture(includeDeviceHubKey: false)
 
         do {
-            _ = try makeInspector(fixture).validatedTargetXcode()
+            _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected missing Device Hub key to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "device-hub-preference-key")
         }
     }
 
-    @Test func optionalBindingDiagnosticsDoNotRejectASuccessfulRuntimeValidation() throws {
+    @Test func optionalBindingDiagnosticsDoNotRejectASuccessfulRuntimeValidation() async throws {
         let fixture = try InstallationFixture()
         let runner = FakeSystemCommandRunner()
         runner.neoHostRuntimeValidationOutput = #"""
@@ -222,12 +223,12 @@ struct InstallationInspectorTests {
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: .acceptingTestFixtures
         )
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
-        #expect(try inspector.validatedNeoHost(for: xcode).applicationURL == fixture.neoHostURL)
+        #expect(try await inspector.validatedNeoHost(for: xcode).applicationURL == fixture.neoHostURL)
     }
 
-    @Test func neoHostRuntimeValidationFailureIsRejected() throws {
+    @Test func neoHostRuntimeValidationFailureIsRejected() async throws {
         let fixture = try InstallationFixture()
         let runner = FakeSystemCommandRunner()
         runner.neoHostRuntimeValidationStatus = 69
@@ -241,10 +242,10 @@ struct InstallationInspectorTests {
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: .acceptingTestFixtures
         )
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected private runtime validation to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "neo-host-runtime")
@@ -253,62 +254,62 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func actualRuntimeProbeDecidesCompatibilityAcrossInstalledFrameworkVersions() throws {
+    @Test func actualRuntimeProbeDecidesCompatibilityAcrossInstalledFrameworkVersions() async throws {
         let fixture = try InstallationFixture(coreSimulatorXcodeMajorVersion: 28, coreDeviceXcodeMajorVersion: 28, simulatorCoreDevicePluginXcodeMajorVersion: 28, coreSimulatorBundleVersion: "1171.5", coreDeviceBundleVersion: "642.14", simulatorCoreDevicePluginBundleVersion: "1171.8")
         let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
-        #expect(try inspector.validatedNeoHost(for: xcode).xcode == xcode)
+        let xcode = try await inspector.validatedTargetXcode()
+        #expect(try await inspector.validatedNeoHost(for: xcode).xcode == xcode)
     }
 
-    @Test func missingWrapperIsRejected() throws {
+    @Test func missingWrapperIsRejected() async throws {
         let fixture = try InstallationFixture()
         try FileManager.default.removeItem(at: fixture.simctlWrapperURL)
         let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected missing simctl wrapper to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "simctl-wrapper")
         }
     }
 
-    @Test func changedWrapperAssignmentFormatIsRejected() throws {
+    @Test func changedWrapperAssignmentFormatIsRejected() async throws {
         let fixture = try InstallationFixture()
         try overwrite(
             "#!/bin/zsh\nEXPECTED_VERSION = \"642.15\"\n",
             at: fixture.devicectlWrapperURL
         )
         let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected changed devicectl wrapper format to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "devicectl-wrapper-version")
         }
     }
 
-    @Test func nonnumericWrapperVersionIsRejected() throws {
+    @Test func nonnumericWrapperVersionIsRejected() async throws {
         let fixture = try InstallationFixture()
         try overwrite(
             "#!/bin/zsh\nEXPECTED_VERSION=\"642.beta\"\n",
             at: fixture.devicectlWrapperURL
         )
         let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected nonnumeric devicectl version to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "devicectl-wrapper-version")
         }
     }
 
-    @Test func ambiguousWrapperVersionAssignmentsAreRejected() throws {
+    @Test func ambiguousWrapperVersionAssignmentsAreRejected() async throws {
         let fixture = try InstallationFixture()
         try overwrite(
             """
@@ -319,66 +320,66 @@ struct InstallationInspectorTests {
             at: fixture.simctlWrapperURL
         )
         let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected ambiguous simctl wrapper version to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "simctl-wrapper-version")
         }
     }
 
-    @Test func directSimctlMustBeIntactAppleSignedCode() throws {
+    @Test func directSimctlMustBeIntactAppleSignedCode() async throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(
             fixture,
             rejectingSignatureIdentifier: ToolConstants.simctlBundleIdentifier
         )
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid simctl signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
         }
     }
 
-    @Test func directDevicectlMustBeIntactAppleSignedCode() throws {
+    @Test func directDevicectlMustBeIntactAppleSignedCode() async throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(
             fixture,
             rejectingSignatureIdentifier: ToolConstants.devicectlBundleIdentifier
         )
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid devicectl signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
         }
     }
 
-    @Test func simulatorCoreDevicePluginMustBeIntactAppleSignedCode() throws {
+    @Test func simulatorCoreDevicePluginMustBeIntactAppleSignedCode() async throws {
         let fixture = try InstallationFixture()
         let inspector = makeInspector(
             fixture,
             rejectingSignatureIdentifier:
                 ToolConstants.simulatorCoreDevicePluginBundleIdentifier
         )
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid simulator plugin signature to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "code-signature")
         }
     }
 
-    @Test func devicectlMustNotLinkDeviceKitOrDeviceHub() throws {
+    @Test func devicectlMustNotLinkDeviceKitOrDeviceHub() async throws {
         for fragment in [
             "@rpath/DeviceKit.framework/Versions/A/DeviceKit",
             "/Applications/Xcode.app/Contents/Applications/DeviceHub.app/Contents/MacOS/DeviceHub",
@@ -386,10 +387,10 @@ struct InstallationInspectorTests {
             let fixture = try InstallationFixture()
             try overwrite(fragment, at: fixture.devicectlBinaryURL)
             let inspector = makeInspector(fixture)
-            let xcode = try inspector.validatedTargetXcode()
+            let xcode = try await inspector.validatedTargetXcode()
 
             do {
-                _ = try inspector.validatedNeoHost(for: xcode)
+                _ = try await inspector.validatedNeoHost(for: xcode)
                 Issue.record("expected forbidden devicectl linkage to fail")
             } catch let error as CLIError {
                 #expect(error.identifier == "devicectl-linkage")
@@ -397,7 +398,7 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func simulatorCoreDevicePluginMustNotLinkDeviceKitOrDeviceHub() throws {
+    @Test func simulatorCoreDevicePluginMustNotLinkDeviceKitOrDeviceHub() async throws {
         for fragment in [
             "@rpath/DeviceKit.framework/Versions/A/DeviceKit",
             "/Applications/Xcode.app/Contents/Applications/DeviceHub.app/Contents/MacOS/DeviceHub",
@@ -408,10 +409,10 @@ struct InstallationInspectorTests {
                 at: fixture.simulatorCoreDevicePluginBinaryURL
             )
             let inspector = makeInspector(fixture)
-            let xcode = try inspector.validatedTargetXcode()
+            let xcode = try await inspector.validatedTargetXcode()
 
             do {
-                _ = try inspector.validatedNeoHost(for: xcode)
+                _ = try await inspector.validatedNeoHost(for: xcode)
                 Issue.record("expected forbidden simulator plugin linkage to fail")
             } catch let error as CLIError {
                 #expect(
@@ -421,7 +422,7 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func compatibilityGateExecutesOnlyThePackagedRuntimeValidator() throws {
+    @Test func compatibilityGateExecutesOnlyThePackagedRuntimeValidator() async throws {
         let fixture = try InstallationFixture()
         let runner = FakeSystemCommandRunner()
         let inspector = InstallationInspector(
@@ -433,8 +434,8 @@ struct InstallationInspectorTests {
             signatureValidator: .acceptingTestFixtures
         )
 
-        let xcode = try inspector.validatedTargetXcode()
-        _ = try inspector.validatedNeoHost(for: xcode)
+        let xcode = try await inspector.validatedTargetXcode()
+        _ = try await inspector.validatedNeoHost(for: xcode)
 
         #expect(
             runner.calls
@@ -451,13 +452,13 @@ struct InstallationInspectorTests {
         )
     }
 
-    @Test func missingPackagedHostFailsBeforeNeoModeCanBeUsed() throws {
+    @Test func missingPackagedHostFailsBeforeNeoModeCanBeUsed() async throws {
         let fixture = try InstallationFixture(includeNeoHost: false)
         let inspector = makeInspector(fixture)
-        let xcode = try inspector.validatedTargetXcode()
+        let xcode = try await inspector.validatedTargetXcode()
 
         do {
-            _ = try inspector.validatedNeoHost(for: xcode)
+            _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected missing packaged host to fail")
         } catch let error as CLIError {
             #expect(error.identifier == "neo-host-bundle")
@@ -465,7 +466,7 @@ struct InstallationInspectorTests {
         }
     }
 
-    @Test func versionComparisonPadsMissingComponents() throws {
+    @Test func versionComparisonPadsMissingComponents() async throws {
         #expect(try ToolVersion("26.6") == ToolVersion("26.6.0"))
         #expect(try ToolVersion("26.6.1") > ToolVersion("26.6"))
         #expect(try ToolVersion("27.0") > ToolVersion("26.99"))

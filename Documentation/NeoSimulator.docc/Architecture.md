@@ -192,7 +192,9 @@ Hub mode.
 | `RemoteDeviceWindowController` | Present a remote screen and drain accepted captures, recording saves, and input before disconnecting. |
 | `ExternalDisplayWindowController` | Present a device's external display. |
 | `DeviceCommand`, `MenuController` | Define commands and derive menu state from the active window. |
-| `DeviceToolRunner` | Run and cancel selected-Xcode tool subprocesses. |
+| `SystemCommandRunner` | Run one subprocess without blocking its caller, from launch until the child is reaped and its output files are removed. Each command's `CommandPolicy` states whether it has a limit and what the caller's cancellation does to the child. |
+| `CommandReads` | Stop every read a controller has running while the operations waiting on them finish, so quitting does not cancel an accepted change and an unresponsive child cannot hold it. A stopped read ends as `CancellationError`, and its consumers publish nothing. |
+| `DeviceToolRunner` | Run a device's selected-Xcode tools one at a time and let its session cancel the running one. |
 | `PasteboardSync` | Exchange copies between the Mac and connected sessions. |
 | `ExternalDisplayChanges` | Serialize display and CarPlay changes across sessions for one device. |
 | `DisplayKeyboardInput`, `DisplayFitting` | Shared input-focus and geometry behavior for both window types. |

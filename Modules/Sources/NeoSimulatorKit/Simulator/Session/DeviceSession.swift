@@ -1,4 +1,5 @@
 import AppKit
+import NeoSimulatorDeviceIO
 import Observation
 import Synchronization
 
@@ -1640,7 +1641,8 @@ package final class DeviceSession {
     }
 
     /// Runs one device tool operation at a time. The caller must hold no
-    /// reservation. Errors other than cancellation are passed to `failure`.
+    /// reservation. Errors other than cancellation are passed to `failure`. Only disconnecting stops a running
+    /// tool, and the window that could show its unknown outcome goes with the session, so that is logged instead.
     package func run(_ body: @escaping @MainActor () async throws -> Void,
              failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformToolOperation else { return }
@@ -1656,6 +1658,7 @@ package final class DeviceSession {
             }
             do { try await body() }
             catch is CancellationError {}
+            catch where error.isCancellation { hostLog(error.localizedDescription) }
             catch { failure(error) }
         }
     }

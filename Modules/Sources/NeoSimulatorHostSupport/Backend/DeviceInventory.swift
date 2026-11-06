@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import Foundation
 
@@ -99,10 +100,12 @@ package struct DeviceInventorySnapshot: Sendable {
 extension SimulatorHostController {
     /// Reads simulator catalogs and one CoreDevice snapshot without joining the renderer-operation FIFO.
     /// Inventory I/O executes outside this actor; existing renderer registrations remain the ownership source.
-    package func inventory() async -> DeviceInventorySnapshot {
+    /// Only cancellation throws: a stopped read observed nothing, so it has no devices or issues to publish.
+    package func inventory() async throws -> DeviceInventorySnapshot {
+        let reads = reads
         async let snapshot = DeviceInventoryReader(
-            readSimulators: { await Self.readSimulatorInventory() },
-            readCoreDevices: Self.readCoreDeviceInventory
+            readSimulators: { try await Self.readSimulatorInventory(using: reads) },
+            readCoreDevices: { try await Self.readCoreDeviceInventory(using: reads) }
         ).read()
         let owners: [RendererRegistration]
         var issues: [DeviceInventoryIssue] = []
@@ -111,7 +114,7 @@ extension SimulatorHostController {
             owners = []
             issues.append(DeviceInventoryIssue(source: .rendererOwnership, error: error))
         }
-        let result = await snapshot
+        let result = try await snapshot
         let devices = result.devices.map { item -> InventoryDevice in
             guard case .simulator(let device) = item else { return item }
             return .simulator(device.inventoryCopy(owners: owners))
@@ -120,11 +123,10 @@ extension SimulatorHostController {
     }
 
     @concurrent
-    package static func readCoreDeviceInventory() async throws -> Data {
-        let result = try SystemCommandRunner().run(
-            executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"),
-            arguments: ["list", "devices", "--json-output", "-", "--quiet", "--timeout", "10"]
-        )
+    package static func readCoreDeviceInventory(using runner: any CommandRunning & Sendable = SystemCommandRunner()) async throws -> Data {
+        let result = try await runner.runCancellable(.devicectl(
+            arguments: ["list", "devices", "--json-output", "-", "--quiet", "--timeout", String(DeviceOperationLimit.devicectlQuery)],
+            policy: .cancellable))
         guard result.terminationStatus == 0 else {
             throw CLIError.io("coredevice-inventory", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
         }
@@ -132,15 +134,16 @@ extension SimulatorHostController {
     }
 
     @concurrent
-    private static func readSimulatorInventory() async -> DeviceInventorySnapshot {
+    private static func readSimulatorInventory(using reads: CommandReads) async throws -> DeviceInventorySnapshot {
         let installations: [XcodeInstallation]
-        do { installations = try XcodeInstallationInspector().discoverXcodes() }
+        do { installations = try await XcodeInstallationInspector(runner: reads).discoverXcodes() }
+        catch is CancellationError { throw CancellationError() }
         catch { return DeviceInventorySnapshot(devices: [], issues: [.init(source: .simulators(xcodeURL: nil, deviceSetPath: nil), error: error)]) }
         let testingPath = SimulatorDeviceSets.testingPath().flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
-        return SimulatorInventoryReader(
+        return try await SimulatorInventoryReader(
             installations: installations.map(\.applicationURL), testingDeviceSetPath: testingPath,
             readCatalog: { xcode, path in
-                let output = try SystemCommandRunner().runSimctl(xcodeURL: xcode, arguments: ["list", "--json"], deviceSetPath: path)
+                let output = try await reads.run(.simctl(xcodeURL: xcode, arguments: ["list", "--json"], deviceSetPath: path, policy: .cancellable))
                 guard output.terminationStatus == 0 else { throw CLIError.io("simulator-inventory", output.stderrText.isEmpty ? output.stdoutText : output.stderrText) }
                 return output.stdout
             }
@@ -149,20 +152,23 @@ extension SimulatorHostController {
 }
 
 /// Uses the production join and partial-result paths with replaceable source I/O.
+/// A failed source becomes an issue beside the other's devices. Cancellation ends the whole read instead,
+/// because a source that was stopped would otherwise look like devices that went away.
 package struct DeviceInventoryReader: Sendable {
-    package var readSimulators: @Sendable () async -> DeviceInventorySnapshot
+    package var readSimulators: @Sendable () async throws -> DeviceInventorySnapshot
     package var readCoreDevices: @Sendable () async throws -> Data
 
-    package func read() async -> DeviceInventorySnapshot {
+    package func read() async throws -> DeviceInventorySnapshot {
         async let simulators = readSimulators()
         let records: [CoreDeviceDevice]
         var issues: [DeviceInventoryIssue] = []
         do { records = try CoreDeviceInventoryDecoder.decode(await readCoreDevices()) }
+        catch is CancellationError { throw CancellationError() }
         catch {
             records = []
             issues.append(DeviceInventoryIssue(source: .coreDevice, error: error))
         }
-        let snapshot = await simulators
+        let snapshot = try await simulators
         let simulated = Dictionary(records.filter { $0.kind == .simulator }.map { ($0.udid ?? $0.identifier, $0) }, uniquingKeysWith: { first, _ in first })
         let devices = snapshot.devices.map { item -> InventoryDevice in
             guard case .simulator(let device) = item, device.deviceSetPath == nil,
@@ -176,9 +182,9 @@ package struct DeviceInventoryReader: Sendable {
 package struct SimulatorInventoryReader {
     package var installations: [URL]
     package var testingDeviceSetPath: String?
-    package var readCatalog: (URL, String?) throws -> Data
+    package var readCatalog: (URL, String?) async throws -> Data
 
-    package func read() -> DeviceInventorySnapshot {
+    package nonisolated(nonsending) func read() async throws -> DeviceInventorySnapshot {
         var devices: [InventoryDevice] = []
         var positions: [DeviceInventoryID: Int] = [:]
         var issues: [DeviceInventoryIssue] = []
@@ -186,7 +192,7 @@ package struct SimulatorInventoryReader {
             let paths: [String?] = testingDeviceSetPath.map { [nil, $0] } ?? [nil]
             for path in paths {
                 do {
-                    for device in try SimulatorDeviceCatalog.decode(readCatalog(xcode, path), deviceSetPath: path,
+                    for device in try await SimulatorDeviceCatalog.decode(readCatalog(xcode, path), deviceSetPath: path,
                                                                     includeUnavailable: true, catalogXcodeURL: xcode) {
                         let item = InventoryDevice.simulator(device)
                         if let position = positions[item.id] {
@@ -196,7 +202,8 @@ package struct SimulatorInventoryReader {
                             devices.append(item)
                         }
                     }
-                } catch { issues.append(.init(source: .simulators(xcodeURL: xcode, deviceSetPath: path), error: error)) }
+                } catch is CancellationError { throw CancellationError() }
+                catch { issues.append(.init(source: .simulators(xcodeURL: xcode, deviceSetPath: path), error: error)) }
             }
         }
         return DeviceInventorySnapshot(devices: devices, issues: issues)
