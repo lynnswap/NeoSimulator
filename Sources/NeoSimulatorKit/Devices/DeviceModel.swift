@@ -13,7 +13,14 @@ public struct DeviceStateGroups: OptionSet, Sendable {
     public static let backgroundServices = Self(rawValue: 1 << 1)
     /// What device commands show, which only a connected screen's session can read.
     public static let commandState = Self(rawValue: 1 << 2)
-    public static let all: Self = [.settings, .backgroundServices, .commandState]
+    public static let info = Self(rawValue: 1 << 3)
+    public static let applications = Self(rawValue: 1 << 4)
+    public static let configurationProfiles = Self(rawValue: 1 << 5)
+    public static let provisioningProfiles = Self(rawValue: 1 << 6)
+    public static let reports = Self(rawValue: 1 << 7)
+    /// Everything in ``DeviceInspectionState``.
+    public static let inspection: Self = [.info, .applications, .configurationProfiles, .provisioningProfiles, .reports]
+    public static let all: Self = [.settings, .backgroundServices, .commandState, .inspection]
 }
 
 /// Keeps part of a device's state current while it is held. Nothing is read for a device that nothing holds, except what
@@ -68,6 +75,7 @@ public final class DeviceModel: Identifiable {
 
     public let settings: DeviceSettingsState
     public let backgroundServices: BackgroundServicesState
+    public let inspection: DeviceInspectionState
 
     /// Whether biometrics are enrolled. Touch ID, Face ID, and Optic ID share this guest state.
     public private(set) var isBiometricEnrolled: Bool?
@@ -88,7 +96,7 @@ public final class DeviceModel: Identifiable {
     /// Results of reads from before this changes describe a device that no longer exists, so they are dropped.
     @ObservationIgnored package private(set) var epoch = 0
     @ObservationIgnored package private(set) var readsStopped: Bool
-    @ObservationIgnored private var isRetired = false
+    @ObservationIgnored package private(set) var isRetired = false
     @ObservationIgnored private var interest: [Int: Int] = [:]
     @ObservationIgnored private var presentations = 0
     @ObservationIgnored private var commandReaders: [UUID: @MainActor () -> Void] = [:]
@@ -114,8 +122,10 @@ public final class DeviceModel: Identifiable {
         self.readsStopped = readsStopped
         settings = DeviceSettingsState()
         backgroundServices = BackgroundServicesState()
+        inspection = DeviceInspectionState()
         settings.owner = self
         backgroundServices.owner = self
+        inspection.attach(to: self)
     }
 
     isolated deinit {
@@ -135,7 +145,8 @@ public final class DeviceModel: Identifiable {
         }
     }
 
-    private static let singleGroups: [DeviceStateGroups] = [.settings, .backgroundServices, .commandState]
+    private static let singleGroups: [DeviceStateGroups] = [.settings, .backgroundServices, .commandState, .info, .applications,
+                                                            .configurationProfiles, .provisioningProfiles, .reports]
 
     package func wants(_ group: DeviceStateGroups) -> Bool { interest[group.rawValue, default: 0] > 0 }
 
@@ -144,6 +155,7 @@ public final class DeviceModel: Identifiable {
     public func revalidate(_ groups: DeviceStateGroups = .all) {
         if groups.contains(.settings) { settings.markAllDirty() }
         if groups.contains(.backgroundServices) { backgroundServices.markDirty() }
+        inspection.markDirty(groups)
         scheduleReads()
         if groups.contains(.commandState) { commandReaders.values.forEach { $0() } }
     }
@@ -151,6 +163,7 @@ public final class DeviceModel: Identifiable {
     private func scheduleReads() {
         settings.scheduleReads()
         backgroundServices.scheduleReads()
+        inspection.scheduleReads()
     }
 
     /// Takes in what the inventory lists now. Only what can change the device's answers makes it read again.
@@ -166,7 +179,8 @@ public final class DeviceModel: Identifiable {
         assign(\.canInspectSettings, device.canInspectSettings)
         assign(\.canInspectBackgroundServices, device.canInspectBackgroundServices)
         backgroundServices.deviceChanged()
-        if Self.answersDiffer(previous, device) { deviceRestarted() }
+        inspection.deviceChanged()
+        if Self.answersDiffer(previous, device) { deviceRestarted() } else { inspection.scheduleReads() }
     }
 
     /// Takes in what a connecting screen's own record says of whether the device runs and since when. Everything else about
@@ -199,6 +213,7 @@ public final class DeviceModel: Identifiable {
         epoch += 1
         settings.discardRunningReads()
         backgroundServices.discardRunningRead()
+        inspection.discardRunningReads()
         scheduleReads()
     }
 
@@ -214,6 +229,7 @@ public final class DeviceModel: Identifiable {
         epoch += 1
         settings.discardRunningReads()
         backgroundServices.discardRunningRead()
+        inspection.discardRunningReads()
         for identifier in unstartedWrites { writes[identifier]?.cancel() }
         health?.cancel()
     }
@@ -222,26 +238,33 @@ public final class DeviceModel: Identifiable {
         readsStopped = true
         settings.cancelReads()
         backgroundServices.cancelRead()
+        inspection.cancelReads()
     }
 
     package func resumeReading() {
         readsStopped = false
-        revalidate([.settings, .backgroundServices])
+        revalidate([.settings, .backgroundServices, .inspection])
     }
 
     package func finishReading() async {
         await settings.finishReading()
         await backgroundServices.finishReading()
+        await inspection.finishReading()
     }
 
     // MARK: Writing
 
     /// Refuses a change that the device could not be sent because an earlier call to it has not returned.
     package func checkAcceptsChanges() throws {
-        guard !isRetired else { throw SimulatorError.operation("This device is no longer available.") }
+        try checkIsListed()
         if let unresponsiveOperation {
             throw DeviceOperationFailure.notSent(operation: "change the device's state", heldBy: unresponsiveOperation)
         }
+    }
+
+    /// Refuses a change that a later device with the same identity must not receive.
+    package func checkIsListed() throws {
+        guard !isRetired else { throw SimulatorError.operation("This device is no longer available.") }
     }
 
     /// Runs `perform` after the changes accepted before it and after `hold`. Another device's changes are not in this

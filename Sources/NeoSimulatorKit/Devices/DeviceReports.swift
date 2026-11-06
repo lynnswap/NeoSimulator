@@ -1,33 +1,33 @@
 import Foundation
 import NeoSimulatorDeviceIO
-import NeoSimulatorKit
 
-package struct DeviceReport: Equatable, Sendable, Identifiable {
-    package struct ID: Hashable, Sendable {
-        package let deviceID: DeviceInventoryID
-        package let relativePath: String
+/// A crash, log, spin, or diagnostic report that a device listed.
+public struct DeviceReport: Equatable, Sendable, Identifiable {
+    public struct ID: Hashable, Sendable {
+        public let deviceID: DeviceInventoryID
+        public let relativePath: String
     }
     /// Values reported by the source, without inferring a crash or hang from an .ips suffix.
-    package struct FileType: Equatable, Sendable {
-        package let fileExtension: String
-        package let recordedLogType: String?
-        package let bugType: String?
+    public struct FileType: Equatable, Sendable {
+        public let fileExtension: String
+        public let recordedLogType: String?
+        public let bugType: String?
     }
-    package struct Resources: Equatable, Sendable {
-        package let isDirectory: Bool
-        package let isHidden: Bool?
-        package let isReadable: Bool?
-        package let isSymbolicLink: Bool?
-        package let isWritable: Bool?
+    public struct Resources: Equatable, Sendable {
+        public let isDirectory: Bool
+        public let isHidden: Bool?
+        public let isReadable: Bool?
+        public let isSymbolicLink: Bool?
+        public let isWritable: Bool?
     }
-    package var id: ID { ID(deviceID: deviceID, relativePath: relativePath) }
-    package let deviceID: DeviceInventoryID
-    package let relativePath: String
-    package let name: String
-    package let size: Int64?
-    package let modificationDate: Date?
-    package let type: FileType
-    package let resources: Resources
+    public var id: ID { ID(deviceID: deviceID, relativePath: relativePath) }
+    public let deviceID: DeviceInventoryID
+    public let relativePath: String
+    public let name: String
+    public let size: Int64?
+    public let modificationDate: Date?
+    public let type: FileType
+    public let resources: Resources
     package let metadata: [String: DeviceInspectorValue]
 }
 
@@ -68,15 +68,6 @@ package struct DeviceReportPreview: Sendable {
 }
 
 extension DeviceInspector {
-    /// Advertised support in this inventory snapshot; a subsequent request can reconnect
-    /// a device and discover capabilities that were absent from the snapshot.
-    package var supportsReportListing: Bool {
-        if case .remote = device { device.capabilities.contains("com.apple.coredevice.feature.listFiles") } else { false }
-    }
-    package var supportsReportDownload: Bool {
-        if case .remote = device { device.capabilities.contains("com.apple.coredevice.feature.transferFiles") } else { false }
-    }
-
     @concurrent package func reports() async throws -> DeviceReportsSnapshot {
         try requireReportDestination()
         let result = try await coreDeviceResult(["device", "info", "files", "--domain-type", "systemCrashLogs", "--recurse"], operation: "Read Reports", policy: .cancellable)

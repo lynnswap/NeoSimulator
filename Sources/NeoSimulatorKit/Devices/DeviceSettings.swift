@@ -65,9 +65,9 @@ public enum DeviceReadStatus: Equatable, Sendable {
     /// Nothing has answered yet.
     case unread
     case current
-    /// The last read failed. Its reason applies to the values that remain from the read before.
+    /// The last read failed or answered only in part. Its reason applies to the values that remain.
     case stale(String)
-    /// The device does not have these settings.
+    /// The device does not have this, so reading again would not change the answer.
     case unsupported
 }
 

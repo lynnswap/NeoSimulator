@@ -1,6 +1,5 @@
 import Foundation
 import MachO.dyld.utils
-import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
 
@@ -45,9 +44,9 @@ struct DeviceInformation: Equatable {
 
     let fields: [Field]
 
-    init(device: InventoryDevice, properties: [String: DeviceInspectorValue]) {
+    init(device: InventoryDevice, properties: [String: DeviceInfoValue]) {
         func string(_ path: [String]) -> String? {
-            var value: DeviceInspectorValue? = .object(properties)
+            var value: DeviceInfoValue? = .object(properties)
             for component in path { value = value?[component] }
             guard let result = value?.string, !result.isEmpty else { return nil }
             return result
@@ -77,7 +76,7 @@ struct DeviceInformation: Equatable {
         append("modelName", title: "Model", value: model, group: .hardware)
         append("udid", title: "UDID", value: udid, group: .hardware)
 
-        func visit(_ value: DeviceInspectorValue, path: [String], title: String) {
+        func visit(_ value: DeviceInfoValue, path: [String], title: String) {
             if path == ["hardware", "cpuType"], let cpu = Self.cpuName(value) {
                 values.append(Field(id: path, title: "CPU Type", value: cpu, group: .hardware))
                 return
@@ -171,8 +170,8 @@ struct DeviceInformation: Equatable {
                                                      options: .regularExpression).capitalized
     }
 
-    private static func cpuName(_ value: DeviceInspectorValue) -> String? {
-        func component(_ value: DeviceInspectorValue?) -> (bits: Int32, raw: String)? {
+    private static func cpuName(_ value: DeviceInfoValue) -> String? {
+        func component(_ value: DeviceInfoValue?) -> (bits: Int32, raw: String)? {
             switch value {
             case .integer(let value): (Int32(truncatingIfNeeded: value), String(value))
             case .unsignedInteger(let value): (Int32(truncatingIfNeeded: value), String(value))
@@ -185,7 +184,7 @@ struct DeviceInformation: Equatable {
         return "type \(type.raw), subtype \(subtype.raw)"
     }
 
-    private static func display(_ value: DeviceInspectorValue) -> String {
+    private static func display(_ value: DeviceInfoValue) -> String {
         switch value {
         case .object(let fields): "\(fields.count) properties"
         case .array(let values): "\(values.count) items"

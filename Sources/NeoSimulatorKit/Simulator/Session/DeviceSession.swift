@@ -2041,13 +2041,11 @@ package final class DeviceSession {
         try await activeRecording(startLimit: startLimit)?.finish()
     }
 
-    /// Called once an import that attempted to install applications ends, whatever its outcome,
+    /// An import that attempted to install applications invalidates them when it ends, whatever its outcome,
     /// because a failed or cancelled batch can still have installed some of them.
-    @ObservationIgnored package var onApplicationsChange: (() -> Void)?
-
     package func importFiles(_ urls: [URL]) async throws {
         var installsApplications = false
-        defer { if installsApplications { onApplicationsChange?() } }
+        defer { if installsApplications { model.revalidate(.applications) } }
         try await SimulatorFileImport.perform(urls) { url, kind in
             switch kind {
             case .application:

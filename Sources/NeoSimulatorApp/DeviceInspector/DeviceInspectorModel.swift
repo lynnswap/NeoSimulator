@@ -1,9 +1,8 @@
 import Foundation
-import NeoSimulatorDeviceIO
-import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import Observation
 
+/// What the inspector shows of the selected device. What is known of the device belongs to its model.
 @MainActor @Observable
 final class DeviceInspectorModel {
     enum Page { case reports, info }
@@ -18,144 +17,67 @@ final class DeviceInspectorModel {
             }
         }
         var profileKind: DeviceProfileKind { self == .provisioning ? .provisioning : .configuration }
+        var group: DeviceStateGroups {
+            switch self {
+            case .info: .info
+            case .applications: .applications
+            case .configuration, .provisioning: .profiles(of: profileKind)
+            }
+        }
     }
-    var device: InventoryDevice? {
-        didSet { select(content); updateInformation() }
+    var device: DeviceModel? {
+        didSet { select(content) }
     }
-    var inspector: DeviceInspector?
     var page = Page.info
     private(set) var content = Content.info
     var isManaging = false
     var isVisible = false
-    private(set) var generation = 0
-    private(set) var applications: [DeviceApplication] = []
-    var profiles: [DeviceProfile] = []
-    private(set) var reports: [DeviceReport] = []
-    private(set) var infoProperties: [String: DeviceInspectorValue] = [:] { didSet { updateInformation() } }
-    private(set) var information: DeviceInformation?
+    /// Why the last action started here failed. Why a read failed is the device's own status.
+    var actionIssue: String?
 
-    private func updateInformation() {
-        information = device.map { DeviceInformation(device: $0, properties: infoProperties) }
+    /// The part of the device's state that shows now.
+    var shownGroup: DeviceStateGroups { page == .reports ? .reports : content.group }
+    var information: DeviceInformation? {
+        device.map { DeviceInformation(device: $0.inventory, properties: $0.inspection.info) }
     }
-    var lastIssue: String?
-    private(set) var reading = false
-    @ObservationIgnored private var readTask: Task<Void, Never>?
-
-    func reset() {
-        stopReading()
-        inspector = nil
-        applications = []
-        profiles = []
-        reports = []
-        infoProperties = [:]
-        lastIssue = nil
+    var reading: Bool { device?.inspection.isReading(shownGroup) == true }
+    var profiles: [DeviceProfile] {
+        guard let state = device?.inspection else { return [] }
+        return content == .provisioning ? state.provisioningProfiles : state.configurationProfiles
     }
 
-    func stopReading() {
-        generation += 1
-        readTask?.cancel()
-        readTask = nil
-        reading = false
+    /// What the last read of the shown part leaves to say.
+    var readMessage: String? {
+        guard let state = device?.inspection else { return nil }
+        switch state.status(of: shownGroup) {
+        case .stale(let reason): return reason
+        case .unread, .unsupported: return nil
+        case .current:
+            if page == .reports { return state.reports.isEmpty ? "No reports available." : nil }
+            switch content {
+            case .info: return nil
+            case .applications: return state.applications.isEmpty ? "No applications installed." : nil
+            case .configuration, .provisioning: return profiles.isEmpty ? "No profiles installed." : nil
+            }
+        }
+    }
+    var readFailed: Bool {
+        if case .stale = device?.inspection.status(of: shownGroup) { true } else { false }
     }
 
-    var simulatorIsRunning: Bool {
-        guard case .simulator(let simulator) = device else { return false }
-        return simulator.isAvailable && simulator.state == "Booted"
-    }
-    func supports(_ feature: String) -> Bool { device?.capabilities.contains("com.apple.coredevice.feature." + feature) == true }
-    var canReadApplications: Bool { device?.kind == .simulator ? simulatorIsRunning : supports("streamapplist") }
-    var canInstallApplications: Bool { device?.canInstallApplications == true }
-    var canReadProfiles: Bool {
-        if case .simulator(let simulator) = device,
-           simulator.deviceSetPath != nil || !simulatorIsRunning { return false }
-        return supports(content == .provisioning ? "provisioningprofiles" : "configurationprofiles")
-    }
+    var simulatorIsRunning: Bool { device?.kind == .simulator && device?.canInspectSettings == true }
+    func supports(_ feature: String) -> Bool { device?.inventory.supports(coreDeviceFeature: feature) == true }
+    var canReadApplications: Bool { device?.inspection.canRead(.applications) == true }
+    var canInstallApplications: Bool { device?.inventory.canInstallApplications == true }
+    var canReadProfiles: Bool { device?.inspection.canRead(content == .provisioning ? .provisioningProfiles : .configurationProfiles) == true }
+    var canReadReports: Bool { device?.inspection.canRead(.reports) == true }
 
     func select(_ content: Content) {
-        switch content {
-        case .provisioning where !supports("provisioningprofiles") && supports("configurationprofiles"):
-            self.content = .configuration
-        case .configuration where !supports("configurationprofiles") && supports("provisioningprofiles"):
-            self.content = .provisioning
-        default:
-            self.content = content
+        let selected: Content = switch content {
+        case .provisioning where !supports("provisioningprofiles") && supports("configurationprofiles"): .configuration
+        case .configuration where !supports("configurationprofiles") && supports("provisioningprofiles"): .provisioning
+        default: content
         }
-    }
-
-    func reload(using source: @escaping @MainActor (InventoryDevice) async throws -> DeviceInspector) {
-        stopReading()
-        guard isVisible, let device else { return }
-        let request = generation
-        let page = self.page
-        let content = self.content
-        reading = true
-        lastIssue = nil
-        readTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let inspector = try await source(device)
-                guard generation == request, !Task.isCancelled else { return }
-                self.inspector = inspector
-                if page == .info && content == .info {
-                    let snapshot = await inspector.info()
-                    guard generation == request, !Task.isCancelled else { return }
-                    infoProperties = snapshot.fields
-                    lastIssue = snapshot.issues.map(\.localizedDescription).joined(separator: "\n")
-                } else if page == .info && content == .applications {
-                    guard canReadApplications else {
-                        throw DeviceInspectorError.unsupported(device.kind == .simulator ? "Start this simulator to inspect its applications." : "This device does not currently support application inspection. Connect and unlock it, then refresh.")
-                    }
-                    let apps = try await inspector.applications()
-                    guard generation == request, !Task.isCancelled else { return }
-                    applications = apps
-                    lastIssue = apps.isEmpty ? "No applications installed." : nil
-                } else if page == .reports {
-                    guard inspector.supportsReportListing else {
-                        let message = device.kind == .simulator
-                            ? "Crash, log, spin, and diagnostic reports are unavailable for simulators."
-                            : "This device does not currently support reports. Connect and unlock it, then refresh."
-                        throw DeviceInspectorError.unsupported(message)
-                    }
-                    let snapshot = try await inspector.reports()
-                    guard generation == request, !Task.isCancelled else { return }
-                    reports = snapshot.reports.sorted {
-                        if $0.modificationDate != $1.modificationDate { return ($0.modificationDate ?? .distantPast) > ($1.modificationDate ?? .distantPast) }
-                        return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
-                    }
-                    lastIssue = snapshot.issues.isEmpty ? (reports.isEmpty ? "No reports available." : nil)
-                        : "\(snapshot.issues.count) reports returned incomplete metadata. Available reports are shown."
-                } else {
-                    guard canReadProfiles else {
-                        let message: String
-                        if case .simulator(let simulator) = device, simulator.deviceSetPath != nil {
-                            message = "Profiles are unavailable for simulators in custom device sets."
-                        } else { message = "This device does not currently support \(content.title.lowercased())." }
-                        throw DeviceInspectorError.unsupported(message)
-                    }
-                    let snapshot = try await inspector.profiles(kind: content.profileKind)
-                    guard generation == request, !Task.isCancelled else { return }
-                    profiles = snapshot.profiles
-                    let partial = content == .configuration ? snapshot.partialConfigurationProfiles : snapshot.partialProvisioningProfiles
-                    lastIssue = partial.isEmpty ? (profiles.isEmpty ? "No profiles installed." : nil)
-                        : "\(partial.count) profiles returned incomplete records. Available profiles are shown."
-                }
-            } catch {
-                guard generation == request, !Task.isCancelled else { return }
-                lastIssue = error.localizedDescription
-            }
-            guard generation == request, !Task.isCancelled else { return }
-            reading = false
-            readTask = nil
-        }
-    }
-}
-
-extension InventoryDevice {
-    /// Whether the Apps inspector's installer can target the device in this snapshot.
-    var canInstallApplications: Bool {
-        switch self {
-        case .simulator(let simulator): simulator.isAvailable && simulator.state == "Booted"
-        case .remote(let device): device.capabilities.contains("com.apple.coredevice.feature.installapp")
-        }
+        if self.content != selected { self.content = selected }
     }
 }

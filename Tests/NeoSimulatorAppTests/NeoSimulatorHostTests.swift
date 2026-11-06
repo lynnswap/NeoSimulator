@@ -11593,16 +11593,23 @@ struct InputFocusTests {
         window.mouseUp(with: try event(.leftMouseUp, at: end))
     }
 
-    @Test func windowImportReportsApplicationChangesEvenWhenTheBatchFails() async throws {
-        let session = try makeSession(TestDisplay(), simctl: URL(fileURLWithPath: "/usr/bin/true"))
-        var changes = 0
-        session.onApplicationsChange = { changes += 1 }
+    @Test func windowImportInvalidatesTheSharedApplicationsEvenWhenTheBatchFails() async throws {
+        let source = ManagerModelSource(devices: [], inspectorResponse: "{}")
+        let model = DeviceModel(inventory: .simulator(SimulatorHostDevice(identifier: "test-device", name: "Test iPhone", descriptiveName: "Test iPhone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted")), source: source)
+        let session = try makeSession(TestDisplay(), simctl: URL(fileURLWithPath: "/usr/bin/true"), model: model)
+        let interest = model.keepCurrent(.applications)
+        defer { interest.release() }
+        await model.finishReading()
+        #expect(await source.inspectorCommands.count == 1)
         try await session.importFiles([URL(fileURLWithPath: "/tmp/Photo.png")])
-        #expect(changes == 0)
+        await model.finishReading()
+        #expect(await source.inspectorCommands.count == 1)
         await #expect(throws: (any Error).self) {
             try await session.importFiles([URL(fileURLWithPath: "/tmp/App.app"), URL(fileURLWithPath: "/tmp/Unsupported.txt")])
         }
-        #expect(changes == 1)
+        await model.finishReading()
+        #expect(await source.inspectorCommands.count == 2)
     }
 
     private func standaloneDeviceModel() -> DeviceModel {

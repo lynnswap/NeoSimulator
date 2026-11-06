@@ -33,8 +33,6 @@ final class DeviceScreens {
     @ObservationIgnored private var remoteHostCleanup: Task<Void, Never>?
     @ObservationIgnored var onError: ((any Error) -> Void)?
     @ObservationIgnored var onShowInMainWindow: ((DeviceInventoryID) -> Void)?
-    /// A screen's import or application drop changed the device's installed applications.
-    @ObservationIgnored var onApplicationsChange: ((DeviceInventoryID) -> Void)?
     /// Edit ▸ Automatically Sync Pasteboard for every simulator screen, whichever host presents it.
     @ObservationIgnored private(set) lazy var pasteboardSync = PasteboardSync { [weak self] in
         self?.simulatorControllers.map(\.session) ?? []
@@ -120,7 +118,7 @@ final class DeviceScreens {
         }
         controller.canInstallApplications = { [weak self] in self?.model.canInstallApplications(on: identifier) == true }
         controller.installApplications = { [weak self] urls in
-            self?.model.installApplications(at: urls, on: identifier) { self?.onApplicationsChange?(identifier) }
+            self?.model.installApplications(at: urls, on: identifier)
         }
         insert(screen)
         return screen
@@ -236,7 +234,6 @@ final class DeviceScreens {
         configuration.onHostConflictEnded = { [weak self] context, failure in
             self?.hostTakeovers.end(context, failure: failure)
         }
-        configuration.onApplicationsChange = { [weak self] device in self?.onApplicationsChange?(device.inventoryID) }
         configuration.guestLifetime = ManagedGuestLifetime(windowClosed: { [weak self] device, choice, finishing in
             guard let self else { return }
             let keepRunning = choice == .keepRunning
