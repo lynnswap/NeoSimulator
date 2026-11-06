@@ -230,7 +230,7 @@ package final class CapturedContent {
     private func writeAnimatedGIF(_ gif: URL, keepingMovie: Bool, report: (Error) -> Void) async {
         let movie = saved ?? file, lane = lane
         do {
-            try await CaptureFile.write(to: gif, extension: "gif", lane: lane, locations: locations) { staged in
+            try await CaptureFile.write(to: gif, extension: "gif", lane: lane, locations: locations, replacingExisting: false) { staged in
                 try await AnimatedGIF.export(movie, to: staged, options: .preferred, lane: lane)
             }
             guard !keepingMovie, !isResolved else { return }

@@ -93,8 +93,9 @@ package enum CaptureFile {
         let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
         for number in 1...99 {
             let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
+            guard claim(candidate) else { continue }
             let exists = try await lane.run { FileManager.default.fileExists(atPath: candidate.path) }
-            if !exists, claim(candidate) { return candidate }
+            if !exists { return candidate }
         }
         throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
     }
@@ -124,10 +125,12 @@ package enum CaptureFile {
         throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99. The capture is at \(capture.path).")
     }
 
-    /// Writes `destination` through a private file beside it, replacing it atomically once `produce` has succeeded.
+    /// Writes through a private file beside the destination. Chosen replacement paths are replaced atomically;
+    /// generated names refuse a file that arrives while the contents are being produced.
     @MainActor
     package static func write(to destination: URL, extension suffix: String, lane: any CaptureLane = BlockingIOLane(),
                               locations: Locations? = nil,
+                              replacingExisting: Bool = true,
                               produce: (URL) async throws -> Void) async throws {
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".neo-simulator-\(UUID().uuidString).\(suffix)")
@@ -138,6 +141,7 @@ package enum CaptureFile {
             try await produce(temporary)
             try Task.checkCancellation()
             try await lane.run {
+                if !replacingExisting { return try renameExclusively(temporary, to: destination) }
                 guard rename(temporary.path, destination.path) == 0 else {
                     throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
                 }

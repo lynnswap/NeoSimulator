@@ -1070,6 +1070,50 @@ struct CaptureThumbnailTests {
         #expect(try savedNames(in: directory) == ["Held.png", "Other.png"])
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func simultaneousGIFsPreserveBothCapturesWhenANameCheckReturnsLate() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = directory.appendingPathComponent("Saved", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (window, source) = deviceWindow()
+        defer { window.close() }
+        let firstLane = HeldCaptureLane(passing: 1)
+        let nextLane = HeldCaptureLane(holdsResult: true)
+        defer { firstLane.open(); nextLane.open() }
+        let owner = UUID()
+        var reported: [any Error] = []
+        func movie(_ name: String, frames: Int, lane: any CaptureLane) async throws -> CapturedContent {
+            let file = directory.appendingPathComponent(name)
+            try await CaptureAndImportTests().writeMovie(to: file, frames: frames)
+            return CapturedContent(.movie, file: file, name: "Movie.mov", defaultFolder: folder, owner: owner, lane: lane)
+        }
+        func begin(_ content: CapturedContent) async throws {
+            let thumbnail = CaptureThumbnail(content, image: nil, parent: window, source: source, spacing: .zero) { reported.append($0) }
+            let item = try #require(thumbnail.menu().items.first { $0.title == "Save as Animated GIF" })
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+            await thumbnail.action?.value
+        }
+        let first = try await movie("First.mov", frames: 3, lane: firstLane)
+        let next = try await movie("Next.mov", frames: 6, lane: nextLane)
+        try await begin(first)
+        await firstLane.untilHeld(1)
+        let namingNext = Task.immediate { try await begin(next) }
+        await nextLane.untilHeld(1)
+        firstLane.open()
+        await first.settled()
+        nextLane.open()
+        try await namingNext.value
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        #expect(files.map(\.lastPathComponent).sorted() == ["Movie #2.gif", "Movie.gif"])
+        let frames = try files.map { file in
+            CGImageSourceGetCount(try #require(CGImageSourceCreateWithURL(file as CFURL, nil)))
+        }.sorted()
+        #expect(frames == [3, 6])
+        #expect(first.isResolved && next.isResolved && reported.isEmpty)
+    }
+
     @Test func quittingWaitsForAnAnimatedGIFAndNamesItsFilesWhileADiskHoldsIt() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1377,13 +1421,27 @@ final class HeldCaptureLane: CaptureLane, Sendable {
         var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     }
     private let state: Mutex<State>
+    private let holdsResult: Bool
 
-    init(passing: Int = 0) { state = Mutex(State(passing: passing)) }
+    init(passing: Int = 0, holdsResult: Bool = false) {
+        state = Mutex(State(passing: passing))
+        self.holdsResult = holdsResult
+    }
 
     /// How many pieces of work have reached the lane.
     var runs: Int { state.withLock { $0.runs } }
 
     @concurrent func run<Value: Sendable>(_ work: @escaping @Sendable () throws -> Value) async throws -> Value {
+        if holdsResult {
+            let result = try await performBlockingIO(work)
+            await waitAtLane()
+            return result
+        }
+        await waitAtLane()
+        return try await performBlockingIO(work)
+    }
+
+    private func waitAtLane() async {
         await withCheckedContinuation { (passed: CheckedContinuation<Void, Never>) in
             let (proceed, ready) = state.withLock { state -> (Bool, [CheckedContinuation<Void, Never>]) in
                 state.runs += 1
@@ -1397,7 +1455,6 @@ final class HeldCaptureLane: CaptureLane, Sendable {
             for watcher in ready { watcher.resume() }
             if proceed { passed.resume() }
         }
-        return try await performBlockingIO(work)
     }
 
     /// Waits until `count` pieces of work are held at the lane.
