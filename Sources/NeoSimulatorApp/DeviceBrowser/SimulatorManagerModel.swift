@@ -144,6 +144,8 @@ final class SimulatorManagerModel {
     private var holdsAllEdits = false
     /// The devices whose later edits queued work holds.
     private var heldEditDeviceIDs: Set<DeviceInventoryID> = []
+    /// The devices that queued work concerns, including one whose screen is only attaching.
+    private var queuedDeviceIDs: Set<DeviceInventoryID> = []
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
     /// What is known of each device, which this process's screens also use.
@@ -472,7 +474,8 @@ final class SimulatorManagerModel {
         // A background service change spans many launchctl calls; only Force Shut Down may interrupt it.
         guard action == .forceShutdown || !deviceIDs.contains(where: { registry.device(for: $0)?.backgroundServices.isChanging == true }) else { return false }
         let overlapping = managementRequests.values.filter { !$0.identifiers.isDisjoint(with: deviceIDs) }
-        if overlapping.isEmpty { return !isBusy }
+        // Work on another device does not stop this one, unlike work that concerns every device.
+        if overlapping.isEmpty { return !holdsAllEdits && queuedDeviceIDs.isDisjoint(with: deviceIDs) }
         guard action == .forceShutdown, overlapping.count == 1, let shutdown = overlapping.first,
               shutdown.action == DeviceManagementAction.shutdown, deviceIDs.isSubset(of: shutdown.identifiers) else { return false }
         return shutdown.identifiers.allSatisfy(\.isSimulator)
@@ -1031,6 +1034,7 @@ final class SimulatorManagerModel {
         let holding = (runningOperation.map { [$0] } ?? []) + pendingOperations.filter { !attachesOnAdmission($0) }
         holdsAllEdits = holding.contains { $0.deviceID == nil }
         heldEditDeviceIDs = Set(holding.compactMap(\.deviceID)).union(activeOpens.filter { !$0.value.attaches }.keys)
+        queuedDeviceIDs = Set(activeOpens.keys).union(((runningOperation.map { [$0] } ?? []) + pendingOperations).compactMap(\.deviceID))
         activity = runningOperation?.activity ?? activeOpens.values.first?.activity ?? pendingOperations.first?.activity
             ?? acceptedWrites.first?.activity ?? ""
     }

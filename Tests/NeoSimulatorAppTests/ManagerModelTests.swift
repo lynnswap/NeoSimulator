@@ -2247,6 +2247,56 @@ struct ManagerModelTests {
         await source.completeManagement(.erase)
     }
 
+    @Test func anOperationOnOneDeviceLeavesOtherDevicesManageable() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let third = simulator(deviceSet: "/third")
+        let source = ManagerModelSource(devices: [first, second, third], holdsManagement: true)
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.registry.stopReading()
+        await manager.refresh()
+
+        // Another device can start and finish while this one's restart stays held, but not one that it overlaps.
+        manager.manage(.restart, devices: [first])
+        #expect(await events.next() == .manage(.restart, [first.id]))
+        #expect(!manager.canManage(.restart, deviceIDs: [first.id]))
+        #expect(!manager.canManage(.restart, deviceIDs: [first.id, second.id]))
+        #expect(manager.canManage(.restart, deviceIDs: [second.id]))
+        manager.manage(.restart, devices: [second])
+        #expect(await events.next() == .manage(.restart, [second.id]))
+        #expect(manager.managingDeviceIDs == [first.id, second.id] && !manager.canManage(.restart, deviceIDs: [second.id]))
+        await source.completeManagement(.restart, for: second.id)
+        try await wait { manager.managingDeviceIDs == [first.id] }
+        #expect(manager.canManage(.restart, deviceIDs: [second.id]))
+
+        // Work queued for a device stops only that device, even when it only attaches a screen.
+        manager.openScreen(for: third)
+        #expect(await events.next() == .open(third.id))
+        #expect(manager.isBusy && manager.canManage(.restart, deviceIDs: [second.id]))
+        #expect(!manager.canManage(.restart, deviceIDs: [third.id]) && !manager.canManage(.restart, deviceIDs: [second.id, third.id]))
+        await source.completeOpen()
+        try await wait { !manager.isBusy }
+        #expect(manager.canManage(.restart, deviceIDs: [third.id]))
+
+        // Work that concerns every device stops all of them, whichever it is.
+        let access = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+        var accesses = access.stream.makeAsyncIterator()
+        manager.requestHostPreferenceAccess = { await withCheckedContinuation { access.continuation.yield($0) } }
+        manager.restoreDefaults()
+        let transition = try #require(await accesses.next())
+        #expect(!manager.canManage(.restart, deviceIDs: [second.id]) && !manager.canManage(.forceShutdown, deviceIDs: [third.id]))
+        manager.manage(.restart, devices: [second])
+        #expect(await source.managementRequests == 2)
+        transition.resume()
+        try await wait { !manager.isBusy }
+        #expect(manager.canManage(.restart, deviceIDs: [second.id]))
+
+        await source.completeManagement(.restart, for: first.id)
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(manager.managingDeviceIDs.isEmpty)
+    }
+
     @Test(arguments: [DeviceManagementAction.restart, .erase, .remove])
     func forceCannotJoinOtherManagementRequests(_ action: DeviceManagementAction) async throws {
         let device = simulator()
@@ -4778,7 +4828,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private(set) var managementRequests = 0
     private(set) var preparationRequests = 0
     private let managementFailureID: DeviceInventoryID?
-    private var managementWaiters: [(DeviceManagementAction, CheckedContinuation<Void, Never>)] = []
+    private var managementWaiters: [(DeviceManagementAction, [DeviceInventoryID], CheckedContinuation<Void, Never>)] = []
     private var admittedManagement: Set<UUID> = []
 
     init(devices: [InventoryDevice], managementFailureID: DeviceInventoryID? = nil, holdsManagement: Bool = false,
@@ -4992,14 +5042,16 @@ actor ManagerModelSource: SimulatorManagerSource {
         managementRequests += 1
         if holdsManagement {
             await withCheckedContinuation { waiting in
-                managementWaiters.append((action, waiting))
+                managementWaiters.append((action, devices.map(\.id), waiting))
                 continuation.yield(.manage(action, devices.map(\.id)))
             }
         } else { continuation.yield(.manage(action, devices.map(\.id))) }
     }
-    func completeManagement(_ action: DeviceManagementAction) {
-        guard let index = managementWaiters.firstIndex(where: { $0.0 == action }) else { return }
-        managementWaiters.remove(at: index).1.resume()
+    func completeManagement(_ action: DeviceManagementAction, for device: DeviceInventoryID? = nil) {
+        guard let index = managementWaiters.firstIndex(where: { waiter in
+            waiter.0 == action && (device.map { waiter.1.contains($0) } ?? true)
+        }) else { return }
+        managementWaiters.remove(at: index).2.resume()
         holdsManagement = false
     }
     func inspector(for device: InventoryDevice) throws -> DeviceInspector {

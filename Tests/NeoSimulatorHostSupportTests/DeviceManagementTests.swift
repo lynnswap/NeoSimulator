@@ -149,6 +149,50 @@ struct DeviceManagementTests {
         #expect(await force.value.results[0].error == nil)
     }
 
+    @Test(.timeLimit(.minutes(1))) func aHeldChangeToOneDeviceHoldsOtherOperationsButNotAnotherDevice() async throws {
+        let first = Self.simulator("A", state: "Booted")
+        let second = Self.simulator("B", state: "Booted")
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let restartingFirst = Task { await controller.manage(.restart, devices: [.simulator(first)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "A"))
+        // What is only waiting for its turn, such as a read, does not hold the other device's change either.
+        let later = Task.immediate { try await controller.operation { @Sendable in await fixture.commands.map(\.arguments) } }
+        let restartingSecond = Task { await controller.manage(.restart, devices: [.simulator(second)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "B"))
+        await fixture.completeShutdown("B")
+        #expect(await events.next() == .command("boot", "B"))
+        #expect(await restartingSecond.value.results[0].error == nil)
+        await fixture.completeShutdown("A")
+        #expect(await events.next() == .command("boot", "A"))
+        #expect(await restartingFirst.value.results[0].error == nil)
+        // It saw the end of both changes, so neither ran beside it.
+        let seen = try await later.value
+        #expect(seen.contains(["boot", "A"]) && seen.contains(["boot", "B"]))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aChangeFollowsTheOperationRunningWhenItArrives() async throws {
+        let device = Self.simulator("A", state: "Booted")
+        let fixture = ManagementFixture()
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let holding = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+        var held = holding.stream.makeAsyncIterator()
+        let transition = Task {
+            try await controller.operation { @Sendable in
+                await withCheckedContinuation { holding.continuation.yield($0) }
+                return await fixture.commands.isEmpty
+            }
+        }
+        let operation = try #require(await held.next())
+        var events = fixture.events.makeAsyncIterator()
+        let change = Task.immediate { await controller.manage(.shutdown, devices: [.simulator(device)], using: fixture.backend) }
+        operation.resume()
+        #expect(try await transition.value)
+        #expect(await events.next() == .command("shutdown", "A"))
+        #expect(await change.value.results[0].error == nil)
+    }
+
     @Test(.timeLimit(.minutes(1))) func failedEscalationKeepsTheOriginalShutdownAndItsResult() async throws {
         let device = Self.simulator("A", state: "Booted", features: ["com.apple.dt.coredevice.device.shutdown"])
         let fixture = ManagementFixture(holdsShutdown: true)

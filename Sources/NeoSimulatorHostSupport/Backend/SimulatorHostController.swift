@@ -210,6 +210,9 @@ package actor SimulatorHostController {
     private var connectionSynchronization: Task<Bool, any Error>?
     private var operationInProgress = false
     private var operationWaiters: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
+    /// Changes running beside one another, each to devices that no other is changing.
+    private var deviceOperations: [UUID: Set<DeviceInventoryID>] = [:]
+    private var deviceOperationWaiters: [(id: UUID, devices: Set<DeviceInventoryID>, continuation: CheckedContinuation<Void, any Error>)] = []
     var shutdownTransactions: [SimulatorShutdownTransaction] = []
 
     package init(rendererApplicationURL: URL,
@@ -955,7 +958,7 @@ package actor SimulatorHostController {
     }
     package func operation<T>(_ body: () async throws -> T) async throws -> T {
         try Task.checkCancellation()
-        if operationInProgress {
+        if operationInProgress || !deviceOperations.isEmpty {
             let id = UUID()
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
@@ -966,9 +969,34 @@ package actor SimulatorHostController {
             }
         } else { operationInProgress = true }
         defer {
-            if operationWaiters.isEmpty { operationInProgress = false }
-            else { operationWaiters.removeFirst().continuation.resume() }
+            operationInProgress = false
+            admitOperations()
         }
+        return try await reportingHostFailure(body)
+    }
+
+    /// Runs a change to `devices` beside changes to other devices, so that a long change to one does not hold another. It
+    /// follows the operation running now and earlier changes to its devices. Other operations wait for it, but those that are
+    /// only waiting do not hold it: most are reads, and a change of host keeps the manager from accepting it.
+    package func deviceOperation<T>(on devices: Set<DeviceInventoryID>, _ body: () async throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                deviceOperationWaiters.append((id, devices, continuation))
+                admitOperations()
+            }
+        } onCancel: {
+            Task { await self.cancelOperationWaiter(id) }
+        }
+        defer {
+            deviceOperations[id] = nil
+            admitOperations()
+        }
+        return try await reportingHostFailure(body)
+    }
+
+    private func reportingHostFailure<T>(_ body: () async throws -> T) async throws -> T {
         do {
             try Task.checkCancellation()
             return try await body()
@@ -977,9 +1005,30 @@ package actor SimulatorHostController {
         catch { throw SimulatorHostFailure(error) }
     }
 
+    /// Starts every change that nothing holds, or else the next operation once no change remains.
+    private func admitOperations() {
+        guard !operationInProgress else { return }
+        var unavailable = Set(deviceOperations.values.joined())
+        deviceOperationWaiters.removeAll { waiter in
+            defer { unavailable.formUnion(waiter.devices) }
+            guard unavailable.isDisjoint(with: waiter.devices) else { return false }
+            deviceOperations[waiter.id] = waiter.devices
+            waiter.continuation.resume()
+            return true
+        }
+        if deviceOperations.isEmpty, !operationWaiters.isEmpty {
+            operationInProgress = true
+            operationWaiters.removeFirst().continuation.resume()
+        }
+    }
+
     private func cancelOperationWaiter(_ id: UUID) {
-        guard let index = operationWaiters.firstIndex(where: { $0.id == id }) else { return }
-        operationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+        if let index = operationWaiters.firstIndex(where: { $0.id == id }) {
+            operationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+        } else if let index = deviceOperationWaiters.firstIndex(where: { $0.id == id }) {
+            deviceOperationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+            admitOperations()
+        }
     }
     /// For a change. A catalog read goes through ``readSimctlList(xcode:deviceSetPath:)`` instead.
     @concurrent

@@ -220,6 +220,10 @@ Cancelled reads cannot replace the current selection's snapshot, and a refresh
 interrupted by an edit resumes after the operation queue finishes.
 
 `SimulatorHostController` retains shared ownership state and operation ordering.
+A change to a simulator through device management runs beside changes to other
+devices, so a long restart of one does not hold another. Every other operation
+in its order, including route changes, waits for those changes to end, and the
+manager accepts no such change while work that concerns every device is queued.
 Synchronous discovery, catalog decoding, process scans, and host preference I/O
 run in `@concurrent` helpers. Initial native bindings resolve asynchronously
 while UI receivers and framework loading stay on MainActor. Concurrent loads of
