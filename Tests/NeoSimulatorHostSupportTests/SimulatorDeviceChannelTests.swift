@@ -7,7 +7,7 @@ import Testing
 @Suite(.timeLimit(.minutes(1)))
 struct SimulatorDeviceChannelTests {
     private func makeChannel(_ identifier: String = "device") -> SimulatorDeviceChannel {
-        SimulatorDeviceChannel(address: DeviceAddress(identifier: identifier, deviceSetPath: nil))
+        SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: identifier, deviceSetPath: nil)))
     }
 
     @Test func aCallThatOutlivesItsDeadlineLeavesItsOutcomeUnknownAndTheQueuedRequestsUnsent() async throws {
@@ -176,10 +176,27 @@ struct SimulatorDeviceChannelTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: directory)
         defer { try? FileManager.default.removeItem(at: link) }
         let hub = DeviceIOHub()
-        let channel = hub.channel(for: DeviceAddress(identifier: "abc", deviceSetPath: directory.path))
-        #expect(hub.channel(for: DeviceAddress(identifier: "ABC", deviceSetPath: link.path + "/")) === channel)
-        #expect(hub.channel(for: DeviceAddress(identifier: "ABC", deviceSetPath: nil)) !== channel)
-        #expect(hub.channel(for: DeviceAddress(identifier: "OTHER", deviceSetPath: directory.path)) !== channel)
+        let channel = hub.channel(for: .device(DeviceAddress(identifier: "abc", deviceSetPath: directory.path)))
+        #expect(hub.channel(for: .device(DeviceAddress(identifier: "ABC", deviceSetPath: link.path + "/"))) === channel)
+        #expect(hub.channel(for: .device(DeviceAddress(identifier: "ABC", deviceSetPath: nil))) !== channel)
+        #expect(hub.channel(for: .device(DeviceAddress(identifier: "OTHER", deviceSetPath: directory.path))) !== channel)
+    }
+
+    @Test func everyPathToADeviceSetFindsTheSameChannelWithinItsDeveloperDirectory() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let link = directory.appendingPathExtension("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: directory)
+        defer { try? FileManager.default.removeItem(at: link) }
+        func set(_ developerDirectory: String, _ path: String?) -> DeviceChannelScope {
+            .deviceSet(DeviceSetAddress(developerDirectory: developerDirectory, path: path))
+        }
+        let hub = DeviceIOHub()
+        let channel = hub.channel(for: set("/Xcode/Developer", directory.path))
+        #expect(hub.channel(for: set("/Xcode/Developer/", link.path + "/")) === channel)
+        #expect(hub.channel(for: set("/Other/Developer", directory.path)) !== channel)
+        #expect(hub.channel(for: set("/Xcode/Developer", nil)) !== channel)
     }
 
     @Test func waitingForATaskCanBeGivenUp() async throws {

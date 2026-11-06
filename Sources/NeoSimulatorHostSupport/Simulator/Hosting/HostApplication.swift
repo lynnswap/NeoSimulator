@@ -22,6 +22,7 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
     private var terminationTask: Task<Void, Never>?
     private var browser: DeviceBrowserWindowController?
     private var newSimulator: NewSimulatorWindowController?
+    private var newSimulatorPreparation: Task<Void, Never>?
     private let creationPreferences = SimulatorPreferences()
     private var menu: MenuController?
     private var openRequests: [String: (device: SimulatorDeviceIdentifier, preservesOwnership: Bool, task: Task<Void, Never>)] = [:]
@@ -58,7 +59,7 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         }
     }
 
-    package func start(initialDeviceIdentifier: String? = nil, initialDeviceSetPath: String? = nil) throws {
+    package func start(initialDeviceIdentifier: String? = nil, initialDeviceSetPath: String? = nil) async throws {
         let initialDevice = initialDeviceIdentifier.map { SimulatorDeviceIdentifier($0, deviceSetPath: initialDeviceSetPath) }
         if isManaged {
             if let initialDevice { engine.adopt(initialDevice) }
@@ -107,7 +108,7 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         }
         let defaults = HostPreferences.defaults
         let attachesBooted = defaults.bool(forKey: HostPreferences.attachBootedOnStart)
-        try engine.start(attachingBootedDevices: attachesBooted)
+        try await engine.start(attachingBootedDevices: attachesBooted)
         if isManaged {
             if let initialDevice { openRequestedSimulator(initialDevice) }
             return
@@ -117,7 +118,7 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
             openRequestedSimulator(initialDevice)
         } else if !attached, defaults.bool(forKey: HostPreferences.sessionOnLaunch),
                   defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch),
-                  let device = Self.initialDevice(in: try availableSimulatorDevices(),
+                  let device = Self.initialDevice(in: availableSimulatorDevices(),
                       current: defaults.string(forKey: HostPreferences.currentDeviceUDID).map {
                           SimulatorDeviceIdentifier($0, deviceSetPath: defaults.string(forKey: "CurrentDeviceSetPath"))
                       }) {
@@ -127,7 +128,8 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         }
     }
 
-    package func availableSimulatorDevices() throws -> [AvailableDevice] { try engine.availableSimulatorDevices() }
+    package func availableSimulatorDevices() -> [AvailableDevice] { engine.availableSimulatorDevices() }
+    package func reloadSimulatorDevices() async throws { _ = try await engine.readAvailableDevices() }
     package func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
         engine.hasVisibleWindow(forDevice: identifier)
     }
@@ -402,13 +404,16 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
 
     /// Brings the existing creation form forward or opens one.
     package func showNewSimulator() {
-        guard !isStopped else { return }
-        if newSimulator == nil {
+        guard !isStopped, newSimulatorPreparation == nil else { return }
+        guard newSimulator == nil else { return presentNewSimulator() }
+        newSimulatorPreparation = Task {
+            defer { newSimulatorPreparation = nil }
             let catalog: SimulatorCatalog
-            do { catalog = try engine.creationCatalog() } catch {
-                report(error)
+            do { catalog = try await engine.creationCatalog() } catch {
+                if !(error is CancellationError) { report(error) }
                 return
             }
+            guard !isStopped else { return }
             let xcodeURL = runtime.xcodeURL
             let model = NewSimulatorModel(catalog: catalog, create: { name, deviceType, runtime in
                 try await DeviceTools.createDevice(named: name, deviceType: deviceType, runtime: runtime,
@@ -419,7 +424,11 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
             newSimulator = NewSimulatorWindowController(model: model, reportFailure: { [weak self] error in
                 self?.report(error)
             }, onClose: { [weak self] in self?.newSimulator = nil })
+            presentNewSimulator()
         }
+    }
+
+    private func presentNewSimulator() {
         newSimulator?.showWindow(nil)
         newSimulator?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate()

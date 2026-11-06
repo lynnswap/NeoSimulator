@@ -38,10 +38,17 @@ package final class SimulatorScreenHost: NSObject {
     package private(set) var isTerminating = false
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
-    private var rescanScheduled = false
+    private var observationRemovals: [Task<Void, Never>] = []
+    private var healthFollowers: [Task<Void, Never>] = []
+    private var isStarted = false
+    private var rescanning: Task<Void, Never>?
+    /// Whether another rescan was requested, and whether any request came from the testing devices' visibility changing.
+    private var rescanRequest: Bool?
     private var testingSet: SimulatorDeviceSet?
     private var testingNotificationToken: UInt64?
     private var testingSetWatcher: DispatchSourceFileSystemObject?
+    private var isOpeningTestingSet = false
+    private var testingSetNeedsOpening = false
     private var sessions: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
     private var connections: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
     private var bootOperations: [SimulatorDeviceIdentifier: DeviceTools] = [:]
@@ -79,7 +86,7 @@ package final class SimulatorScreenHost: NSObject {
         isInProcess = inProcess
         suppliedPasteboardSync = pasteboardSync
         self.offersLifetimeChoice = offersLifetimeChoice
-        deviceSet = try runtime.openDeviceSet()
+        deviceSet = runtime.openDeviceSet()
         HostPreferences.registerDefaults()
         super.init()
         recordings.onError = { [weak self] error in
@@ -96,12 +103,12 @@ package final class SimulatorScreenHost: NSObject {
             || (sessions[identifier] == nil && externalDisplayQueues[identifier] != nil)
     }
     package func adopt(_ identifier: SimulatorDeviceIdentifier) { ownedDeviceIdentifiers.insert(identifier) }
-    package func creationCatalog() throws -> SimulatorCatalog { try deviceSet.readCatalog() }
+    package func creationCatalog() async throws -> SimulatorCatalog { try await deviceSet.readCatalog().catalog() }
     package func refreshLocationSelection(for identifier: SimulatorDeviceIdentifier) throws {
         try sessions[identifier]?.session.refreshLocationSelection()
     }
 
-    package func start(attachingBootedDevices: Bool = true) throws {
+    package func start(attachingBootedDevices: Bool = true) async throws {
         do {
             try conflicts.check()
             touchIndicatorObservation = DefaultsObservation(
@@ -111,12 +118,22 @@ package final class SimulatorScreenHost: NSObject {
             testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
                 self?.applyTestingDeviceVisibility()
             }
-            notificationToken = try deviceSet.observe { [weak self] in self?.scheduleRescan() }
-            openTestingSet()
-            if !attachingBootedDevices {
-                suppressed.formUnion(try readDevices().filter { $0.state == 3 }.map(\.identity))
+            healthFollowers.append(rescanWhenAnsweringAgain(deviceSet))
+            let token = try await deviceSet.observe { [weak self] in self?.rescan() }
+            guard !stopped else {
+                observationRemovals.append(deviceSet.stopObserving(token))
+                return
             }
-            if !isManaged && !isInProcess { try scanDevices() }
+            notificationToken = token
+            await openTestingSet()
+            let devices = try await readDevices()
+            guard !stopped else { return }
+            if !attachingBootedDevices {
+                suppressed.formUnion(devices.filter { $0.state == 3 }.map(\.identity))
+            }
+            // Until here a rescan could attach a device that this start leaves alone.
+            isStarted = true
+            if !isManaged && !isInProcess { try await scanDevices() }
         } catch {
             shutdown()
             throw error
@@ -124,11 +141,13 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     package func releaseDevice(_ identifier: SimulatorDeviceIdentifier) async throws {
-        guard ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
-                || connections[identifier] != nil || closingShutdowns[identifier] != nil
-                || disconnectedSessions.contains(where: { $0.device.identity == identifier })
-                || (externalDisplayQueues[identifier] != nil
-                    && isRunning(identifier.identifier, deviceSetPath: identifier.deviceSetPath)) else { return }
+        var holdsDevice = ownedDeviceIdentifiers.contains(identifier) || sessions[identifier] != nil
+            || connections[identifier] != nil || closingShutdowns[identifier] != nil
+            || disconnectedSessions.contains(where: { $0.device.identity == identifier })
+        if !holdsDevice, externalDisplayQueues[identifier] != nil {
+            holdsDevice = await isRunning(identifier.identifier, deviceSetPath: identifier.deviceSetPath)
+        }
+        guard holdsDevice else { return }
         guard !releasingDevices.contains(identifier) else {
             throw SimulatorError.operation("This simulator is already being handed over.")
         }
@@ -187,19 +206,46 @@ package final class SimulatorScreenHost: NSObject {
         }
     }
 
-    package func availableSimulatorDevices() throws -> [AvailableDevice] {
-        var devices = try readDevices()
-        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
-        return devices.map(Self.describe)
+    /// What the shown device sets last reported. This waits for nothing, also while a set's call is held.
+    package func availableSimulatorDevices() -> [AvailableDevice] {
+        var devices = deviceSet.devices
+        if showsTestingDevices, let testingSet { devices += testingSet.devices }
+        return devices.filter(Self.isSupported).map(Self.describe)
+    }
+
+    /// What the shown device sets report now.
+    package func readAvailableDevices() async throws -> [AvailableDevice] {
+        try await readDevices().map(Self.describe)
     }
 
     package func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
         sessions[identifier]?.window?.isVisible == true
     }
 
-    /// Reads supported product families from a device set.
-    private func readDevices(in set: SimulatorDeviceSet? = nil) throws -> [SimulatorDevice] {
-        try (set ?? deviceSet).readDevices().filter { DeviceCapabilities.Family(rawValue: $0.productFamily) != nil }
+    private static func isSupported(_ device: SimulatorDevice) -> Bool {
+        DeviceCapabilities.Family(rawValue: device.productFamily) != nil
+    }
+
+    /// Reads supported product families from the shown device sets. A testing set that cannot be read keeps what it last
+    /// reported, since it should not stop the default set's devices from opening.
+    private func readDevices() async throws -> [SimulatorDevice] {
+        async let defaultDevices = deviceSet.refresh()
+        var testingDevices: [SimulatorDevice] = []
+        if showsTestingDevices, let testingSet {
+            do { testingDevices = try await testingSet.refresh() }
+            catch is CancellationError { throw CancellationError() }
+            catch {
+                hostLog("Could not read the parallel testing device set: \(error.localizedDescription)")
+                testingDevices = testingSet.devices
+            }
+        }
+        return try await (defaultDevices + testingDevices).filter(Self.isSupported)
+    }
+
+    /// Reads a device from its own set, so that opening it depends on no other set.
+    private func readDevice(_ identifier: SimulatorDeviceIdentifier) async throws -> SimulatorDevice? {
+        let set = identifier.deviceSetPath == nil ? deviceSet : showsTestingDevices ? testingSet : nil
+        return try await set?.refresh().first { $0.identity == identifier && Self.isSupported($0) }
     }
 
     /// Updates the preference and every open window, including restarting devices.
@@ -223,15 +269,10 @@ package final class SimulatorScreenHost: NSObject {
         guard !stopped, !isTerminating else { return }
         if showsTestingDevices {
             // Reattach every booted testing device, including previously closed windows.
-            if let testingSet, let devices = try? readDevices(in: testingSet) {
-                suppressed.subtract(devices.map(\.identity))
-            }
+            if let testingSet { suppressed.subtract(testingSet.devices.map(\.identity)) }
         } else {
             let hadDeviceWindows = !sessions.isEmpty
-            if let testingSet {
-                do { ownedDeviceIdentifiers.subtract(try readDevices(in: testingSet).map(\.identity)) }
-                catch { report(error) }
-            }
+            if let testingSet { ownedDeviceIdentifiers.subtract(testingSet.devices.map(\.identity)) }
             // A restart keeps running without its window.
             for (identifier, controller) in sessions where controller.session.tools.deviceSetPath != nil {
                 sessions.removeValue(forKey: identifier)
@@ -246,28 +287,54 @@ package final class SimulatorScreenHost: NSObject {
 
     /// Opens TestingDeviceSetPath or ~/Library/Developer/XCTestDevices if it exists.
     /// Waits for Xcode to create a missing set.
-    private func openTestingSet() {
-        guard !stopped, testingSet == nil else { return }
+    private func openTestingSet() async {
+        guard !stopped, testingSet == nil, !isOpeningTestingSet else { return }
+        isOpeningTestingSet = true
+        defer { isOpeningTestingSet = false }
         let path = HostPreferences.defaults.string(forKey: HostPreferences.testingDeviceSetPath)
             .map { NSString(string: $0).expandingTildeInPath }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer/XCTestDevices").path
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard url != URL(fileURLWithPath: deviceSet.path).standardizedFileURL else {
-            hostLog("TestingDeviceSetPath names the default device set; parallel testing devices are not shown")
-            return
-        }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            watchForTestingSet(at: url)
-            return
-        }
-        testingSetWatcher?.cancel()
-        testingSetWatcher = nil
         do {
-            let set = try runtime.openDeviceSet(at: url.path)
-            testingNotificationToken = try set.observe { [weak self] in self?.scheduleRescan() }
+            guard url != URL(fileURLWithPath: try await deviceSet.resolvedPath()).standardizedFileURL else {
+                hostLog("TestingDeviceSetPath names the default device set; parallel testing devices are not shown")
+                return
+            }
+            guard !stopped else { return }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                watchForTestingSet(at: url)
+                return
+            }
+            testingSetWatcher?.cancel()
+            testingSetWatcher = nil
+            let set = runtime.openDeviceSet(at: url.path)
+            let token = try await set.observe { [weak self] in self?.rescan() }
+            guard !stopped else {
+                observationRemovals.append(set.stopObserving(token))
+                return
+            }
+            testingNotificationToken = token
             testingSet = set
+            healthFollowers.append(rescanWhenAnsweringAgain(set))
+        } catch is CancellationError {
         } catch {
             hostLog("Could not open the parallel testing device set: \(error.localizedDescription)")
+            // A call that held its worker is no reason to give the set up. The next rescan tries again.
+            testingSetNeedsOpening = error is DeviceOperationFailure
+        }
+    }
+
+    /// A set that answers again may have changed while its call was held, without a rescan being able to see that.
+    private func rescanWhenAnsweringAgain(_ set: SimulatorDeviceSet) -> Task<Void, Never> {
+        Task { [weak self] in
+            var wasHeld = false
+            for await health in set.healthChanges() {
+                if case .unresponsive = health { wasHeld = true }
+                else if wasHeld {
+                    wasHeld = false
+                    self?.rescan()
+                }
+            }
         }
     }
 
@@ -305,8 +372,10 @@ package final class SimulatorScreenHost: NSObject {
 
     private func testingSetDirectoryChanged() {
         guard testingSet == nil else { return }
-        openTestingSet()
-        if testingSet != nil { rescan() }
+        Task { [weak self] in
+            await self?.openTestingSet()
+            if self?.testingSet != nil { self?.rescan() }
+        }
     }
 
     private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
@@ -316,10 +385,10 @@ package final class SimulatorScreenHost: NSObject {
                         state: device.state, deviceSetPath: device.deviceSetPath)
     }
 
-    private static func capabilities(of device: SimulatorDevice) -> DeviceCapabilities {
+    private static func capabilities(of device: SimulatorDevice, features: Set<String>) -> DeviceCapabilities {
         DeviceCapabilities(family: DeviceCapabilities.Family(rawValue: device.productFamily),
                            runtimeVersion: device.runtimeVersion,
-                           supportsFeature: { [device] in device.supportsFeature($0) },
+                           supportsFeature: { features.contains($0) },
                            controlsOrientation: device.deviceSetPath == nil,
                            hasFramebufferMask: device.hasFramebufferMask,
                            screenCornerRadius: device.screenCornerRadius,
@@ -394,13 +463,11 @@ package final class SimulatorScreenHost: NSObject {
         while true {
             try Task.checkCancellation()
             guard !stopped, !isTerminating else { throw CancellationError() }
-            var devices = try readDevices()
-            if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
-            let state = devices.first(where: { $0.identity == identifier })?.state
+            let state = try await readDevice(identifier)?.state
             if state == 3 { break }
             guard state == 2, ContinuousClock.now < deadline else {
                 presentationRestarts.remove(identifier)
-                try scanDevices()
+                try await scanDevices()
                 throw SimulatorError.operation("The simulator is not running, so its display could not reconnect.")
             }
             try await Task.sleep(for: .milliseconds(100))
@@ -421,11 +488,10 @@ package final class SimulatorScreenHost: NSObject {
         // A quitting host opens nothing; callers do not report the cancellation.
         guard !stopped, !isTerminating else { throw CancellationError() }
         try conflicts.check()
-        var devices = try readDevices()
-        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
-        guard let device = devices.first(where: { $0.identity == identifier }) else {
+        guard let device = try await readDevice(identifier) else {
             throw SimulatorError.operation("The selected simulator is no longer available")
         }
+        guard !stopped, !isTerminating else { throw CancellationError() }
         guard bootIfNeeded || device.state == 3 else {
             throw SimulatorError.operation("The simulator is no longer running, so its display was not attached.")
         }
@@ -447,9 +513,7 @@ package final class SimulatorScreenHost: NSObject {
             while true {
                 try Task.checkCancellation()
                 guard !stopped, !isTerminating, !releasingDevices.contains(identifier) else { throw CancellationError() }
-                var current = try readDevices()
-                if showsTestingDevices, let testingSet { current += try readDevices(in: testingSet) }
-                guard let device = current.first(where: { $0.identity == identifier }) else {
+                guard let device = try await readDevice(identifier) else {
                     throw SimulatorError.operation("The selected simulator is no longer available")
                 }
                 if device.state == 3 { return }
@@ -464,11 +528,11 @@ package final class SimulatorScreenHost: NSObject {
             guard !stopped, !isTerminating, !releasingDevices.contains(identifier),
                   !(isManaged || isInProcess) || ownedDeviceIdentifiers.contains(identifier) else { throw CancellationError() }
             if !bootIfNeeded {
-                guard try availableSimulatorDevices().contains(where: { $0.identity == identifier && $0.isBooted }) else {
+                guard try await readDevice(identifier)?.state == 3 else {
                     throw SimulatorError.operation("The simulator is no longer running, so its display was not attached.")
                 }
             }
-            try scanDevices()
+            try await scanDevices()
             if let pending = connections[identifier] {
                 if preservesConnection { await pending.value }
                 else {
@@ -486,35 +550,58 @@ package final class SimulatorScreenHost: NSObject {
         if presents, !isInProcess { controller.showAndActivate() }
     }
 
-    private func scheduleRescan() {
-        guard !rescanScheduled, !stopped, !isTerminating else { return }
-        rescanScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.rescanScheduled = false
-            self.rescan()
+    /// Reads the sets again and applies what they report. However many ask, one rescan runs and one more waits.
+    private func rescan(testingVisibilityChanged: Bool = false) {
+        guard isStarted, !stopped, !isTerminating else { return }
+        rescanRequest = rescanRequest == true || testingVisibilityChanged
+        guard rescanning == nil else { return }
+        rescanning = Task { [weak self] in
+            while let self, let testingVisibilityChanged = self.rescanRequest {
+                self.rescanRequest = nil
+                await self.performRescan(testingVisibilityChanged: testingVisibilityChanged)
+            }
+            self?.rescanning = nil
         }
     }
 
-    private func rescan(testingVisibilityChanged: Bool = false) {
-        do { try scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
-        catch let error as SimulatorError {
+    /// Rescans before what follows looks at the windows that the rescan may close.
+    private func rescanAndWait() async {
+        rescan()
+        await rescanning?.value
+    }
+
+    private func performRescan(testingVisibilityChanged: Bool) async {
+        if testingSetNeedsOpening {
+            testingSetNeedsOpening = false
+            await openTestingSet()
+        }
+        do { try await scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
+        catch is CancellationError {}
+        catch let failure as DeviceOperationFailure {
+            // The call that holds the set was already reported when it outlived its limit.
+            if case .notSent = failure { hostLog(failure.localizedDescription) } else { report(failure) }
+        } catch let error as SimulatorError {
             if case .conflict = error { handleHostConflict() }
             else { report(error) }
         } catch { report(error) }
     }
 
-    private func scanDevices(testingVisibilityChanged: Bool = false) throws {
+    private func scanDevices(testingVisibilityChanged: Bool = false) async throws {
         guard !stopped, !isTerminating else { return }
         defer { updateOwnership(testingVisibilityChanged: testingVisibilityChanged) }
         try conflicts.check()
-        var devices = try readDevices()
-        if showsTestingDevices, let testingSet { devices += try readDevices(in: testingSet) }
+        // A restart that ends during this read may not be in it, and asks for another rescan. Until then, what this read
+        // reports about its device says nothing about the device now.
+        let restartsBeforeReading = Set(restarting.keys).union(presentationRestarts)
+        let pendingBeforeReading = pendingDeviceIdentifiers
+        let devices = try await readDevices()
+        guard !stopped, !isTerminating else { return }
+        try conflicts.check()
         let booted = devices.filter { $0.state == 3 && (!(isManaged || isInProcess) || ownedDeviceIdentifiers.contains($0.identity)) }
         let identifiers = Set(booted.map(\.identity))
         let hadDeviceWindows = !sessions.isEmpty
         for identifier in sessions.keys where !identifiers.contains(identifier) && restarting[identifier] == nil
-            && !presentationRestarts.contains(identifier) {
+            && !presentationRestarts.contains(identifier) && !restartsBeforeReading.contains(identifier) {
             sessions.removeValue(forKey: identifier)?.invalidate()
             awaitingReconnect.removeValue(forKey: identifier)
         }
@@ -524,12 +611,10 @@ package final class SimulatorScreenHost: NSObject {
         // An accepted open still owns a booting guest even if display connection fails.
         // Only the catalog's stopped/missing devices without an in-flight operation release ownership.
         let running = Set(devices.filter { $0.state != 1 }.map(\.identity))
-        let pending = openingDevices.union(bootOperations.keys).union(restarting.keys)
-            .union(connections.keys).union(releasingDevices).union(presentationRestarts)
-        ownedDeviceIdentifiers.formIntersection(running.union(pending))
+        ownedDeviceIdentifiers.formIntersection(running.union(pendingDeviceIdentifiers).union(pendingBeforeReading))
         // A restart's boot is not a new boot, so a window closed during the
         // restart stays closed.
-        suppressed.formIntersection(identifiers.union(restarting.keys))
+        suppressed.formIntersection(identifiers.union(restarting.keys).union(restartsBeforeReading))
         connectionFailures = connectionFailures.filter { identifiers.contains($0.key) }
         if isHeadless { return }
         // A restarting device connects only after its restart ends, also when
@@ -547,6 +632,11 @@ package final class SimulatorScreenHost: NSObject {
         onChange?()
     }
 
+    private var pendingDeviceIdentifiers: Set<SimulatorDeviceIdentifier> {
+        openingDevices.union(bootOperations.keys).union(restarting.keys)
+            .union(connections.keys).union(releasingDevices).union(presentationRestarts)
+    }
+
     private func connect(_ device: SimulatorDevice) {
         let identifier = device.identity
         connections[identifier] = Task { [weak self] in
@@ -560,12 +650,22 @@ package final class SimulatorScreenHost: NSObject {
             do {
                 try await runtime.display.screenAdapter.prepare(for: device.object)
                 // CoreSimulator reports Booted before its integrated screen is ready.
+                var screenFailure: (any Error)?
                 for _ in 0..<40 {
                     try Task.checkCancellation()
                     guard !stopped, !isTerminating, !suppressed.contains(identifier) else { return }
                     try conflicts.check()
-                    if let screen = runtime.display.defaultScreen(of: device) {
-                        var capabilities = Self.capabilities(of: device)
+                    let defaultScreen: (identifier: UInt32, object: AnyObject)?
+                    do {
+                        defaultScreen = try runtime.display.defaultScreen(of: device)
+                        screenFailure = nil
+                    } catch {
+                        defaultScreen = nil
+                        screenFailure = error
+                    }
+                    if let screen = defaultScreen {
+                        let features = try await device.supportedFeatures(DeviceCapabilities.allFeatures)
+                        var capabilities = Self.capabilities(of: device, features: features)
                         let nativeCanvas: NativeDeviceCanvas?
                         var keyboard: NativeDeviceKeyboard?
                         var trackpad: NativeDeviceTrackpad?
@@ -671,7 +771,7 @@ package final class SimulatorScreenHost: NSObject {
                     }
                     try await Task.sleep(for: .milliseconds(250))
                 }
-                throw SimulatorError.unavailable("No integrated screen became available for \(device.name)")
+                throw await IntegratedScreenUnavailable(deviceName: device.name, lastFailure: screenFailure)
             } catch is CancellationError {
             } catch SimulatorError.conflict(_) {
                 handleHostConflict()
@@ -876,7 +976,7 @@ package final class SimulatorScreenHost: NSObject {
             await session.finishRecording()
             guard let self, !self.yieldedToAnotherHost,
                   !Task.isCancelled,
-                  self.isRunning(identifier.identifier, deviceSetPath: tools.deviceSetPath) else {
+                  await self.isRunning(identifier.identifier, deviceSetPath: tools.deviceSetPath) else {
                 self?.closingShutdowns.removeValue(forKey: identifier)
                 self?.updateOwnership()
                 return
@@ -898,10 +998,17 @@ package final class SimulatorScreenHost: NSObject {
         for shutdown in terminationShutdowns { shutdown.cancel() }
     }
 
-    /// Whether shutdown is needed; stopped and already stopping devices need no action.
-    private func isRunning(_ identifier: String, deviceSetPath: String?) -> Bool {
-        guard let set = deviceSetPath == nil ? deviceSet : testingSet,
-              let device = try? set.readDevices().first(where: { $0.identifier == identifier }) else { return false }
+    /// Whether shutdown is needed, now or, from a set that cannot answer, as the set last reported.
+    private func isRunning(_ identifier: String, deviceSetPath: String?) async -> Bool {
+        do { try await (deviceSetPath == nil ? deviceSet : testingSet)?.refresh() }
+        catch { hostLog("Could not read the device set: \(error.localizedDescription)") }
+        return wasLastRunning(identifier, deviceSetPath: deviceSetPath)
+    }
+
+    /// Stopped and already stopping devices need no action.
+    private func wasLastRunning(_ identifier: String, deviceSetPath: String?) -> Bool {
+        let set = deviceSetPath == nil ? deviceSet : testingSet
+        guard let device = set?.devices.first(where: { $0.identifier == identifier }) else { return false }
         return device.state != 1 && device.state != 4
     }
 
@@ -951,7 +1058,12 @@ package final class SimulatorScreenHost: NSObject {
         var shutdowns = Array(closingShutdowns.values).map { shutdown in
             Task { () -> String? in await shutdown.value; return nil }
         }
-        for device in devices where isRunning(device.identifier, deviceSetPath: device.deviceSetPath) {
+        // A quit waits only briefly for a set that stopped answering: what it last reported decides then.
+        for set in [deviceSet, testingSet].compactMap(\.self) {
+            do { try await set.refresh(waitingAtMost: DeviceOperationLimit.terminationStopGrace) }
+            catch { hostLog("Could not read the device set: \(error.localizedDescription)") }
+        }
+        for device in devices where wasLastRunning(device.identifier, deviceSetPath: device.deviceSetPath) {
             do {
                 let tools = try DeviceTools(identifier: device.identifier, xcodeURL: runtime.xcodeURL,
                                             deviceSetPath: device.deviceSetPath)
@@ -1038,7 +1150,7 @@ package final class SimulatorScreenHost: NSObject {
             self.bootOperations.removeValue(forKey: identifier)
             self.restarting.removeValue(forKey: identifier)
             // A window whose device is still down closes; a booted device reconnects.
-            self.rescan()
+            await self.rescanAndWait()
             if let completion { completion(failure); return }
             guard let failure, !(failure is CancellationError), !self.stopped else { return }
             // Cancelling a restart is part of closing its device, which reads the state next.
@@ -1122,6 +1234,10 @@ package final class SimulatorScreenHost: NSObject {
         let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll(owner: captureOwner)
         recordingTerminationErrors.removeAll()
         shutdown()
+        // Registrations leave on the sets' workers, and a quit reports what has not finished: this should not be that.
+        let removalDeadline = ContinuousClock.now + DeviceOperationLimit.terminationStopGrace
+        for removal in observationRemovals { _ = await removal.ends(before: removalDeadline) }
+        observationRemovals.removeAll()
         onChange?()
         if !failures.isEmpty || !captureFailures.isEmpty {
             throw SimulatorError.operation((failures + captureFailures.map(\.localizedDescription)).joined(separator: "\n"))
@@ -1134,16 +1250,16 @@ package final class SimulatorScreenHost: NSObject {
         conflicts.onConflict = nil
         touchIndicatorObservation = nil
         testingDevicesObservation = nil
-        if let notificationToken {
-            do { try deviceSet.stopObserving(notificationToken) }
-            catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
-        }
+        if let notificationToken { observationRemovals.append(deviceSet.stopObserving(notificationToken)) }
         notificationToken = nil
         if let testingSet, let testingNotificationToken {
-            do { try testingSet.stopObserving(testingNotificationToken) }
-            catch { hostLog("Could not unregister testing device notifications: \(error.localizedDescription)") }
+            observationRemovals.append(testingSet.stopObserving(testingNotificationToken))
         }
         testingNotificationToken = nil
+        for follower in healthFollowers { follower.cancel() }
+        healthFollowers.removeAll()
+        rescanRequest = nil
+        rescanning?.cancel()
         testingSetWatcher?.cancel()
         testingSetWatcher = nil
         for task in connections.values { task.cancel() }
@@ -1160,6 +1276,26 @@ package final class SimulatorScreenHost: NSObject {
     }
 }
 
+
+/// Why a booted device's integrated screen did not appear in time: what reading its screens last failed with, and which
+/// native requests had still not returned then. Another device's unanswered request can be the reason, since CoreSimulator
+/// serves a process's requests one at a time.
+package struct IntegratedScreenUnavailable: LocalizedError {
+    package let deviceName: String
+    package let lastFailure: (any Error)?
+    package let unanswered: [UnresolvedDeviceOperation]
+
+    package init(deviceName: String, lastFailure: (any Error)?, hub: DeviceIOHub = .shared) async {
+        self.deviceName = deviceName
+        self.lastFailure = lastFailure
+        unanswered = await hub.unresolvedOperations().filter { $0.state == .running }
+    }
+
+    package var errorDescription: String? {
+        (["No integrated screen became available for \(deviceName)."] + [lastFailure?.localizedDescription].compactMap(\.self)
+            + unanswered.map(\.description)).joined(separator: "\n")
+    }
+}
 
 /// An open may return after cancellation with a newly attached screen. Its cleanup must finish uncancelled.
 @MainActor

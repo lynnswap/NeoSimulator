@@ -88,6 +88,14 @@ package struct DeviceCapabilities {
     package static let digitalDial = "com.apple.hid.digital-dial"
     /// `SimFeatureFallDetection`: the watch takes Features ▸ Simulate Fall.
     package static let fallDetection = "com.apple.motion.fall-detection"
+
+    /// Every feature above, which connecting reads from the device once so that asking waits for nothing.
+    package static let allFeatures = [
+        displayRotation, actionButtonSting, actionButtonStaccato, siri, routableAudio, applePayAuthorization, touchID, faceID,
+        opticID, hoverboard, standBy, slowMotionStateful, graphicsQualityOverride, keyboard, touchPressure, pasteboard,
+        externalDisplay, integratedDisplay, carPlay, alwaysOnDisplay, tvRemote, watchGestures, digitalCrown, digitalDial,
+        fallDetection,
+    ]
 }
 
 /// Simulator-compatible standard-defaults keys.

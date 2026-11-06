@@ -22,9 +22,9 @@ package final class SimulatorGuestSettings {
         let preparation = Task { [source, xcodeURL] in
             try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator")
             let interface = try await CoreSimulatorInterface(runtime: .shared)
-            let set = try SimulatorDeviceSet(interface: interface,
+            let set = SimulatorDeviceSet.shared(interface: interface,
                 developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: source.deviceSetPath)
-            guard let device = try set.device(withIdentifier: source.identifier) else {
+            guard let device = try await set.device(withIdentifier: source.identifier) else {
                 throw CLIError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
             }
             return device

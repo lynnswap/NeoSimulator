@@ -82,7 +82,7 @@ public enum NeoSimulatorServiceMain {
         do {
             if options.readsCreationCatalog {
                 let catalog = try await SimulatorRuntime.creationCatalog(xcodeURL: options.xcodeURL)
-                let data = try JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: catalog))
+                let data = try JSONEncoder().encode(catalog)
                 try FileHandle.standardOutput.write(contentsOf: data)
             } else {
                 _ = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
@@ -117,7 +117,7 @@ public enum NeoSimulatorServiceMain {
                                                  owner: options.owner, headless: options.isHeadless)
             Self.controller = controller
             application.delegate = controller
-            try controller.start(initialDeviceIdentifier: options.deviceIdentifier, initialDeviceSetPath: options.deviceSetPath)
+            try await controller.start(initialDeviceIdentifier: options.deviceIdentifier, initialDeviceSetPath: options.deviceSetPath)
             do { try conflicts.check() }
             catch {
                 controller.shutdown()

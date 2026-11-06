@@ -32,7 +32,7 @@ let package = Package(
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ]),
         .target(name: "NeoSimulatorApp", dependencies: [
-            "NeoSimulatorKit", "NeoSimulatorHostSupport",
+            "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorHostSupport",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ], resources: [.process("Resources")]),
         .target(name: "NeoSimulatorService", dependencies: [

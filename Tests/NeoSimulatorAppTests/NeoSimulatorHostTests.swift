@@ -3249,7 +3249,7 @@ struct InputFocusTests {
     func nativeDeviceSetDoesNotRefreshTheCatalogForBootProgressOrDeviceIO() async throws {
         let runtime = try await makeRuntime()
         let interface = runtime.coreSimulator
-        let set = try runtime.openDeviceSet()
+        let set = runtime.openDeviceSet()
         let context = try unsafe interface.sharedContext.unsafeInvoke(on: interface.serviceClass as AnyObject,
             runtime.xcodeURL.appendingPathComponent("Contents/Developer").path)
         let nativeSet = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
@@ -3258,11 +3258,11 @@ struct InputFocusTests {
             on: try #require(NSClassFromString("SimDeviceSet")))
         let changes = AsyncStream<Void>.makeStream()
         var refreshes = 0
-        let token = try set.observe {
+        let token = try await set.observe {
             refreshes += 1
             changes.continuation.yield(())
         }
-        defer { try? set.stopObserving(token); changes.continuation.finish() }
+        defer { _ = set.stopObserving(token); changes.continuation.finish() }
         try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "SimDeviceNotificationType_BootStatus"] as NSDictionary)
         try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_io_notification"] as NSDictionary)
         try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_state", "new_state": 3] as NSDictionary)
@@ -3270,6 +3270,29 @@ struct InputFocusTests {
         await events.next()
         await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
         #expect(refreshes == 1)
+    }
+
+    /// Only reads. Every message here is one the real set's workers send, against whatever devices this Mac has.
+    @Test(.timeLimit(.minutes(1)))
+    func nativeDeviceSetCapturesItsDevicesAndCatalogOnItsWorker() async throws {
+        let runtime = try await makeRuntime()
+        let set = runtime.openDeviceSet()
+        #expect(runtime.openDeviceSet() === set)
+        #expect(try await !set.resolvedPath().isEmpty)
+        let devices = try await set.refresh()
+        #expect(set.devices.map(\.identifier) == devices.map(\.identifier))
+        if let device = devices.first {
+            #expect(try await set.device(withIdentifier: device.identifier) === device)
+            #expect(try await set.refresh().first === device)
+            _ = try await device.currentState()
+            _ = try await device.supportedFeatures(DeviceCapabilities.allFeatures)
+        }
+        let catalog = try await set.readCatalog()
+        let lookup = catalog.catalog()
+        for pairing in catalog.pairings.prefix(1) {
+            #expect(lookup.canPair(pairing.watchType, pairing.watchRuntime, pairing.phoneType, pairing.phoneRuntime))
+        }
+        #expect(!lookup.canPair("no watch", "no runtime", "no phone", "no runtime"))
     }
 
     @Test func pasteboardDelegateAnswersSimPasteboardPlus() async throws {
@@ -9034,7 +9057,7 @@ struct InputFocusTests {
             supportedDeviceTypes: [beta.identifier: ["phone"], candidate.identifier: ["phone"]],
             canPair: { _, _, _, _ in false })
         let snapshot = try JSONDecoder().decode(SimulatorCatalog.Snapshot.self,
-                                                 from: JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: source)))
+                                                 from: JSONEncoder().encode(snapshot(of: source)))
         let catalog = snapshot.catalog()
         var createdRuntime: String?
         let model = NewSimulatorModel(catalog: catalog, create: { _, _, runtime in
@@ -9205,7 +9228,7 @@ struct InputFocusTests {
     }
 
     @Test func newSimulatorOffersAPairedWatchOnlyForAnIPhone() throws {
-        let data = try JSONEncoder().encode(SimulatorCatalog.Snapshot(catalog: pairingCatalog()))
+        let data = try JSONEncoder().encode(snapshot(of: pairingCatalog()))
         let catalog = try JSONDecoder().decode(SimulatorCatalog.Snapshot.self, from: data).catalog()
         let model = NewSimulatorModel(catalog: catalog, create: { _, _, _ in "" }, pair: { _, _ in })
         #expect(model.canAddWatch && !model.addsWatch && model.forwardTitle == "Create")
@@ -10777,7 +10800,7 @@ final class HeldDeviceWorker: Sendable {
     private let state = Mutex<(calls: [String], gate: DispatchSemaphore?)>(([], nil))
 
     init(limit: Duration = .seconds(10)) {
-        channel = SimulatorDeviceChannel(address: DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil))
+        channel = SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil)))
         self.limit = limit
     }
 
@@ -11527,6 +11550,23 @@ struct HostBehaviorTests {
         #expect(model.devices.isEmpty)
     }
 
+    @Test func browserShowsWhatTheSetsLastReportedUntilAReloadAnswers() async throws {
+        let source = TestCatalog()
+        let model = DeviceBrowserModel(source: source)
+        let shown = model.devices
+        source.reloadFailure = DeviceOperationFailure.notSent(operation: "read the device set", heldBy: "read the device set")
+        await model.reload()?.value
+        #expect(model.devices.map(\.identity) == shown.map(\.identity))
+        #expect(model.errorMessage?.contains("has not returned") == true)
+        source.reloadFailure = nil
+        source.reloadedDevices = []
+        // Showing what was last reported reads nothing.
+        model.refresh()
+        #expect(model.devices.map(\.identity) == shown.map(\.identity))
+        await model.reload()?.value
+        #expect(model.devices.isEmpty)
+    }
+
     @Test func captureFailurePreservesExistingDestination() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -11632,11 +11672,23 @@ struct HostBehaviorTests {
 }
 
 @MainActor
+private func snapshot(of catalog: SimulatorCatalog) -> SimulatorCatalog.Snapshot {
+    SimulatorCatalog.Snapshot(deviceTypes: catalog.deviceTypes, runtimes: catalog.runtimes,
+                              supportedDeviceTypes: catalog.supportedDeviceTypes) { catalog.canPair($0, $1, $2, $3) }
+}
+
+@MainActor
 private final class TestCatalog: DeviceBrowserSource {
     var devices = [availableDevice("phone", "Phone", runtime: "iOS 27", state: 1)]
     var opened: [SimulatorDeviceIdentifier] = []
     var failure: Error?
+    var reloadFailure: Error?
+    var reloadedDevices: [AvailableDevice]?
     func availableSimulatorDevices() -> [AvailableDevice] { devices }
+    func reloadSimulatorDevices() async throws {
+        if let reloadFailure { throw reloadFailure }
+        if let reloadedDevices { devices = reloadedDevices }
+    }
     func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         if let failure { throw failure }
         opened.append(identifier)
