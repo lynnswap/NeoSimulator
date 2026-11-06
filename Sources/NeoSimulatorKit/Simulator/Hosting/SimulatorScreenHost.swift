@@ -989,6 +989,12 @@ package final class SimulatorScreenHost: NSObject {
                 self?.updateOwnership()
                 return
             }
+            // Reading the set can suspend until after another host takes ownership.
+            guard !self.yieldedToAnotherHost, !Task.isCancelled else {
+                self.closingShutdowns.removeValue(forKey: identifier)
+                self.updateOwnership()
+                return
+            }
             do { try await tools.shutdown() } catch is CancellationError {
             } catch {
                 hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
@@ -1049,7 +1055,7 @@ package final class SimulatorScreenHost: NSObject {
             let finishing = Task { try await finishInput(of: session) }
             // A quit does not wait on a device that stopped answering, which a retry could not get past either.
             if isTerminating, await !finishing.ends(before: deadline) {
-                TerminationAccount.shared.note("\(session.device.name): its native input was not removed before quitting.")
+                failures.append("\(session.device.name): its native input was not removed before the context stopped.")
                 continue
             }
             do { try await finishing.value }
@@ -1071,6 +1077,7 @@ package final class SimulatorScreenHost: NSObject {
             do { try await set.refresh(waitingAtMost: DeviceOperationLimit.terminationStopGrace) }
             catch { hostLog("Could not read the device set: \(error.localizedDescription)") }
         }
+        guard !yieldedToAnotherHost else { return failures }
         for device in devices where wasLastRunning(device.identifier, deviceSetPath: device.deviceSetPath) {
             do {
                 let tools = try DeviceTools(identifier: device.identifier, xcodeURL: runtime.xcodeURL,
@@ -1212,7 +1219,7 @@ package final class SimulatorScreenHost: NSObject {
             defer { stoppingTask = nil }
             if retryingCleanup {
                 let inputFailures = await finishDisconnectedInput()
-                let failures = inputFailures + (await finishExternalDisplayChanges())
+                let failures = inputFailures + (await finishExternalDisplayChanges()) + (await finishObservationRemovals())
                 if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
             } else {
                 try await finishStopping(devices: devices)
@@ -1223,12 +1230,13 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
+        var failures: [String] = []
         let pending = Array(connections.values) + Array(restarting.values)
         pending.forEach { $0.cancel() }
         bootOperations.values.forEach { $0.cancel() }
         let deadline = ContinuousClock.now + HostPreferences.terminationLimit
         for task in pending where await !task.ends(before: deadline) {
-            TerminationAccount.shared.note("A device's connection or restart had not stopped when NeoSimulator quit.")
+            failures.append("A device's connection or restart had not finished before the context stopped.")
         }
         for controller in sessions.values { controller.invalidate() }
         disconnectedSessions += sessions.values.map(\.session)
@@ -1238,18 +1246,25 @@ package final class SimulatorScreenHost: NSObject {
         presentationRestarts.removeAll()
         let inputFailures = await finishDisconnectedInput()
         let displayFailures = await finishExternalDisplayChanges()
-        let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
+        failures += inputFailures + displayFailures + (await shutDownForTermination(devices))
         let captureFailures = recordingTerminationErrors + CaptureThumbnail.finishAll(owner: captureOwner)
         recordingTerminationErrors.removeAll()
         shutdown()
-        // Registrations leave on the sets' workers, and a quit reports what has not finished: this should not be that.
-        let removalDeadline = ContinuousClock.now + DeviceOperationLimit.terminationStopGrace
-        for removal in observationRemovals { _ = await removal.ends(before: removalDeadline) }
-        observationRemovals.removeAll()
+        failures += await finishObservationRemovals()
         onChange?()
         if !failures.isEmpty || !captureFailures.isEmpty {
             throw SimulatorError.operation((failures + captureFailures.map(\.localizedDescription)).joined(separator: "\n"))
         }
+    }
+
+    private func finishObservationRemovals() async -> [String] {
+        let deadline = ContinuousClock.now + DeviceOperationLimit.terminationStopGrace
+        var unfinished: [Task<Void, Never>] = []
+        for removal in observationRemovals where await !removal.ends(before: deadline) {
+            unfinished.append(removal)
+        }
+        observationRemovals = unfinished
+        return unfinished.isEmpty ? [] : ["A device-set observation had not been removed before the context stopped."]
     }
 
     package func shutdown() {
