@@ -30,12 +30,9 @@ package final class NativeDeviceKeyboard {
     private var lastOperation: Task<Void, Never>?
     private var isStopped = false
 
-    /// Connects to the simulator's CoreDevice record, which exists only for the default device set, or returns nil when
-    /// CoreDevice does not list it or its HID services. A keyboard's guest service is created with its first report.
-    package static func connect(simulatorUDID: String) async throws -> NativeDeviceKeyboard? {
-        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID) else { return nil }
-        let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
-        guard try remote.supports(CoreDeviceScreenInput.universalHIDFeature) else { return nil }
+    /// Connects through a simulator's CoreDevice record, which has said it has HID services. A keyboard's guest service is
+    /// created with its first report.
+    package static func connect(remote: CoreDeviceRemoteScreenDevice) async throws -> NativeDeviceKeyboard {
         try Task.checkCancellation()
         return NativeDeviceKeyboard(transport: try await CoreDeviceKeyboardTransport(remote: remote))
     }

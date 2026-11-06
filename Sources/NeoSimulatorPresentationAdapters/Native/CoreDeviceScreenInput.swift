@@ -426,13 +426,9 @@ package final class NativeDeviceTrackpad {
     private var generation = 0
     private var isStopped = false
 
-    /// Connects to the simulator's CoreDevice record, which exists only for the default device set, or returns nil when
-    /// CoreDevice does not list it or its HID services. A trackpad's guest service is created with its first event over
-    /// the screen.
-    package static func connect(simulatorUDID: String) async throws -> NativeDeviceTrackpad? {
-        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID) else { return nil }
-        let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
-        guard try remote.supports(CoreDeviceScreenInput.universalHIDFeature) else { return nil }
+    /// Connects through a simulator's CoreDevice record, which has said it has HID services. A trackpad's guest service is
+    /// created with its first event over the screen.
+    package static func connect(remote: CoreDeviceRemoteScreenDevice) async throws -> NativeDeviceTrackpad {
         try Task.checkCancellation()
         let transport = try await CoreDeviceTrackpadTransport(remote: remote)
         return NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
@@ -524,13 +520,8 @@ package final class NativeDeviceScreenInput {
     private var lastOperation: Task<Void, Never>?
     private var isStopped = false
 
-    /// Connects to the simulator's CoreDevice record, which exists only for the default device set, or returns nil when
-    /// CoreDevice does not list it or its touchscreen and button services.
-    package static func connect(simulatorUDID: String) async throws -> NativeDeviceScreenInput? {
-        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID) else { return nil }
-        let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
-        guard try remote.supports(CoreDeviceScreenInput.features[.digitizer]!),
-              try remote.supports(CoreDeviceScreenInput.features[.button]!) else { return nil }
+    /// Connects through a simulator's CoreDevice record, which has said it has touchscreen and button services.
+    package static func connect(remote: CoreDeviceRemoteScreenDevice) async throws -> NativeDeviceScreenInput {
         let input = CoreDeviceScreenInput(remote: remote)
         try await input.prepareSimulatorInput()
         try Task.checkCancellation()

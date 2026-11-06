@@ -4,9 +4,10 @@ import Observation
 public enum SimulatorServiceReadiness: Sendable {
     /// The device's capabilities route nothing to the service, as with touch pressure, whose touches only SimulatorKit carries.
     case notRouted
-    /// The routed transport has no such service for this device.
+    /// The routed transport has said that this device has no such service.
     case unsupported
-    /// The routed transport has not connected yet. A pasteboard starts connecting when a transfer first needs it.
+    /// The routed transport has not connected yet, which includes not having said yet what this device has. A pasteboard
+    /// starts connecting when a transfer first needs it.
     case pending
     case ready
     /// The routed transport could not be reached. This says nothing about whether the device supports it, so nothing else
@@ -25,6 +26,8 @@ package final class DeviceOptionalServices {
     package private(set) var input = SimulatorServiceReadiness.notRouted
     /// The device's routed pasteboard transport, which only a transfer waits for.
     package private(set) var pasteboard = SimulatorServiceReadiness.notRouted
+    /// A service is waiting because CoreDevice has not said yet what this device has. A change to the device's record ends this.
+    package private(set) var isAwaitingDeviceRecord = false
     /// Connects the input route again, set by whatever owns the route.
     @ObservationIgnored package var onRetryInput: (@MainActor () -> Void)?
 
@@ -32,6 +35,7 @@ package final class DeviceOptionalServices {
 
     package func setInput(_ readiness: SimulatorServiceReadiness) { input = readiness }
     package func setPasteboard(_ readiness: SimulatorServiceReadiness) { pasteboard = readiness }
+    package func setAwaitingDeviceRecord(_ awaiting: Bool) { isAwaitingDeviceRecord = awaiting }
 
     /// Connects the input route again after a failure. A route that is pending, ready or unsupported stays as it is.
     package func retryInput() {

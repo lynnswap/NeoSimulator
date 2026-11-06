@@ -172,6 +172,7 @@ package enum CoreDeviceRuntime {
 
 @MainActor
 package final class CoreDeviceRemoteScreenDevice {
+    package let identifier: String
     package let runtime: ABIRuntime
     package let object: NativeSwiftValue
     package let type: NativeSwiftType
@@ -191,6 +192,7 @@ package final class CoreDeviceRemoteScreenDevice {
         guard let object = try unsafe devices.unsafeInvoke(on: manager)[uuid] else {
             throw DeviceIOError.unavailable("remote-screen-device", "The selected device is no longer available.")
         }
+        self.identifier = identifier
         self.runtime = runtime
         self.manager = manager
         self.object = object
@@ -200,6 +202,44 @@ package final class CoreDeviceRemoteScreenDevice {
 
     package func supports(_ feature: String) throws -> Bool {
         try unsafe supportsFeature.unsafeInvoke(on: object, feature)
+    }
+
+    /// Whether CoreDevice is connected to the device. Its features say what the device has only while it is.
+    package func isConnected() async throws -> Bool {
+        let infoType = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
+        let stateType = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceState")))
+        let abis: [NativeSwiftType: NativeType] = [stateType: try .opaque(named: stateType.name)]
+        let deviceInfo = try await type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+        let state = try await infoType.resolve(.swift(.getter("state", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let rawValue = try await stateType.resolve(.swift(.getter("rawValue", as: (() -> String).self,
+            valueABIs: abis, receiverABI: abis[stateType])))
+        let connected = try await stateType.makeEnumCase(named: "connected")
+        let info = try unsafe deviceInfo.unsafeInvoke(on: object)
+        return try unsafe rawValue.unsafeInvoke(on: state.unsafeInvoke(on: info)) == rawValue.unsafeInvoke(on: connected)
+    }
+
+    /// Calls `changed` with each change of what CoreDevice knows of the device, starting with what it knows now, until
+    /// the stream ends or the caller is cancelled.
+    package func followInfoChanges(_ changed: @escaping @MainActor () -> Void) async throws {
+        let info = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
+        let stream = try await runtime.resolve(.swift(.type("Swift.AsyncThrowingStream",
+            genericArguments: [.type(info), .type((any Error).self)])))
+        let changes = try await type.resolve(.swift(.getter("deviceInfoChanges", as: (() -> NativeSwiftValue).self,
+            valueABIs: [stream: try .opaque(named: stream.name)])))
+        let owner = try unsafe changes.unsafeInvoke(on: object)
+        defer { withExtendedLifetime(owner) {} }
+        guard let sequence = try owner.withCopy({ $0 as? any AsyncSequence }) else {
+            throw DeviceIOError.unavailable("device-info-observation", "The device's changes could not be observed.")
+        }
+        try await follow(sequence, changed)
+    }
+
+    private func follow<S: AsyncSequence>(_ sequence: S, _ changed: @MainActor () -> Void) async throws {
+        var iterator = sequence.makeAsyncIterator()
+        while try await iterator.next(isolation: #isolation) != nil {
+            try Task.checkCancellation()
+            changed()
+        }
     }
 
     /// Simulator UDIDs identify hardware records, not keys in DeviceManager.devices.

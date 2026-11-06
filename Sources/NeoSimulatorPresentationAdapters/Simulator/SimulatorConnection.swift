@@ -54,13 +54,18 @@ package final class SimulatorConnection: SimulatorDisplay {
     /// Connects this display's native input, which the display does not wait for.
     package var inputActivation: NativeInputActivation?
     private let pasteboardRoute: SimulatorPasteboardRoute
+    /// What this connection's services ask CoreDevice through, which ends with the connection. A display that shares a
+    /// device's connection has none of its own.
+    private let deviceRecord: CoreDeviceSimulatorRecord?
     private let displays: SimulatorDisplaySet
 
     /// The display starts with SimulatorKit's input, which the guest takes until `activateNativeInput` gives it native
     /// input. `nativeKeyboard` is the one the device's displays share; one made here belongs to this display.
     package init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorPresentationRuntime,
          displays: SimulatorDisplaySet, pasteboardRoute: SimulatorPasteboardRoute,
-         nativeCanvas: NativeDeviceCanvas? = nil, nativeKeyboard: SharedNativeKeyboard? = nil) async throws {
+         nativeCanvas: NativeDeviceCanvas? = nil, nativeKeyboard: SharedNativeKeyboard? = nil,
+         deviceRecord: CoreDeviceSimulatorRecord? = nil) async throws {
+        self.deviceRecord = deviceRecord
         self.nativeCanvas = nativeCanvas
         self.device = device
         self.runtime = runtime
@@ -481,6 +486,7 @@ package final class SimulatorConnection: SimulatorDisplay {
         guard !disconnected else { return }
         disconnected = true
         inputActivation?.cancel()
+        deviceRecord?.stop()
         // The digitizer gets its own delegate back before SimulatorKit disconnects the display, so no more touches reach
         // the native touchscreen. A failed restore leaves the replacement with this connection, which `stop()` retries.
         if let digitizerTouches {
@@ -505,9 +511,14 @@ package final class SimulatorConnection: SimulatorDisplay {
     package func stop() async throws {
         disconnect()
         var failures: [String] = []
-        // Input that is still connecting has sent the guest nothing, and nothing owns it until it activates.
-        if let inputActivation, await !inputActivation.ends(before: ContinuousClock.now + HostPreferences.terminationLimit) {
-            failures.append("The device's native input had not finished connecting.")
+        // Input that is still connecting has sent the guest nothing. The activation stops what no display took up, also
+        // what answers after this returned, and this reports what it has not finished.
+        if let inputActivation {
+            if await !inputActivation.ends(before: ContinuousClock.now + HostPreferences.terminationLimit) {
+                failures.append("The device's native input had not finished connecting.")
+            }
+            do { try await inputActivation.stopUnactivated() }
+            catch { failures.append("Could not stop the native input that no display took up: \(error.localizedDescription)") }
         }
         if let digitizerTouches {
             do { try digitizerTouches.restore(); self.digitizerTouches = nil }

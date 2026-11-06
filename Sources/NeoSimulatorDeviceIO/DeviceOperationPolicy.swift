@@ -58,6 +58,8 @@ package enum DeviceOperationLimit {
     /// How long a caller waits for CoreDevice's full initialization, after which it is told so and the delay is shown.
     /// The one initialization keeps running, and whoever asks later waits on it again; see ``SharedTask``.
     package static let coreDeviceInitialization: Duration = .seconds(60)
+    /// How long opening a screen that cannot exist without its simulator's CoreDevice record waits for the record.
+    package static let coreDeviceRecord: Duration = .seconds(60)
     /// How long a guest service may take to create a HID service or send what a connection accepted.
     /// Closing the connection on the limit also ends what it created in the guest.
     package static let guestService: Duration = .seconds(10)

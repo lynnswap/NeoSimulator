@@ -188,12 +188,9 @@ package final class CoreDevicePasteboardTransport: PasteboardTransport {
         }
     }
 
-    /// The pasteboard of a default-set simulator, or nil when CoreDevice does not list it or its pasteboard.
-    package static func make(simulatorUDID: String) async throws -> CoreDevicePasteboardTransport? {
-        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID) else { return nil }
-        let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
-        guard try remote.supports(feature) else { return nil }
-        return try await CoreDevicePasteboardTransport(remote: remote, bindings: Bindings(runtime: remote.runtime))
+    /// The pasteboard of a simulator whose CoreDevice record has said it has one.
+    package static func make(remote: CoreDeviceRemoteScreenDevice) async throws -> CoreDevicePasteboardTransport {
+        try await CoreDevicePasteboardTransport(remote: remote, bindings: Bindings(runtime: remote.runtime))
     }
 
     private init(remote: CoreDeviceRemoteScreenDevice, bindings: Bindings) {

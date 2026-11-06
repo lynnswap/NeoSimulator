@@ -9,6 +9,7 @@ import Metal
 @testable import NeoSimulatorHostSupport
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorPresentationAdapters
+import Synchronization
 import Testing
 import UniformTypeIdentifiers
 import XPC
@@ -1513,6 +1514,96 @@ struct RemoteDeviceScreenTests {
         let messages = await peers.messages(to: universalHID, count: expected.count)
         withExtendedLifetime(keyboard) {}
         #expect(messages.count == expected.count && zip(messages, expected).allSatisfy { xpc_equal($0, $1) })
+    }
+
+    /// The guest's route through its own ports, on a device's real channel. A lookup that the channel holds fails the
+    /// attempt, a retry meanwhile is refused unsent, and the channel saying the call returned starts the one attempt that connects.
+    @Test(.timeLimit(.minutes(1)))
+    func aHeldLookUpFailsTheRouteWithoutBeingSentAgainAndTheChannelsRecoveryConnectsIt() async throws {
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: .shared)
+        let channel = SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil)))
+        let held = DispatchSemaphore(value: 0)
+        defer { held.signal() }
+        let calls = Mutex(0)
+        let guest = SimulatorGuestHID(codec: codec) { name in
+            // The first call blocks, as a guest that stopped answering blocks the device's lookup.
+            try await channel.read("look up \(name)", limit: .milliseconds(50)) {
+                if calls.withLock({ $0 += 1; return $0 }) == 1 { held.wait() }
+            }
+            return try peers.connect(name)
+        }
+        let services = DeviceOptionalServices()
+        var activated = 0
+        let activation = NativeInputActivation(services: services, connect: {
+            NativeInputServices(keyboard: try await NativeDeviceKeyboard.connect(guest: guest),
+                                trackpad: try await NativeDeviceTrackpad.connect(guest: guest))
+        }, activate: { _ in activated += 1 }, healthChanges: { channel.healthChanges() })
+        defer { activation.cancel() }
+        func failure() -> DeviceOperationFailure? { services.input.failure as? DeviceOperationFailure }
+
+        activation.start()
+        while failure() == nil { await Task.yield() }
+        let universalHID = CoreDeviceScreenInput.universalHIDFeature
+        #expect(failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50)))
+        #expect(peers.lookUps.isEmpty)
+
+        services.retryInput()
+        while failure() == nil || failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50)) { await Task.yield() }
+        #expect(failure() == .notSent(operation: "look up \(universalHID)", heldBy: "look up \(universalHID)"))
+        #expect(calls.withLock { $0 } == 1 && peers.lookUps.isEmpty && activated == 0)
+
+        held.signal()
+        while activated == 0 { await Task.yield() }
+        #expect(calls.withLock { $0 } == 3)
+        #expect(peers.lookUps == [universalHID, universalHID])
+    }
+
+    /// What connected but no display took up belongs to nobody else, so it stops through its own ports however late it
+    /// answered. What could not stop is retried by the connection's stop, and the attempt never starts again.
+    @Test(.timeLimit(.minutes(1)))
+    func inputThatNoDisplayTookUpStopsThroughItsOwnPorts() async throws {
+        let transport = KeyboardFixtureTransport()
+        let keyboard = NativeDeviceKeyboard(transport: transport)
+        keyboard.handle(try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 1, windowNumber: 0,
+            context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)))
+        let service = try #require(transport.keyboards.first)
+        service.stopFailures = 1
+        var answer: CheckedContinuation<NativeInputServices?, any Error>?
+        var connects = 0
+        var activated = 0
+        let services = DeviceOptionalServices()
+        let activation = NativeInputActivation(services: services, connect: {
+            connects += 1
+            return try await withCheckedThrowingContinuation { answer = $0 }
+        }, activate: { _ in activated += 1 })
+        activation.start()
+        while answer == nil { await Task.yield() }
+
+        activation.cancel()
+        #expect(await !activation.ends(before: ContinuousClock.now))
+        nonisolated(unsafe) let late: NativeInputServices? = NativeInputServices(keyboard: keyboard)
+        answer?.resume(returning: late)
+        #expect(await activation.ends(before: ContinuousClock.now + .seconds(30)))
+        #expect(activated == 0 && service.stops == 1)
+        activation.start()
+        #expect(connects == 1)
+
+        try await activation.stopUnactivated()
+        #expect(service.stops == 2)
+        try await activation.stopUnactivated()
+        #expect(service.stops == 2)
+
+        // A display that could not take them up leaves them here too, and that is the route's failure.
+        let refused = NativeDeviceKeyboard(transport: KeyboardFixtureTransport())
+        let display = NSObject()
+        let refusing = DeviceOptionalServices()
+        let failing = NativeInputActivation(services: refusing, connect: { NativeInputServices(keyboard: refused) },
+                                            activate: { _ in throw ScreenFixtureError.stream })
+        failing.start()
+        while refusing.input.failure == nil { await Task.yield() }
+        refused.setEnabled(true, for: display)
+        #expect(!refused.isEnabled(for: display))
     }
 
     @Test(.timeLimit(.minutes(1)))

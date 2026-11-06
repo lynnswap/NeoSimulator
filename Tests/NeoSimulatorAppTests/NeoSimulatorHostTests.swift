@@ -10590,6 +10590,185 @@ struct InputFocusTests {
         #expect(isPending(services.pasteboard))
     }
 
+    /// A simulator's CoreDevice record, which a test changes as CoreDevice does.
+    @MainActor
+    private final class RecordFixture: CoreDeviceFeatureRecord {
+        var connected = false
+        var features: Set<String> = []
+        func isConnected() async throws -> Bool { connected }
+        func supports(_ feature: String) throws -> Bool { features.contains(feature) }
+    }
+
+    /// CoreDevice's list and notifications. Each stream starts with what is current, as CoreDevice's do.
+    @MainActor
+    private final class RecordSourceFixture: CoreDeviceRecordSource {
+        var current: RecordFixture?
+        var readFailure: (any Error)?
+        private(set) var reads = 0
+        private var streams: [Int: AsyncThrowingStream<Void, any Error>.Continuation] = [:]
+        private var nextStream = 0
+        var followers: Int { streams.count }
+
+        func record() async throws -> RecordFixture? {
+            reads += 1
+            if let readFailure { throw readFailure }
+            return current
+        }
+        func followInventory(_ changed: @escaping @MainActor () -> Void) async throws { try await follow(changed) }
+        func follow(_ record: RecordFixture, _ changed: @escaping @MainActor () -> Void) async throws { try await follow(changed) }
+        func change() { for stream in streams.values { stream.yield() } }
+        func endStreams(throwing error: any Error) { for stream in streams.values { stream.finish(throwing: error) } }
+
+        private func follow(_ changed: @MainActor () -> Void) async throws {
+            let (stream, continuation) = AsyncThrowingStream.makeStream(of: Void.self)
+            let number = nextStream
+            nextStream += 1
+            streams[number] = continuation
+            defer { streams[number] = nil }
+            continuation.yield()
+            for try await _ in stream { changed() }
+        }
+    }
+
+    /// The display is open before CoreDevice lists the device. Neither no record nor a record that is not connected says
+    /// what the device has, and the input CoreDevice then offers arrives on that same display, with nothing left followed.
+    @Test(.timeLimit(.minutes(1)))
+    func delayedDiscoveryGivesTheChosenRouteOnTheOpenDisplay() async throws {
+        let display = TestDisplay()
+        let session = try makeSession(display)
+        let services = session.optionalServices
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        discovery.onAwaitingChange = { services.setAwaitingDeviceRecord($0) }
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: {
+            guard case .supported = try await discovery.answer(for: ["input"]) else { return nil }
+            return NativeInputServices()
+        }, activate: { _ in activations.value += 1 })
+        activation.start()
+        await yield { source.followers == 1 }
+        #expect(isPending(services.input) && services.isAwaitingDeviceRecord)
+
+        let record = RecordFixture()
+        source.current = record
+        source.change()
+        await yield { source.followers == 2 }
+        #expect(isPending(services.input) && activations.value == 0)
+
+        record.connected = true
+        record.features = ["input"]
+        source.change()
+        await yield { isReady(services.input) && source.followers == 0 }
+        #expect(activations.value == 1 && !services.isAwaitingDeviceRecord)
+        #expect(session.display === display)
+    }
+
+    /// Only a connected record without the feature is evidence, and it is what takes SimPasteboardPlus.
+    @Test(.timeLimit(.minutes(1)))
+    func onlyAConnectedRecordWithoutTheFeatureIsUnsupported() async throws {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let record = RecordFixture()
+        source.current = record
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: {
+            guard case .supported = try await discovery.answer(for: ["input"]) else { return nil }
+            return NativeInputServices()
+        }, activate: { _ in activations.value += 1 })
+        let route = SimulatorPasteboardRoute(services: services, make: {
+            guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+            return TestPasteboardTransport()
+        })
+        activation.start()
+        let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+        await yield { source.followers == 2 }
+        #expect(isPending(services.input) && isPending(services.pasteboard))
+
+        record.connected = true
+        source.change()
+        await yield { isUnsupported(services.input) && isUnsupported(services.pasteboard) }
+        #expect(try await transfer.value == nil)
+        #expect(activations.value == 0)
+    }
+
+    /// A read that fails and notifications that end say nothing about the device, and asking again goes through the same owner.
+    @Test(.timeLimit(.minutes(1)))
+    func aFailureToReadTheRecordIsNotUnsupportedAndCanBeRetried() async {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: {
+            guard case .supported = try await discovery.answer(for: ["input"]) else { return nil }
+            return NativeInputServices()
+        }, activate: { _ in activations.value += 1 })
+        source.readFailure = DeviceIOError.temporary("fixture-read", "CoreDevice did not answer.")
+        activation.start()
+        await yield { services.input.failure != nil }
+        #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-read")
+        #expect(source.followers == 0)
+
+        source.readFailure = nil
+        services.retryInput()
+        await yield { source.followers == 1 }
+        #expect(isPending(services.input))
+        source.endStreams(throwing: DeviceIOError.temporary("fixture-stream", "CoreDevice stopped reporting."))
+        await yield { services.input.failure != nil && source.followers == 0 }
+        #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-stream")
+
+        let record = RecordFixture()
+        record.connected = true
+        record.features = ["input"]
+        source.current = record
+        services.retryInput()
+        await yield { isReady(services.input) }
+        #expect(activations.value == 1)
+    }
+
+    /// The owner ends with its connection: what waits is cancelled, which says nothing about the device, and nothing is followed.
+    @Test(.timeLimit(.minutes(1)))
+    func stoppingTheRecordsOwnerEndsWhatWaitsWithoutAnAnswer() async {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let route = SimulatorPasteboardRoute(services: services, make: {
+            guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+            return TestPasteboardTransport()
+        })
+        let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+        let cancelled = Task.immediate { _ = try await discovery.answer(for: ["input"]) }
+        await yield { source.followers == 1 }
+        // One asker's cancellation leaves the other's wait.
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(source.followers == 1 && isPending(services.pasteboard))
+
+        discovery.stop()
+        await #expect(throws: CancellationError.self) { _ = try await transfer.value }
+        await yield { source.followers == 0 }
+        #expect(isPending(services.pasteboard))
+        await #expect(throws: CancellationError.self) { _ = try await discovery.answer(for: ["pasteboard"]) }
+    }
+
+    /// A screen that cannot exist without the record waits for it in any state, and a record that does not come is a failure.
+    @Test(.timeLimit(.minutes(1)))
+    func aScreenThatNeedsTheRecordWaitsForItUntilItsLimit() async throws {
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let waiting = Task.immediate { try await discovery.record(limit: .seconds(30)) }
+        await yield { source.followers == 1 }
+        let record = RecordFixture()
+        source.current = record
+        source.change()
+        #expect(try await waiting.value === record)
+        await yield { source.followers == 0 }
+
+        source.current = nil
+        await #expect(throws: DeviceIOError.self) { _ = try await discovery.record(limit: .milliseconds(20)) }
+        await yield { source.followers == 0 }
+    }
+
     @Test func serviceStatusSaysWhatTheServicesSay() {
         let failure = DeviceIOError.temporary("fixture", "It did not answer.")
         #expect(DeviceServiceStatus(input: .notRouted, pasteboard: .notRouted) == nil)
@@ -10597,6 +10776,8 @@ struct InputFocusTests {
         #expect(DeviceServiceStatus(input: .unsupported, pasteboard: .unsupported) == nil)
         // Only a transfer waits for the pasteboard, so its connecting costs nothing yet.
         #expect(DeviceServiceStatus(input: .ready, pasteboard: .pending) == nil)
+        // A wait for CoreDevice's word about the device can last, so it shows even when only a transfer waits.
+        #expect(DeviceServiceStatus(input: .ready, pasteboard: .pending, isAwaitingDeviceRecord: true)?.message.contains("CoreDevice") == true)
         #expect(DeviceServiceStatus(input: .pending, pasteboard: .ready)?.offersRetry == false)
         let input = DeviceServiceStatus(input: .failed(failure), pasteboard: .failed(failure))
         #expect(input?.offersRetry == true && input?.message.contains("It did not answer.") == true)

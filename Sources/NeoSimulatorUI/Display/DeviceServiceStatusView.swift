@@ -2,17 +2,20 @@ import AppKit
 import NeoSimulatorKit
 
 /// What a device's optional services tell the person using its screen, if anything. A pasteboard that has not connected
-/// yet costs nothing until a transfer waits for it, so only its failure shows.
+/// yet costs nothing until a transfer waits for it, so only its failure and a wait for the device's record show.
 package struct DeviceServiceStatus: Equatable {
     package var message: String
     package var offersRetry: Bool
 
-    package init?(input: SimulatorServiceReadiness, pasteboard: SimulatorServiceReadiness) {
+    package init?(input: SimulatorServiceReadiness, pasteboard: SimulatorServiceReadiness, isAwaitingDeviceRecord: Bool = false) {
         if let failure = input.failure {
             message = "The device's keyboard and touch input aren't connected: \(failure.localizedDescription)"
             offersRetry = true
         } else if let failure = pasteboard.failure {
             message = "The device's pasteboard isn't connected: \(failure.localizedDescription)"
+            offersRetry = false
+        } else if isAwaitingDeviceRecord {
+            message = "Waiting for CoreDevice to report this device…"
             offersRetry = false
         } else if case .pending = input {
             message = "Connecting the device's keyboard and touch input…"

@@ -245,15 +245,15 @@ package final class NativeDeviceCanvas {
     }
 
     /// Requires what the view itself needs: DeviceKit and the simulator's CoreDevice record, which names the device to
-    /// DeviceView whatever state CoreDevice reports for it. The controls around the view have their own readiness and
-    /// report their own errors when they are used. `lookUp` returns a caller-owned send right to the guest's Mach service
-    /// of a name, as the simulator's `SimDevice` looks it up.
-    package static func connect(simulatorUDID: String,
+    /// DeviceView whatever state CoreDevice reports for it, and for which this waits because discovery can be delayed.
+    /// The controls around the view have their own readiness and report their own errors when they are used. `lookUp`
+    /// returns a caller-owned send right to the guest's Mach service of a name, as the simulator's `SimDevice` looks it up.
+    package static func connect(record: CoreDeviceSimulatorRecord,
                                 lookUp: @escaping @MainActor (String) async throws -> UInt32) async throws -> NativeDeviceCanvas {
         try await CoreDeviceRuntime.loadDeviceKit()
-        guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID),
-              let uuid = UUID(uuidString: identifier) else {
-            throw RemoteScreenError.unavailable("native-device-canvas", "CoreDevice has no record of this simulator, so DeviceKit cannot show its screen.")
+        let remote = try await record.record(limit: DeviceOperationLimit.coreDeviceRecord)
+        guard let uuid = UUID(uuidString: remote.identifier) else {
+            throw RemoteScreenError.unavailable("native-device-canvas", "CoreDevice's record of this simulator has no device identifier for DeviceKit.")
         }
         let bindings = try await Bindings(runtime: ABIRuntime.shared)
         let base = try unsafe bindings.make.unsafeInvoke(uuid)
@@ -281,7 +281,7 @@ package final class NativeDeviceCanvas {
         let root = NativeCanvasRoot(presentation: presentation, shown: try activated(content(shown)),
             hidden: try activated(content(hidden)), canvasPath: bindings.canvasPath, zoomPath: bindings.zoomPath)
         let captureDisplay: () throws -> UInt32
-        do { captureDisplay = try await captureDisplayReader(deviceIdentifier: identifier) }
+        do { captureDisplay = try await captureDisplayReader(remote: remote) }
         catch is CancellationError { throw CancellationError() }
         catch { captureDisplay = { throw error } }
         return NativeDeviceCanvas(root: AnyView(root), presentation: presentation,
@@ -291,8 +291,7 @@ package final class NativeDeviceCanvas {
     }
 
     /// Reads the display when a capture starts: CoreDevice may report no displays until it finds the booted device.
-    private static func captureDisplayReader(deviceIdentifier: String) async throws -> () throws -> UInt32 {
-        let remote = try await CoreDeviceRemoteScreenDevice(identifier: deviceIdentifier)
+    private static func captureDisplayReader(remote: CoreDeviceRemoteScreenDevice) async throws -> () throws -> UInt32 {
         let runtime = remote.runtime
         let infoType = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
         let displayInfo = try await runtime.resolve(.swift(.type("CoreDevice.DisplayInfo")))

@@ -60,8 +60,8 @@ package struct NativeTouchRoute {
     }
 }
 
-/// What a device's native input route connected. Connecting sends the guest nothing, so these can be let go until a
-/// display activates them.
+/// What a device's native input route connected. Connecting sends the guest nothing, and whoever connected these stops
+/// them through their own ports until a display takes them up.
 package struct NativeInputServices {
     package var keyboard: NativeDeviceKeyboard?
     package var trackpad: NativeDeviceTrackpad?
@@ -72,57 +72,118 @@ package struct NativeInputServices {
         self.trackpad = trackpad
         self.touchRoute = touchRoute
     }
+
+    /// Stops each service whatever the others do. What could not be stopped is retried by the next call.
+    package func stop() async throws {
+        var failures: [String] = []
+        do { try await keyboard?.stop() } catch { failures.append(error.localizedDescription) }
+        do { try await trackpad?.stop() } catch { failures.append(error.localizedDescription) }
+        do { try await touchRoute?.input.stop() } catch { failures.append(error.localizedDescription) }
+        if !failures.isEmpty { throw RemoteScreenError.io("native-input-removal", failures.joined(separator: "\n")) }
+    }
 }
 
 /// Connects a display's native input after the display opened and hands it over in place. Its state says how far that
-/// came: `connect` returning nil is a device without the route, and a throw is a failure to reach it, which keeps the
-/// display on SimulatorKit's input, says so, and can be retried.
+/// came: `connect` returning nil is a device whose route said it lacks the services, and a throw is a failure to reach
+/// them, which keeps the display on SimulatorKit's input, says so, and can be retried. A call that a device's channel
+/// holds is neither sent again nor waited for: the attempt fails, a retry meanwhile is refused unsent, and the channel
+/// says when the call returned, which starts one more attempt.
 @MainActor
 package final class NativeInputActivation {
     private let services: DeviceOptionalServices
     private let connect: @MainActor () async throws -> NativeInputServices?
     private let activate: @MainActor (NativeInputServices) async throws -> Void
+    private let healthChanges: (@MainActor () -> AsyncStream<DeviceChannelHealth>)?
     private var running: Task<Void, Never>?
+    private var recovery: Task<Void, Never>?
+    private var isCancelled = false
+    /// What connected but no display took up and could not be stopped, which `stopUnactivated()` retries.
+    private var unstopped: [NativeInputServices] = []
 
+    /// `healthChanges` is the channel of a route that `connect` reaches through one.
     package init(services: DeviceOptionalServices, connect: @escaping @MainActor () async throws -> NativeInputServices?,
-                 activate: @escaping @MainActor (NativeInputServices) async throws -> Void) {
+                 activate: @escaping @MainActor (NativeInputServices) async throws -> Void,
+                 healthChanges: (@MainActor () -> AsyncStream<DeviceChannelHealth>)? = nil) {
         self.services = services
         self.connect = connect
         self.activate = activate
+        self.healthChanges = healthChanges
         services.onRetryInput = { [weak self] in self?.start() }
         services.setInput(.pending)
     }
 
-    /// Connects unless a connection is running or has finished. A failed one can start again.
+    /// Connects unless a connection is running or has finished, or the display has ended. A failed one can start again.
     package func start() {
-        guard running == nil else { return }
+        guard running == nil, !isCancelled else { return }
+        recovery?.cancel()
+        recovery = nil
         services.setInput(.pending)
         let (connect, activate, services) = (connect, activate, services)
         running = Task { [weak self] in
+            var connected: NativeInputServices?
             do {
-                if let connected = try await connect() {
-                    try Task.checkCancellation()
-                    try await activate(connected)
-                    services.setInput(.ready)
-                } else {
+                connected = try await connect()
+                guard let connected else {
                     services.setInput(.unsupported)
+                    return
                 }
-            } catch where error.isCancellation {
-                return
+                try Task.checkCancellation()
+                try await activate(connected)
+                services.setInput(.ready)
             } catch {
+                // Nothing else owns what connected but no display took up, however late it arrived.
+                if let connected {
+                    do { try await connected.stop() } catch {
+                        hostLog("Could not stop the native input that no display took up: \(error.localizedDescription)")
+                        self?.unstopped.append(connected)
+                    }
+                }
+                guard !error.isCancellation else { return }
                 services.setInput(.failed(error))
                 self?.running = nil
+                self?.startWhenAnsweringAgain(after: error)
             }
         }
     }
 
-    package func cancel() { running?.cancel() }
+    /// Ends what waits, and starts nothing more: what answers later is stopped rather than activated.
+    package func cancel() {
+        isCancelled = true
+        running?.cancel()
+        recovery?.cancel()
+        recovery = nil
+    }
 
-    /// Whether a connection that was cancelled has returned by `deadline`. A native call that ignores its cancellation
-    /// holds nothing of the display's, but does hold a guest service if it then answers.
+    /// Whether a connection that was cancelled has returned by `deadline`, having stopped what it connected. A native call
+    /// that ignores its cancellation holds nothing of the display's, and what it answers with is stopped when it does.
     package func ends(before deadline: ContinuousClock.Instant) async -> Bool {
         guard let running else { return true }
         return await running.ends(before: deadline)
+    }
+
+    /// Stops what an earlier attempt could not, and throws what still could not be stopped.
+    package func stopUnactivated() async throws {
+        let stopping = unstopped
+        unstopped = []
+        var failures: [String] = []
+        for connected in stopping {
+            do { try await connected.stop() } catch {
+                unstopped.append(connected)
+                failures.append(error.localizedDescription)
+            }
+        }
+        if !failures.isEmpty { throw RemoteScreenError.io("native-input-removal", failures.joined(separator: "\n")) }
+    }
+
+    private func startWhenAnsweringAgain(after error: any Error) {
+        guard error is DeviceOperationFailure, let healthChanges else { return }
+        let changes = healthChanges()
+        recovery = Task { [weak self] in
+            for await health in changes where health == .ready {
+                self?.start()
+                return
+            }
+        }
     }
 }
 
@@ -147,9 +208,10 @@ package final class SharedNativeKeyboard {
     }
 }
 
-/// How a device's pasteboard is reached: CoreDevice's transport for the default set, which a transfer waits for, and
-/// SimPasteboardPlus where the device really has no other. A failure to reach CoreDevice's says nothing about whether the
-/// device has it, so it falls back to nothing, and the next transfer asks again.
+/// How a device's pasteboard is reached: CoreDevice's transport for the default set, which a transfer waits for until
+/// CoreDevice has said what the device has, and SimPasteboardPlus where CoreDevice has said the device has no other. A
+/// failure to reach CoreDevice says nothing about whether the device has it, so it falls back to nothing, and the next
+/// transfer asks again.
 @MainActor
 package final class SimulatorPasteboardRoute {
     private let services: DeviceOptionalServices
@@ -157,7 +219,7 @@ package final class SimulatorPasteboardRoute {
     private var resolved: (any PasteboardTransport)?
     private var isResolved = false
 
-    /// With no `make`, nothing but SimPasteboardPlus is routed.
+    /// With no `make`, nothing but SimPasteboardPlus is routed. `make` returning nil says the device has no routed transport.
     package init(services: DeviceOptionalServices, make: (@MainActor () async throws -> (any PasteboardTransport)?)?) {
         self.services = services
         self.make = make
@@ -220,47 +282,56 @@ package final class SimulatorScreenRouter {
         var capabilities = Self.capabilities(of: device, features: features)
         let plan = NativeInputPlan(capabilities: capabilities, deviceTypeIdentifier: device.deviceTypeIdentifier,
                                    isInDefaultSet: device.deviceSetPath == nil)
-        // DeviceKit's view is the screen of a device that needs it, so opening fails without it.
-        let nativeCanvas = plan == .canvas
-            ? try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier, lookUp: device.lookUp) : nil
+        // What this connection routes by CoreDevice's word about the device asks here. It ends with the connection.
+        let record = CoreDeviceSimulatorRecord(simulatorUDID: device.identifier)
+        // DeviceKit's view is the screen of a device that needs it, so opening waits for its record and fails without it.
+        let nativeCanvas = plan == .canvas ? try await NativeDeviceCanvas.connect(record: record, lookUp: device.lookUp) : nil
         try Task.checkCancellation()
         let services = DeviceOptionalServices()
+        record.onAwaitingChange = { [weak services] in services?.setAwaitingDeviceRecord($0) }
         // CoreDevice lists only the default set, so any other set has nothing to route.
         var makePasteboard: (@MainActor () async throws -> (any PasteboardTransport)?)?
         if device.deviceSetPath == nil {
-            let identifier = device.identifier
-            makePasteboard = { try await CoreDevicePasteboardTransport.make(simulatorUDID: identifier) }
+            makePasteboard = {
+                guard case .supported(let remote) = try await record.answer(for: [CoreDevicePasteboardTransport.feature]) else { return nil }
+                return try await CoreDevicePasteboardTransport.make(remote: remote)
+            }
         }
         let pasteboardRoute = SimulatorPasteboardRoute(services: services, make: makePasteboard)
         let connection = try await SimulatorConnection(device: device, screen: screen, runtime: runtime, displays: displays,
-                                                       pasteboardRoute: pasteboardRoute, nativeCanvas: nativeCanvas)
+                                                       pasteboardRoute: pasteboardRoute, nativeCanvas: nativeCanvas,
+                                                       deviceRecord: record)
         if nativeCanvas != nil { capabilities.controlsOrientation = false }
         let start: @MainActor () -> Void = { [weak connection] in
             guard let connection else { return }
-            Self.startInput(on: connection, of: device, plan: plan, runtime: runtime, services: services)
+            Self.startInput(on: connection, of: device, plan: plan, record: record, runtime: runtime, services: services)
         }
         return ConnectedDeviceDisplay(display: connection, capabilities: capabilities, optionalServices: services,
                                       startOptionalServices: start)
     }
 
     private static func startInput(on connection: SimulatorConnection, of device: SimulatorDevice, plan: NativeInputPlan,
-                                   runtime: SimulatorPresentationRuntime, services: DeviceOptionalServices) {
+                                   record: CoreDeviceSimulatorRecord, runtime: SimulatorPresentationRuntime,
+                                   services: DeviceOptionalServices) {
         guard plan != .canvas, plan != .simulatorKit else { return }
         let connect: @MainActor () async throws -> NativeInputServices? = {
-            try await connectInput(of: device, plan: plan, runtime: runtime)
+            try await connectInput(of: device, plan: plan, record: record, runtime: runtime)
         }
         let activate: @MainActor (NativeInputServices) async throws -> Void = { [weak connection] connected in
             guard let connection else { throw CancellationError() }
             try await connection.activateNativeInput(connected)
         }
-        let activation = NativeInputActivation(services: services, connect: connect, activate: activate)
+        // Only the guest's route reaches the device through its channel.
+        var healthChanges: (@MainActor () -> AsyncStream<DeviceChannelHealth>)?
+        if plan == .guest { healthChanges = { device.channel.healthChanges() } }
+        let activation = NativeInputActivation(services: services, connect: connect, activate: activate, healthChanges: healthChanges)
         connection.inputActivation = activation
         activation.start()
     }
 
-    /// Connects `plan`'s services, or returns nil when the device lacks them. Connecting sends the guest nothing, so what
-    /// connected before a later failure can be let go.
-    private static func connectInput(of device: SimulatorDevice, plan: NativeInputPlan,
+    /// Connects `plan`'s services, or returns nil when CoreDevice has said the device lacks them. Connecting sends the guest
+    /// nothing, so what connected before a later failure can be let go.
+    private static func connectInput(of device: SimulatorDevice, plan: NativeInputPlan, record: CoreDeviceSimulatorRecord,
                                      runtime: SimulatorPresentationRuntime) async throws -> NativeInputServices? {
         let name = device.name
         var connected = NativeInputServices()
@@ -276,13 +347,15 @@ package final class SimulatorScreenRouter {
             connected.trackpad = try await NativeDeviceTrackpad.connect(guest: guest)
             connected.touchRoute = NativeTouchRoute(input: try await NativeDeviceScreenInput.connect(guest: guest), interface: interface)
         case .coreDevice(let keyboard, let trackpad, let touches):
-            if keyboard { connected.keyboard = try await NativeDeviceKeyboard.connect(simulatorUDID: device.identifier) }
-            if trackpad { connected.trackpad = try await NativeDeviceTrackpad.connect(simulatorUDID: device.identifier) }
-            guard connected.keyboard != nil || connected.trackpad != nil else { return nil }
+            // Without the native touchscreen the guest would lose SimulatorKit's touches to the other input.
+            var features = [CoreDeviceScreenInput.universalHIDFeature]
+            if touches { features += [CoreDeviceScreenInput.features[.digitizer]!, CoreDeviceScreenInput.features[.button]!] }
+            guard case .supported(let remote) = try await record.answer(for: features) else { return nil }
+            if keyboard { connected.keyboard = try await NativeDeviceKeyboard.connect(remote: remote) }
+            if trackpad { connected.trackpad = try await NativeDeviceTrackpad.connect(remote: remote) }
             if touches {
-                // Without the native touchscreen the guest would lose SimulatorKit's touches to the other input.
-                guard let input = try await NativeDeviceScreenInput.connect(simulatorUDID: device.identifier) else { return nil }
-                connected.touchRoute = NativeTouchRoute(input: input, interface: try await runtime.touchInterface())
+                connected.touchRoute = NativeTouchRoute(input: try await NativeDeviceScreenInput.connect(remote: remote),
+                                                        interface: try await runtime.touchInterface())
             }
         }
         connected.keyboard?.onFailure = { hostLog("Could not send keyboard input to \(name): \($0.localizedDescription)") }

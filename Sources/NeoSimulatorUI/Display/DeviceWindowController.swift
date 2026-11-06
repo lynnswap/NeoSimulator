@@ -557,7 +557,8 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         serviceStatusObservation = withPortableContinuousObservation { [weak self] _ in
             guard let self else { return }
             let services = self.session.optionalServices
-            self.serviceStatus = DeviceServiceStatus(input: services.input, pasteboard: services.pasteboard)
+            self.serviceStatus = DeviceServiceStatus(input: services.input, pasteboard: services.pasteboard,
+                                                     isAwaitingDeviceRecord: services.isAwaitingDeviceRecord)
             self.content.setServiceStatus(self.serviceStatus) { [weak self] in self?.session.optionalServices.retryInput() }
         }
     }
