@@ -17,7 +17,7 @@
                BlueprintIdentifier = "NeoSimulatorKit"
                BuildableName = "NeoSimulatorKit"
                BlueprintName = "NeoSimulatorKit"
-               ReferencedContainer = "container:..">
+               ReferencedContainer = "container:">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -35,7 +35,7 @@
                BlueprintIdentifier = "NeoSimulatorAppTests"
                BuildableName = "NeoSimulatorAppTests"
                BlueprintName = "NeoSimulatorAppTests"
-               ReferencedContainer = "container:..">
+               ReferencedContainer = "container:">
             </BuildableReference>
          </TestableReference>
          <TestableReference
@@ -46,7 +46,7 @@
                BlueprintIdentifier = "NeoSimulatorHostSupportTests"
                BuildableName = "NeoSimulatorHostSupportTests"
                BlueprintName = "NeoSimulatorHostSupportTests"
-               ReferencedContainer = "container:..">
+               ReferencedContainer = "container:">
             </BuildableReference>
          </TestableReference>
       </Testables>
