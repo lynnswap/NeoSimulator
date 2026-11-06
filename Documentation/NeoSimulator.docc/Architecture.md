@@ -379,9 +379,15 @@ observation asks again.
 
 A device's screen opens with what the screen itself needs: its display and, for a Duo, the
 independent canvas that is its screen. Its native input and pasteboard follow from what the device
-is. A device without one is `unsupported`, and only then does SimulatorKit or SimPasteboardPlus serve
-it for good. A transport that did not answer says nothing about the device, so it is `failed`:
-nothing else takes its place, the failure stays visible, and asking again asks the same transport.
+is. Only a connected CoreDevice record that lacks a feature makes the device `unsupported`, and only
+then does SimulatorKit or SimPasteboardPlus serve it for good. A simulator's record can arrive late
+and lists no features until CoreDevice connects, so one `CoreDeviceRecordDiscovery` for each connection
+waits on CoreDevice's `deviceChanges` and `deviceInfoChanges` while the service stays `pending`, with
+no timer. A Duo's screen waits for the record the same way, until `DeviceOperationLimit.coreDeviceRecord`.
+A transport that did not answer says nothing about the device, so it is `failed`: nothing else takes
+its place, the failure stays visible, and asking again asks the same transport. A retry while a device's
+channel holds a call is refused unsent, and the channel saying the call returned starts one more attempt.
+What connected but no display took up stops through its own ports, however late it answered.
 Native input activates on the open screen once the pointer and any button SimulatorKit holds are
 up, the touches first, because the guest drops SimulatorKit's touches and buttons once native
 keyboard or trackpad input starts. A 3D Touch screen keeps SimulatorKit's input throughout, as only
