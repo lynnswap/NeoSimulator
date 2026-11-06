@@ -10975,25 +10975,32 @@ struct InputFocusTests {
         var current: RecordFixture?
         var readFailure: (any Error)?
         private(set) var reads = 0
-        private var streams: [Int: AsyncThrowingStream<Void, any Error>.Continuation] = [:]
+        private(set) var recordFollows = 0
+        /// What each stream follows: a record, or CoreDevice's list for nil.
+        private var streams: [Int: (record: RecordFixture?, continuation: AsyncThrowingStream<Void, any Error>.Continuation)] = [:]
         private var nextStream = 0
         var followers: Int { streams.count }
+        func followers(of record: RecordFixture?) -> Int { streams.values.count { $0.record === record } }
 
         func record() async throws -> RecordFixture? {
             reads += 1
             if let readFailure { throw readFailure }
             return current
         }
-        func followInventory(_ changed: @escaping @MainActor () -> Void) async throws { try await follow(changed) }
-        func follow(_ record: RecordFixture, _ changed: @escaping @MainActor () -> Void) async throws { try await follow(changed) }
-        func change() { for stream in streams.values { stream.yield() } }
-        func endStreams(throwing error: any Error) { for stream in streams.values { stream.finish(throwing: error) } }
+        func followInventory(_ changed: @escaping @MainActor () -> Void) async throws { try await follow(nil, changed) }
+        func follow(_ record: RecordFixture, _ changed: @escaping @MainActor () -> Void) async throws {
+            recordFollows += 1
+            try await follow(.some(record), changed)
+        }
+        func change() { for stream in streams.values { stream.continuation.yield() } }
+        func change(of record: RecordFixture?) { for stream in streams.values where stream.record === record { stream.continuation.yield() } }
+        func endStreams(throwing error: any Error) { for stream in streams.values { stream.continuation.finish(throwing: error) } }
 
-        private func follow(_ changed: @MainActor () -> Void) async throws {
+        private func follow(_ record: RecordFixture?, _ changed: @MainActor () -> Void) async throws {
             let (stream, continuation) = AsyncThrowingStream.makeStream(of: Void.self)
             let number = nextStream
             nextStream += 1
-            streams[number] = continuation
+            streams[number] = (record, continuation)
             defer { streams[number] = nil }
             continuation.yield()
             for try await _ in stream { changed() }
@@ -11031,6 +11038,64 @@ struct InputFocusTests {
         try await wait { isReady(services.input) && source.followers == 0 }
         #expect(activations.value == 1 && !services.isAwaitingDeviceRecord)
         #expect(session.display === display)
+    }
+
+    /// CoreDevice's list replaces the record that a wait follows, and only the new record's own notification says when it
+    /// connects. A read returns a new value of an unchanged record too, which is no reason to follow again.
+    @Test(.timeLimit(.minutes(1)))
+    func aWaitFollowsTheRecordThatReplacedTheOneItFollowed() async throws {
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        defer { discovery.stop() }
+        let old = RecordFixture()
+        source.current = old
+        let waiting = Task.immediate { () -> ObjectIdentifier? in
+            guard case .supported(let record) = try await discovery.answer(for: ["input"]) else { return nil }
+            return ObjectIdentifier(record)
+        }
+        // The list's first notification, which says what is current, may have replaced what the first read found.
+        try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+        source.current = RecordFixture()
+        let reads = source.reads
+        source.change(of: old)
+        try await wait { source.reads > reads }
+        #expect(source.recordFollows == 2 && source.followers(of: old) == 1)
+
+        let new = RecordFixture()
+        source.current = new
+        source.change(of: nil)
+        try await wait { source.followers(of: old) == 0 && source.followers(of: new) == 1 }
+
+        new.connected = true
+        new.features = ["input"]
+        source.change(of: new)
+        #expect(try await waiting.value == ObjectIdentifier(new))
+        try await wait { source.followers == 0 }
+    }
+
+    /// A record that leaves CoreDevice's list is no answer and is no longer followed, and the owner's stop ends what followed its successor.
+    @Test(.timeLimit(.minutes(1)))
+    func aRemovedRecordIsNoLongerFollowedAndItsSuccessorEndsWithTheOwner() async throws {
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let old = RecordFixture()
+        source.current = old
+        let waiting = Task.immediate { _ = try await discovery.answer(for: ["input"]) }
+        try await wait { source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+        source.current = nil
+        source.change(of: nil)
+        try await wait { source.followers(of: old) == 0 && source.followers == 1 }
+
+        let new = RecordFixture()
+        source.current = new
+        source.change(of: nil)
+        try await wait { source.followers(of: new) == 1 && source.followers == 2 }
+
+        discovery.stop()
+        await #expect(throws: CancellationError.self) { try await waiting.value }
+        try await wait { source.followers == 0 }
     }
 
     /// Only a connected record without the feature is evidence, and it is what takes SimPasteboardPlus.

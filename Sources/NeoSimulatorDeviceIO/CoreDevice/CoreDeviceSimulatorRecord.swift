@@ -13,11 +13,12 @@ package protocol CoreDeviceFeatureRecord: AnyObject, Sendable {
 @MainActor
 package protocol CoreDeviceRecordSource: AnyObject, Sendable {
     associatedtype Record: CoreDeviceFeatureRecord
-    /// The simulator's record, or nil while CoreDevice lists none, which says nothing about the simulator.
+    /// The simulator's record, or nil while CoreDevice lists none, which says nothing about the simulator. Each read can
+    /// return a new value of an unchanged record, so only a change of the list says that the record may have been replaced.
     func record() async throws -> Record?
-    /// Calls `changed` when CoreDevice's list of devices changes.
+    /// Calls `changed` when CoreDevice's list of devices changes, which can replace the simulator's record.
     func followInventory(_ changed: @escaping @MainActor () -> Void) async throws
-    /// Calls `changed` when what CoreDevice knows of `record` changes, including its connection.
+    /// Calls `changed` when what CoreDevice knows of `record` itself changes, including its connection.
     func follow(_ record: Record, _ changed: @escaping @MainActor () -> Void) async throws
 }
 
@@ -44,6 +45,12 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     /// Why the notifications ended, which everything waiting on them is told.
     private var failure: (any Error)?
     private var latest: Source.Record?
+    /// How many times CoreDevice's list has changed, which can replace the simulator's record.
+    private var listChanges = 0
+    /// What `listChanges` was when the read of `latest` began.
+    private var latestListChanges = 0
+    /// What `listChanges` was when the read of the record that `recordFollower` follows began.
+    private var followedListChanges = 0
     private var stopped = false
     /// Reports whether anything is waiting because CoreDevice has not answered yet.
     package var onAwaitingChange: (@MainActor (Bool) -> Void)?
@@ -115,17 +122,35 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     private func read<Value>(_ decide: @MainActor (Source.Record) async throws -> Value?) async throws -> Value? {
         try Task.checkCancellation()
         guard !stopped else { throw CancellationError() }
-        guard let record = try await source.record() else { return nil }
-        latest = record
+        let listChangesSeen = listChanges
+        let record = try await source.record()
+        // What another read found after a later change of the list stays the latest.
+        if listChangesSeen >= latestListChanges {
+            latest = record
+            latestListChanges = listChangesSeen
+        }
+        guard let record else { return nil }
         return try await decide(record)
     }
 
     private func followChanges() {
         guard !stopped else { return }
         if inventoryFollower == nil {
-            inventoryFollower = follow { [source] changed in try await source.followInventory(changed) }
+            inventoryFollower = follow { [weak self, source] changed in
+                try await source.followInventory { [weak self] in
+                    self?.listChanges += 1
+                    changed()
+                }
+            }
+        }
+        // A record replaced by a change of the list says nothing of its successor. What was followed then ends, and its end
+        // counts for nothing. The next follower starts with what is current, so nothing since the read is missed.
+        if followedListChanges != latestListChanges {
+            recordFollower?.cancel()
+            recordFollower = nil
         }
         if recordFollower == nil, let latest {
+            followedListChanges = latestListChanges
             recordFollower = follow { [source] changed in try await source.follow(latest, changed) }
         }
     }

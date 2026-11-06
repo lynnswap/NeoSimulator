@@ -387,7 +387,9 @@ is. Only a connected CoreDevice record that lacks a feature makes the device `un
 then does SimulatorKit or SimPasteboardPlus serve it for good. A simulator's record can arrive late
 and lists no features until CoreDevice connects, so one `CoreDeviceRecordDiscovery` for each connection
 waits on CoreDevice's `deviceChanges` and `deviceInfoChanges` while the service stays `pending`, with
-no timer. A Duo's screen waits for the record the same way, until `DeviceOperationLimit.coreDeviceRecord`.
+no timer. A change of the list can replace the record, so it also moves the `deviceInfoChanges`
+subscription to what the list then holds. A Duo's screen waits for the record the same way, until
+`DeviceOperationLimit.coreDeviceRecord`.
 A transport that did not answer says nothing about the device, so it is `failed`: nothing else takes
 its place, the failure stays visible, and asking again asks the same transport. A retry while a device's
 channel holds a call is refused unsent, and the channel saying the call returned starts one more attempt.
