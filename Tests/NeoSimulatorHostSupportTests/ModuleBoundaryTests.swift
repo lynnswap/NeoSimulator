@@ -26,6 +26,15 @@ struct ModuleBoundaryTests {
 
     // MARK: Native loading
 
+    @Test(.timeLimit(.minutes(1)))
+    func aDifferentDeviceContextUsesTheSelectedDisplayXcode() async throws {
+        let displayXcode = try await CoreDeviceRuntime.uiXcodeURL()
+        let deviceXcode = displayXcode.appendingPathComponent("AnotherDeviceContext.app")
+        let runtime = try await SimulatorPresentationRuntime.load(xcodeURL: deviceXcode)
+        #expect(runtime.xcodeURL == deviceXcode)
+        #expect(runtime.uiXcodeURL == displayXcode)
+    }
+
     /// Each check, load and record of the toolkit is one step, so contexts asking at once cannot end up with two.
     @Test(.timeLimit(.minutes(1)))
     func concurrentContextsKeepOneUIToolkit() async throws {

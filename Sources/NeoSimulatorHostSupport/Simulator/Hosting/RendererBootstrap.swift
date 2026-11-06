@@ -24,7 +24,7 @@ package final class RendererBootstrap {
     /// Loads what a display needs from `xcodeURL`, which throws if it cannot be used. With `includingNativeBindings`, this
     /// returns the encoded report of the optional native bindings.
     package static func validateRuntime(xcodeURL: URL, includingNativeBindings: Bool) async throws -> Data? {
-        _ = try await SimulatorPresentationRuntime.load(xcodeURL: xcodeURL)
+        _ = try await SimulatorPresentationRuntime.load(xcodeURL: xcodeURL, uiXcodeURL: xcodeURL)
         guard includingNativeBindings else { return nil }
         return try JSONEncoder().encode(await NativeRuntimeValidationReport.prepareOptionalBindings())
     }

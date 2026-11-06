@@ -22,10 +22,13 @@ package final class SimulatorPresentationRuntime {
     package let pasteboard: SimulatorPasteboardInterface
     package var audio: SimulatorAudioInterface { io.audio }
 
-    /// Joins a context's in-flight preparation while its native values stay on the main actor. A toolkit other than the
-    /// process's fails, also when preparations of different contexts run together.
+    /// Loads the selected display Xcode unless a toolkit is explicitly requested, independently of the device's Xcode.
+    /// Joins a context's in-flight preparation. A toolkit other than the process's fails, also for concurrent contexts.
     package static func load(xcodeURL: URL, uiXcodeURL: URL? = nil) async throws -> SimulatorPresentationRuntime {
-        try await load(io: try await SimulatorIORuntime.load(xcodeURL: xcodeURL), uiXcodeURL: uiXcodeURL)
+        let displayXcode: URL
+        if let uiXcodeURL { displayXcode = uiXcodeURL }
+        else { displayXcode = try await CoreDeviceRuntime.uiXcodeURL() }
+        return try await load(io: try await SimulatorIORuntime.load(xcodeURL: xcodeURL), uiXcodeURL: displayXcode)
     }
 
     package static func load(io: SimulatorIORuntime, uiXcodeURL: URL? = nil) async throws -> SimulatorPresentationRuntime {
