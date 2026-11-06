@@ -1028,6 +1028,23 @@ private extension SimulatorSettingsBackend {
 
 @Suite
 struct SimulatorSettingsBackendTests {
+    @Test(arguments: [26, 27])
+    func colorFilterIsUnavailableWhenTheGuestCanReadButCannotWriteIt(majorVersion: UInt32) async throws {
+        var reads = 0
+        let reported: DeviceInspectorValue = .object(["colorFilter": .object(["enabled": .boolean(false)])])
+        let filter = try await SimulatorGuestSettings.colorFilter(runtimeVersion: majorVersion << 16) {
+            reads += 1
+            return reported
+        }
+        if majorVersion == 26 {
+            #expect(filter.colorFilter == nil && filter.colorFilterRequiredOSVersion == 27)
+            #expect(reads == 0)
+        } else {
+            #expect(filter.colorFilter == SimulatorColorFilter.none && filter.colorFilterRequiredOSVersion == nil)
+            #expect(reads == 1)
+        }
+    }
+
     private func envelope(_ value: String) -> Data { Data(("{\"result\":" + value + "}").utf8) }
     private func simulator(_ identifier: String, deviceSetPath: String? = nil) -> InventoryDevice {
         .simulator(SimulatorHostDevice(identifier: identifier, name: "Fixture", descriptiveName: "Fixture",
