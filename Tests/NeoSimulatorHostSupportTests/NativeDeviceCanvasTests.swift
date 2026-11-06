@@ -101,7 +101,11 @@ struct NativeDeviceCanvasTests {
         for await _ in read {}
         #expect(!poses.isAvailable)
         provider.offersControls = true
-        while !poses.isAvailable { await Task.yield() }
+        while !poses.isAvailable {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = poses.isAvailable } onChange: { continuation.resume() }
+            }
+        }
         #expect(poses.actionBarControls.count == 2)
     }
 

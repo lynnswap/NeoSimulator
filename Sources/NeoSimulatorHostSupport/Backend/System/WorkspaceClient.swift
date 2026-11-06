@@ -553,7 +553,6 @@ package struct WorkspaceClient: Sendable {
                     throw HostOperationError(category: .temporary, identifier: "neo-host-startup", message: message,
                                    failureReason: message, recoverySuggestion: recovery)
                 case .ready:
-                    await Task.yield()
                     guard !isTerminated() else {
                         throw HostOperationError.temporary("neo-host-startup", "NeoSimulator exited during startup")
                     }

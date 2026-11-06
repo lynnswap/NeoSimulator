@@ -426,8 +426,9 @@ and a read that began before the device restarted or changed what it can answer 
 answers for nothing. Each accepted change shows at once and stays attached to its
 device, which runs its changes in the order they were accepted, without waiting for
 any other device. Its outcome is what the change's own caller receives, and what
-confirms it is one read after the last change accepted for the device, even if nothing
-shows the device any longer.
+confirms it is one read of its group after the last change accepted to that group,
+even if nothing shows the device any longer. Neither a change nor a read of another
+group holds that read up.
 
 Inventory reads list which sources answered. A failed source says nothing of what
 only it listed, so those records and their state stay; only a successful read of
@@ -435,10 +436,16 @@ every source that listed a device removes it. A device that returns after that i
 new device. An inventory change that alters no answer, such as a new name, asks the
 device nothing.
 
+A screen that connects to a device reports its own record of it, so a device booted
+since the last inventory read can answer on the model that already represents it. The
+record says only whether the device runs and since when. Everything else stays what
+the inventory listed, and a later read has the last word on this too, except one that
+began before the screen connected.
+
 Reads run on an invalidation and never by a timer: a native report, a session's own
 command, the device changing state, an explicit refresh, or the application coming to
-the foreground. Invalidations that arrive while a read runs coalesce into one read
-after it. A value that something outside this process changes, without a signal this
+the foreground. Invalidations that arrive while a group's read runs coalesce into one
+read of that group when it answers, whatever the rest of its batch is doing. A value that something outside this process changes, without a signal this
 process can observe, stays as it was last read until one of those happens. That
 includes another process's registry, which shares no objects with this one.
 

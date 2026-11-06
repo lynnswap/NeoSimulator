@@ -258,9 +258,9 @@ package struct SimulatorInventoryReader {
 }
 
 extension SimulatorHostDevice {
-    package func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil, coreDevice: CoreDeviceDevice? = nil) -> Self {
+    package func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil, coreDevice: CoreDeviceDevice? = nil, state: String? = nil) -> Self {
         Self(identifier: identifier, name: name, descriptiveName: descriptiveName, runtimeIdentifier: runtimeIdentifier,
-             runtimeName: runtimeName, productFamily: productFamily, state: state, ownerXcodeURL: ownerXcodeURL,
+             runtimeName: runtimeName, productFamily: productFamily, state: state ?? self.state, ownerXcodeURL: ownerXcodeURL,
              catalogXcodeURL: catalogXcodeURL, deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
              isAvailable: isAvailable,
              lastUsedAt: lastUsedAt, createdAt: createdAt, capabilities: capabilities ?? coreDevice?.capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
