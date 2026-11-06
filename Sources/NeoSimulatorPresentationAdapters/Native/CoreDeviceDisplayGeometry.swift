@@ -363,15 +363,17 @@ package final class NativeDeviceCanvas {
 package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     package var content: AnyView?
     package var contentSize: (() -> CGSize)?
+    private weak var hostingWindow: NSWindow?
     package override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
     package required init(rootView: AnyView) { content = rootView; super.init(rootView: rootView) }
     package required init?(coder: NSCoder) { nil }
     package override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        // DeviceKit's screen-layer projection belongs to the hosting window.
-        // Recreate that graph while retaining the device/session and posture owner.
-        if let content, let window { rootView = AnyView(content.id(window.windowNumber)) }
-        else { rootView = AnyView(EmptyView()) }
+        // Sidebar navigation temporarily detaches the view. Keep its scene for the return to the same window;
+        // DeviceKit's screen-layer projection needs a new graph only when the hosting window changes.
+        guard let content, let window, hostingWindow !== window else { return }
+        hostingWindow = window
+        rootView = AnyView(content.id(window.windowNumber))
     }
 }
 
