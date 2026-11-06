@@ -1,6 +1,6 @@
 # Development
 
-Build NeoSimulator.app and its embedded renderer with Xcode.
+Build and test the app, SDK, documentation, and release packages.
 
 ## Workspace and builds
 
@@ -11,23 +11,20 @@ Implementation lives under `Sources`:
 
 | Module | Responsibility |
 | --- | --- |
-| `NeoSimulatorNative` | Package-only library lifetime, the framework loader and its one UI toolkit, and opaque native handles. |
-| `NeoSimulatorDeviceIO` | Package-only subprocess execution, each device's native request channel, CoreSimulator and CoreDevice clients, and their request values and errors. |
-| `NeoSimulatorKit` | Public device API: inventory, models, lifecycle, and sessions, and the ports that a presentation implements. It imports no AppKit or SwiftUI, and neither ABIBridge nor Native. |
-| `NeoSimulatorPresentationAdapters` | Package-only native display, input and pasteboard bindings, which implement Kit's ports, and the routing between them. |
-| `NeoSimulatorUI` | Public AppKit presentation: `SimulatorScreens`, `SimulatorScreen`, and the window controllers and views. |
-| `NeoSimulatorHostSupport` | Package-only host selection, settings transactions, inventory, renderer ownership, and shared menus. |
-| `NeoSimulatorApp` | Manager UI, device operations, inspectors, and application lifecycle. |
-| `NeoSimulatorService` | Embedded renderer startup, arguments, and owner monitoring. |
+| `NeoSimulatorNative` | Framework loading and opaque native handles. |
+| `NeoSimulatorDeviceIO` | Subprocesses, native request channels, CoreSimulator, and CoreDevice clients. |
+| `NeoSimulatorKit` | Public device inventory, models, lifecycle, and sessions; no UI imports. |
+| `NeoSimulatorPresentationAdapters` | Native display, input, and pasteboard bindings. |
+| `NeoSimulatorUI` | Public AppKit screens, controllers, and views. |
+| `NeoSimulatorHostSupport` | Host selection, preference transactions, inventory, and renderer ownership. |
+| `NeoSimulatorApp` | Manager UI, inspectors, and app lifecycle. |
+| `NeoSimulatorService` | Embedded renderer startup and owner monitoring. |
 
-The package exposes Kit, UI, App, and Service as library products. The other modules are shared
-only within the package. Tests in `Tests` import these modules rather than compiling their
-implementation again.
+Kit, UI, App, and Service are library products; the other modules are package-only.
+Tests import these modules. For SDK usage, see <doc:UsingTheSDK>.
 
-A target imports only what its manifest lists directly, so a lower layer's handle stays out of
-reach of the layers above it. SwiftPM does not enforce this for a transitive target, so
-`scripts/check-module-graph.py` compares the compiler's import pre-scan with the manifest and with
-the agreed graph, and CI runs it:
+Targets may import only direct dependencies. CI checks the compiler's import
+pre-scan against the manifest and module graph:
 
 ```bash
 scripts/check-module-graph.py
@@ -67,17 +64,9 @@ arm64/NeoSimulator.app/
   Contents/Resources/NeoSimulatorGuestSettings
 ```
 
-The AppKit manager owns host selection, presents device screens, and launches
-the embedded renderer when Neo is selected. Its main window uses
-`NSSplitViewController` for the sidebar, device canvas, and device-settings
-inspector. The manager loads one SimulatorKit UI toolkit, which stays loaded for
-its process lifetime, and opens an in-process host with its own CoreSimulator
-context for each Xcode whose simulators it shows. Each of those Xcode
-installations also gets a separate headless renderer process, which owns guest
-boot, restart, and shutdown. Devices using different Xcode versions can run
-concurrently.
-
-Source builds do not replace the app installed in Applications.
+The manager presents screens and starts one headless renderer per Xcode for
+guest operations. See <doc:Architecture> for ownership and lifecycle.
+Source builds do not replace the app in Applications.
 
 The manager and renderer resolve their private interfaces through ABIBridge.
 `DeviceBrowser.swift` has previews using sample devices without connecting to
@@ -91,32 +80,13 @@ They use sample catalogs and separate preferences domains. Debug builds allow
 Xcode's preview process to run alongside the app and skip application startup
 in preview processes.
 
-AppKit controllers retain the observable models used by their views. The
-background-services inspector uses an `NSOutlineView`, with a SwiftUI `Form`
-for profile controls in a top-aligned split-view accessory. Profile settings
-use an `NSSplitViewController` with an `NSTableView` for profile selection.
-Their controllers retain the list views when switching to an unavailable-state view.
-Both service lists use an `NSSearchField`, placed in a top-aligned accessory in
-the device inspector and above the list in settings. Search filters categories
-and service identifiers, expands matches, and restores the
-previous disclosure state when cleared. The settings pane keeps its search when
-switching profiles. `ObservationBridge` subscriptions update controls when model
-properties change.
+AppKit controllers retain observable models. `ObservationBridge` updates controls,
+and `DeviceBrowserState` saves pane visibility, inspector tabs, and device selection.
+`DeviceModel` owns device state; selection and inspector models own presentation.
 
-`DeviceBrowserState` saves pane visibility, inspector tabs, and selected device
-identifiers in user defaults. Selection is restored as devices arrive in the
-inventory, including simulators in custom device sets.
-
-`DeviceModel` owns each device's reads and accepted edits, and `DeviceRegistry` owns
-those models for as long as the inventory lists the devices. `ManagerSelection` only
-says which of them the manager shows. Inspector
-models own presentation state and send device commands through
-`SimulatorManagerModel`, which owns the operation queue. `ServiceProfileStore`
-owns observable profile instances and per-device overrides. Settings edit the
-selected profile directly. Adding a profile selects its temporary name for inline
-editing. Only saving a simulator's modified Default profile asks for a name in a
-sheet. Saving captures accepted service changes without waiting for their application
-to finish. Saving a profile does not apply it to other simulators.
+`ServiceProfileStore` owns profiles and device overrides. Settings edit the selected
+profile directly. Saving a modified Default profile asks for a name, includes accepted
+changes still being applied, and does not apply the profile to other devices.
 
 Service profiles and device assignments are stored together in
 `Application Support/<app bundle identifier>/ServiceProfiles.json`. Writes are
@@ -139,29 +109,20 @@ scripts/test-app-bundle.sh
 python3 -m unittest discover -s scripts/tests -v
 ```
 
-Package tests cover host switching, preference transactions, recovery,
-installation inspection, signatures, native input focus, runtime lookups,
-device-browser behavior, cancellation, capture/import failures, and renderer
-contracts using isolated fixtures. They run without an app host, so the fixtures
-control defaults and process state independently of app startup. Capture tests
-hold real file work at a `CaptureLane`, and session calls and GPU copies at a
-`RemoteScreenCaptureStream.Lifecycle`, to show what callers can do meanwhile.
+Package tests use isolated defaults, process fixtures, and fake device transports;
+they do not require an app host or connected devices. Capture tests control file
+and GPU work through `CaptureLane` and `RemoteScreenCaptureStream.Lifecycle`.
 
 The app-bundle script builds the NeoSimulator scheme and runs
 `NeoSimulatorLicenseTests`. This separate target checks the LicenseList-generated
 notices and bundled `Credits.rtf`.
 
-Release-script tests cover the embedded renderer's release metadata and the
-signing order and entitlements of the helper, renderer, and manager.
-These suites do not replace a live check of an affected private API and guest
-runtime.
+Release-script tests check renderer metadata, signing order, and entitlements.
+Changes to private APIs also need a live check on the affected runtime.
 
-Device transport tests use fake dependencies and run without communicating
-with simulators, physical devices, or VMs. Check physical devices, VMs, and
-Device Hub settings live through NeoSimulator.app: macOS grants device and
-Device Hub data access to the program that requests it, so a standalone test or
-diagnostic program gets its own prompts and results. Simulators need no such
-access and can also be checked with `simctl`.
+Use NeoSimulator.app for physical-device, VM, and Device Hub access checks:
+macOS grants access to the requesting program, so standalone diagnostics have
+separate permissions. Simulators can also be checked with `simctl`.
 
 UI fixtures must work while the Mac is locked. Disable animations and
 synchronize asynchronous work with explicit events or controlled deadlines;
@@ -169,8 +130,8 @@ elapsed sleeps and repeated task yields do not establish completion.
 
 ## Documentation
 
-The article catalog in `Documentation/NeoSimulator.docc` is the source for the
-published guide. Keep installation essentials in README and user tasks here.
+The published guide comes from `Documentation/NeoSimulator.docc`. Keep app
+installation in README, SDK usage in <doc:UsingTheSDK>, and API contracts in doc comments.
 
 ```bash
 scripts/build-documentation.sh
@@ -191,21 +152,17 @@ and deploys the guide to GitHub Pages. The repository's Pages source must be
 
 ## DMG distribution
 
-`build-release.sh` builds the complete app, signs the simulator settings helper
-ad hoc, and signs the renderer before its manager. The helper is stored in
-Resources as simulator code, outside the locations for nested macOS code.
-Its signature stays ad hoc even when the app uses Developer ID signing.
-The manager's signature has
-`com.apple.security.device.camera` from `App/NeoSimulator/NeoSimulator.entitlements`,
-because the hardened runtime blocks AVFoundation capture of a connected
-device's screen without it. The renderer is signed without entitlements. The
-helper is signed with only its DYLD-environment and library-validation
-exceptions; its simulator entitlements are embedded in the binary. The default
-signature is ad hoc; `--signing-identity` or
-`CODE_SIGN_IDENTITY` selects a certificate and enables secure timestamping. `package-release.sh` creates a drag-to-Applications DMG and
-checks that the app's files, signature, architectures, and Finder layout survive
-packaging. DMG tooling requires Python 3.10 or later; CI uses Python 3.13.
-Local and validation DMGs are not public releases.
+`build-release.sh` builds the app and signs the renderer before the manager.
+The guest-settings helper stays ad hoc signed in Resources, with its simulator
+entitlements embedded in the binary. Its macOS signing exceptions allow DYLD
+environment variables and disable library validation. The manager has
+`com.apple.security.device.camera` for physical-device capture; the renderer has
+no entitlements.
+
+Signing defaults to ad hoc. `--signing-identity` or `CODE_SIGN_IDENTITY` selects
+a certificate and enables secure timestamping. `package-release.sh` creates the
+DMG and verifies its files, signatures, architectures, and Finder layout.
+Packaging requires Python 3.10+; CI uses 3.13. Local validation DMGs are not releases.
 
 ```bash
 python3.13 -m venv .build/release-tools
@@ -226,26 +183,20 @@ python3 scripts/prepare_release.py start \
   --notes-file <approved-release-notes>
 ```
 
-Add `--prerelease` to publish a prerelease with the same signed and notarized
-DMG. The script marks both the draft and the workflow request as a prerelease.
-When starting **Publish Release** manually, set its **prerelease** checkbox to
-match the draft release. A mismatch stops preparation before a tag is created.
+Use `--prerelease` for a prerelease. For a manual **Publish Release** run, its
+**prerelease** checkbox must match the draft; a mismatch stops before tag creation.
 
-The start command creates the approved version tag and a draft, then starts **Publish Release**.
-The tag is available immediately. A matching tag and draft are reused when the
-same command is retried; a conflicting tag is never moved. CI tests and builds the
-arm64 DMG. The **release-signing** environment then requires approval before
-Developer ID signing and notarization. Signing uses a temporary keychain,
-keeps the simulator settings helper's ad hoc signature and signs the embedded
-renderer before the outer app with Developer ID. It uses the same entitlements
-as `build-release.sh` and verifies each signature and its entitlements.
-The workflow notarizes and staples the DMG, checks both the app and DMG with
-Gatekeeper, then uploads the
-DMG, `release-info.json`, and `SHA256SUMS` to the same draft and publishes it.
-Publication verifies that the tag still targets the tested commit. Failed checks
-leave the tag and draft in place. Check Actions before repeating a start command
-whose dispatch result is uncertain. A workflow started from an existing draft
-also creates its tag during preparation, before build and validation.
+The start command creates the tag and draft, then dispatches **Publish Release**.
+Retries reuse a matching tag and draft; conflicting tags are never moved. Check
+Actions before retrying an uncertain dispatch. Starting from an existing draft
+also creates the tag before building.
+
+CI tests and builds the arm64 DMG, then waits for **release-signing** approval.
+It uses a temporary keychain for Developer ID signing and notarization, preserves
+the helper's ad hoc signature, and verifies signatures and entitlements. After
+stapling and Gatekeeper checks, it uploads the DMG, `release-info.json`, and
+`SHA256SUMS`, verifies the tag still points to the tested commit, and publishes.
+Failures leave the tag and draft available for retry.
 
 Configure the `release-signing` environment with required reviewers and these
 values before the first public release:

@@ -3,8 +3,7 @@ import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import NeoSimulatorNative
 
-/// Which transport carries a device's native input. This follows from what the device is, and never from whether a
-/// transport answered: a failure to reach one is that route's failure, not a reason to take another.
+/// Selects native input by device capability. Connection failures preserve the selected route.
 package enum NativeInputPlan: Equatable, Sendable {
     /// DeviceKit's own view takes the screen's input. A device that needs it has no other screen.
     case canvas
@@ -60,8 +59,8 @@ package struct NativeTouchRoute {
     }
 }
 
-/// What a device's native input route connected. Connecting sends the guest nothing, and whoever connected these stops
-/// them through their own ports until a display takes them up.
+/// Connected input services. Until a display adopts them, the caller must stop them.
+/// Connecting alone sends nothing to the guest.
 package struct NativeInputServices {
     package var keyboard: NativeDeviceKeyboard?
     package var trackpad: NativeDeviceTrackpad?
@@ -83,11 +82,10 @@ package struct NativeInputServices {
     }
 }
 
-/// Connects a display's native input after the display opened and hands it over in place. Its state says how far that
-/// came: `connect` returning nil is a device whose route said it lacks the services, and a throw is a failure to reach
-/// them, which keeps the display on SimulatorKit's input, says so, and can be retried. A call that a device's channel
-/// holds is neither sent again nor waited for: the attempt fails, a retry meanwhile is refused unsent, and the channel
-/// says when the call returned, which starts one more attempt.
+/// Connects native input after display opening and hands it over in place.
+/// Nil means unsupported; failures retain SimulatorKit input and allow retry.
+/// An overdue channel call fails the attempt and blocks retry until it returns, then
+/// triggers one new attempt.
 @MainActor
 package final class NativeInputActivation {
     private let services: DeviceOptionalServices
@@ -210,10 +208,9 @@ package final class SharedNativeKeyboard {
     }
 }
 
-/// How a device's pasteboard is reached: CoreDevice's transport for the default set, which a transfer waits for until
-/// CoreDevice has said what the device has, and SimPasteboardPlus where CoreDevice has said the device has no other. A
-/// failure to reach CoreDevice says nothing about whether the device has it, so it falls back to nothing, and the next
-/// transfer asks again.
+/// Selects CoreDevice pasteboard for supported default-set devices, otherwise SimPasteboardPlus.
+/// Transfers wait for CoreDevice capability discovery. Failure preserves the route;
+/// the next transfer retries discovery.
 @MainActor
 package final class SimulatorPasteboardRoute {
     private let services: DeviceOptionalServices
@@ -248,8 +245,8 @@ package final class SimulatorPasteboardRoute {
     }
 }
 
-/// Connects a device's display and routes what its capabilities select. The display opens with what it itself needs, so
-/// an optional service can neither delay nor fail it.
+/// Connects a display and its capability-selected transports.
+/// Optional services connect separately so they cannot delay or fail display opening.
 @MainActor
 package final class SimulatorScreenRouter {
     private let displays: SimulatorDisplaySet

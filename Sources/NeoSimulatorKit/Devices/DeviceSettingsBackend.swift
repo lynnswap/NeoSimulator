@@ -135,7 +135,7 @@ package struct SimulatorSettingsBackend: Sendable {
             do { return try await readGuest(group) }
             catch { return .failed(group, "\(name): \(error.localizedDescription)") }
         }
-        /// One value of the query that a remote device answers its appearance settings with.
+        /// A value from the remote device's shared appearance query.
         func remote(_ name: String, feature: String, _ apply: @escaping @Sendable (inout SimulatorDeviceSettings, Appearance) -> Void) async -> DeviceSettingsGroupRead {
             guard let remoteAppearance, device.supportsSettingsFeature(feature) else { return .unsupported(group) }
             return await values(name) {

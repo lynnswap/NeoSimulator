@@ -4,15 +4,13 @@ Select a display host and restore saved Xcode preferences from the app.
 
 ## Select a display host
 
-Choose **NeoSimulator** or **Device Hub** under **Preferred Display Host** in
-**Settings → General**. New installations use NeoSimulator while the app is open.
-Existing choices are preserved. Changing hosts leaves devices running. Routing
-preferences apply across Xcode installations.
+Choose **NeoSimulator** or **Device Hub** in **Settings → General → Preferred
+Display Host**. New installations default to NeoSimulator; existing choices are
+preserved. Changes apply across Xcode installations and leave devices running.
 
-Startup applies the saved preference. Quitting keeps the selected display
-settings. NeoSimulator does not launch automatically. Choose Device Hub here
-to use it for future Xcode runs, or use **Restore Original Settings…** to restore
-the values saved before NeoSimulator first changed them.
+Startup applies the saved choice; quitting keeps it. NeoSimulator does not launch
+automatically. For future Xcode runs, choose Device Hub or **Restore Original
+Settings…** to recover the preferences saved before Neo first changed them.
 
 NeoSimulator checks Xcode's current preferences after showing its main window
 at startup, and before selecting a host or restoring original settings. This
@@ -35,11 +33,10 @@ Select an installed Xcode to save an override, then choose **Restart to Apply**.
 NeoSimulator restarts while keeping simulator devices running and reopening
 their displayed screens.
 
-The setting selects SimulatorKit and DeviceKit together. Simulator runtimes and
-Xcode's Build & Run routing remain independent: devices retain their own runtime
-and connection owner, and a newer request for the same device takes precedence.
-The app must restart because loaded Apple frameworks remain registered for the
-lifetime of the process. Choose **Default (xcode-select)** to remove the override.
+This selects SimulatorKit and DeviceKit together. Devices retain their own runtime
+and connection owner; a newer request for the same device takes precedence.
+Restart is required because loaded frameworks stay registered for the process
+lifetime. **Default (xcode-select)** removes the override.
 
 ## Recover original preferences
 
@@ -49,11 +46,10 @@ was absent or false. If another tool changed a managed preference, review the
 reported conflict. Choose **Restore Saved Values…** and confirm only when you
 intend to replace the current routing preferences with the saved originals.
 
-The saved original settings are stored in
-`~/Library/Application Support/xcode-simulator-host/state.plist`. The app reads
-the same file as the previous CLI, so moving to the app requires no manual
-transfer or restore step. Keep this file while you still need to restore the
-original settings, even after removing the old CLI installation.
+Original settings are stored in
+`~/Library/Application Support/xcode-simulator-host/state.plist`, shared with the
+previous CLI. No migration is needed. Keep it for restoration even after removing
+the CLI.
 A host launch failure after committing preferences leaves this receipt available
 for restoration. Device-operation failures appear in that device's window and
 do not select another host.

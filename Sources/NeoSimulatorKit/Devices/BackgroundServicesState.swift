@@ -5,7 +5,7 @@ import Observation
 /// A simulator's observed launchd state, with accepted changes shown until their read-back arrives.
 @MainActor @Observable
 public final class BackgroundServicesState {
-    /// What the last change left differently from what it asked for.
+    /// Differences between the requested and resulting service states.
     public struct Outcome: Equatable, Sendable {
         /// Services kept on because another enabled category or the platform needs them.
         public let stillEnabledLabels: [String]
@@ -28,11 +28,11 @@ public final class BackgroundServicesState {
         let change: Change
     }
 
-    /// The services as last observed, with what has been accepted since.
+    /// Observed service states with pending accepted changes applied.
     public private(set) var services: SimulatorBackgroundServices?
     public private(set) var pendingRestartLabels: Set<String> = []
     public private(set) var outcome: Outcome?
-    /// What the last read answered. Values that remain after a failure are from the read before.
+    /// The last read status. Failed reads preserve previous values.
     public private(set) var status = DeviceReadStatus.unread
     public private(set) var isReading = false
     /// Whether an accepted change has not finished.
@@ -143,7 +143,7 @@ public final class BackgroundServicesState {
 
     package func markDirty() { dirty = true }
 
-    /// A later read follows any read that is running, and a device with an accepted change reads after its outcome.
+    /// Coalesces reads, waiting for pending changes before read-back.
     package func scheduleReads() {
         guard let owner, !owner.readsStopped, dirty, readTask == nil, pending.isEmpty, owner.wants(.backgroundServices),
               owner.inventory.canInspectBackgroundServices else { return }

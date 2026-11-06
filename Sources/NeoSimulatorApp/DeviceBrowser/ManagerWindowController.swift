@@ -706,8 +706,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         window?.makeKeyAndOrderFront(nil)
     }
 
-    /// Places a screen that just opened or reconnected. The selected device's screen follows the latest choice; another
-    /// device's screen that connected on its own keeps `presentation`, or else its current one.
+    /// Places the selected screen using the latest choice. Other automatically connected
+    /// screens keep `presentation`, or their current placement if none is supplied.
     func presentConnectedScreen(_ identifier: DeviceInventoryID, purpose: SimulatorPresentationContext.Purpose,
                                 preserving presentation: SimulatorScreenRestoration.Presentation? = nil) async throws {
         try Task.checkCancellation()
@@ -1292,8 +1292,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return menu
     }
 
-    /// The sidebar's context menu acts on the row it was opened for, or on the whole selection if that row is part of it or
-    /// it was opened for no row. Opening it changes neither the selection nor what the window shows.
+    /// Targets the clicked row, or the selection when it contains that row or no row was clicked.
+    /// Opening the menu does not change selection or presentation.
     func updateDeviceMenu(for clickedRow: Int) {
         guard clickedRow >= 0, !table.selectedRowIndexes.contains(clickedRow) else {
             populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)

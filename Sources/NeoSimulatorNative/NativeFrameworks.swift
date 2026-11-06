@@ -24,12 +24,9 @@ package enum NativeRuntimeError: LocalizedError, Equatable, Sendable {
     }
 }
 
-/// Owns the private frameworks this process loads, which stay mapped for its lifetime, and the one UI toolkit it may have.
-///
-/// Everything here reads the disk or waits on image initializers, so it runs on one serial queue of its own and never on
-/// the caller's executor. An owned-process probe of Xcode 27.2's frameworks found no initializer that needs the main
-/// thread. The queue also makes each check, load and record of the toolkit one step, so that two contexts cannot load
-/// different toolkits.
+/// Loads private frameworks and the process's single UI toolkit on a dedicated serial queue.
+/// Libraries remain mapped for the process lifetime. Serial check/load/record operations
+/// prevent competing contexts from loading different toolkits.
 package enum NativeFrameworks {
     private static let queue = DispatchQueue(label: "dev.lynnswap.NeoSimulator.native-frameworks")
     /// Only `queue` reads or writes these.
@@ -51,10 +48,9 @@ package enum NativeFrameworks {
         try await load(coreSimulatorPath)
     }
 
-    /// Loads CoreSimulator and the UI toolkit of `uiXcodeURL`, and records `contextXcodeURL` as an opened device context.
-    /// With no `uiXcodeURL`, it uses the process's toolkit, or the context's Xcode when none is loaded. Returns the
-    /// process's toolkit. The toolkit is recorded as soon as its Objective-C registration exists, which a later failure
-    /// cannot undo.
+    /// Loads the requested UI toolkit and records the device context.
+    /// Without an explicit toolkit, uses the loaded toolkit or the context's Xcode.
+    /// Registration is permanent even if later preparation fails.
     package static func loadUIToolkit(requested uiXcodeURL: URL?, context contextXcodeURL: URL) async throws -> URL {
         try await onQueue {
             let context = contextXcodeURL.resolvingSymlinksInPath()

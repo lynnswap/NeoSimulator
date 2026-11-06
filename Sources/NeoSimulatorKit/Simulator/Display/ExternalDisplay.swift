@@ -269,17 +269,15 @@ package struct ExternalDisplayFailure {
     package let error: Error
 }
 
-/// Serializes external-display changes across a device's sessions; the latest pending choice wins.
-/// Each change uses its originating session's screen connection. Power-off is idempotent
-/// and always sent, because property reports can lag completion.
+/// Serializes display changes across a device's sessions; the latest pending choice wins.
+/// Each uses its originating connection. Power-off is always sent because reports may lag.
 ///
-/// CarPlay configuration is written before mode changes. HID service removal precedes
-/// session end; session start precedes HID service creation. Failures are collected,
-/// but failed screen changes stop the operation and failed starts skip service creation.
+/// Writes CarPlay configuration before mode changes, removes HID before ending a session,
+/// and starts the session before creating HID. Collects failures; failed screen changes
+/// stop the operation, and failed starts skip HID creation.
 ///
-/// Disconnection from a stopped device or `completionTimeout` abandons stalled work. Its request is withdrawn if it has
-/// not started, so it cannot act on the device later. One that has started can still finish, with an outcome nobody
-/// knows, and its completion is ignored so later sessions can proceed.
+/// Stopped-device disconnection or timeout withdraws unstarted work. Started work may finish
+/// with an unknown outcome; its completion is ignored so later sessions can proceed.
 @MainActor
 package final class ExternalDisplayChanges {
     private struct Change {

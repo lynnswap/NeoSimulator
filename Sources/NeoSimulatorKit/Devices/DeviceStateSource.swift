@@ -2,8 +2,7 @@ import CoreAudio
 import Foundation
 import NeoSimulatorDeviceIO
 
-/// Where a registry's device state comes from. Inventory, settings, and services each read independently; only the
-/// source knows how a device answers.
+/// Provides a registry's device state, reading inventory, settings, and services independently.
 package protocol DeviceStateSource: Sendable {
     /// Only cancellation throws: a stopped read observed nothing to publish.
     func inventory() async throws -> DeviceInventorySnapshot
@@ -58,7 +57,7 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         }
     }
 
-    /// A channel's own failure says whether the change was sent; it stays typed so that the model can be honest about it.
+    /// Preserves typed channel failures so the model can distinguish unsent changes from unknown outcomes.
     package func write(_ change: DeviceSettingChange, to device: InventoryDevice) async throws {
         do {
             let url = try await xcodeURL(device)
@@ -186,7 +185,7 @@ package struct LiveDeviceStateSource: DeviceStateSource {
 }
 
 private extension DeviceSettingsGroupRead {
-    /// The device reports no location it was given, so what was last chosen for it comes from the saved selection.
+    /// Returns the saved location choice because the device does not report its assigned location.
     func addingSavedLocation(of device: InventoryDevice) -> Self {
         guard case .values = outcome else { return self }
         var read = self

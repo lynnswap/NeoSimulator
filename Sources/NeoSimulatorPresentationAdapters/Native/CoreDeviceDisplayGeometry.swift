@@ -244,10 +244,8 @@ package final class NativeDeviceCanvas {
         }
     }
 
-    /// Requires what the view itself needs: DeviceKit and the simulator's CoreDevice record, which names the device to
-    /// DeviceView whatever state CoreDevice reports for it, and for which this waits because discovery can be delayed.
-    /// The controls around the view have their own readiness and report their own errors when they are used. `lookUp`
-    /// returns a caller-owned send right to the guest's Mach service of a name, as the simulator's `SimDevice` looks it up.
+    /// Waits for the CoreDevice record that identifies this simulator to DeviceKit.
+    /// Surrounding controls connect independently. `lookUp` returns a caller-owned Mach send right.
     package static func connect(record: CoreDeviceSimulatorRecord,
                                 lookUp: @escaping @MainActor (String) async throws -> UInt32) async throws -> NativeDeviceCanvas {
         try await CoreDeviceRuntime.loadDeviceKit()
@@ -338,12 +336,9 @@ package final class NativeDeviceCanvas {
     }
 
     package func setChromeVisible(_ visible: Bool) { presentation.showsChrome = visible }
-    /// Renders the presenting canvas's magnification after the composition is measured, as
-    /// DeviceKit's own canvas applies its scale effect. An AppKit-magnified ancestor would change
-    /// how the composition's AppKit-backed content measures.
-    ///
-    /// With a magnification, the view's frame is the scaled composition and the composition scales
-    /// from its top-leading corner. With `nil`, the composition is centered in the view at its own size.
+    /// Scales the measured composition, keeping AppKit-backed layout unchanged.
+    /// A magnified composition uses its top-leading origin and a scaled frame;
+    /// with nil magnification, it is centered at its natural size.
     package func setMagnification(_ magnification: CGFloat?) {
         guard presentation.magnification != magnification else { return }
         presentation.magnification = magnification

@@ -23,8 +23,8 @@ public struct DeviceStateGroups: OptionSet, Sendable {
     public static let all: Self = [.settings, .backgroundServices, .commandState, .inspection]
 }
 
-/// Keeps part of a device's state current while it is held. Nothing is read for a device that nothing holds, except what
-/// confirms a change it was asked to make.
+/// Keeps selected state groups current until released.
+/// Without an interest, reads occur only to confirm accepted changes.
 @MainActor
 public final class DeviceReadInterest {
     private var end: (@MainActor () -> Void)?
@@ -53,14 +53,12 @@ package enum DeviceWriteResult {
     case failed(any Error)
 }
 
-/// What is known of one device, which everything that presents the device in this process shares.
+/// The cached state shared by views of one device in this process.
 ///
-/// A device keeps the same model for as long as its registry lists it, so returning to it finds what it last answered.
-/// Reading a property asks the device nothing. Hold a ``DeviceReadInterest`` from ``keepCurrent(_:)`` to have what changed
-/// read again as it is invalidated.
-///
-/// A change made outside this process that sends no signal stays unknown until ``revalidate(_:)`` or
-/// ``DeviceRegistry/revalidate()``, which a client should call when it returns to the foreground or the user asks.
+/// The registry retains this model while it lists the device. Property access performs no I/O.
+/// Retain a ``DeviceReadInterest`` from ``keepCurrent(_:)`` to refresh invalidated groups.
+/// Call ``revalidate(_:)`` or ``DeviceRegistry/revalidate()`` on foreground activation or
+/// explicit refresh to discover external changes that send no observable signal.
 @MainActor @Observable
 public final class DeviceModel: Identifiable {
     public nonisolated let id: DeviceInventoryID
@@ -82,7 +80,7 @@ public final class DeviceModel: Identifiable {
     public private(set) var showsStandBy: Bool?
     /// The Core Animation debug options as the device last reported them.
     public private(set) var debugOptions: [CADebugOption: Bool] = [:]
-    /// The native call that has outlived its deadline, while one has. Requests are not sent until it returns.
+    /// The native request past its deadline. New requests are rejected until it returns.
     public private(set) var unresponsiveOperation: String?
     /// Why the last read or reapplied setting failed, until a later read succeeds.
     public private(set) var lastIssue: String?
@@ -150,8 +148,8 @@ public final class DeviceModel: Identifiable {
 
     package func wants(_ group: DeviceStateGroups) -> Bool { interest[group.rawValue, default: 0] > 0 }
 
-    /// Marks `groups` out of date. What something holds is read again, after any read of it that is running; the rest is
-    /// read when something next holds it. Command state is read through a connected screen's session, if there is one.
+    /// Invalidates `groups`. Groups with a retained interest refresh after any current read;
+    /// others refresh when interest resumes. Command state requires a connected session.
     public func revalidate(_ groups: DeviceStateGroups = .all) {
         if groups.contains(.settings) { settings.markAllDirty() }
         if groups.contains(.backgroundServices) { backgroundServices.markDirty() }
@@ -183,8 +181,8 @@ public final class DeviceModel: Identifiable {
         if Self.answersDiffer(previous, device) { deviceRestarted() } else { inspection.scheduleReads() }
     }
 
-    /// Takes in what a connecting screen's own record says of whether the device runs and since when. Everything else about
-    /// the device stays the inventory's, as does this once the inventory reads it again.
+    /// Updates running state and boot time from a screen connection.
+    /// Other fields remain inventory-owned; the next inventory read also takes over these fields.
     package func observeConnection(to device: AvailableDevice, lastBootDate: Date?) {
         guard case .simulator(let known) = inventory else { return }
         let bootChanged = lastBootDate != nil && connectedBoot != nil && lastBootDate != connectedBoot
@@ -207,8 +205,7 @@ public final class DeviceModel: Identifiable {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
-    /// The device started again, or changed what it can answer for, so nothing read before now describes it. What is held
-    /// stays until a new read replaces it.
+    /// Discards reads from before a restart or capability change, retaining values until refreshed.
     package func deviceRestarted() {
         epoch += 1
         settings.discardRunningReads()

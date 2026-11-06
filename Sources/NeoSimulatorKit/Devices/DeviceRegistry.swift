@@ -2,11 +2,10 @@ import Foundation
 import NeoSimulatorDeviceIO
 import Observation
 
-/// The devices one process knows of, each with one ``DeviceModel`` for as long as it is listed.
+/// Retains one ``DeviceModel`` per listed device for the application's lifetime.
 ///
-/// An application owns its registry and keeps it for as long as it uses the devices; which of them it shows is its own
-/// concern. Separate processes have separate registries, which do not share objects or caches: what one process changes
-/// reaches another only through a signal the other observes, or a revalidation when it comes to the foreground.
+/// Registries are process-local. Other processes' changes arrive through observed signals
+/// or revalidation, such as on foreground activation.
 @MainActor @Observable
 public final class DeviceRegistry {
     public private(set) var devices: [DeviceModel] = []
@@ -60,10 +59,10 @@ public final class DeviceRegistry {
         for model in models.values { model.revalidate() }
     }
 
-    /// Publishes what an inventory read found. A listed device keeps its object. A device that is not listed has gone only
-    /// if every source that listed it read successfully, and a record that another source adds to survives that source's
-    /// failure. Work running for a device that has gone finishes without publishing to anyone looking it up again. What a
-    /// screen found by connecting after the read began is newer than what the read says of whether the device runs.
+    /// Updates inventory while retaining existing models.
+    /// Remove a device only when every source that listed it successfully reports its absence.
+    /// Retired work cannot publish to a replacement model. A screen's newer boot state takes
+    /// precedence over a read started before that connection.
     package func apply(_ snapshot: DeviceInventorySnapshot) {
         var listed: [DeviceModel] = []
         var seen: Set<DeviceInventoryID> = []

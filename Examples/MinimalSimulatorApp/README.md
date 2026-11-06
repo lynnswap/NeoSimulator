@@ -1,21 +1,11 @@
 # MinimalSimulatorApp
 
-This independent Swift package imports only the public `NeoSimulatorKit` and `NeoSimulatorUI`
-products. It lists simulators with `NeoSimulatorKit`, which loads no UI toolkit, opens one in a
-window or an AppKit view controller with `NeoSimulatorUI`'s `SimulatorScreens`, and releases its
-display resources when the app quits.
+This standalone package uses `NeoSimulatorKit` and `NeoSimulatorUI` to list,
+boot, and display simulators. It shares device state through a `DeviceRegistry`
+and cleans up its screen on quit.
 
-The application retains one `DeviceRegistry` and passes it to `SimulatorContext.load`.
-Its inventory and each screen's `session.deviceModel` share the same observable object.
-A screen is usable before its optional services are: `session.inputReadiness` and
-`session.pasteboardReadiness` say how far they have come, a failure there never switches to another
-route, and `session.retryInput()` connects the same input route again.
-Keep a `DeviceReadInterest` returned by `model.keepCurrent(.settings)` while a settings
-view needs updates; returning to a device reuses its values. `model.inspection` holds the
-device's details, applications, profiles and reports the same way, through
-`model.keepCurrent(.applications)` and the other groups of `.inspection`. Call
-`registry.revalidate()` when the application returns to the foreground to refresh changes
-made elsewhere.
+See [Using the SDK](../../Documentation/NeoSimulator.docc/UsingTheSDK.md) for
+API usage, observable state, and lifecycle contracts.
 
 Requirements match NeoSimulator: Apple Silicon, macOS 26.4, and Xcode 27 with a
 simulator runtime installed. Quit Apple's Simulator and Device Hub before opening
