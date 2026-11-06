@@ -632,7 +632,8 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         panel.isExtensionHidden = false
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            self.mutate(affecting: []) { _ = try await $0.downloadReport(report, to: url, replacingExistingFile: true) }
+            // The selection can move while a sheet waits; the change stays on the device it asked about.
+            self.model.performInspectorChange(on: device, affecting: []) { _ = try await $0.downloadReport(report, to: url, replacingExistingFile: true) }
         }
     }
 
@@ -727,11 +728,9 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         if let failure = cleanupFailures.values.first { throw failure }
     }
 
-    func resumeAfterCancelledQuit() { preparingToQuit = false }
-
-    private func mutate(affecting groups: DeviceStateGroups, operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
-        guard let device else { return }
-        model.performInspectorChange(on: device, affecting: groups, operation: operation)
+    func resumeAfterCancelledQuit() {
+        preparingToQuit = false
+        if isViewLoaded { updateControls() }
     }
 
     @objc private func install(_ sender: Any?) {
@@ -748,7 +747,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             : [UTType(filenameExtension: content == .configuration ? "mobileconfig" : "mobileprovision") ?? .data]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            self.mutate(affecting: content.group) { inspector in
+            self.model.performInspectorChange(on: device, affecting: content.group) { inspector in
                 if installsApplication { try await inspector.installApplication(at: url) }
                 else { try await inspector.installProfile(at: url, kind: content.profileKind) }
             }
@@ -767,15 +766,15 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
-            self.mutate(affecting: profile.map { DeviceStateGroups.profiles(of: $0.kind) } ?? .applications) { inspector in
+            self.model.performInspectorChange(on: device, affecting: profile.map { DeviceStateGroups.profiles(of: $0.kind) } ?? .applications) { inspector in
                 if let app { try await inspector.uninstallApplication(bundleIdentifier: app.bundleIdentifier) }
                 else if let profile { try await inspector.removeProfile(identifier: profile.identifier, kind: profile.kind) }
             }
         }
     }
     @objc private func launch(_ sender: Any?) {
-        guard available, launchButton.isEnabled, let app = selectedApp else { return }
-        mutate(affecting: []) { try await $0.launchApplication(bundleIdentifier: app.bundleIdentifier) }
+        guard available, launchButton.isEnabled, let app = selectedApp, let device else { return }
+        model.performInspectorChange(on: device, affecting: []) { try await $0.launchApplication(bundleIdentifier: app.bundleIdentifier) }
     }
     @objc private func revealContainer(_ sender: Any?) {
         guard available, simulatorIsRunning, let app = selectedApp, let state = device?.inspection else { return }
@@ -803,7 +802,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         if let type = UTType(filenameExtension: "xcappdata") { panel.allowedContentTypes = [type] }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            self.mutate(affecting: []) {
+            self.model.performInspectorChange(on: device, affecting: []) {
                 try await $0.downloadApplicationData(bundleIdentifier: app.bundleIdentifier, to: url, replacingExistingFile: true)
             }
         }
@@ -826,7 +825,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             alert.addButton(withTitle: "Cancel")
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard response == .alertFirstButtonReturn else { return }
-                self?.mutate(affecting: .applications) { try await $0.replaceApplicationData(bundleIdentifier: app.bundleIdentifier, from: url) }
+                self?.model.performInspectorChange(on: device, affecting: .applications) { try await $0.replaceApplicationData(bundleIdentifier: app.bundleIdentifier, from: url) }
             }
         }
     }

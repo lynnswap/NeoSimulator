@@ -1706,6 +1706,122 @@ struct ManagerModelTests {
         controller.update(device: nil, isManaging: false, isVisible: true)
     }
 
+    // MARK: Changes confirmed in a sheet
+
+    /// Puts up `action`'s sheet about the first of two listed devices, then selects the second while it waits.
+    private func inspectorAskingAboutFirstDevice(action: String, page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content) async throws
+        -> (source: ManagerModelSource, manager: SimulatorManagerModel, controller: ManagerDeviceInspectorController, window: NSWindow, sheet: NSWindow,
+            first: InventoryDevice, second: InventoryDevice) {
+        _ = NSApplication.shared
+        let features: Set<String> = ["streamapplist", "uninstallapp", "configurationprofiles", "listFiles", "transferFiles", "processcontrol", "streamprocesslist"]
+        let first = inspectedRemote("first-device", features: features)
+        let second = inspectedRemote("second-device", features: features)
+        let source = ManagerModelSource(devices: [], inspectorResponse:
+            #"{"result":{"apps":[{"bundleIdentifier":"fixture.app","name":"Fixture","containerAccessible":true}],"configurationProfiles":[{"payloadIdentifier":"fixture.configuration","name":"Configuration"}],"files":[{"relativePath":"Fixture.ips","metadata":{},"resources":{"isDirectory":false}}]}}"#)
+        await source.skipSettingsReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        let controller = ManagerDeviceInspectorController(model: manager)
+        // A sheet only needs a window to attach to; this one is never ordered on screen.
+        let window = NSWindow(contentViewController: controller)
+        manager.registry.apply(DeviceInventorySnapshot(devices: [first, second], issues: []))
+        controller.setPage(page)
+        controller.inspection.select(content)
+        for device in [first, second] {
+            manager.inspect(device, selectionCount: 1)
+            controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+            #expect(await events.next() == .inspect(device.id))
+            await finishInspectorRead(controller.inspection)
+            guard device.id == first.id else { break }
+            let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }.first {
+                $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
+            })
+            try await wait(timeout: .seconds(5)) { table.numberOfRows == 1 }
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            #expect(NSApp.sendAction(NSSelectorFromString(action), to: controller, from: nil))
+            try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+        }
+        return (source, manager, controller, window, try #require(window.attachedSheet), first, second)
+    }
+
+    // `install:` reaches the same call the same way, but its open panel has no URL until a person picks a file.
+    @Test(arguments: [
+        ("remove:", DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications, ["device", "uninstall", "app", "fixture.app"]),
+        ("remove:", .info, .configuration, ["device", "profile", "remove", "fixture.configuration"]),
+        ("downloadReport:", .reports, .info, ["device", "copy", "from", "--domain-type", "systemCrashLogs", "--source", "Fixture.ips"]),
+        ("exportData:", .info, .applications, ["device", "copy", "from", "--source", "."]),
+        ("importData:", .info, .applications, ["device"]),
+    ])
+    func aChangeConfirmedAfterTheSelectionMovesActsOnTheDeviceItAskedAbout(
+        change: (action: String, page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content, command: [String])) async throws {
+        let (source, manager, controller, window, sheet, first, _) = try await inspectorAskingAboutFirstDevice(
+            action: change.action, page: change.page, content: change.content)
+        var events = source.events.makeAsyncIterator()
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory.appending(path: "Chosen"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        await source.holdInspectorReads()
+        if let panel = sheet as? NSSavePanel {
+            panel.directoryURL = directory
+            panel.nameFieldStringValue = "Chosen"
+            window.endSheet(panel, returnCode: .OK)
+        } else { window.endSheet(sheet, returnCode: .alertFirstButtonReturn) }
+        if change.action == "importData:" {
+            try await wait(timeout: .seconds(5)) { window.attachedSheet != nil && window.attachedSheet !== sheet }
+            window.endSheet(try #require(window.attachedSheet), returnCode: .alertFirstButtonReturn)
+        }
+        try await wait(timeout: .seconds(5)) { !manager.managingDeviceIDs.isEmpty }
+        try #require(manager.managingDeviceIDs == [first.id])
+        #expect(await events.next() == .inspect(first.id))
+        let command = try #require(await source.inspectorCommands.last).arguments
+        #expect(command.starts(with: change.command))
+        #expect(command.contains("first-device") && !command.contains("second-device"))
+        await source.failInspectorRead()
+        try await wait(timeout: .seconds(5)) { manager.managingDeviceIDs.isEmpty }
+        controller.update(device: nil, isManaging: false, isVisible: true)
+    }
+
+    @Test func aDeviceRetiredWhileItsSheetWasUpRejectsTheConfirmedChange() async throws {
+        let (source, manager, controller, window, sheet, _, second) = try await inspectorAskingAboutFirstDevice(
+            action: "remove:", page: .info, content: .applications)
+        var failures: [String] = []
+        manager.onError = { failures.append($0.localizedDescription) }
+        manager.registry.apply(DeviceInventorySnapshot(devices: [second], issues: []))
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        try await wait(timeout: .seconds(5)) { !failures.isEmpty }
+        #expect(failures == ["first-device: This device is no longer available."])
+        #expect(await source.inspectorCommands.allSatisfy { !$0.arguments.contains("uninstall") })
+        try await wait(timeout: .seconds(5)) { manager.managingDeviceIDs.isEmpty }
+        controller.update(device: nil, isManaging: false, isVisible: true)
+    }
+
+    @Test func cancellingAQuitRestoresTheInstallerOfAnApplicationListThatCannotBeRead() async throws {
+        _ = NSApplication.shared
+        let device = inspectedRemote(features: ["installapp"])
+        let source = ManagerModelSource(devices: [], inspectorResponse: Self.inspectionResponse)
+        await source.skipSettingsReads()
+        let manager = SimulatorManagerModel(source: source)
+        let controller = ManagerDeviceInspectorController(model: manager)
+        // A quit can be cancelled before the inspector was ever shown.
+        controller.resumeAfterCancelledQuit()
+        #expect(!controller.isViewLoaded)
+
+        manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        manager.inspect(device, selectionCount: 1)
+        controller.setPage(.info)
+        controller.inspection.select(.applications)
+        controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+        let install = try #require(inspectorViews(controller.view).compactMap { $0 as? NSButton }.first { $0.toolTip == "Install…" })
+        #expect(install.isEnabled && !install.isHidden)
+
+        try await controller.finishPreviews()
+        #expect(!install.isEnabled)
+        controller.resumeAfterCancelledQuit()
+        #expect(install.isEnabled)
+        #expect(await source.inspectorCommands.isEmpty)
+        controller.update(device: nil, isManaging: false, isVisible: true)
+    }
+
     // MARK: Inspection state
 
     private static let inspectionResponse = #"{"result":{"properties":{"name":"Details"},"apps":[{"bundleIdentifier":"fixture.app","name":"Fixture"}],"configurationProfiles":[{"payloadIdentifier":"fixture.configuration","name":"Configuration"}],"provisioningProfiles":[{"uuid":"fixture.provisioning","name":"Provisioning"}],"files":[{"relativePath":"Fixture.ips","metadata":{},"resources":{"isDirectory":false}}]}}"#
