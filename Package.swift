@@ -13,7 +13,7 @@ let package = Package(
         .executable(name: "CoreDeviceInventoryProbe", targets: ["CoreDeviceInventoryProbe"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.16.2"),
+        .package(url: "https://github.com/lynnswap/ABIBridge.git", revision: "631a09caaab90607afd6af9322ce534dcbc5aba1"),
         .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.7"),
     ],
     targets: [
