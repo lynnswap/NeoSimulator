@@ -88,6 +88,7 @@ public final class DeviceModel: Identifiable {
     /// Results of reads from before this changes describe a device that no longer exists, so they are dropped.
     @ObservationIgnored package private(set) var epoch = 0
     @ObservationIgnored package private(set) var readsStopped: Bool
+    @ObservationIgnored private var isRetired = false
     @ObservationIgnored private var interest: [Int: Int] = [:]
     @ObservationIgnored private var presentations = 0
     @ObservationIgnored private var commandReaders: [UUID: @MainActor () -> Void] = [:]
@@ -152,6 +153,7 @@ public final class DeviceModel: Identifiable {
 
     /// Takes in what the inventory lists now. Only what can change the device's answers makes it read again.
     package func update(_ device: InventoryDevice, sources: Set<DeviceInventoryIssue.Source>) {
+        guard !isRetired else { return }
         self.sources = sources
         let previous = inventory
         guard previous != device else { return }
@@ -184,6 +186,22 @@ public final class DeviceModel: Identifiable {
         scheduleReads()
     }
 
+    /// The inventory has authoritatively stopped listing this device. Existing callers may keep the last values, but
+    /// unfinished reads belong to this retired generation and new changes must not target a later replacement.
+    package func retire() {
+        guard !isRetired else { return }
+        isRetired = true
+        readsStopped = true
+        isAvailable = false
+        canInspectSettings = false
+        canInspectBackgroundServices = false
+        epoch += 1
+        settings.discardRunningReads()
+        backgroundServices.discardRunningRead()
+        for identifier in unstartedWrites { writes[identifier]?.cancel() }
+        health?.cancel()
+    }
+
     package func stopReading() {
         readsStopped = true
         settings.cancelReads()
@@ -204,6 +222,7 @@ public final class DeviceModel: Identifiable {
 
     /// Refuses a change that the device could not be sent because an earlier call to it has not returned.
     package func checkAcceptsChanges() throws {
+        guard !isRetired else { throw SimulatorError.operation("This device is no longer available.") }
         if let unresponsiveOperation {
             throw DeviceOperationFailure.notSent(operation: "change the device's state", heldBy: unresponsiveOperation)
         }
@@ -291,7 +310,7 @@ public final class DeviceModel: Identifiable {
 
     // MARK: Presenting sessions
 
-    /// A session keeps its device's model registered while it shows it, even if the inventory stops listing the device.
+    /// A session retains its model while it shows it; an authoritative inventory removal can retire that model.
     /// `readCommandState` is how a revalidation reaches what only that session can read.
     package func beginPresentation(readCommandState: @escaping @MainActor () -> Void) -> UUID {
         presentations += 1

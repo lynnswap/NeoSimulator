@@ -66,7 +66,8 @@ public final class DeviceRegistry {
         for device in snapshot.devices where seen.insert(device.id).inserted {
             let model = models[device.id]
             let current = Self.retainingUnreadValues(of: model?.inventory, in: device, snapshot: snapshot)
-            let sources = snapshot.sources(of: device)
+            let unreadSources = model?.sources.filter { snapshot.retains([$0]) } ?? []
+            let sources = snapshot.sources(of: device).union(unreadSources)
             if let model {
                 model.update(current, sources: sources)
                 listed.append(model)
@@ -78,7 +79,10 @@ public final class DeviceRegistry {
         }
         for model in devices where !seen.contains(model.id) {
             if snapshot.retains(model.sources) { listed.append(model) }
-            else if !model.isPresented { models[model.id] = nil }
+            else {
+                model.retire()
+                models[model.id] = nil
+            }
         }
         if listed.map(\.id) != devices.map(\.id) { devices = listed }
         inventoryIssues = snapshot.issues
@@ -102,7 +106,7 @@ public final class DeviceRegistry {
         let model = DeviceModel(inventory: device, source: source, registry: self, readsStopped: readsStopped)
         if let channel { model.follow(channel) }
         else if case .simulator(let identifier, let path) = device.id.destination {
-            model.follow(DeviceIOHub.shared.channel(for: DeviceAddress(identifier: identifier, deviceSetPath: path)))
+            model.follow(DeviceIOHub.shared.channel(for: .device(DeviceAddress(identifier: identifier, deviceSetPath: path))))
         }
         models[device.id] = model
         return model

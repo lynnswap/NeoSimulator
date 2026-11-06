@@ -13,6 +13,7 @@ enum MinimalSimulatorApp {
 
 @MainActor
 private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+    private let registry = DeviceRegistry()
     private var context: SimulatorContext?
     private var screen: SimulatorScreen?
     private var window: NSWindow?
@@ -32,10 +33,11 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func start() async throws {
-        let context = try await SimulatorContext.load()
+        let context = try await SimulatorContext.load(deviceRegistry: registry)
         self.context = context
         context.onError = { [weak self] in self?.asynchronousFailures.append($0.localizedDescription) }
         let devices = try await context.devices()
+        try await registry.refresh()
         let arguments = CommandLine.arguments
         guard let option = arguments.firstIndex(of: "--device"), option + 1 < arguments.count else {
             for device in devices {
@@ -63,6 +65,9 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
             screen = try await context.openScreen(id)
         }
         self.screen = screen
+        guard registry.device(for: .simulator(id)) === screen.deviceModel else {
+            throw SimulatorError.operation("The screen did not share the registry's device state.")
+        }
         screen.onEnd = { print("Screen ended: \($0)") }
         NSApp.setActivationPolicy(.regular)
         let menu = NSMenu()

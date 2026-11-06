@@ -3080,13 +3080,20 @@ struct ManagerModelTests {
         let remote = try #require(try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}}}]}}"#.utf8)).first)
         let xcode = URL(fileURLWithPath: "/Fixture.app")
         let catalog = DeviceInventoryIssue.Source.simulators(xcodeURL: xcode, deviceSetPath: nil)
+        let otherCatalog = DeviceInventoryIssue.Source.simulators(xcodeURL: URL(fileURLWithPath: "/Other.app"), deviceSetPath: nil)
         let phone = simulator()
         let registry = DeviceRegistry(source: ManagerModelSource(devices: []))
         struct Unread: Error {}
         registry.apply(DeviceInventorySnapshot(devices: [phone, .remote(remote)], issues: [],
-                                               sources: [phone.id: [catalog], .coreDevice("A"): [.coreDevice]]))
+                                               sources: [phone.id: [catalog, otherCatalog], .coreDevice("A"): [.coreDevice]]))
         let phoneModel = try #require(registry.device(for: phone.id))
         let remoteModel = try #require(registry.device(for: .coreDevice("A")))
+
+        registry.apply(DeviceInventorySnapshot(devices: [phone, .remote(remote)], issues: [.init(source: catalog, error: Unread())],
+                                               sources: [phone.id: [otherCatalog], .coreDevice("A"): [.coreDevice]]))
+        registry.apply(DeviceInventorySnapshot(devices: [.remote(remote)], issues: [.init(source: catalog, error: Unread())],
+                                               sources: [.coreDevice("A"): [.coreDevice]]))
+        #expect(registry.device(for: phone.id) === phoneModel)
 
         // A failed source says nothing of what only it listed, and the sources that read still decide theirs.
         registry.apply(DeviceInventorySnapshot(devices: [phone], issues: [.init(source: .coreDevice, error: Unread())],
@@ -3110,6 +3117,36 @@ struct ManagerModelTests {
         #expect(registry.device(for: .coreDevice("A")) === remoteModel)
         registry.apply(DeviceInventorySnapshot(devices: [phone], issues: [], sources: [phone.id: [catalog]]))
         #expect(registry.device(for: .coreDevice("A")) == nil)
+    }
+
+    @Test func aRemovedDeviceKeepsLateReadsAndNewWritesOutOfItsReplacement() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let presentation = model.beginPresentation {}
+        defer { model.endPresentation(presentation) }
+        #expect(await events.next() == .read(device.id))
+
+        registry.apply(DeviceInventorySnapshot(devices: [], issues: []))
+        await source.completeRead(settings(appearance: .dark))
+        await model.finishReading()
+        try #require(registry.device(for: device.id) == nil)
+        try #require(!model.isAvailable && !model.canInspectSettings)
+        #expect(model.settings.appearance == nil)
+        await #expect(throws: SimulatorError.self) { try await model.settings.set(.boldText(true)) }
+        #expect(await source.writtenChanges.isEmpty)
+
+        registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        let replacement = try #require(registry.device(for: device.id))
+        #expect(replacement !== model)
+        let newInterest = replacement.keepCurrent(.settings)
+        defer { newInterest.release() }
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .light))
+        await registry.finishReading()
+        #expect(replacement.settings.appearance == .light && model.settings.appearance == nil)
     }
 
     @Test func aFailedCoreDeviceReadKeepsWhatItAddedToASimulator() async throws {

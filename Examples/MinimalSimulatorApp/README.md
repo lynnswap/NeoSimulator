@@ -4,6 +4,12 @@ This independent Swift package imports only the public `NeoSimulatorKit` product
 It lists simulators, opens one in a window or an AppKit view controller, and releases
 its display resources when the app quits.
 
+The application retains one `DeviceRegistry` and passes it to `SimulatorContext.load`.
+Its inventory and each screen's `deviceModel` share the same observable object.
+Keep a `DeviceReadInterest` returned by `model.keepCurrent(.settings)` while a settings
+view needs updates; returning to a device reuses its values. Call `registry.revalidate()`
+when the application returns to the foreground to refresh changes made elsewhere.
+
 Requirements match NeoSimulator: Apple Silicon, macOS 26.4, and Xcode 27 with a
 simulator runtime installed. Quit Apple's Simulator and Device Hub before opening
 a screen.
