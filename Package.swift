@@ -38,7 +38,7 @@ let package = Package(
         .target(name: "NeoSimulatorService", dependencies: [
             "NeoSimulatorKit", "NeoSimulatorHostSupport",
         ]),
-        .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorHostSupport"]),
+        .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorKit"]),
         .testTarget(name: "NeoSimulatorAppTests", dependencies: [
             "NeoSimulatorApp", "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorHostSupport", "NeoSimulatorService",
             .product(name: "ABIBridge", package: "ABIBridge"),
