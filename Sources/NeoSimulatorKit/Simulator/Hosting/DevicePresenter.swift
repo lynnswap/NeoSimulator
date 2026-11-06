@@ -99,8 +99,14 @@ package protocol DevicePresenter: AnyObject {
     /// Makes the presentation of a new session.
     func makePresentation(of session: DeviceSession, offersLifetimeChoice: Bool,
                           events: DevicePresentationEvents) throws -> any DevicePresentation
-    /// Finishes the captures that outlive their sessions, and returns their failures.
-    func finishCaptures() -> [any Error]
+    /// Begins a stop of the captures that outlive their sessions: when this returns their thumbnails have ended and saving
+    /// what they hold has begun, and until `finishCaptures` their failures wait for it instead of being reported.
+    func beginFinishingCaptures()
+    /// Waits until `deadline` for those captures' file work, and returns what their owner has to hear. Their work carries on
+    /// past the deadline, and a failure from then on goes to `reportDetachedCapture` and to the next stop.
+    func finishCaptures(before deadline: ContinuousClock.Instant) async -> [any Error]
+    /// Lets go of failures that the user has been told of. Those captures stay where the failures said, and are not saved again.
+    func acknowledgeCaptureFailures()
     /// Shows a device's log file.
     func openLog(_ log: URL) async throws
     /// The first language of the Mac's current keyboard input source.

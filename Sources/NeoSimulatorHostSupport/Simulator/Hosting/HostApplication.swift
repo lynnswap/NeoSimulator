@@ -482,8 +482,12 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
             catch {
                 if ownerExitRequested || handoverRequested { hostLog(error.localizedDescription) }
                 else { notes.append(error.localizedDescription) }
+                engine.acknowledgeCaptureFailures()
             }
             let deadline = ContinuousClock.now + HostPreferences.terminationLimit
+            for failure in await CaptureThumbnail.finishAll(before: deadline) {
+                TerminationAccount.shared.note(failure.localizedDescription)
+            }
             for request in requests where await !request.ends(before: deadline) {
                 TerminationAccount.shared.note("A screen had not finished opening when NeoSimulator quit.")
             }
@@ -497,7 +501,8 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
 
     package func applicationWillTerminate(_ notification: Notification) {
         CaptureThumbnail.savesImmediately = true
-        CaptureThumbnail.finishAll()
+        // Quitting has finished every capture it knew of; there is no more time to save one that arrived since.
+        for file in CaptureThumbnail.unfinishedCaptures() { hostLog("A capture was not saved before NeoSimulator quit. It remains at \(file.path).") }
         shutdown()
     }
 
