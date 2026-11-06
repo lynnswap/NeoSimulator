@@ -431,7 +431,7 @@ package final class DeviceSession {
     package private(set) var appResizeGeometry: AppResizeGeometry?
     package private(set) var isResizingApp = false
     package var canResizeApp: Bool {
-        canPerformToolOperation && recording == nil && supportsAppResize
+        canPerformToolOperation && recording == nil && recordingStart == nil && supportsAppResize
             && (isResizingApp || isStartingAppResize || appResizeEligibility == .eligible)
     }
     @ObservationIgnored package let tools: DeviceTools
@@ -481,7 +481,8 @@ package final class DeviceSession {
     /// The transfers the device has not completed, oldest first.
     @ObservationIgnored private var pendingPulls: [PendingTransfer] = []
     @ObservationIgnored private var pendingPushes: [PendingTransfer] = []
-    @ObservationIgnored private var operation: Task<Void, Never>?
+    @ObservationIgnored private var operation: Task<(any Error)?, Never>?
+    @ObservationIgnored private var captureWrites: [UUID: CaptureFile.Locations] = [:]
     /// The delayed steps of hardware inputs, which a disconnect cancels.
     @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
     @ObservationIgnored private var nextInputStep = 0
@@ -502,6 +503,7 @@ package final class DeviceSession {
     package private(set) var isBusy = false
     package private(set) var isConnected = true
     package private(set) var recording: VideoRecording?
+    private var recordingStart: Task<Void, any Error>?
     /// The orientation last read from the device.
     package private(set) var orientation: DeviceOrientation?
     /// The angle the display is shown at, which a guest-initiated rotation
@@ -719,7 +721,7 @@ package final class DeviceSession {
 
     package var canPerformCommands: Bool { isConnected && display.isBooted }
     package var canPerformToolOperation: Bool { canPerformCommands && !isBusy }
-    package var canStartRecording: Bool { canPerformToolOperation && recording == nil && !isStartingAppResize }
+    package var canStartRecording: Bool { canPerformToolOperation && recording == nil && recordingStart == nil && !isStartingAppResize }
 
     // MARK: Immediate device input
 
@@ -1913,8 +1915,8 @@ package final class DeviceSession {
     }
 
     /// Runs one device tool operation at a time. The caller must hold no
-    /// reservation. Errors other than cancellation are passed to `failure`. Only disconnecting stops a running
-    /// tool, and the window that could show its unknown outcome goes with the session, so that is logged instead.
+    /// reservation. Errors other than cancellation are passed to `failure`. Disconnecting cancels the operation;
+    /// stopping also receives a cleanup failure even when the window that would show it has closed.
     package func run(_ body: @escaping @MainActor () async throws -> Void,
              failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformToolOperation else { return }
@@ -1930,8 +1932,9 @@ package final class DeviceSession {
             }
             do { try await body() }
             catch is CancellationError {}
-            catch where error.isCancellation { hostLog(error.localizedDescription) }
-            catch { failure(error) }
+            catch where error.isCancellation { hostLog(error.localizedDescription); return error }
+            catch { failure(error); return error }
+            return nil
         }
     }
 
@@ -1983,17 +1986,26 @@ package final class DeviceSession {
 
     /// Saves the screen to a file chosen in a save panel, replacing it.
     package func saveScreenshot(to destination: URL, mask: DeviceTools.ScreenMask) async throws {
-        try await CaptureFile.write(to: destination, extension: "png") { temporary in
+        let identifier = UUID()
+        let locations = CaptureFile.Locations()
+        captureWrites[identifier] = locations
+        defer { captureWrites.removeValue(forKey: identifier) }
+        try await CaptureFile.write(to: destination, extension: "png", locations: locations) { temporary in
             try await tools.screenshot(to: temporary, mask: mask, displayID: display.captureDisplayID)
-            try Self.checkPNG(at: temporary)
+            try await Self.checkPNG(at: temporary)
         }
     }
 
     /// The screen as a PNG, without the device's mask, for Edit ▸ Copy Screen.
     package func screenPNG() async throws -> Data {
         let temporary = try await screenshot(mask: .ignored)
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        return try Data(contentsOf: temporary)
+        return try await performBlockingIO {
+            defer {
+                do { try FileManager.default.removeItem(at: temporary) }
+                catch { hostLog("Could not remove a temporary screenshot at \(temporary.path): \(error.localizedDescription)") }
+            }
+            return try Data(contentsOf: temporary)
+        }
     }
 
     /// Takes a screenshot into a new temporary PNG, which the caller owns.
@@ -2002,49 +2014,68 @@ package final class DeviceSession {
             .appendingPathComponent("simulator_screenshot_\(UUID().uuidString).png")
         do {
             try await tools.screenshot(to: temporary, mask: mask, displayID: display.captureDisplayID)
-            try Self.checkPNG(at: temporary)
+            try await Self.checkPNG(at: temporary)
             return temporary
         } catch {
-            try? FileManager.default.removeItem(at: temporary)
+            _ = try? await performBlockingIO { try FileManager.default.removeItem(at: temporary) }
             throw error
         }
     }
 
-    private static func checkPNG(at url: URL) throws {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        guard try handle.read(upToCount: 8) == Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
-            throw SimulatorError.operation("The screenshot tool did not produce a PNG file")
+    private static func checkPNG(at url: URL) async throws {
+        try await performBlockingIO {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            guard try handle.read(upToCount: 8) == Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
+                throw SimulatorError.operation("The screenshot tool did not produce a PNG file")
+            }
         }
     }
 
-    /// Whether a recording to a chosen file will replace `file` when it finishes.
-    package func isRecordingDestination(_ file: URL) -> Bool { recordings.isReserved(file) }
+    /// Holds a file that a capture is being saved to against recordings, which replace their file when they finish.
+    package func claimCaptureDestination(_ file: URL) async throws -> (@MainActor () -> Void)? { try await recordings.claim(file) }
 
-    /// Announces recording state changes to the device plugin.
-    package func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) throws {
-        guard canPerformCommands, recording == nil else { return }
+    /// Announces recording state changes to the device plugin. A recording that started after this session lost its
+    /// display, which no stop could reach while it was starting, is stopped as soon as it exists.
+    package func startRecording(to destination: RecordingStore.Destination, mask: DeviceTools.ScreenMask) async throws {
+        guard canPerformCommands, recording == nil, recordingStart == nil else { return }
         guard !isStartingAppResize else {
             throw SimulatorError.operation("Wait for the app display to connect before starting a recording.")
         }
         let displayID = try display.captureDisplayID
-        recording = try recordings.start(to: destination, process: { [makeRecordingProcess] in
-            makeRecordingProcess($0, mask, displayID)
-        }) { [weak self] in
-            self?.recording = nil
-            self?.display.announceRecording(started: false)
+        let recordedDisplay = display
+        let start = Task { [self] in
+            let started = try await recordings.start(to: destination, process: { [makeRecordingProcess] in
+                makeRecordingProcess($0, mask, displayID)
+            }) { [weak self] in
+                self?.recording = nil
+                self?.display.announceRecording(started: false)
+            }
+            recording = started
+            display.announceRecording(started: true)
+            if !canPerformCommands || display !== recordedDisplay { started.stop() }
         }
-        display.announceRecording(started: true)
+        recordingStart = start
+        defer { recordingStart = nil }
+        try await start.value
     }
 
     package func stopRecording() { recording?.stop() }
 
-    /// Stops an active recording and waits until it is finalized, so that a
-    /// restart does not cut it off. The recording store reports its errors.
-    package func finishRecording() async {
-        guard let recording else { return }
-        recording.stop()
-        try? await recording.waitUntilFinished()
+    /// The active recording, once a start in progress has made one or failed. A start that a disk or launch holds past
+    /// the limit throws here and goes on, owned by the recording store.
+    package func activeRecording(startLimit: Duration = DeviceOperationLimit.recordingStart) async throws -> VideoRecording? {
+        if let recordingStart, await !recordingStart.ends(before: .now + startLimit) {
+            throw SimulatorError.operation("The recording has not finished starting.")
+        }
+        return recording
+    }
+
+    /// Stops an active recording and waits until it is finalized, so that a restart does not cut it off. The recording
+    /// store reports its errors. A start or stop past its limit throws; the store still owns that recording, which stops
+    /// itself once it exists if this session has lost its display by then.
+    package func finishRecording(startLimit: Duration = DeviceOperationLimit.recordingStart) async throws {
+        try await activeRecording(startLimit: startLimit)?.finish()
     }
 
     /// Called once an import that attempted to install applications ends, whatever its outcome,
@@ -2109,16 +2140,29 @@ package final class DeviceSession {
         inputRemoval = removeInput()
     }
 
-    /// Disconnects, then waits until the display has sent the native input it accepted and removed its services.
-    /// After a failure, the next call removes what the display's input owners kept.
+    /// Disconnects, then joins native input removal and the tool operation's cleanup. A tool that outlives the stop
+    /// grace remains owned and is reported; the next stop joins it again.
     package func stop() async throws {
         disconnect()
+        let finishingOperation = operation
         let removal = inputRemoval ?? removeInput()
         inputRemoval = removal
+        var failures: [any Error] = []
         do { try await removal.value } catch {
             if inputRemoval == removal { inputRemoval = nil }
-            throw error
+            failures.append(error)
         }
+        if let finishingOperation {
+            if await finishingOperation.ends(before: .now + DeviceOperationLimit.terminationStopGrace) {
+                if let failure = await finishingOperation.value { failures.append(failure) }
+            } else {
+                let locations = Set(captureWrites.values.flatMap(\.locations)).map(\.path).sorted().joined(separator: "\n")
+                let detail = locations.isEmpty ? "" : " Check these file locations:\n\(locations)"
+                failures.append(SimulatorError.operation("A device tool operation did not finish before the screen stopped.\(detail)"))
+            }
+        }
+        if failures.count == 1 { throw failures[0] }
+        if !failures.isEmpty { throw SimulatorError.operation(failures.map(\.localizedDescription).joined(separator: "\n")) }
     }
 
     /// Starts removing the display's native input before returning. The failure is also logged, because a

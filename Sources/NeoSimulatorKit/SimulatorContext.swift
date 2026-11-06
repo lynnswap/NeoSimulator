@@ -385,6 +385,10 @@ public final class SimulatorContext {
 
     /// Releases every screen without shutting down guests.
     /// A failed call can be retried to finish resources that could not be released.
+    /// Recording and capture file work that outlasts the wait goes on: the error names its files, `onError` receives a
+    /// failure that comes after this returned, and the next call joins that work and throws such a failure too.
+    /// A capture that could not be saved is not attempted again: it stays at the location the error names, and every call
+    /// throws until it has been moved away from there or ``acknowledgeCaptureFailures()`` has been called.
     public func invalidate() async throws {
         if let invalidation { try await invalidation.value; return }
         isInvalidating = true
@@ -408,6 +412,10 @@ public final class SimulatorContext {
         defer { invalidation = nil }
         try await task.value
     }
+
+    /// Acknowledges capture failures already reported to the user, so another ``invalidate()`` does not repeat them.
+    /// This leaves the files at the locations in the errors. Work still in progress can report a later failure.
+    public func acknowledgeCaptureFailures() { engine.acknowledgeCaptureFailures() }
 
     fileprivate func close(_ screen: SimulatorScreen) async throws {
         if let invalidation { try await invalidation.value; return }

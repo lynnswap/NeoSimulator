@@ -131,7 +131,9 @@ Package tests cover host switching, preference transactions, recovery,
 installation inspection, signatures, native input focus, runtime lookups,
 device-browser behavior, cancellation, capture/import failures, and renderer
 contracts using isolated fixtures. They run without an app host, so the fixtures
-control defaults and process state independently of app startup.
+control defaults and process state independently of app startup. Capture tests
+hold real file work at a `CaptureLane`, and session calls and GPU copies at a
+`RemoteScreenCaptureStream.Lifecycle`, to show what callers can do meanwhile.
 
 The app-bundle script builds the NeoSimulator scheme and runs
 `NeoSimulatorLicenseTests`. This separate target checks the LicenseList-generated
