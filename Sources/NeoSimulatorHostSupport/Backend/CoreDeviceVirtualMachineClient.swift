@@ -38,7 +38,7 @@ package final class CoreDeviceManagementClient {
 
     package static func commandIdentifier(for deviceID: DeviceInventoryID,
         resolveSimulator: @MainActor (String) async throws -> String? = CoreDeviceRemoteScreenDevice.simulatorIdentifier) async throws -> String {
-        switch deviceID {
+        switch deviceID.destination {
         case .coreDevice(let identifier): return identifier
         case .simulator(let udid, nil):
             guard let identifier = try await resolveSimulator(udid) else {

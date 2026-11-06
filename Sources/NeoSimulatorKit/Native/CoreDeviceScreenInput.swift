@@ -924,7 +924,7 @@ private final class NativeDevicePostureTransport: DevicePostureTransport {
 
     static func make(_ identifier: DeviceInventoryID) async throws -> (any DevicePostureTransport)? {
         let commandID: String
-        switch identifier {
+        switch identifier.destination {
         case .coreDevice(let id): commandID = id
         case .simulator(let udid, nil):
             guard let id = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: udid) else { return nil }

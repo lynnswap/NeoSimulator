@@ -646,12 +646,13 @@ package final class RendererDeviceRequestWaiter {
                     forName: Notification.Name("dev.lynnswap.NeoSimulator.\(acknowledgement)"),
                     object: requestIdentifier, queue: .main
                 ) { [weak self] notification in
-                    let releasedIdentifier = notification.userInfo?["udid"] as? String
-                    let acknowledgedSet = notification.userInfo?["deviceSetPath"] as? String
+                    let acknowledged = (notification.userInfo?["udid"] as? String).map {
+                        DeviceInventoryID.simulator(udid: $0, deviceSetPath: notification.userInfo?["deviceSetPath"] as? String)
+                    }
                     let failure = notification.userInfo?["error"] as? String
                     let handled = notification.userInfo?["handled"] as? Bool ?? true
                     Task { @MainActor in
-                        guard releasedIdentifier == identifier, acknowledgedSet == deviceSetPath else { return }
+                        guard acknowledged == deviceID else { return }
                         if let failure {
                             self?.finish(.failure(CLIError.temporary("renderer-device-request", failure)))
                         } else {

@@ -557,7 +557,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
 
     private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
         ManagerDeviceSettingsView(model: DeviceSettingsPanelModel(manager: model, screens: screens, preferences: SimulatorPreferences(), customLocation: { [weak self] in
-            guard let self, let identifier = self.model.settings.device?.id else { return }
+            guard let self, let identifier = self.model.selection.device?.id else { return }
             self.presentLocationEditor(for: identifier)
         }))
     }
@@ -673,8 +673,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             deviceScreenViewController.updatePreview(selectionCount: selections.count)
         }
         updateDeviceSettings()
-        model.settings.inspect(selectedDevice, selectionCount: selections.count)
-        model.backgroundServices.inspect(selectedDevice, selectionCount: selections.count)
+        model.inspect(selectedDevice, selectionCount: selections.count)
     }
 
     func selectDevice(_ identifier: DeviceInventoryID) {
@@ -964,7 +963,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let showsInspector = !splitController.splitViewItems[2].isCollapsed
         deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
                                isVisible: showsInspector && (inspectorMode == 1 || inspectorMode == 2))
-        model.backgroundServices.setVisible(showsInspector && inspectorMode == 3)
+        model.selection.setServicesVisible(showsInspector && inspectorMode == 3)
         backgroundServicesAccessory?.isActive = showsInspector && inspectorMode == 3
         backgroundServicesHost?.isVisible = showsInspector && inspectorMode == 3
     }

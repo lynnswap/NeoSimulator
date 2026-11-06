@@ -8,6 +8,24 @@ import Testing
 
 @Suite
 struct DeviceInventoryTests {
+    @Test func everySpellingOfASimulatorIsTheSameIdentity() throws {
+        let canonical = DeviceInventoryID.simulator(udid: "ABC-DEF", deviceSetPath: "/tmp/Fixture")
+        let device = InventoryDevice.simulator(SimulatorHostDevice(identifier: "abc-def", name: "Fixture", descriptiveName: "Fixture",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted", deviceSetPath: "/tmp/Fixture/"))
+        let address = DeviceAddress(identifier: "abc-def", deviceSetPath: "/tmp/Fixture")
+        let spellings: [DeviceInventoryID] = [
+            .simulator(udid: "abc-def", deviceSetPath: "/tmp/Other/../Fixture/"),
+            .simulator(SimulatorDeviceIdentifier("abc-def", deviceSetPath: "/tmp/Fixture")),
+            .simulator(udid: address.identifier, deviceSetPath: address.deviceSetPath),
+            try JSONDecoder().decode(DeviceInventoryID.self, from: JSONEncoder().encode(canonical)),
+            device.id,
+        ]
+        #expect(spellings.allSatisfy { $0 == canonical })
+        #expect(canonical != .simulator(udid: "ABC-DEF", deviceSetPath: nil))
+        // CoreDevice names its own destinations, and they keep the spelling it gave them.
+        #expect(DeviceInventoryID.coreDevice("abc-def") != .coreDevice("ABC-DEF"))
+    }
+
     @Test(arguments: [false, true])
     func currentPropertiesKeepCommandIdentityCapabilitiesAndConnectionRecency(previousFieldNames: Bool) throws {
         let json = previousFieldNames ? String(decoding: Self.coreDeviceJSON, as: UTF8.self)

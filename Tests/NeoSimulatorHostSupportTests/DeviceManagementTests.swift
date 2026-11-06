@@ -385,7 +385,7 @@ struct DeviceManagementTests {
             lookup = $0
             return "different-coredevice-command-id"
         }
-        #expect(lookup == "hardware-udid" && identifier == "different-coredevice-command-id")
+        #expect(lookup == "HARDWARE-UDID" && identifier == "different-coredevice-command-id")
         let remote = try await CoreDeviceManagementClient.commandIdentifier(for: .coreDevice("command-id")) { _ in
             Issue.record("A CoreDevice command identity must not be looked up as a simulator UDID.")
             return nil
@@ -547,7 +547,7 @@ private actor ManagementFixture {
     private(set) var attachRequests = 0
     private(set) var coreDeviceOperations: [NativeOperation] = []
     private(set) var releasedDevices: [DeviceInventoryID] = []
-    var virtualOperations: [String] { coreDeviceOperations.compactMap { if case .coreDevice(let id) = $0.deviceID { id } else { nil } } }
+    var virtualOperations: [String] { coreDeviceOperations.compactMap { if case .coreDevice(let id) = $0.deviceID.destination { id } else { nil } } }
 
     init(hasRenderer: Bool = false, failsRelease: Bool = false, holdsRelease: Bool = false, holdsShutdown: Bool = false, restartHasWindow: Bool = true,
          failingCommand: String? = nil, failingIdentifier: String? = nil, virtualFeatures: [String: Set<String>] = [:],

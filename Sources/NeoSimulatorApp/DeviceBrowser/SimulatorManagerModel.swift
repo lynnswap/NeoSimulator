@@ -91,15 +91,10 @@ final class UIFrameworkSettings {
     isolated deinit { loading?.cancel() }
 }
 
-protocol SimulatorManagerSource: DeviceSettingsSource, BackgroundServicesSource {
+protocol SimulatorManagerSource: DeviceStateSource {
     func status() async throws -> SimulatorHostStatus
     func beginSession() async throws
     func endSession() async throws
-    /// Only cancellation throws: a stopped read observed nothing to publish.
-    func inventory() async throws -> DeviceInventorySnapshot
-    /// Stops the reads running now and refuses new ones until ``resumeReads()``, without stopping any change.
-    nonisolated func stopReads()
-    nonisolated func resumeReads()
     func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func installedXcodes() async throws -> [SimulatorXcode]
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) async throws
@@ -125,7 +120,8 @@ extension SimulatorHostController: SimulatorManagerSource {}
 final class SimulatorManagerModel {
     @ObservationIgnored private let controller: any SimulatorManagerSource
     private(set) var status: SimulatorHostStatus?
-    private(set) var inventory: [InventoryDevice] = []
+    /// The devices the registry lists, as the inventory last described them.
+    var inventory: [InventoryDevice] { registry.devices.map(\.inventory) }
     /// DeviceKit's sidebar Active values in this process; a device without one is unknown.
     private(set) var activeStates = DeviceActiveStates()
     var devices: [SimulatorHostDevice] {
@@ -144,12 +140,15 @@ final class SimulatorManagerModel {
     }
     private var managementRequests: [UUID: ManagementRequest] = [:]
     private(set) var isBusy = false
-    /// Whether queued work holds later settings edits. A running device's screen that is attaching does not.
-    private(set) var holdsSettingsEdits = false
+    /// Whether queued work holds later edits of every device. A running device's screen that is attaching does not.
+    private var holdsAllEdits = false
+    /// The devices whose later edits queued work holds.
+    private var heldEditDeviceIDs: Set<DeviceInventoryID> = []
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
-    let settings: DeviceSettingsModel
-    let backgroundServices: BackgroundServicesModel
+    /// What is known of each device, which this process's screens also use.
+    let registry: DeviceRegistry
+    let selection = ManagerSelection()
     let serviceProfiles: ServiceProfileStore
     private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
@@ -185,18 +184,33 @@ final class SimulatorManagerModel {
     @ObservationIgnored var uninterruptedCommands = UninterruptedCommands.shared
     @ObservationIgnored private var operationTask: Task<Void, Never>?
     private struct PendingOperation {
+        let id = UUID()
         let activity: String
-        let refreshCatalog: Bool
+        /// The device whose changes this follows and holds; nil means every device's.
+        let deviceID: DeviceInventoryID?
         let openDevice: SimulatorScreenOpenRequest?
         /// Whether the open only attaches the screen, without booting, if the device is running when the queue admits it.
         /// Other opens and settings that do not depend on the connection can run alongside it.
         var attachesRunningDevice = false
-        var waitsForAttach = true
+        /// The accepted changes that this must follow.
+        var followsWrites: [Task<Void, any Error>] = []
         /// Receives whether the admitted open only attaches.
         let run: @MainActor (_ attaches: Bool) async throws -> Void
     }
+    /// A change accepted for one device, which runs in that device's order.
+    private struct AcceptedWrite {
+        let write: DeviceWrite
+        let activity: String
+        let deviceID: DeviceInventoryID
+    }
+    @ObservationIgnored private var acceptedWrites: [AcceptedWrite] = []
+    /// Changes that a quit stopped before their turn.
+    @ObservationIgnored private var abandonedWrites: Set<UUID> = []
+    /// Accepted operations that have not ended, with what waits for them.
+    @ObservationIgnored private var unfinishedOperations: [UUID: [CheckedContinuation<Void, Never>]] = [:]
     private(set) var openingDeviceIDs: Set<DeviceInventoryID> = []
     private struct ActiveOpen {
+        let id: UUID
         let request: SimulatorScreenOpenRequest
         var task: Task<Void, any Error>?
         let activity: String
@@ -211,6 +225,7 @@ final class SimulatorManagerModel {
         pendingOperations.removeAll { operation in
             guard operation.openDevice?.deviceID == identifier else { return false }
             operation.openDevice?.cancel()
+            finishOperation(operation.id)
             return true
         }
         if let active = activeOpens[identifier], let task = active.task {
@@ -226,9 +241,7 @@ final class SimulatorManagerModel {
     }
 
     func cancelPendingSimulatorOpens() {
-        for identifier in openingDeviceIDs {
-            if case .simulator = identifier { cancelOpening(identifier) }
-        }
+        for identifier in openingDeviceIDs where identifier.isSimulator { cancelOpening(identifier) }
     }
 
     init(rendererApplicationURL: URL,
@@ -238,8 +251,7 @@ final class SimulatorManagerModel {
         self.controller = controller
         makeDevicePosture = { DevicePostureModel(deviceID: $0) }
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
-        settings = DeviceSettingsModel(source: controller)
-        backgroundServices = BackgroundServicesModel(source: controller)
+        registry = DeviceRegistry(source: controller)
         self.serviceProfiles = serviceProfiles
     }
 
@@ -249,8 +261,7 @@ final class SimulatorManagerModel {
         controller = source
         self.makeDevicePosture = makeDevicePosture
         frameworks = UIFrameworkSettings { try await source.installedXcodes() }
-        settings = DeviceSettingsModel(source: source)
-        backgroundServices = BackgroundServicesModel(source: source)
+        registry = DeviceRegistry(source: source)
         self.serviceProfiles = serviceProfiles
     }
 
@@ -291,7 +302,7 @@ final class SimulatorManagerModel {
         onDeviceOpenRequested?(identifier)
         openingDeviceIDs.insert(identifier)
         let request = controller.makeScreenOpenRequest(for: identifier)
-        enqueue(PendingOperation(activity: "Opening simulator…", refreshCatalog: true, openDevice: request,
+        enqueue(PendingOperation(activity: "Opening simulator…", deviceID: identifier, openDevice: request,
                                  attachesRunningDevice: true) { attaches in
             try await self.controller.openDevice(request, xcodeURL: nil, bootIfNeeded: !attaches)
             try Task.checkCancellation()
@@ -305,7 +316,7 @@ final class SimulatorManagerModel {
         if restoration.presentation == .main { onDeviceOpenRequested?(restoration.deviceID) }
         openingDeviceIDs.insert(restoration.deviceID)
         let request = controller.makeScreenOpenRequest(for: restoration.deviceID)
-        perform("Restoring simulator…", openDevice: request) {
+        perform("Restoring simulator…", device: restoration.deviceID, openDevice: request) {
             await self.refreshCatalog()
             try await self.controller.openDevice(request, xcodeURL: restoration.xcodeURL, bootIfNeeded: true)
             try Task.checkCancellation()
@@ -316,7 +327,7 @@ final class SimulatorManagerModel {
 
     func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, any Error>) {
         // Accept the close before waiting, so a later open cannot overtake it.
-        perform("Closing simulator…") {
+        perform("Closing simulator…", device: identifier) {
             await self.stopDevicePosture(for: identifier)
             // The screen is already gone, so the device closes even when its cleanup failed, which is reported then.
             let cleanup = await finishing.result
@@ -335,7 +346,7 @@ final class SimulatorManagerModel {
         case .simulator(let simulator): openDevice(simulator.inventoryID)
         case .remote:
             onDeviceOpenRequested?(device.id)
-            perform("Opening device screen…") {
+            perform("Opening device screen…", device: device.id) {
                 guard !self.managingDeviceIDs.contains(device.id),
                       case .remote(let current)? = self.inventory.first(where: { $0.id == device.id }) else { return }
                 try await self.onOpenRemoteDevice?(current)
@@ -459,12 +470,12 @@ final class SimulatorManagerModel {
     func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
         guard !stopping, !deviceIDs.isEmpty else { return false }
         // A background service change spans many launchctl calls; only Force Shut Down may interrupt it.
-        guard action == .forceShutdown || deviceIDs.isDisjoint(with: backgroundServices.changingDeviceIDs) else { return false }
+        guard action == .forceShutdown || !deviceIDs.contains(where: { registry.device(for: $0)?.backgroundServices.isChanging == true }) else { return false }
         let overlapping = managementRequests.values.filter { !$0.identifiers.isDisjoint(with: deviceIDs) }
         if overlapping.isEmpty { return !isBusy }
         guard action == .forceShutdown, overlapping.count == 1, let shutdown = overlapping.first,
               shutdown.action == DeviceManagementAction.shutdown, deviceIDs.isSubset(of: shutdown.identifiers) else { return false }
-        return shutdown.identifiers.allSatisfy { if case .simulator = $0 { true } else { false } }
+        return shutdown.identifiers.allSatisfy(\.isSimulator)
     }
 
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
@@ -509,6 +520,9 @@ final class SimulatorManagerModel {
                         do { try self.serviceProfiles.removeBinding(for: result.deviceID) }
                         catch { self.onError?(error) }
                     }
+                }
+                if action == .restart || action == .erase {
+                    for result in report.results where result.error == nil { self.registry.device(for: result.deviceID)?.deviceRestarted() }
                 }
                 var presentationError: (any Error)?
                 do { try await self.afterManagingSimulators?(action, targets) }
@@ -598,8 +612,6 @@ final class SimulatorManagerModel {
         if refreshing { await withCheckedContinuation { refreshWaiters.append($0) } }
         else { refreshing = true }
         defer {
-            settings.requestRefresh()
-            backgroundServices.requestRefresh()
             if refreshWaiters.isEmpty {
                 refreshing = false
                 applyPendingServiceProfiles()
@@ -609,16 +621,14 @@ final class SimulatorManagerModel {
         repeat {
             inventoryRefreshRequested = false
             refreshHostStatus()
-            let snapshot: DeviceInventorySnapshot
-            do { snapshot = try await controller.inventory() }
+            do { try await registry.refresh() }
             catch {
                 // What is published stays until a read completes, which a cancelled quit starts again.
                 inventoryRefreshRequested = true
                 return
             }
-            inventory = snapshot.devices
             reconcileDevicePostures()
-            inventoryIssues = snapshot.issues
+            inventoryIssues = registry.inventoryIssues
             updateInventoryIssue()
         } while inventoryRefreshRequested && !stopping
     }
@@ -717,29 +727,39 @@ final class SimulatorManagerModel {
         setDeviceSetting(.location(latitude: latitude, longitude: longitude), for: identifier)
     }
 
-    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for identifier: DeviceInventoryID) {
-        guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
-        let edit = settings.accept(setting, for: device)
-        perform("Updating device settings…", refreshCatalog: false, waitsForAttach: setting.waitsForScreenAttach) {
-            try await self.settings.apply(edit)
-        }
+    /// Shows which device the manager window presents. `device` comes from the current inventory.
+    func inspect(_ device: InventoryDevice?, selectionCount: Int) {
+        selection.select(device.flatMap { registry.device(for: $0.id) }, count: selectionCount)
+    }
+
+    /// Marks what is known of every device as out of date, when something outside NeoSimulator may have changed it without a signal.
+    func revalidateDevices() {
+        guard !stopping else { return }
+        registry.revalidate()
+    }
+
+    func setDeviceSetting(_ setting: DeviceSettingChange, for identifier: DeviceInventoryID) {
+        guard !stopping, !managingDeviceIDs.contains(identifier), inventory.contains(where: { $0.id == identifier }),
+              let device = registry.device(for: identifier) else { return }
+        do {
+            let write = try device.settings.accept(setting, after: hold(of: identifier, waitsForAttach: setting.waitsForScreenAttach))
+            track(write, activity: "Updating device settings…", on: identifier)
+        } catch { onError?(error) }
     }
 
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for identifier: DeviceInventoryID) {
-        guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }) else { return }
+        guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }),
+              let model = registry.device(for: identifier) else { return }
         do {
-            let current = backgroundServices.device?.id == identifier ? backgroundServices.configuration : nil
             try serviceProfiles.record(targets, enabled: enabled, for: identifier,
-                productFamily: device.serviceProductFamily, currentConfiguration: current)
-            let change = backgroundServices.accept(targets, enabled: enabled, for: device)
-            perform("Updating background services…", refreshCatalog: false, waitsForAttach: false) {
-                try await self.backgroundServices.apply(change)
-            }
+                productFamily: device.serviceProductFamily, currentConfiguration: model.backgroundServices.configuration)
+            let write = try model.backgroundServices.accept(.services(targets, enabled: enabled), after: hold(of: identifier, waitsForAttach: false))
+            track(write, activity: "Updating background services…", on: identifier)
         } catch { onError?(error) }
     }
 
     func canEditSettings(for identifier: DeviceInventoryID) -> Bool {
-        !stopping && !holdsSettingsEdits && !managingDeviceIDs.contains(identifier)
+        !stopping && !holdsAllEdits && !heldEditDeviceIDs.contains(identifier) && !managingDeviceIDs.contains(identifier)
     }
 
     func selectServiceProfile(_ profileID: UUID, for identifier: DeviceInventoryID) {
@@ -763,24 +783,61 @@ final class SimulatorManagerModel {
     }
 
     private func enqueueServiceConfiguration(_ binding: DeviceServiceProfile, for device: InventoryDevice) {
-        let change = backgroundServices.accept(binding.configuration, for: device)
-        perform("Applying service profile…", refreshCatalog: false, waitsForAttach: false) {
-            do {
+        guard let model = registry.device(for: device.id) else { return }
+        do {
+            let write = try model.backgroundServices.accept(.configuration(binding.configuration),
+                after: hold(of: device.id, waitsForAttach: false)) {
                 try self.serviceProfiles.beginApplication(for: device.id, requestID: binding.requestID)
-            } catch {
-                self.backgroundServices.discard(change)
-                throw error
             }
-            try await self.backgroundServices.apply(change)
-        }
+            track(write, activity: "Applying service profile…", on: device.id)
+        } catch { onError?(error) }
     }
 
     private func applyPendingServiceProfiles() {
         guard !stopping else { return }
         for device in inventory where device.canInspectBackgroundServices && !managingDeviceIDs.contains(device.id)
-            && !backgroundServices.changingDeviceIDs.contains(device.id) {
+            && registry.device(for: device.id)?.backgroundServices.isChanging != true {
             if let binding = serviceProfiles.binding(for: device.id), binding.pendingApplication {
                 enqueueServiceConfiguration(binding, for: device)
+            }
+        }
+    }
+
+    /// What a change to `identifier` must follow: work accepted before it that changes every device or connects that one.
+    /// An attaching screen holds only what it restores or what would disturb it. Another device's work does not hold it.
+    private func hold(of identifier: DeviceInventoryID, waitsForAttach: Bool) -> Task<Void, Never>? {
+        func holds(_ deviceID: DeviceInventoryID?, attaches: Bool) -> Bool {
+            deviceID == nil || (deviceID == identifier && (waitsForAttach || !attaches))
+        }
+        var operations = Set(activeOpens.filter { holds($0.key, attaches: $0.value.attaches) }.values.map(\.id))
+        if let runningOperation, holds(runningOperation.deviceID, attaches: false) { operations.insert(runningOperation.id) }
+        for operation in pendingOperations where holds(operation.deviceID, attaches: attachesOnAdmission(operation)) {
+            operations.insert(operation.id)
+        }
+        guard !operations.isEmpty else { return nil }
+        return Task {
+            for operation in operations where self.unfinishedOperations[operation] != nil {
+                await withCheckedContinuation { self.unfinishedOperations[operation]?.append($0) }
+            }
+        }
+    }
+
+    private func finishOperation(_ identifier: UUID) {
+        unfinishedOperations.removeValue(forKey: identifier)?.forEach { $0.resume() }
+    }
+
+    /// Reports the outcome of an accepted change, which later host work waits for in its device's order.
+    private func track(_ write: DeviceWrite, activity: String, on identifier: DeviceInventoryID) {
+        acceptedWrites.append(AcceptedWrite(write: write, activity: activity, deviceID: identifier))
+        publishQueueState()
+        Task {
+            let result = await write.task.result
+            self.acceptedWrites.removeAll { $0.write.id == write.id }
+            self.publishQueueState()
+            if self.abandonedWrites.remove(write.id) != nil {
+                self.onError?(QuitOutcome.notRun(activity))
+            } else if case .failure(let error) = result {
+                self.onError?(error)
             }
         }
     }
@@ -789,8 +846,7 @@ final class SimulatorManagerModel {
         stopping = true
         let openings = activeOpens.values.compactMap(\.task)
         cancelPendingOpens()
-        settings.stopReading()
-        backgroundServices.stopReading()
+        registry.stopReading()
         // Accepted changes finish below, but no child that only reads state can hold them or this wait.
         controller.stopReads()
         defer { controller.resumeReads() }
@@ -810,6 +866,7 @@ final class SimulatorManagerModel {
         let postures = Task { await self.stopDevicePostures() }
         var finished = await postures.ends(before: deadline)
         if let operationTask, await !operationTask.ends(before: deadline) { finished = false }
+        for accepted in acceptedWrites where await !accepted.write.task.ends(before: deadline) { finished = false }
         for task in managementRequests.values.compactMap(\.task) where await !task.ends(before: deadline) { finished = false }
         var heldOpenings: Set<Task<Void, any Error>> = []
         for opening in openings where await !opening.ends(before: deadline) {
@@ -820,15 +877,19 @@ final class SimulatorManagerModel {
         if !finished {
             let unstarted = pendingOperations
             pendingOperations.removeAll()
+            for operation in unstarted { finishOperation(operation.id) }
             publishQueueState()
             resumeOperations()
             for operation in unstarted { onError?(QuitOutcome.notRun(operation.activity)) }
+            for accepted in acceptedWrites where registry.device(for: accepted.deviceID)?.isUnstarted(accepted.write) == true {
+                abandonedWrites.insert(accepted.write.id)
+                accepted.write.task.cancel()
+            }
             heldOpenings = await waitForStoppedWork(openings: heldOpenings, before: .now + terminationGrace)
         }
         let reads = Task {
             await self.statusRefreshTask?.value
-            await self.settings.finishReading()
-            await self.backgroundServices.finishReading()
+            await self.registry.finishReading()
         }
         if await !reads.ends(before: .now + terminationGrace) {
             NSLog("NeoSimulator: Reads of device state had not stopped when quitting went on.")
@@ -844,6 +905,9 @@ final class SimulatorManagerModel {
         -> Set<Task<Void, any Error>> {
         let activity = runningOperation?.activity
         if let operationTask, await !operationTask.ends(before: deadline) { onError?(QuitOutcome.unknown(activity ?? "A change")) }
+        for accepted in acceptedWrites where !abandonedWrites.contains(accepted.write.id) {
+            if await !accepted.write.task.ends(before: deadline) { onError?(QuitOutcome.unknown(accepted.activity)) }
+        }
         for request in managementRequests.values {
             if let task = request.task, await !task.ends(before: deadline) {
                 onError?(QuitOutcome.unknown(request.action.map { "\($0)" } ?? "An inspector change"))
@@ -870,8 +934,7 @@ final class SimulatorManagerModel {
         stopping = false
         quitPreparation = nil
         uninterruptedCommands.resumeAfterCancelledQuit()
-        settings.resumeReading()
-        backgroundServices.resumeReading()
+        registry.resumeReading()
         if inventoryRefreshRequested { Task { await refresh() } }
     }
 
@@ -883,33 +946,30 @@ final class SimulatorManagerModel {
         backgroundIssue = message
     }
 
-    private func perform(_ activity: String, refreshCatalog: Bool = true, openDevice: SimulatorScreenOpenRequest? = nil,
-                         waitsForAttach: Bool = true, operation: @escaping @MainActor () async throws -> Void) {
-        enqueue(PendingOperation(activity: activity, refreshCatalog: refreshCatalog, openDevice: openDevice,
-                                 waitsForAttach: waitsForAttach) { _ in try await operation() })
+    /// `device` is the one device the operation concerns; without one, it follows and holds the changes of every device.
+    private func perform(_ activity: String, device: DeviceInventoryID? = nil, openDevice: SimulatorScreenOpenRequest? = nil,
+                         operation: @escaping @MainActor () async throws -> Void) {
+        enqueue(PendingOperation(activity: activity, deviceID: device, openDevice: openDevice) { _ in try await operation() })
     }
 
     /// Admits independent screen opens together. Other operations retain their accepted order and wait for
-    /// connecting screens when they change the host or settings needed by a connection.
+    /// connecting screens. Each follows the changes accepted before it for the devices it concerns.
     private func enqueue(_ operation: PendingOperation) {
         guard !stopping else { return }
+        var operation = operation
+        operation.followsWrites = registry.writeTasks(for: operation.deviceID)
+        unfinishedOperations[operation.id] = []
         pendingOperations.append(operation)
         publishQueueState()
         guard operationTask == nil else {
             resumeOperations()
             return
         }
-        settings.setReadingSuspended(true)
-        backgroundServices.setReadingSuspended(true)
         operationTask = Task {
             defer {
                 self.operationTask = nil
-                self.isBusy = false
-                self.holdsSettingsEdits = false
+                self.publishQueueState()
                 self.reconcileDevicePostures()
-                self.activity = ""
-                self.settings.setReadingSuspended(false)
-                self.backgroundServices.setReadingSuspended(false)
             }
             while !self.pendingOperations.isEmpty || !self.activeOpens.isEmpty {
                 guard let next = self.pendingOperations.first, self.canAdmit(next) else {
@@ -923,34 +983,37 @@ final class SimulatorManagerModel {
                 let attaches = self.attachesOnAdmission(next)
                 if let request = next.openDevice {
                     let task = Task {
+                        for write in next.followsWrites { _ = await write.result }
                         try await next.run(attaches)
                         try Task.checkCancellation()
                     }
-                    self.activeOpens[request.deviceID] = ActiveOpen(request: request, task: task, activity: next.activity, attaches: attaches)
+                    self.activeOpens[request.deviceID] = ActiveOpen(id: next.id, request: request, task: task, activity: next.activity, attaches: attaches)
                     self.publishQueueState()
-                    Task { await self.finishOpen(request, task, refreshesCatalog: next.refreshCatalog) }
+                    Task { await self.finishOpen(request, task) }
                 } else {
                     self.runningOperation = next
                     self.publishQueueState()
                     defer { self.runningOperation = nil }
                     var failure: (any Error)?
+                    for write in next.followsWrites { _ = await write.result }
                     do { try await next.run(false) }
                     catch { failure = error }
-                    if !self.stopping, next.refreshCatalog || self.inventoryRefreshRequested { await self.refreshCatalog() }
+                    if !self.stopping { await self.refreshCatalog() }
+                    self.finishOperation(next.id)
                     if let failure { self.onError?(failure) }
                 }
             }
         }
     }
 
-    private func finishOpen(_ request: SimulatorScreenOpenRequest, _ task: Task<Void, any Error>, refreshesCatalog: Bool) async {
+    private func finishOpen(_ request: SimulatorScreenOpenRequest, _ task: Task<Void, any Error>) async {
         defer {
-            activeOpens.removeValue(forKey: request.deviceID)
+            if let open = activeOpens.removeValue(forKey: request.deviceID) { finishOperation(open.id) }
             publishQueueState()
             resumeOperations()
         }
         var failure: (any Error)?
-        var refreshesCatalog = refreshesCatalog
+        var refreshesCatalog = true
         do { try await task.value }
         catch {
             refreshesCatalog = false
@@ -964,17 +1027,18 @@ final class SimulatorManagerModel {
     }
 
     private func publishQueueState() {
-        let running = runningOperation?.refreshCatalog == true
-        isBusy = !activeOpens.isEmpty || running || pendingOperations.contains { $0.refreshCatalog }
-        holdsSettingsEdits = running || activeOpens.values.contains { !$0.attaches }
-            || pendingOperations.contains { $0.refreshCatalog && !attachesOnAdmission($0) }
-        activity = runningOperation?.activity ?? activeOpens.values.first?.activity ?? pendingOperations.first?.activity ?? ""
+        isBusy = !activeOpens.isEmpty || runningOperation != nil || !pendingOperations.isEmpty
+        let holding = (runningOperation.map { [$0] } ?? []) + pendingOperations.filter { !attachesOnAdmission($0) }
+        holdsAllEdits = holding.contains { $0.deviceID == nil }
+        heldEditDeviceIDs = Set(holding.compactMap(\.deviceID)).union(activeOpens.filter { !$0.value.attaches }.keys)
+        activity = runningOperation?.activity ?? activeOpens.values.first?.activity ?? pendingOperations.first?.activity
+            ?? acceptedWrites.first?.activity ?? ""
     }
 
     private func canAdmit(_ operation: PendingOperation) -> Bool {
         if activeOpens.isEmpty { return true }
-        if let request = operation.openDevice { return activeOpens[request.deviceID] == nil }
-        return !operation.waitsForAttach && activeOpens.values.allSatisfy(\.attaches)
+        guard let request = operation.openDevice else { return false }
+        return activeOpens[request.deviceID] == nil
     }
 
     /// Whether admitting `operation` now would only attach the screen of its running device.
@@ -990,7 +1054,7 @@ final class SimulatorManagerModel {
 
 }
 
-private extension SimulatorDeviceSetting {
+private extension DeviceSettingChange {
     /// A connecting screen restores the device's saved audio routes and location, and Display Zoom changes the
     /// framebuffer and relaunches the guest's interface, so these writes wait for a screen that is attaching.
     var waitsForScreenAttach: Bool {

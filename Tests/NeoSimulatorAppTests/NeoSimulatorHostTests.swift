@@ -59,9 +59,9 @@ struct InputFocusTests {
             name: id, descriptiveName: id, runtimeIdentifier: "fixture-runtime", runtimeName: "iOS",
             productFamily: "iPhone", state: "Booted")) }
         let source = ManagerModelSource(devices: devices)
+        await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let model = SimulatorManagerModel(source: source)
-        model.settings.setReadingSuspended(true)
         await model.refresh()
         let access = HostPreferenceAccess(file: URL.temporaryDirectory.appending(path: "\(UUID().uuidString).plist"))
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses, hostPreferenceAccess: access)
@@ -91,7 +91,6 @@ struct InputFocusTests {
         if showsCompactDeviceInMain { main.showDevice(devices[1].id) }
         await source.completeOpen()
         #expect(await events.next() == .open(devices[2].id))
-        await source.returnOnNextRead(SimulatorDeviceSettings())
         await source.completeOpen()
         try await wait(timeout: .seconds(5)) {
             !model.isBusy
@@ -99,7 +98,7 @@ struct InputFocusTests {
         let selected = showsCompactDeviceInMain ? devices[1].id : devices[2].id
         let pane = main.deviceScreenViewController
         #expect(main.selectedIdentifiers == [selected] && pane.liveDeviceIdentifier == selected)
-        #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect(main.window?.isVisible == true)
         #expect(compactPresentations == (showsCompactDeviceInMain ? [] : [ids[1]]))
         #expect(controllers[0].window?.isVisible == false && !controllers[0].isEmbedded)
@@ -108,7 +107,6 @@ struct InputFocusTests {
         try #require(app.screens.screen(for: devices[1].id)?.presentation == .compact)
         try await main.presentConnectedScreen(devices[1].id, purpose: .automatic)
         #expect(compactPresentations == [ids[1]])
-        #expect(await events.next() == .read(selected))
         app.application(NSApp, open: [restorations[1].url])
         #expect(await events.next() == .open(devices[1].id))
         await source.completeOpen()
@@ -517,7 +515,7 @@ struct InputFocusTests {
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
         defer { controller.invalidate() }
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         let screens = DeviceScreens(model: model)
         let identifier = DeviceInventoryID.simulator(udid: controller.session.device.identifier,
                                                      deviceSetPath: controller.session.device.deviceSetPath)
@@ -609,7 +607,7 @@ struct InputFocusTests {
             keyboardCaptureTap: TestKeyboardEventTap(), presentCompactWindow: { _ in })
         defer { controller.invalidate() }
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         let screens = DeviceScreens(model: model)
         let screen = screens.attach(controller, as: .simulator(udid: controller.session.device.identifier,
                                                                deviceSetPath: controller.session.device.deviceSetPath))
@@ -809,7 +807,7 @@ struct InputFocusTests {
         let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
         try await session.start()
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         let screens = DeviceScreens(model: model)
         screens.attach(RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in }))
         transport.onReleaseInputs = { throw CancellationError() }
@@ -7236,7 +7234,7 @@ struct InputFocusTests {
         let display = TestDisplay()
         let worker = HeldDeviceWorker()
         defer { worker.release() }
-        let model = SimulatorDeviceModel()
+        let model = standaloneDeviceModel()
         let controller = try makeController(display, features: [DeviceCapabilities.faceID, DeviceCapabilities.standBy], model: model)
         defer { controller.invalidate() }
         display.worker = worker
@@ -7264,6 +7262,41 @@ struct InputFocusTests {
         #expect(enrolled.state == .on)
     }
 
+    @Test func commandsAndInspectorShareTheStateOfTheirDevice() async throws {
+        let device = InventoryDevice.simulator(SimulatorHostDevice(identifier: "test-device", name: "Test iPhone", descriptiveName: "Test iPhone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted"))
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let registry = DeviceRegistry(source: source)
+        try await registry.refresh()
+        let model = try #require(registry.device(for: device.id))
+        let inspected = model.keepCurrent(.settings)
+        defer { inspected.release() }
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .light))
+        await registry.finishReading()
+
+        let display = TestDisplay()
+        let controller = try makeController(display, features: [DeviceCapabilities.faceID], model: model)
+        defer { controller.invalidate() }
+        #expect(controller.session.model === model)
+
+        // What a command changes, the inspector reads again.
+        try await controller.session.toggleAppearance()
+        #expect(display.appearanceToggles == 1)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .dark))
+        await registry.finishReading()
+        #expect(model.settings.appearance == .dark)
+
+        // What the inspector refreshes, the session reads again, and its commands answer from the same state.
+        display.notificationStates["com.apple.BiometricKit.enrollmentChanged"] = 1
+        model.revalidate(.commandState)
+        try await wait { model.isBiometricEnrolled == true }
+        #expect(controller.session.isBiometricEnrolled)
+        #expect(await source.readCount == 2)
+    }
+
     @Test func aHeldCallLeavesTheScreenAnsweringReportsWhatItKnowsAndReappliesOnlyWhatIsWantedNow() async throws {
         let key = HostPreferences.slowMotionAnimation
         let saved = UserDefaults.standard.object(forKey: key)
@@ -7273,7 +7306,7 @@ struct InputFocusTests {
         let display = TestDisplay()
         let worker = HeldDeviceWorker(limit: .milliseconds(50))
         defer { worker.release() }
-        let model = SimulatorDeviceModel()
+        let model = standaloneDeviceModel()
         model.follow(worker.channel)
         let controller = try makeController(display, features: [DeviceCapabilities.slowMotionStateful], model: model)
         defer { controller.invalidate() }
@@ -7440,7 +7473,7 @@ struct InputFocusTests {
         let display = TestDisplay()
         let worker = HeldDeviceWorker(limit: .milliseconds(50))
         defer { worker.release() }
-        let model = SimulatorDeviceModel()
+        let model = standaloneDeviceModel()
         model.follow(worker.channel)
         let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], model: model)
         defer { session.disconnect() }
@@ -7659,7 +7692,7 @@ struct InputFocusTests {
         defer { controller.invalidate() }
         let session = controller.session
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         let screens = DeviceScreens(model: model)
         defer { withExtendedLifetime(screens) {} }
         _ = screens.attach(controller, as: .simulator(udid: identifier, deviceSetPath: nil))
@@ -8102,7 +8135,7 @@ struct InputFocusTests {
         display.connectExternalScreen(screen)
         let worker = HeldDeviceWorker(limit: .milliseconds(50))
         defer { worker.release() }
-        let model = SimulatorDeviceModel()
+        let model = standaloneDeviceModel()
         model.follow(worker.channel)
         let controller = try makeController(display, features: features, preferences: preferences, model: model)
         defer { controller.invalidate() }
@@ -10735,7 +10768,7 @@ struct InputFocusTests {
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in },
                                 onShutDown: ((DeviceWindowController) -> Void)? = nil,
-                                model: SimulatorDeviceModel = SimulatorDeviceModel())
+                                model: DeviceModel? = nil)
         throws -> DeviceWindowController {
         let session = try makeSession(display, family: family, features: features, framebufferMask: framebufferMask,
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
@@ -10842,6 +10875,11 @@ struct InputFocusTests {
         #expect(changes == 1)
     }
 
+    private func standaloneDeviceModel() -> DeviceModel {
+        DeviceModel(inventory: .simulator(SimulatorHostDevice(identifier: "test-device", name: "Test iPhone", descriptiveName: "Test iPhone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted")), source: LiveDeviceStateSource())
+    }
+
     private func makeSession(_ display: TestDisplay,
                              family: DeviceCapabilities.Family = .iPhone,
                              features: Set<String> = Self.defaultFeatures,
@@ -10854,7 +10892,7 @@ struct InputFocusTests {
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
                              deviceSetPath: String? = nil,
-                             model: SimulatorDeviceModel = SimulatorDeviceModel(),
+                             model: DeviceModel? = nil,
                              preferences: MemoryPreferences = MemoryPreferences(),
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,

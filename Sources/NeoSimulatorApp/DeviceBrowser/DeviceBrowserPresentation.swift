@@ -254,7 +254,7 @@ struct DeviceBrowserPresentation {
     }
 
     private static func stableKey(_ identifier: DeviceInventoryID) -> String {
-        switch identifier {
+        switch identifier.destination {
         case .simulator(let udid, let path): "simulator:\(udid):\(path.map { "set:\($0)" } ?? "default")"
         case .coreDevice(let identifier): "coredevice:\(identifier)"
         }

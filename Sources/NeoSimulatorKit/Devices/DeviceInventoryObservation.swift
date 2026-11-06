@@ -1,4 +1,3 @@
-import NeoSimulatorKit
 import NeoSimulatorDeviceIO
 import ABIBridge
 import Foundation

@@ -13,7 +13,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
 
     let profiles: ServiceProfileStore
     @ObservationIgnored private let manager: SimulatorManagerModel
-    @ObservationIgnored private let services: BackgroundServicesModel
+    @ObservationIgnored private let selection: ManagerSelection
     @ObservationIgnored private let showProfileSettings: (UUID) -> Void
     @ObservationIgnored lazy var categories = SimulatorBackgroundServiceCategory.all.map {
         BackgroundServiceCategoryModel($0, source: self)
@@ -24,31 +24,36 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     init(manager: SimulatorManagerModel, showProfileSettings: @escaping (UUID) -> Void) {
         self.manager = manager
         self.showProfileSettings = showProfileSettings
-        services = manager.backgroundServices
+        selection = manager.selection
         profiles = manager.serviceProfiles
     }
 
+    private var services: BackgroundServicesState? { selection.device?.backgroundServices }
+
     var content: Content {
-        if services.selectionCount > 1 { return .multipleSelection }
-        guard services.selectionCount == 1, let device = services.device else { return .noSelection }
-        guard case .simulator(let simulator) = device else { return .unsupportedDevice }
+        if selection.count > 1 { return .multipleSelection }
+        guard selection.count == 1, let device = selection.device else { return .noSelection }
+        guard case .simulator(let simulator) = device.inventory else { return .unsupportedDevice }
         guard simulator.isAvailable else { return .simulator(.unavailableRuntime) }
         guard simulator.state == "Booted" else { return .simulator(.stopped) }
-        if let issue = services.issue { return .simulator(.failure(issue)) }
-        if services.serviceState != nil { return .simulator(.services) }
+        // A failed read keeps what was read before, which `issue` says may be out of date.
+        if device.backgroundServices.services != nil { return .simulator(.services) }
+        if let issue { return .simulator(.failure(issue)) }
         return .simulator(.loading)
     }
-    var holdsChanges: Bool { services.device.map { !manager.canEditSettings(for: $0.id) } ?? true }
-    var serviceState: SimulatorBackgroundServices? { services.serviceState }
-    var issue: String? { services.issue }
-    var pendingRestartLabels: Set<String> { services.pendingRestartLabels }
-    var isLoading: Bool { services.isLoading }
+    var holdsChanges: Bool { selection.device.map { !manager.canEditSettings(for: $0.id) } ?? true }
+    var serviceState: SimulatorBackgroundServices? { services?.services }
+    var issue: String? {
+        if case .stale(let reason) = services?.status { reason } else { nil }
+    }
+    var pendingRestartLabels: Set<String> { services?.pendingRestartLabels ?? [] }
+    var isLoading: Bool { services?.isReading == true }
     var showsActionIssue: Bool {
         get { actionIssue != nil }
         set { if !newValue { actionIssue = nil } }
     }
     var selectedProfile: ServiceProfile {
-        guard let device = services.device, let binding = profiles.binding(for: device.id) else { return .default }
+        guard let device = selection.device, let binding = profiles.binding(for: device.id) else { return .default }
         return profiles.profile(binding.profileID) ?? .default
     }
     struct ProfileChoice: Equatable {
@@ -66,24 +71,24 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     var selectedProfileID: UUID {
         get { selectedProfile.id }
         set {
-            guard let device = services.device else { return }
+            guard let device = selection.device else { return }
             manager.selectServiceProfile(newValue, for: device.id)
         }
     }
     var hasProfileChanges: Bool {
-        let current = services.configuration ?? services.device.flatMap { profiles.binding(for: $0.id)?.configuration } ?? ServiceConfiguration()
+        let current = services?.configuration ?? selection.device.flatMap { profiles.binding(for: $0.id)?.configuration } ?? ServiceConfiguration()
         let required = serviceState?.platformRequiredLabels ?? []
         return current.disabledLabels.subtracting(required) != selectedProfile.configuration.disabledLabels.subtracting(required)
     }
     var canSaveProfile: Bool {
-        !holdsChanges && services.device?.canInspectBackgroundServices == true && serviceState != nil
-            && services.issue == nil && profiles.issue == nil && hasProfileChanges
+        !holdsChanges && selection.device?.canInspectBackgroundServices == true && serviceState != nil
+            && issue == nil && profiles.issue == nil && hasProfileChanges
     }
 
     func customizeProfile() { showProfileSettings(selectedProfileID) }
 
     func saveProfile() {
-        guard canSaveProfile, let device = services.device, let configuration = services.configuration else { return }
+        guard canSaveProfile, let device = selection.device, let configuration = services?.configuration else { return }
         let profile = selectedProfile
         if profile.id == ServiceProfile.default.id {
             let editor = ServiceProfileEditorModel(name: "", configuration: configuration)
@@ -97,12 +102,12 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         }
     }
     func revertProfile() {
-        guard let device = services.device else { return }
+        guard let device = selection.device else { return }
         manager.revertServiceProfile(for: device.id)
     }
     func setServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) {
-        guard let device = services.device else { return }
+        guard let device = selection.device else { return }
         manager.setBackgroundServices(targets, enabled: enabled, for: device.id)
     }
-    func requestRefresh() { services.requestRefresh() }
+    func requestRefresh() { selection.device?.revalidate(.backgroundServices) }
 }

@@ -1,4 +1,3 @@
-import NeoSimulatorKit
 // Ported from simslim (https://github.com/MobAI-App/simslim) at d594c230fe9ed5080189b0ce76afabda6104bae0:
 // the categories in profiles.go and the descriptions in service_descriptions.go.
 // Copyright (c) 2026 Interlap. MIT License; the full notice ships in App/Credits.rtf.
@@ -6,7 +5,7 @@ import NeoSimulatorKit
 
 extension SimulatorBackgroundServiceCategory {
     /// Every category NeoSimulator manages. A label outside these categories is never changed.
-    package static let all: [SimulatorBackgroundServiceCategory] = [
+    public static let all: [SimulatorBackgroundServiceCategory] = [
         SimulatorBackgroundServiceCategory(
             id: "widgets",
             name: "Widgets & Wallpaper",
