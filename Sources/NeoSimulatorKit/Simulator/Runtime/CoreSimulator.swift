@@ -488,7 +488,6 @@ package struct SimulatorDeviceRecord: Sendable {
 
     /// A booted iPhone that no SimDevice stands behind: see ``SimulatorDeviceSet/shared(interface:developerDirectory:path:listing:)``.
     init(listed identifier: String, deviceSetPath: String?) {
-        object = NSObject()
         self.identifier = identifier
         self.deviceSetPath = deviceSetPath
         name = identifier
