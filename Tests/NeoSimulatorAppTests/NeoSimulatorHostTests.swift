@@ -12,6 +12,7 @@ import Testing
 import XCTest
 import Synchronization
 import IOKit.hidsystem
+import XPC
 
 /// Waits for rendered state without relying on XCTest's run-loop predicate timer.
 @MainActor
@@ -3437,18 +3438,87 @@ struct InputFocusTests {
         #expect(try await !set.resolvedPath().isEmpty)
         let devices = try await set.refresh()
         #expect(set.devices.map(\.identifier) == devices.map(\.identifier))
-        if let device = devices.first {
-            #expect(try await set.device(withIdentifier: device.identifier) === device)
-            #expect(try await set.refresh().first === device)
-            _ = try await device.currentState()
-            _ = try await device.supportedFeatures(DeviceCapabilities.allFeatures)
-        }
         let catalog = try await set.readCatalog()
         let lookup = catalog.catalog()
         for pairing in catalog.pairings.prefix(1) {
             #expect(lookup.canPair(pairing.watchType, pairing.watchRuntime, pairing.phoneType, pairing.phoneRuntime))
         }
         #expect(!lookup.canPair("no watch", "no runtime", "no phone", "no runtime"))
+    }
+
+    /// Only reads the guest. Each client here has its own context, and the only connection this cancels is its own.
+    @Test(.timeLimit(.minutes(1)))
+    func aDeviceClientIsSharedUntilItsOwnConnectionEnds() async throws {
+        let runtime = try await makeRuntime()
+        let set = runtime.openDeviceSet()
+        #expect(try await set.client(withIdentifier: UUID().uuidString) == nil)
+        #expect(try await set.client(withIdentifier: "not a UDID") == nil)
+        guard let listed = try await set.refresh().first else { return }
+
+        var device: SimulatorDevice? = try await joinedClient(in: set, identifier: listed.identifier)
+        #expect(try await set.client(withIdentifier: listed.identifier) === device)
+        #expect(device?.identity == listed.identity)
+        _ = try await device?.currentState()
+        _ = try await device?.supportedFeatures(DeviceCapabilities.allFeatures)
+
+        let send = try await ABIRuntime.shared.resolve(
+            .objc(.method("sendNotification:", as: ((NSDictionary) -> Void).self)),
+            on: try #require(NSClassFromString("SimDeviceSet")))
+        // A removal that the set does not show ends nothing.
+        try autoreleasepool {
+            let nativeSet = try #require((device?.object as? NSObject)?.value(forKey: "deviceSet") as? NSObject)
+            try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_removed"] as NSDictionary)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(try await set.client(withIdentifier: listed.identifier) === device)
+        #expect(device?.state != 0)
+
+        let released = try endConnection(of: try #require(device))
+        while try await set.client(withIdentifier: listed.identifier) === device { await Task.yield() }
+        let replacement = try #require(try await set.client(withIdentifier: listed.identifier))
+        #expect(replacement.channel === device?.channel)
+        _ = try await replacement.currentState()
+        do {
+            _ = try await device?.currentState()
+            Issue.record("A request went to a client that had ended.")
+        } catch SimulatorError.unavailable(_) {}
+        // What still holds the ended device keeps its context and set, which SimulatorKit needs while it has the device.
+        let release = Task { for await _ in released {} }
+        let releasedWhileHeld = await release.ends(before: .now + .milliseconds(300))
+        #expect(!releasedWhileHeld)
+        device = nil
+        #expect(await release.ends(before: .now + .seconds(5)))
+    }
+
+    private func joinedClient(in set: SimulatorDeviceSet, identifier: String) async throws -> SimulatorDevice {
+        async let first = set.client(withIdentifier: identifier)
+        async let joined = set.client(withIdentifier: identifier.lowercased())
+        let device = try #require(try await first)
+        #expect(try await joined === device)
+        return device
+    }
+
+    /// Cancels the client's own connection. The stream finishes when its context and set are both released.
+    private func endConnection(of device: SimulatorDevice) throws -> AsyncStream<Never> {
+        let (released, finished) = AsyncStream.makeStream(of: Never.self)
+        let remaining = Mutex(2)
+        try autoreleasepool {
+            let nativeSet = try #require((device.object as? NSObject)?.value(forKey: "deviceSet") as? NSObject)
+            let context = try #require(nativeSet.value(forKey: "serviceContext") as? NSObject)
+            for object in [nativeSet, context] {
+                unsafe objc_setAssociatedObject(object, UnsafeRawPointer(bitPattern: 0x467)!, ReleaseSentinel {
+                    if remaining.withLock({ $0 -= 1; return $0 == 0 }) { finished.finish() }
+                }, .OBJC_ASSOCIATION_RETAIN)
+            }
+            xpc_connection_cancel(try #require(context.value(forKey: "serviceConnection") as? xpc_connection_t))
+        }
+        return released
+    }
+
+    private final class ReleaseSentinel: Sendable {
+        let released: @Sendable () -> Void
+        init(released: @escaping @Sendable () -> Void) { self.released = released }
+        deinit { released() }
     }
 
     /// Reads, and registers with a set this test owns. A headless in-process host connects to no device and stops none.

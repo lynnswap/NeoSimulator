@@ -200,7 +200,8 @@ Hub mode.
 | `CommandReads` | Stop every read a controller has running while the operations waiting on them finish, so quitting does not cancel an accepted change and an unresponsive child cannot hold it. A stopped read ends as `CancellationError`, and its consumers publish nothing. |
 | `UninterruptedCommands` | Hold the commands that keep running when their callers are cancelled, so that a quit that has waited for them can stop them and bound the rollbacks that follow. |
 | `SimulatorDeviceChannel`, `DeviceIOHub` | Own the native requests of each device and device set, one channel per identifier and device-set path, or per developer directory and device-set path, for the life of the process: their order, deadlines, cancellation and what is still in flight. See [Native device requests](#Native-device-requests). |
-| `SimulatorDeviceSet` | Create and read one CoreSimulator device set on its channel's worker, and hold what it last reported as values for everything that presents it. |
+| `SimulatorDeviceSet` | Create and read one CoreSimulator device set on its channel's worker, and hold what it last reported as values for everything that presents it. Own the `SimulatorDevice` of each device something asked to reach. |
+| `SimulatorDevice` | A device's own CoreSimulator context and connection, one per developer directory, device-set path and identifier, for everything that reaches the guest. See [A device's own connection](#A-devices-own-connection). |
 | `SimulatorDeviceModel`, `SimulatorDeviceRegistry` | Hold what a device last answered, its health and its last issue, one per device, for everything that presents it. |
 | `DeviceToolRunner` | Run a device's selected-Xcode tools one at a time and let its session cancel the running one. |
 | `PasteboardSync` | Exchange copies between the Mac and connected sessions. |
@@ -284,13 +285,54 @@ synchronization and the external display's saved choice. Restoring these prefere
 does not delay presentation. Preparing native input and pasteboard transports during
 connection can still wait for CoreDevice initialization, up to its caller deadline.
 
-Channels separate caller waits, but devices read from the same set still share its
-`SimServiceContext` connection to CoreSimulatorService. A `lookup:error:` waiting
-for a stopped `launchd_sim` can hold later lookups on that connection, including a
-different device's first bridge, input connection or screen. Those callers fail by
-their deadlines; an already-connected bridge can continue. Separately initialized
-contexts have distinct connections, but the device wrappers from one set currently
-share a context.
+Channels separate caller waits, but devices of one `SimServiceContext` also share its
+connection to CoreSimulatorService. A `lookup:error:` waiting for a stopped `launchd_sim`
+holds later lookups on that connection, including a different device's first bridge,
+input connection or screen. So each device has its own context, as described next.
+
+### A device's own connection
+
+`SimulatorDeviceSet` lists devices through the process's shared context, as
+`SimulatorDeviceRecord` values, which cannot reach a guest. Whatever has to reach one asks
+`client(withIdentifier:)` for its `SimulatorDevice`, which holds that device's own context
+and set: the screen, input, guest settings and tools of a device all share it. Listing
+devices makes none, since each costs about 3 MB and 2 Mach ports for as long as it lasts.
+
+The device's worker creates it the first time it is asked for. Whoever asks meanwhile
+joins that opening, each for as long as it waits. An opening that outlives its waiters
+stays open for the next request, and one that fails leaves nothing open and is tried again
+only when asked. Closing a window and rebooting the guest keep the client, and neither a
+timeout nor an unknown outcome replaces it.
+
+Only two things end a client, both through the one report that CoreSimulator makes when
+its connection ends:
+
+| What happened | How it is known | What follows |
+| --- | --- | --- |
+| The device was deleted | `device_removed` on the client's own set, and `devicesByUDID` no longer holds it | The client cancels its own connection, which returns a lookup it holds, and the device reports state 0. |
+| CoreSimulator ended the connection | `XPC_ERROR_CONNECTION_INVALID`, which the context does not recover from | Logged. `INTERRUPTED` is not this: the context resubscribes by itself. |
+
+A failed read or a shorter `availableDevices` is neither: a device whose runtime is
+unavailable is not deleted. A cancelled connection does not return a call held in the
+guest's bridge, so that call keeps its lane and its unknown outcome. The next client opens
+on the same worker, so it cannot overlap a request of the one before it. The old
+`SimulatorDevice`'s requests fail unsent from then on, because CoreSimulator answers a
+message to a device whose context is gone as though nothing had failed.
+
+A context and its set retain each other, the connection retains the context, and each
+device and pair of the set holds a handler that retains the set. So releasing means
+cancelling the connection and, after that, clearing the set's `serviceContext` and removing
+the devices and pairs from that private set, which changes only its own maps. It waits for
+two things. Clearing before the connection's end has been reported can leave the context
+allocated. And since a `SimDevice` holds its set weakly and SimulatorKit throws when it uses
+one without a set, it also waits until whatever holds the ended `SimulatorDevice`, such as
+an open screen, has let go. The release is then a `cleanUp` on the device's worker. An
+external screen's `SimDeviceScreen` keeps a completion block after calling it, so that block
+gives up its completion when called; otherwise it would hold the screen's connection and so
+the device.
+
+A client separates a device's requests from another device's. It does not separate them from
+what holds CoreSimulatorService itself, or SimulatorKit's main-actor calls.
 
 Validating a menu reads `SimulatorDeviceModel` and asks the device nothing. A menu
 that opens, a connection, the session's own changes and a recovery read the guest
@@ -311,8 +353,8 @@ capturing what each reports, looking one up, and the creation catalog with every
 pairing answer, so that a catalog's `canPair` is a lookup in values. A set's channel
 follows the table above, with `DeviceOperationLimit.deviceSet` as its deadline.
 
-What a set last read stays on `SimulatorDeviceSet`, and each `SimulatorDevice` is
-updated in place, so `state`, `lastBootDate` and the catalog properties wait for
+What a set last read stays on `SimulatorDeviceSet`, and each existing `SimulatorDevice`
+is updated in place, so `state`, `lastBootDate` and the catalog properties wait for
 nothing. A menu, a browser and a connection's `isBooted` read those values. Whoever
 has to know what is true now awaits `refresh()`: one read runs at a time, and everyone
 who asks while it runs shares one more, however many ask. A read that fails, also
@@ -322,9 +364,8 @@ rescan, and so does a set whose channel becomes ready again. Connecting reads a
 device's features once on its own worker, and a stop that has to know the device's
 state now asks there too.
 
-The worker of a set is not the worker of a device, so a call held on one leaves the
-other able to answer unless CoreSimulator's own connection is what holds it, as
-described above. When no integrated screen appears in time, the failure says what
+The worker of a set is not the worker of a device, and neither shares a connection with
+the other, so a call held on one leaves the other able to answer. When no integrated screen appears in time, the failure says what
 reading the screens last failed with and which native requests had still not returned.
 
 CoreDevice's full initialization is one `SharedTask`: nothing replaces it while it is
