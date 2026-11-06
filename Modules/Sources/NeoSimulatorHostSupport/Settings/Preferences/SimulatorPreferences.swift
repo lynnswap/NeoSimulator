@@ -8,7 +8,7 @@ package final class SimulatorPreferences {
     @ObservationIgnored private let creationDefaults: UserDefaults?
     @ObservationIgnored private var observations: [DefaultsObservation] = []
     @ObservationIgnored private var isReloading = false
-    private static let familyKey = "NewSimulatorProductFamily"
+    private static let categoryKey = "NewSimulatorCategory"
     package var startLastDevice = true {
         didSet {
             guard !isReloading else { return }
@@ -25,23 +25,23 @@ package final class SimulatorPreferences {
     package var includeDeviceMask = false { didSet { save(includeDeviceMask, forKey: HostPreferences.screenShotUseMask) } }
     package var gifImageSize = 640 { didSet { save(gifImageSize, forKey: HostPreferences.gifMaxFrameSize) } }
     package var gifFrameRate = 10 { didSet { save(gifFrameRate, forKey: HostPreferences.gifMaxFramerate) } }
-    package var newSimulatorFamily: Int? {
+    package var newSimulatorCategory: DeviceCategory? {
         didSet {
             guard !isReloading else { return }
-            if let newSimulatorFamily { creationDefaults?.set(newSimulatorFamily, forKey: Self.familyKey) }
-            else { creationDefaults?.removeObject(forKey: Self.familyKey) }
+            if let newSimulatorCategory { creationDefaults?.set(newSimulatorCategory.rawValue, forKey: Self.categoryKey) }
+            else { creationDefaults?.removeObject(forKey: Self.categoryKey) }
         }
     }
 
-    package func newSimulatorDeviceType(for family: Int) -> String? {
-        creationDefaults?.string(forKey: "NewSimulatorDeviceType.\(family)")
+    package func newSimulatorDeviceType(for category: DeviceCategory) -> String? {
+        creationDefaults?.string(forKey: "NewSimulatorDeviceType.\(category.rawValue)")
     }
-    package func newSimulatorRuntime(for family: Int) -> String? {
-        creationDefaults?.string(forKey: "NewSimulatorRuntime.\(family)")
+    package func newSimulatorRuntime(for category: DeviceCategory) -> String? {
+        creationDefaults?.string(forKey: "NewSimulatorRuntime.\(category.rawValue)")
     }
-    package func setNewSimulatorSelection(deviceType: String?, runtime: String?, for family: Int) {
-        creationDefaults?.set(deviceType, forKey: "NewSimulatorDeviceType.\(family)")
-        creationDefaults?.set(runtime, forKey: "NewSimulatorRuntime.\(family)")
+    package func setNewSimulatorSelection(deviceType: String?, runtime: String?, for category: DeviceCategory) {
+        creationDefaults?.set(deviceType, forKey: "NewSimulatorDeviceType.\(category.rawValue)")
+        creationDefaults?.set(runtime, forKey: "NewSimulatorRuntime.\(category.rawValue)")
     }
 
     package init(defaults: UserDefaults = HostPreferences.defaults,
@@ -63,7 +63,7 @@ package final class SimulatorPreferences {
             HostPreferences.screenShotUseMask, HostPreferences.gifMaxFrameSize, HostPreferences.gifMaxFramerate,
         ]) { [weak self] in self?.reload() })
         if let creationDefaults {
-            observations.append(DefaultsObservation(creationDefaults, keys: [Self.familyKey]) { [weak self] in self?.reload() })
+            observations.append(DefaultsObservation(creationDefaults, keys: [Self.categoryKey]) { [weak self] in self?.reload() })
         }
     }
 
@@ -83,7 +83,7 @@ package final class SimulatorPreferences {
         includeDeviceMask = defaults.bool(forKey: HostPreferences.screenShotUseMask)
         gifImageSize = defaults.integer(forKey: HostPreferences.gifMaxFrameSize)
         gifFrameRate = defaults.integer(forKey: HostPreferences.gifMaxFramerate)
-        newSimulatorFamily = creationDefaults?.object(forKey: Self.familyKey) as? Int
+        newSimulatorCategory = creationDefaults?.string(forKey: Self.categoryKey).map(DeviceCategory.init(rawValue:))
     }
 
     package nonisolated static func migrateStandalonePreferences(defaults: UserDefaults = .standard,

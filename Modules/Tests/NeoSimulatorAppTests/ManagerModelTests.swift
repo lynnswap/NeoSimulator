@@ -298,6 +298,57 @@ struct ManagerModelTests {
         #expect(button.state == .off && button.image === image)
     }
 
+    @Test func deviceFamilyFilterClassifiesDuoByItsMetadata() async throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.DuoFilter.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let duo = "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"
+        let source = ManagerModelSource(devices: [
+            .simulator(SimulatorHostDevice(identifier: "phone", name: "iPhone Duo Clone", descriptiveName: "Phone",
+                runtimeIdentifier: "ios", runtimeName: "iOS 27.2", productFamily: "iPhone", state: "Shutdown",
+                deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17")),
+            .simulator(SimulatorHostDevice(identifier: "renamed", name: "Review Device", descriptiveName: "Renamed",
+                runtimeIdentifier: "duo-ios", runtimeName: "iOS 27.2", productFamily: "iPhone", state: "Shutdown",
+                deviceTypeIdentifier: duo)),
+            // A catalog that lacks the device type leaves the family empty.
+            .simulator(SimulatorHostDevice(identifier: "unavailable", name: "Unavailable Device", descriptiveName: "Unavailable",
+                runtimeIdentifier: "duo-ios", runtimeName: "iOS 27.2", productFamily: "", state: "Shutdown",
+                deviceTypeIdentifier: duo, isAvailable: false)),
+            .remote(CoreDeviceDevice(identifier: "physical", udid: nil, kind: .physical, name: "Desk Phone", reportedName: "Desk Phone",
+                modelIdentifier: "iPhone19,4", modelName: "iPhone Duo", cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil,
+                osBuildUpdate: nil, connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted",
+                preparednessState: nil, capabilities: [], lastConnectedAt: nil, visibilityClass: nil)),
+        ])
+        let model = SimulatorManagerModel(source: source)
+        model.settings.setReadingSuspended(true)
+        await model.refresh()
+        let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                                 menus: MenuController(application: nil), defaults: defaults)
+        controller.window?.setFrameAutosaveName("")
+        defer { controller.window?.close() }
+        let content = try #require(controller.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let menu = try #require(controller.window?.toolbar?.items
+            .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
+        func choose(_ title: String) throws {
+            controller.menuNeedsUpdate(menu)
+            let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        }
+        func deviceNames() -> Set<String> {
+            Set((0..<outline.numberOfRows).compactMap { row in
+                guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
+                return controller.outlineView(outline, typeSelectStringFor: nil, item: item)
+            })
+        }
+        try choose("Show Groups")
+        try choose("iPhone Duo")
+        #expect(deviceNames() == ["Review Device", "Unavailable Device", "Desk Phone"])
+        try choose("iPhone")
+        #expect(deviceNames() == ["iPhone Duo Clone"])
+    }
+
     @Test func settingsToolbarResizesWindowWithoutIntermediateFrames() throws {
         let domain = "NeoSimulator.SettingsAnimation.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
@@ -361,22 +412,22 @@ struct ManagerModelTests {
         #expect(!first.canProceed)
         controller.devices.state.isVisible = true
         first.name = "My iPad"
-        first.selectFamily(2)
+        first.selectCategory(.iPad)
         runtimeInstalled = true
         controller.reloadSimulatorIfVisible()
         await controller.simulatorLoading?.value
         let refreshed = try #require(controller.devices.state.form)
         #expect(refreshed !== first && refreshed.name == "My iPad")
-        #expect(refreshed.family == 2 && refreshed.deviceType == "pad")
+        #expect(refreshed.category == .iPad && refreshed.deviceType == "pad")
         #expect(refreshed.runtime == "ios" && refreshed.canProceed)
-        #expect(makeForm().family == 2)
+        #expect(makeForm().category == .iPad)
 
         controller.devices.state.isVisible = false
         controller.reloadSimulatorIfVisible()
         await controller.simulatorLoading?.value
         let reopened = try #require(controller.devices.state.form)
         #expect(reopened.name.isEmpty && !reopened.addsWatch)
-        #expect(reopened.family == 2 && reopened.deviceType == "pad" && reopened.runtime == "ios")
+        #expect(reopened.category == .iPad && reopened.deviceType == "pad" && reopened.runtime == "ios")
     }
 
     @Test(arguments: DeviceBrowserPresentation.SortOrder.allCases)
