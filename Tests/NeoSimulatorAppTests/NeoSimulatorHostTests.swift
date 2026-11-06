@@ -7487,7 +7487,7 @@ struct InputFocusTests {
         worker.hold()
         var failures: [String] = []
         session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
-        try await wait { failures.count == 1 }
+        try await wait { failures.count == 1 && model.unresponsiveOperation != nil }
         let abandoned = try #require(display.connectingPasteboardEvents)
         worker.release()
         try await wait { model.unresponsiveOperation == nil }
@@ -8133,28 +8133,35 @@ struct InputFocusTests {
     }
 
     /// A session with the external display `screen`, whose device stops answering during `whileHeld` and then answers
-    /// again. It returns once what the device's recovery wants of it has been sent.
+    /// again. It returns once the recovery changes finish, keeping the session alive for the caller's assertions.
     private func recoverExternalDisplay(_ screen: TestExternalScreen, features: Set<String> = Self.externalDisplayFeatures,
                                         preferences: MemoryPreferences = MemoryPreferences(),
-                                        whileHeld: (DeviceSession) async throws -> Void) async throws {
+                                        whileHeld: (DeviceSession) async throws -> Void) async throws -> DeviceSession {
         let display = TestDisplay()
         display.connectExternalScreen(screen)
         let worker = HeldDeviceWorker(limit: .milliseconds(50))
         defer { worker.release() }
         let model = standaloneDeviceModel()
         model.follow(worker.channel)
-        let controller = try makeController(display, features: features, preferences: preferences, model: model)
-        defer { controller.invalidate() }
-        controller.session.connectExternalDisplay { Issue.record($0) }
+        let changes = ExternalDisplayChanges()
+        let session = try makeSession(display, features: features, model: model, preferences: preferences,
+                                      externalDisplayChanges: changes)
+        var recovered = false
+        defer { if !recovered { session.disconnect() } }
+        session.connectExternalDisplay { Issue.record($0) }
         display.deliverScreenReports()
         display.worker = worker
         screen.worker = worker
         worker.hold()
         await #expect(throws: DeviceOperationFailure.self) { try await worker.call("hold the device") }
         try await wait { model.unresponsiveOperation == "hold the device" }
-        try await whileHeld(controller.session)
+        try await whileHeld(session)
         worker.release()
         try await wait { model.unresponsiveOperation == nil && worker.calls.contains("read the device's state") }
+        // Recovery enqueues external-display work before reading command state.
+        try #require(await changes.idle(before: .now + .seconds(2)))
+        recovered = true
+        return session
     }
 
     @Test func aDisabledChoiceThatWasNotSentIsAppliedOnceWhenTheDeviceAnswersAgain() async throws {
@@ -8162,11 +8169,12 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1)
         var failures: [String] = []
-        try await recoverExternalDisplay(screen, preferences: preferences) { session in
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { session in
             session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
             try await wait { failures.count == 1 }
             #expect(screen.requests.isEmpty)
         }
+        defer { session.disconnect() }
         let notSent = DeviceOperationFailure.notSent(operation: "turn off the external display", heldBy: "hold the device")
         #expect(failures == ["Could not turn off the external display of Test iPhone: \(notSent.localizedDescription)"])
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == ExternalDisplayMode.disabled.rawValue)
@@ -8177,10 +8185,11 @@ struct InputFocusTests {
     @Test func aModeChoiceThatWasNotSentIsAppliedOnceWhenTheDeviceAnswersAgain() async throws {
         let screen = TestExternalScreen()
         var failures: [String] = []
-        try await recoverExternalDisplay(screen) { session in
+        let session = try await recoverExternalDisplay(screen) { session in
             session.chooseExternalDisplay(.size1280x720) { failures.append($0.localizedDescription) }
             try await wait { failures.count == 1 }
         }
+        defer { session.disconnect() }
         #expect(screen.requests.filter { $0.hasPrefix("mode") }.count == 1)
         #expect(screen.current.isPoweredOn && screen.current.pixelSize == CGSize(width: 1280, height: 720))
     }
@@ -8192,7 +8201,8 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         // Another tool turned it on.
         screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1)
-        try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        defer { session.disconnect() }
         #expect(screen.requests.isEmpty)
         #expect(screen.current.isPoweredOn)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == nil)
@@ -8202,11 +8212,12 @@ struct InputFocusTests {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.disabled.rawValue, forDevice: "test-device")
         let screen = TestExternalScreen()
-        try await recoverExternalDisplay(screen, preferences: preferences) { _ in
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { _ in
             #expect(screen.requests.isEmpty)
             // Another tool turns it on while the device does not answer.
             screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1) }
         }
+        defer { session.disconnect() }
         #expect(screen.requests == ["off"])
         #expect(!screen.current.isPoweredOn)
     }
@@ -8215,7 +8226,8 @@ struct InputFocusTests {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.carPlay.rawValue, forDevice: "test-device")
         let screen = TestExternalScreen()
-        try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        defer { session.disconnect() }
         #expect(screen.requests.isEmpty)
     }
 
