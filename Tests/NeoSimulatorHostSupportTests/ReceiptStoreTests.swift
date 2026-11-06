@@ -41,7 +41,7 @@ struct ReceiptStoreTests {
         release.continuation.yield(())
         try await holder.value
         if !cancel { #expect(try await contender.value == 42 && ran) }
-        #expect(try await store.withExclusiveLock { 7 } == 7)
+        #expect(try store.withExclusiveLock { 7 } == 7)
     }
 
     @Test func receiptRoundTripsAndDeletes() throws {
