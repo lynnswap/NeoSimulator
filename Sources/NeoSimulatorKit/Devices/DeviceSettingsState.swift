@@ -138,13 +138,11 @@ public final class DeviceSettingsState {
         scheduleReads()
     }
 
-    /// Starts what is out of date, of what something wants. A group with a running read gets one more read after it, and
-    /// a group with an accepted change reads after its outcome.
+    /// Starts what is out of date, of what something wants. A group with a running read gets one more read when it answers,
+    /// and a group with an accepted change reads after the outcome of the last one. Neither holds up any other group.
     package func scheduleReads() {
         guard let owner, !owner.readsStopped, owner.inventory.canInspectSettings else { return }
-        var wanted = owner.wants(.settings) ? dirty : dirty.intersection(forced)
-        // What confirms a change reads once, after the last change accepted for the device.
-        if !pending.isEmpty { wanted.subtract(forced) }
+        let wanted = owner.wants(.settings) ? dirty : dirty.intersection(forced)
         let groups = wanted.subtracting(reading).subtracting(pending.map(\.change.group))
         guard !groups.isEmpty else { return }
         dirty.subtract(groups)
@@ -167,6 +165,8 @@ public final class DeviceSettingsState {
         let group = read.group
         batch.answered.insert(group)
         reading.remove(group)
+        // What this answer leaves out of date does not wait for the rest of its batch.
+        defer { scheduleReads() }
         // A stopped read may have seen nothing, and one begun before an accepted change can predate it.
         guard !owner.readsStopped, batch.serials[group, default: 0] == serials[group, default: 0] else {
             dirty.insert(group)
