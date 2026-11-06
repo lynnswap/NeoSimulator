@@ -221,16 +221,21 @@ package final class UninterruptedCommands: Sendable {
     package static let shared = UninterruptedCommands()
 
     private let state = Mutex(State())
+    private let terminationGrace: Duration
 
-    package init() {}
+    package init(terminationGrace: Duration = DeviceOperationLimit.terminationGrace) {
+        self.terminationGrace = terminationGrace
+    }
+
+    // What an execution is told only enters its queue, so it is told under the lock: it hears of a quit and of its
+    // cancellation in the order they happened, and one that starts as a quit is cancelled keeps no deadline.
 
     fileprivate func add(_ execution: CommandExecution) -> UUID {
         let identifier = UUID()
-        let isTerminating = state.withLock { state in
+        state.withLock { state in
             state.running[identifier] = execution
-            return state.isTerminating
+            if state.isTerminating { execution.stopForTermination(after: terminationGrace) }
         }
-        if isTerminating { execution.stopForTermination(after: DeviceOperationLimit.terminationGrace) }
         return identifier
     }
 
@@ -239,18 +244,21 @@ package final class UninterruptedCommands: Sendable {
     }
 
     /// Stops the commands running now. Those that start afterwards still run, such as the rollback of a preference
-    /// transaction whose command was stopped, but each only for ``DeviceOperationLimit/terminationGrace``.
+    /// transaction whose command was stopped, but each only for `terminationGrace`.
     package func stopForTermination() {
-        let running = state.withLock { state in
+        state.withLock { state in
             state.isTerminating = true
-            return Array(state.running.values)
+            for execution in state.running.values { execution.stopForTermination() }
         }
-        for execution in running { execution.stopForTermination() }
     }
 
-    /// The quit was cancelled, so commands run until they exit again.
+    /// The quit was cancelled, so commands run until they exit again, also those that started during it. A command the
+    /// quit has already stopped stays stopped.
     package func resumeAfterCancelledQuit() {
-        state.withLock { $0.isTerminating = false }
+        state.withLock { state in
+            state.isTerminating = false
+            for execution in state.running.values { execution.withdrawTerminationDeadline() }
+        }
     }
 }
 
@@ -287,6 +295,8 @@ private actor CommandExecution {
     private var hasExited = false
     private var interruption: CommandFailure.Interruption?
     private var timers: [DispatchWorkItem] = []
+    /// What ends a command that started while quitting, until the quit is cancelled.
+    private var terminationDeadline: DispatchWorkItem?
     private var cleanupErrors: [any Error] = []
 
     init(command: SystemCommand, fileManager: FileManager) {
@@ -304,7 +314,20 @@ private actor CommandExecution {
     }
 
     nonisolated func stopForTermination(after delay: Duration) {
-        queue.async { self.assumeIsolated { $0.schedule(after: delay) { $0.stop(.terminating) } } }
+        queue.async {
+            self.assumeIsolated { execution in
+                execution.terminationDeadline = execution.schedule(after: delay) { $0.stop(.terminating) }
+            }
+        }
+    }
+
+    nonisolated func withdrawTerminationDeadline() {
+        queue.async {
+            self.assumeIsolated { execution in
+                execution.terminationDeadline?.cancel()
+                execution.terminationDeadline = nil
+            }
+        }
     }
 
     func run() async throws -> CommandOutput {
@@ -425,10 +448,12 @@ private actor CommandExecution {
         }
     }
 
-    private func schedule(after delay: Duration, _ action: @escaping @Sendable (isolated CommandExecution) -> Void) {
+    @discardableResult
+    private func schedule(after delay: Duration, _ action: @escaping @Sendable (isolated CommandExecution) -> Void) -> DispatchWorkItem {
         let timer = DispatchWorkItem { [weak self] in self?.assumeIsolated { action($0) } }
         timers.append(timer)
         let (seconds, attoseconds) = delay.components
         queue.asyncAfter(deadline: .now() + Double(seconds) + Double(attoseconds) / 1e18, execute: timer)
+        return timer
     }
 }
