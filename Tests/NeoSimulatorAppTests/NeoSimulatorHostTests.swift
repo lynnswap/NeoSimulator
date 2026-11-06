@@ -1500,7 +1500,7 @@ struct InputFocusTests {
             session.toggleAppResize(size: CGSize(width: 500, height: 600))
             try await wait { session.isResizingApp }
             transport.eligibilityUpdates.continuation.yield(.resizing)
-            await Task.yield()
+            try await wait { session.appResizeEligibility == .resizing }
             #expect(session.isResizingApp)
             switch end {
             case 0: transport.eligibilityUpdates.continuation.yield(.unavailable)
@@ -2687,13 +2687,13 @@ struct InputFocusTests {
         #expect(NSApp.sendAction(try #require(home.action), to: home.target, from: home))
         #expect(display.buttons == [.home])
         #expect(controller.session.reserve())
-        await Task.yield()
+        try await wait {
+            commands.filter { ["saveScreen", "rotateRight"].contains($0.itemIdentifier.rawValue) }
+                .allSatisfy { !$0.isEnabled }
+        }
         #expect(home.isEnabled)
-        #expect(commands.filter { ["saveScreen", "rotateRight"].contains($0.itemIdentifier.rawValue) }
-            .allSatisfy { !$0.isEnabled })
         controller.session.disconnect()
-        await Task.yield()
-        #expect(commands.allSatisfy { !$0.isEnabled })
+        try await wait { commands.allSatisfy { !$0.isEnabled } }
     }
 
     @Test func toolbarItemChangesStayInTheirOwnDeviceWindow() throws {
@@ -2984,7 +2984,11 @@ struct InputFocusTests {
             controller.session.run({
                 throw CommandFailure.interrupted(executable: URL(fileURLWithPath: "/simctl"), cause: cause, output: nil)
             }, failure: { failure = $0 })
-            while controller.session.isBusy { await Task.yield() }
+            while controller.session.isBusy {
+                await withCheckedContinuation { continuation in
+                    withObservationTracking { _ = controller.session.isBusy } onChange: { continuation.resume() }
+                }
+            }
         }
         await run(.cancelled)
         #expect(failure == nil)
@@ -3318,7 +3322,11 @@ struct InputFocusTests {
         #expect(device?.state != 0)
 
         let released = try endConnection(of: try #require(device))
-        while try await set.client(withIdentifier: listed.identifier) === device { await Task.yield() }
+        let closedBy = ContinuousClock.now + .seconds(5)
+        while try await set.client(withIdentifier: listed.identifier) === device {
+            try #require(ContinuousClock.now < closedBy, "The closed device client was not retired.")
+            try await Task.sleep(for: .milliseconds(10))
+        }
         let replacement = try #require(try await set.client(withIdentifier: listed.identifier))
         #expect(replacement.channel === device?.channel)
         _ = try await replacement.currentState()
@@ -8789,14 +8797,12 @@ struct InputFocusTests {
         controller.invalidate()
         #expect(changes.isBusy)
         let result = Result()
-        let wait = Task { result.idle = await changes.idle(before: .now + .seconds(60)) }
-        await Task.yield()
+        let waiting = Task { result.idle = await changes.idle(before: .now + .seconds(60)) }
         screen.deliver()
-        await Task.yield()
-        #expect(screen.requests == ["mode 1920x1080@1", "off"])
+        try await wait { screen.requests == ["mode 1920x1080@1", "off"] }
         #expect(result.idle == nil)
         screen.deliver()
-        await wait.value
+        await waiting.value
         #expect(result.idle == true && !changes.isBusy)
         #expect(!screen.current.isPoweredOn)
         let held = TestExternalScreen()
@@ -10249,7 +10255,7 @@ struct InputFocusTests {
         #expect(connect.state?(a) == .on && first.keyboard == [true])
 
         a.perform(.connectHardwareKeyboard)
-        for _ in 0..<100 where first.hardwareKeyboard.isEmpty { await Task.yield() }
+        try await wait { !first.hardwareKeyboard.isEmpty }
         #expect(first.hardwareKeyboard == [false])
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "A"))
         #expect(connect.state?(a) == .off && connect.state?(b) == .on)
@@ -10265,7 +10271,7 @@ struct InputFocusTests {
         #expect(second.hardwareKeyboard.isEmpty)
 
         a.perform(.connectHardwareKeyboard)
-        for _ in 0..<100 where first.hardwareKeyboard.count < 2 { await Task.yield() }
+        try await wait { first.hardwareKeyboard.count >= 2 }
         #expect(first.hardwareKeyboard == [false, true] && first.keyboard == [true, false, true])
         #expect(connect.state?(a) == .on && software.isEnabled(a))
     }
@@ -10279,7 +10285,7 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         controller.perform(.connectHardwareKeyboard)
-        for _ in 0..<100 where window.attachedSheet == nil { await Task.yield() }
+        try await wait { window.attachedSheet != nil }
         #expect(try #require(window.attachedSheet).isVisible)
         // Simulator.app saves before applying; a failed choice remains available for retry.
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "test-device"))
@@ -12408,7 +12414,6 @@ struct DeviceToolTests {
         }
         #expect(timeout.interruption == .timedOut(.milliseconds(30)))
         let task = Task { try await runner.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"]) }
-        await Task.yield()
         task.cancel()
         // Whether its child has started by now is up to the scheduler.
         let stopped = try await #require(throws: (any Error).self) { try await task.value }
