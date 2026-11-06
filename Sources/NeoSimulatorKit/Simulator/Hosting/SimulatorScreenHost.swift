@@ -733,12 +733,13 @@ package final class SimulatorScreenHost: NSObject {
                                                                  nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad,
                                                                  touchRoute: touchRoute)
                         if nativeCanvas != nil { capabilities.controlsOrientation = false }
+                        let available = Self.describe(device.record)
                         let session = DeviceSession(
-                            device: Self.describe(device.record), capabilities: capabilities,
+                            device: available, capabilities: capabilities,
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
-                            model: deviceRegistry.presentedModel(of: Self.describe(device), ownerXcodeURL: runtime.xcodeURL, channel: device.channel),
+                            model: deviceRegistry.presentedModel(of: available, ownerXcodeURL: runtime.xcodeURL, channel: device.channel),
                             recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
                             externalDisplayChanges: externalDisplayChanges(of: device),
                             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })

@@ -7231,7 +7231,7 @@ struct InputFocusTests {
         let display = TestDisplay()
         let worker = HeldDeviceWorker(limit: .milliseconds(50))
         defer { worker.release() }
-        let model = SimulatorDeviceModel()
+        let model = standaloneDeviceModel()
         model.follow(worker.channel)
         let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], model: model)
         defer { session.disconnect() }
@@ -7894,7 +7894,7 @@ struct InputFocusTests {
         display.connectExternalScreen(screen)
         let worker = HeldDeviceWorker(limit: .milliseconds(50))
         defer { worker.release() }
-        let model = SimulatorDeviceModel()
+        let model = standaloneDeviceModel()
         model.follow(worker.channel)
         let controller = try makeController(display, features: features, preferences: preferences, model: model)
         defer { controller.invalidate() }
