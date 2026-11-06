@@ -1,4 +1,4 @@
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -36,8 +36,8 @@ struct DeviceManagementTests {
         #expect(release.requests.count == 1)
         if outcome == .failed {
             let cleanup = try #require(forced.error as? DeviceManagementCleanupError)
-            #expect((cleanup.cleanupErrors.first as? CLIError)?.identifier == "renderer-device-request")
-            #expect((original.error as? CLIError)?.identifier == "renderer-device-request")
+            #expect((cleanup.cleanupErrors.first as? HostOperationError)?.identifier == "renderer-device-request")
+            #expect((original.error as? HostOperationError)?.identifier == "renderer-device-request")
         } else {
             #expect(forced.error == nil && original.error == nil)
             #expect(forced.completedSteps.contains("Display disconnected"))
@@ -68,14 +68,14 @@ struct DeviceManagementTests {
             }, using: fixture.backend)
         }
         #expect(await events.next() == .native(device.inventoryID))
-        if preparationFails { preparation.resume(throwing: CLIError.io("preparation-fixture", "Display cleanup failed")) }
+        if preparationFails { preparation.resume(throwing: HostOperationError.io("preparation-fixture", "Display cleanup failed")) }
         else { preparation.resume() }
         let forced = await force.value.results[0]
         let result = await normal.value.results[0]
         #expect(forced.completedSteps.contains("Forcibly shut down"))
         #expect((forced.error as? DeviceManagementCleanupError)?.cleanupErrors.count == (preparationFails ? 1 : nil))
         #expect(result.completedSteps.contains("Forcibly shut down"))
-        #expect((result.error as? CLIError)?.identifier == (preparationFails ? "preparation-fixture" : nil))
+        #expect((result.error as? HostOperationError)?.identifier == (preparationFails ? "preparation-fixture" : nil))
         #expect(await fixture.commands.isEmpty)
         #expect(await fixture.coreDeviceOperations.count == 1)
         #expect(await controller.shutdownTransactions.isEmpty)
@@ -157,7 +157,7 @@ struct DeviceManagementTests {
         let normal = Task { await controller.manage(.shutdown, devices: [.simulator(device)], using: fixture.backend) }
         #expect(await events.next() == .command("shutdown", "A"))
         let failed = await controller.manage(.forceShutdown, devices: [.simulator(device)], using: fixture.backend)
-        #expect((failed.results[0].error as? CLIError)?.identifier == "virtual-machine-capability")
+        #expect((failed.results[0].error as? DeviceIOError)?.identifier == "virtual-machine-capability")
         await fixture.completeShutdown("A")
         let report = await normal.value
         #expect(report.results[0].completedSteps == ["Shut down"] && report.results[0].error == nil)
@@ -300,7 +300,7 @@ struct DeviceManagementTests {
         let fixture = ManagementFixture(hasRenderer: true, failsRelease: true)
         let report = await fixture.backend.manage(.shutdown, devices: [.simulator(Self.simulator("A", state: "Booted"))])
         let result = try #require(report.results.first)
-        #expect((result.error as? CLIError)?.identifier == "release-fixture")
+        #expect((result.error as? HostOperationError)?.identifier == "release-fixture")
         #expect(result.completedSteps.isEmpty)
         #expect(await fixture.commands.isEmpty)
         #expect(await fixture.coreDeviceOperations.isEmpty)
@@ -340,8 +340,8 @@ struct DeviceManagementTests {
             virtualFeatures: ["other-command-id": ["com.apple.dt.coredevice.device.shutdown"]])
         let report = await fixture.backend.manage(.forceShutdown, devices: [.simulator(device), other])
         let failure = try #require(report.results[0].error as? DeviceManagementCleanupError)
-        #expect((failure.operationError as? CLIError)?.identifier == "virtual-machine-capability")
-        #expect((failure.cleanupErrors.first as? CLIError)?.identifier == "release-fixture")
+        #expect((failure.operationError as? DeviceIOError)?.identifier == "virtual-machine-capability")
+        #expect((failure.cleanupErrors.first as? HostOperationError)?.identifier == "release-fixture")
         #expect(report.results[0].completedSteps.isEmpty)
         #expect(report.results[1].error == nil && report.results[1].completedSteps == ["Forcibly shut down"])
         #expect(await fixture.coreDeviceOperations == [.init(action: .forceShutdown, deviceID: other.id)])
@@ -366,13 +366,13 @@ struct DeviceManagementTests {
         let report = await managing.value
         let failure = try #require(report.results[0].error as? DeviceManagementCleanupError)
         #expect(failure.operationError == nil)
-        #expect((failure.cleanupErrors.first as? CLIError)?.identifier == "release-fixture")
+        #expect((failure.cleanupErrors.first as? HostOperationError)?.identifier == "release-fixture")
         #expect(report.results[0].completedSteps == ["Forcibly shut down"])
         let presentationFailure = report.results[0].recordingDisplayCleanup(.failure(
-            CLIError.io("presentation-fixture", "Local display cleanup failed")))
+            HostOperationError.io("presentation-fixture", "Local display cleanup failed")))
         let combined = try #require(presentationFailure.error as? DeviceManagementCleanupError)
         #expect(combined.operationError == nil)
-        #expect(combined.cleanupErrors.compactMap { ($0 as? CLIError)?.identifier } == ["release-fixture", "presentation-fixture"])
+        #expect(combined.cleanupErrors.compactMap { ($0 as? HostOperationError)?.identifier } == ["release-fixture", "presentation-fixture"])
         #expect(report.results[1].error == nil)
         #expect(report.results[1].completedSteps == ["Forcibly shut down", "Display disconnected"])
         #expect(await fixture.coreDeviceOperations.map(\.deviceID) == [first.inventoryID, second.inventoryID])
@@ -381,18 +381,18 @@ struct DeviceManagementTests {
 
     @MainActor @Test func nativeCommandIdentityIsResolvedWithoutAssumingTheSimulatorUDIDIsACoreDeviceID() async throws {
         var lookup: String?
-        let identifier = try await CoreDeviceManagementClient.commandIdentifier(for: .simulator(udid: "hardware-udid", deviceSetPath: nil)) {
+        let identifier = try await coreDeviceCommandIdentifier(for: .simulator(udid: "hardware-udid", deviceSetPath: nil)) {
             lookup = $0
             return "different-coredevice-command-id"
         }
         #expect(lookup == "HARDWARE-UDID" && identifier == "different-coredevice-command-id")
-        let remote = try await CoreDeviceManagementClient.commandIdentifier(for: .coreDevice("command-id")) { _ in
+        let remote = try await coreDeviceCommandIdentifier(for: .coreDevice("command-id")) { _ in
             Issue.record("A CoreDevice command identity must not be looked up as a simulator UDID.")
             return nil
         }
         #expect(remote == "command-id")
-        await #expect(throws: CLIError.self) {
-            _ = try await CoreDeviceManagementClient.commandIdentifier(for: .simulator(udid: "missing", deviceSetPath: nil)) { _ in nil }
+        await #expect(throws: HostOperationError.self) {
+            _ = try await coreDeviceCommandIdentifier(for: .simulator(udid: "missing", deviceSetPath: nil)) { _ in nil }
         }
     }
 
@@ -439,7 +439,7 @@ struct DeviceManagementTests {
         let vm = InventoryDevice.remote(try Self.remote(identifier: "vm", reality: "virtual"))
         #expect(!vm.supports(.pause) && !vm.supports(.resume) && !vm.supports(.restart))
         let report = await fixture.backend.manage(.pause, devices: [vm])
-        #expect((report.results.first?.error as? CLIError)?.identifier == "virtual-machine-capability")
+        #expect((report.results.first?.error as? DeviceIOError)?.identifier == "virtual-machine-capability")
         #expect(await fixture.commands.isEmpty)
         #expect(vm.supports(.rename("VM")) && vm.supports(.unpair) && !vm.supports(.remove))
         let forgotten = await fixture.backend.manage(.unpair, devices: [vm])
@@ -463,7 +463,7 @@ struct DeviceManagementTests {
         let ready = InventoryDevice.remote(try Self.remote(identifier: "ready-vm", reality: "virtual", features: [feature]))
         #expect(stale.supports(.pause) && ready.supports(.pause))
         let report = await fixture.backend.manage(.pause, devices: [stale, ready])
-        #expect((report.results[0].error as? CLIError)?.identifier == "virtual-machine-capability")
+        #expect((report.results[0].error as? DeviceIOError)?.identifier == "virtual-machine-capability")
         #expect(report.results[0].completedSteps.isEmpty)
         #expect(report.results[1].error == nil && report.results[1].completedSteps == ["Paused"])
         #expect(await fixture.virtualOperations == ["ready-vm"])
@@ -601,7 +601,7 @@ private actor ManagementFixture {
                 continuation.yield(.release(identifier))
             }
         }
-        if failsRelease { throw CLIError.io("release-fixture", "Recording cleanup failed") }
+        if failsRelease { throw HostOperationError.io("release-fixture", "Recording cleanup failed") }
         displayConnected = false
         releasedDevices.append(identifier)
     }
@@ -609,7 +609,7 @@ private actor ManagementFixture {
     func completeRelease(failing: Bool) {
         let waiting = releaseContinuation
         releaseContinuation = nil
-        if failing { waiting?.resume(throwing: CLIError.io("release-fixture", "Recording cleanup failed")) }
+        if failing { waiting?.resume(throwing: HostOperationError.io("release-fixture", "Recording cleanup failed")) }
         else { waiting?.resume() }
     }
 
@@ -622,7 +622,7 @@ private actor ManagementFixture {
 
     private func manageCoreDevice(_ action: DeviceManagementAction, identifier: DeviceInventoryID) throws {
         guard let feature = action.coreDeviceFeature, nativeFeatures[identifier]?.contains(feature) == true else {
-            throw CLIError.unavailable("virtual-machine-capability", "The device no longer exposes the requested management operation.")
+            throw DeviceIOError.unavailable("virtual-machine-capability", "The device no longer exposes the requested management operation.")
         }
         coreDeviceOperations.append(NativeOperation(action: action, deviceID: identifier))
         continuation.yield(.native(identifier))
@@ -630,12 +630,12 @@ private actor ManagementFixture {
 
     private func run(_ arguments: [String], path: String?, xcodeURL: URL? = nil) async throws -> Data {
         if ["shutdown", "erase", "delete"].contains(arguments.first ?? ""), displayConnected {
-            throw CLIError.io("unsafe-mutation", "The live display was not released before mutation")
+            throw HostOperationError.io("unsafe-mutation", "The live display was not released before mutation")
         }
         commands.append(Command(arguments: arguments, path: path, xcodeURL: xcodeURL))
         if arguments.first == failingCommand,
            failingIdentifier == nil || arguments.dropFirst().first == failingIdentifier {
-            throw CLIError.io("mutation-fixture", "Synthetic command failure")
+            throw HostOperationError.io("mutation-fixture", "Synthetic command failure")
         }
         if holdsShutdown, arguments.first == "shutdown", let identifier = arguments.dropFirst().first {
             try await withTaskCancellationHandler {

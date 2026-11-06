@@ -1,5 +1,6 @@
-import NeoSimulatorKit
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 
 extension XcodeInstallation {
     package var deviceHubApplicationURL: URL {

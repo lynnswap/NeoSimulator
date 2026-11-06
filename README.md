@@ -30,31 +30,36 @@ display host is kept after quitting. To use Device Hub, choose it under
 
 ## Build a simulator app
 
-The `NeoSimulatorKit` Swift package product provides simulator discovery, boot and
-shutdown, and AppKit screen presentation. It requires Swift 6.4 and the same macOS
-and Xcode versions as the application.
+The `NeoSimulatorKit` Swift package product provides simulator discovery, device state,
+boot and shutdown, with no presentation dependency. The `NeoSimulatorUI` product presents
+those devices on AppKit screens. Both require Swift 6.4 and the same macOS and Xcode versions
+as the application.
 
 ```swift
 import NeoSimulatorKit
+import NeoSimulatorUI
 
 let context = try await SimulatorContext.load()
 let devices = try await context.devices()
 if let device = devices.first {
     _ = try await context.boot(device.id)
-    let screen = try await context.openScreen(device.id)
+    let screens = try await SimulatorScreens(context: context)
+    let screen = try await screens.open(device.id)
     try screen.showWindow()
-    // Retain context and screen while presenting the simulator.
+    // Retain context, screens and screen while presenting the simulator.
 }
 ```
 
 Use `SimulatorScreenViewController(screen:)` to embed the screen in an AppKit
-container. `screen.close()` and `context.invalidate()` release presentation
-resources while leaving guests running; `context.shutDown(_:)` explicitly stops a
-guest. Finish these asynchronous operations before terminating your app so their
-errors can be reported.
+container. `screen.session` is the open device: its model, guest commands, and the readiness of
+its optional services. A screen is usable before those services are, and a service that fails
+says so without another transport taking its place. `screen.close()` and `context.invalidate()`
+release presentation resources while leaving guests running; `context.shutDown(_:)` explicitly
+stops a guest. Finish these asynchronous operations before terminating your app so their errors
+can be reported.
 
 See [MinimalSimulatorApp](Examples/MinimalSimulatorApp) for a separate package
-that uses only the public product, including cleanup and an automatic open/close
+that uses only the public products, including cleanup and an automatic open/close
 exercise.
 
 ## Acknowledgements

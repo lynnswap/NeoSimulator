@@ -1,11 +1,13 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
-@testable import NeoSimulatorApp
-@testable import NeoSimulatorService
 import AppKit
 import AVFoundation
 import Foundation
 import ImageIO
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorService
+@testable import NeoSimulatorUI
 import QuartzCore
 import Testing
 

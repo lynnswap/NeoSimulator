@@ -1,6 +1,7 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
+import NeoSimulatorDeviceIO
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
 import SwiftUI
 
 @MainActor

@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import NeoSimulatorDeviceIO
 
 /// External display choices, using Simulator.app's persisted menu tags.
@@ -92,6 +92,14 @@ package struct ExternalScreenState: Equatable {
     /// shows (see `ExternalScreenMode.guestSize(for:refreshRate:among:)`).
     package var refreshRate: Double = 60
 
+    package init(isPoweredOn: Bool, pixelSize: CGSize, scale: CGFloat, isCarPlay: Bool = false, refreshRate: Double = 60) {
+        self.isPoweredOn = isPoweredOn
+        self.pixelSize = pixelSize
+        self.scale = scale
+        self.isCarPlay = isCarPlay
+        self.refreshRate = refreshRate
+    }
+
     /// Derives the menu choice from actual screen state. Returns nil for unlisted sizes or scales.
     package var mode: ExternalDisplayMode? {
         guard isPoweredOn else { return .disabled }
@@ -118,6 +126,12 @@ package struct ExternalScreenMode: Equatable {
     package var scale: CGFloat
     /// In hertz; CoreSimulator reports hundredths of a hertz.
     package var refreshRate: Double
+
+    package init(sizes: Sizes?, scale: CGFloat, refreshRate: Double) {
+        self.sizes = sizes
+        self.scale = scale
+        self.refreshRate = refreshRate
+    }
 
     package func accepts(_ size: CGSize, scale: CGFloat) -> Bool {
         guard scale == self.scale, let sizes else { return false }

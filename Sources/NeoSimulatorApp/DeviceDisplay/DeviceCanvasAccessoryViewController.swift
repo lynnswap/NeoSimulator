@@ -1,6 +1,7 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
+import NeoSimulatorUI
 
 @MainActor
 final class DeviceCanvasAccessoryViewController: NSSplitViewItemAccessoryViewController {

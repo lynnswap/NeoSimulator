@@ -2,12 +2,16 @@
 
 import PackageDescription
 
+// A consumer reads a member only through a module it imports, which keeps a lower target's opaque handles opaque.
+let memberImportVisibility: [SwiftSetting] = [.enableUpcomingFeature("MemberImportVisibility")]
+
 let package = Package(
     name: "NeoSimulatorKit",
     defaultLocalization: "en",
     platforms: [.macOS("26.4")],
     products: [
         .library(name: "NeoSimulatorKit", targets: ["NeoSimulatorKit"]),
+        .library(name: "NeoSimulatorUI", targets: ["NeoSimulatorUI"]),
         .library(name: "NeoSimulatorApp", targets: ["NeoSimulatorApp"]),
         .library(name: "NeoSimulatorService", targets: ["NeoSimulatorService"]),
         .executable(name: "CoreDeviceInventoryProbe", targets: ["CoreDeviceInventoryProbe"]),
@@ -17,30 +21,40 @@ let package = Package(
         .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.8"),
     ],
     targets: [
-        .target(name: "NeoSimulatorDeviceIO"),
-        .target(
-            name: "NeoSimulatorKit",
-            dependencies: [
-                "NeoSimulatorDeviceIO",
-                .product(name: "ABIBridge", package: "ABIBridge"),
-                .product(name: "ObservationBridge", package: "ObservationBridge"),
-            ]
-        ),
-        .target(name: "NeoSimulatorHostSupport", dependencies: [
-            "NeoSimulatorDeviceIO", "NeoSimulatorKit",
+        .target(name: "NeoSimulatorNative", dependencies: [
+            .product(name: "ABIBridge", package: "ABIBridge"),
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorDeviceIO", dependencies: [
+            "NeoSimulatorNative",
+            .product(name: "ABIBridge", package: "ABIBridge"),
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorKit", dependencies: [
+            "NeoSimulatorDeviceIO",
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorPresentationAdapters", dependencies: [
+            "NeoSimulatorKit", "NeoSimulatorDeviceIO", "NeoSimulatorNative",
             .product(name: "ABIBridge", package: "ABIBridge"),
             .product(name: "ObservationBridge", package: "ObservationBridge"),
-        ]),
-        .target(name: "NeoSimulatorApp", dependencies: [
-            "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorHostSupport",
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorUI", dependencies: [
+            "NeoSimulatorKit", "NeoSimulatorPresentationAdapters",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
-        ], resources: [.process("Resources")]),
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorHostSupport", dependencies: [
+            "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorApp", dependencies: [
+            "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], resources: [.process("Resources")], swiftSettings: memberImportVisibility),
         .target(name: "NeoSimulatorService", dependencies: [
-            "NeoSimulatorKit", "NeoSimulatorHostSupport",
-        ]),
-        .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorHostSupport"]),
+            "NeoSimulatorHostSupport", "NeoSimulatorKit",
+        ], swiftSettings: memberImportVisibility),
+        .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorKit"], swiftSettings: memberImportVisibility),
         .testTarget(name: "NeoSimulatorAppTests", dependencies: [
-            "NeoSimulatorApp", "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorHostSupport", "NeoSimulatorService",
+            "NeoSimulatorApp", "NeoSimulatorService", "NeoSimulatorHostSupport", "NeoSimulatorUI",
+            "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ABIBridge", package: "ABIBridge"),
         ], swiftSettings: [
             .enableUpcomingFeature("MemberImportVisibility"),
@@ -48,7 +62,8 @@ let package = Package(
             .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
         ]),
         .testTarget(name: "NeoSimulatorHostSupportTests", dependencies: [
-            "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorHostSupport",
+            "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters",
+            "NeoSimulatorKit", "NeoSimulatorDeviceIO", "NeoSimulatorNative",
             .product(name: "ABIBridge", package: "ABIBridge"),
         ]),
     ]

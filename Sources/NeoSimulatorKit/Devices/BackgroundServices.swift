@@ -251,12 +251,12 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
             switch target {
             case .category(let identifier):
                 guard let category = BackgroundServiceCatalog.category(identifier) else {
-                    throw CLIError.configuration("background-service-unknown", "“\(identifier)” is not a background service category.")
+                    throw DeviceDomainError.configuration("background-service-unknown", "“\(identifier)” is not a background service category.")
                 }
                 if !categories.contains(category) { categories.append(category) }
             case .service(let label):
                 guard BackgroundServiceCatalog.managed.contains(label) else {
-                    throw CLIError.configuration("background-service-unknown", "“\(label)” is not a managed background service.")
+                    throw DeviceDomainError.configuration("background-service-unknown", "“\(label)” is not a managed background service.")
                 }
                 if !labels.contains(label) { labels.append(label) }
             }
@@ -403,7 +403,7 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
             case .success(let output) where output.terminationStatus == 0:
                 return String(decoding: output.stdout, as: UTF8.self)
             case .success(let output):
-                failure = CLIError.io("background-service-read", Self.describe(arguments[0], nil, output))
+                failure = DeviceDomainError.io("background-service-read", Self.describe(arguments[0], nil, output))
                 guard Self.isSettling(output) else { throw failure }
             case .failure(let stopped as CommandFailure) where stopped.interruption == .cancelled:
                 // A read leaves nothing to account for, and the caller's state stays as it was.
@@ -451,8 +451,8 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
             + (detail.isEmpty ? "" : ": \(detail)")
     }
 
-    private static func failure(_ identifier: String, _ message: String) -> CLIError {
-        CLIError(category: .io, identifier: identifier, message: message, failureReason: message)
+    private static func failure(_ identifier: String, _ message: String) -> DeviceDomainError {
+        DeviceDomainError(category: .io, identifier: identifier, message: message, failureReason: message)
     }
 }
 

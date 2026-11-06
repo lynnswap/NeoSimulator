@@ -1,6 +1,8 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
 import AppKit
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorPresentationAdapters
 import Observation
 import SwiftUI
 import Testing
@@ -70,7 +72,7 @@ struct NativeDeviceCanvasTests {
         let (finished, finish) = AsyncStream.makeStream(of: Void.self)
         let poses = NativeDevicePoseControls { _ in
             defer { finish.finish() }
-            throw CLIError.unavailable("fixture-poses", "DeviceKit's action providers are unavailable.")
+            throw RemoteScreenError.unavailable("fixture-poses", "DeviceKit's action providers are unavailable.")
         }
         #expect(!poses.isAvailable)
         for await _ in finished {}
@@ -113,7 +115,7 @@ struct NativeDeviceCanvasTests {
             // Native discovery does not stop for cancellation, and fails after the disconnect.
             try? await Task.sleep(for: .seconds(3600))
             #expect(Task.isCancelled)
-            throw CLIError.unavailable("fixture-poses", "DeviceKit's action providers are unavailable.")
+            throw RemoteScreenError.unavailable("fixture-poses", "DeviceKit's action providers are unavailable.")
         }
         var errors: [String] = []
         poses.onError = { errors.append($0.localizedDescription) }

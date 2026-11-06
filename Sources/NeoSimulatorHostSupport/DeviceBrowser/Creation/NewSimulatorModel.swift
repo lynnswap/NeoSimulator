@@ -1,5 +1,6 @@
-import NeoSimulatorKit
 import AppKit
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 import Observation
 
 @MainActor @Observable

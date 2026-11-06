@@ -1,6 +1,7 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
 import Foundation
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
 import Security
 import Testing
 
@@ -33,7 +34,7 @@ struct CodeSignatureValidatorTests {
             satisfying: #"identifier "com.apple.calculator" and anchor apple"#
         )
 
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try CodeSignatureValidator.live.validateAppleApplication(
                 calculatorURL,
                 "com.example.NotCalculator"
@@ -81,7 +82,7 @@ struct CodeSignatureValidatorTests {
         )
         try requireValidApplication(at: applicationURL)
 
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try CodeSignatureValidator.live.validateAppleApplication(
                 applicationURL,
                 "com.example.AdHoc"
@@ -106,13 +107,13 @@ struct CodeSignatureValidatorTests {
             fixture.applicationURL,
             fixture.identifier
         )
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try CodeSignatureValidator.live.validateAppleApplication(
                 fixture.applicationURL,
                 "com.example.IdentityMismatch"
             )
         }
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try CodeSignatureValidator.live.validateAppleCode(
                 fixture.applicationURL,
                 fixture.identifier
@@ -133,7 +134,7 @@ struct CodeSignatureValidatorTests {
             satisfying: #"identifier "\#(fixture.identifier)" and anchor apple generic"#
         )
 
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try CodeSignatureValidator.live.validateAppleApplication(
                 fixture.applicationURL,
                 fixture.identifier

@@ -11,15 +11,27 @@ Implementation lives under `Sources`:
 
 | Module | Responsibility |
 | --- | --- |
-| `NeoSimulatorDeviceIO` | Package-only subprocess execution, each device's native request channel, and each operation's deadlines. |
-| `NeoSimulatorKit` | Public simulator API, display and input sessions, and native runtime bindings. |
+| `NeoSimulatorNative` | Package-only library lifetime, the framework loader and its one UI toolkit, and opaque native handles. |
+| `NeoSimulatorDeviceIO` | Package-only subprocess execution, each device's native request channel, CoreSimulator and CoreDevice clients, and their request values and errors. |
+| `NeoSimulatorKit` | Public device API: inventory, models, lifecycle, and sessions, and the ports that a presentation implements. It imports no AppKit or SwiftUI, and neither ABIBridge nor Native. |
+| `NeoSimulatorPresentationAdapters` | Package-only native display, input and pasteboard bindings, which implement Kit's ports, and the routing between them. |
+| `NeoSimulatorUI` | Public AppKit presentation: `SimulatorScreens`, `SimulatorScreen`, and the window controllers and views. |
 | `NeoSimulatorHostSupport` | Package-only host selection, settings transactions, inventory, renderer ownership, and shared menus. |
 | `NeoSimulatorApp` | Manager UI, device operations, inspectors, and application lifecycle. |
 | `NeoSimulatorService` | Embedded renderer startup, arguments, and owner monitoring. |
 
-The package exposes Kit, App, and Service as library products. The device-I/O
-and host-support modules are shared only within the package. Tests in `Tests` import these
-modules rather than compiling their implementation again.
+The package exposes Kit, UI, App, and Service as library products. The other modules are shared
+only within the package. Tests in `Tests` import these modules rather than compiling their
+implementation again.
+
+A target imports only what its manifest lists directly, so a lower layer's handle stays out of
+reach of the layers above it. SwiftPM does not enforce this for a transitive target, so
+`scripts/check-module-graph.py` compares the compiler's import pre-scan with the manifest and with
+the agreed graph, and CI runs it:
+
+```bash
+scripts/check-module-graph.py
+```
 
 The Xcode application targets contain their entry points and bundle resources.
 The manager also contains the LicenseList-backed Licenses pane, passed to the

@@ -1,11 +1,12 @@
+import AppKit
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
-import AppKit
+import NeoSimulatorUI
 
 /// Composes the renderer's application lifecycle around the reusable simulator engine.
 @MainActor
 package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrowserSource {
-    private let runtime: SimulatorRuntime
+    private let runtime: SimulatorIORuntime
     private let engine: SimulatorScreenHost
     private let isManaged: Bool
     private let isHeadless: Bool
@@ -28,13 +29,14 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
     private var openRequests: [String: (device: SimulatorDeviceIdentifier, preservesOwnership: Bool, task: Task<Void, Never>)] = [:]
     package var isStopped: Bool { engine.isStopped }
 
-    package init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
+    package init(runtime: SimulatorIORuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
          owner: RendererOwnerIdentity? = nil, headless: Bool = false) throws {
         self.runtime = runtime
         self.isManaged = isManaged
         self.isHeadless = headless
         self.owner = owner
-        engine = try SimulatorScreenHost(runtime: runtime, conflicts: conflicts, isManaged: isManaged, headless: headless)
+        engine = try SimulatorScreenHost(runtime: runtime, conflicts: conflicts, presenter: DeviceWindowPresenter(),
+                                         isManaged: isManaged, headless: headless)
         super.init()
         engine.onOpen = { identifier in
             HostPreferences.defaults.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)

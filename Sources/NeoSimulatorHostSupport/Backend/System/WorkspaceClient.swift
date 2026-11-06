@@ -1,6 +1,8 @@
-import NeoSimulatorKit
 import AppKit
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
+import NeoSimulatorUI
 
 package struct RunningApplication: Equatable, Sendable {
     package let processIdentifier: pid_t
@@ -103,7 +105,7 @@ private final class ApplicationTerminationWaiter {
                             }
                             self.finish(
                                 .failure(
-                                    CLIError.temporary(
+                                    HostOperationError.temporary(
                                         "\(self.identity.errorIdentifier)-termination-timeout",
                                         "\(self.identity.displayName) pid \(self.application.processIdentifier) did not finish terminating before the operation deadline"
                                     )
@@ -139,7 +141,7 @@ private final class ApplicationTerminationWaiter {
                             if !self.application.isTerminated {
                                 self.finish(
                                     .failure(
-                                        CLIError.temporary(
+                                        HostOperationError.temporary(
                                             "\(self.identity.errorIdentifier)-termination",
                                             "\(self.identity.displayName) pid \(self.application.processIdentifier) did not accept the termination request"
                                         )
@@ -205,7 +207,7 @@ package struct WorkspaceClient: Sendable {
             var expectedURLs = [expectedApplicationURL]
             for application in running {
                 guard let url = application.bundleURL else {
-                    throw CLIError.configuration("device-hub-identity", "A running Device Hub has no application URL.")
+                    throw HostOperationError.configuration("device-hub-identity", "A running Device Hub has no application URL.")
                 }
                 try CodeSignatureValidator.live.validateAppleApplication(url, ToolConstants.deviceHubBundleIdentifier)
                 expectedURLs.append(url)
@@ -230,7 +232,7 @@ package struct WorkspaceClient: Sendable {
             guard Bundle(url: applicationURL)?.bundleIdentifier
                     == ToolConstants.neoHostBundleIdentifier
             else {
-                throw CLIError.configuration(
+                throw HostOperationError.configuration(
                     "neo-host-bundle",
                     "refusing to launch \(applicationURL.path) because it is not \(ToolConstants.neoHostBundleIdentifier)"
                 )
@@ -270,13 +272,13 @@ package struct WorkspaceClient: Sendable {
                 guard application.bundleIdentifier
                         == ToolConstants.neoHostBundleIdentifier
                 else {
-                    throw CLIError.configuration(
+                    throw HostOperationError.configuration(
                         "neo-host-identifier",
                         "LaunchServices opened pid \(application.processIdentifier) with bundle identifier \(application.bundleIdentifier ?? "unknown"); expected \(ToolConstants.neoHostBundleIdentifier)"
                     )
                 }
                 guard let openedURL = application.bundleURL else {
-                    throw CLIError.io(
+                    throw HostOperationError.io(
                         "neo-host-launch",
                         "LaunchServices opened the standalone simulator host without a bundle URL"
                     )
@@ -285,7 +287,7 @@ package struct WorkspaceClient: Sendable {
                 let expected = normalized(applicationURL)
                 let observed = normalized(openedURL)
                 guard observed == expected else {
-                    throw CLIError.configuration(
+                    throw HostOperationError.configuration(
                         "neo-host-substitution",
                         "requested \(expected.path), but LaunchServices opened \(observed.path)"
                     )
@@ -314,7 +316,7 @@ package struct WorkspaceClient: Sendable {
             let app = try await NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
             guard app.bundleIdentifier == ToolConstants.deviceHubBundleIdentifier,
                   app.bundleURL.map(normalized) == normalized(applicationURL) else {
-                throw CLIError.configuration("device-hub-substitution", "LaunchServices opened an unexpected Device Hub application")
+                throw HostOperationError.configuration("device-hub-substitution", "LaunchServices opened an unexpected Device Hub application")
             }
             // LaunchServices has already committed this external launch; it may be a shared instance.
             try Task.checkCancellation()
@@ -327,7 +329,7 @@ package struct WorkspaceClient: Sendable {
                 expectedURLs: [applicationURL], errorIdentifier: "neo-host"
             ), timeoutInterval: nil, processIdentifiers: Set(registrations.map(\.processIdentifier)), requestTermination: { application in
                 guard let registration = registrations.first(where: { $0.processIdentifier == application.processIdentifier }) else {
-                    throw CLIError.temporary("renderer-registration", "A renderer is still starting. Try quitting again when it is ready.")
+                    throw HostOperationError.temporary("renderer-registration", "A renderer is still starting. Try quitting again when it is ready.")
                 }
                 var info: [String: Any] = ["action": "quit"]
                 if let keepingDevicesRunning { info["keepRunning"] = keepingDevicesRunning }
@@ -383,7 +385,7 @@ package struct WorkspaceClient: Sendable {
             guard let record = try registration(application) else { continue }
             guard record.processIdentifier == application.processIdentifier,
                   normalized(URL(fileURLWithPath: record.applicationPath)) == normalized(applicationURL) else {
-                throw CLIError.configuration("renderer-registration", "The renderer registration does not match its running application.")
+                throw HostOperationError.configuration("renderer-registration", "The renderer registration does not match its running application.")
             }
             guard let pid = record.ownerProcessIdentifier, let launchDate = record.ownerLaunchDate,
                   ownerIsAbsent(RendererOwnerIdentity(processIdentifier: pid, launchDate: launchDate)) else { continue }
@@ -436,13 +438,13 @@ package struct WorkspaceClient: Sendable {
 
             for application in applications {
                 guard application.bundleIdentifier == identity.bundleIdentifier else {
-                    throw CLIError.configuration(
+                    throw HostOperationError.configuration(
                         "\(identity.errorIdentifier)-identity",
                         "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) because its bundle identifier is \(application.bundleIdentifier ?? "unknown")"
                     )
                 }
                 guard let bundleURL = application.bundleURL else {
-                    throw CLIError.configuration(
+                    throw HostOperationError.configuration(
                         "\(identity.errorIdentifier)-identity",
                         "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) because it has no bundle URL"
                     )
@@ -450,7 +452,7 @@ package struct WorkspaceClient: Sendable {
                 let observed = normalized(bundleURL)
                 guard expected.contains(observed) else {
                     let allowedPaths = expected.map(\.path).sorted().joined(separator: ", ")
-                    throw CLIError.configuration(
+                    throw HostOperationError.configuration(
                         "\(identity.errorIdentifier)-substitution",
                         "refusing to terminate \(identity.displayName) pid \(application.processIdentifier) from \(observed.path); expected one of: \(allowedPaths)"
                     )
@@ -462,7 +464,7 @@ package struct WorkspaceClient: Sendable {
                 if let deadline {
                     let remaining = clock.now.duration(to: deadline)
                     guard remaining > .zero else {
-                        throw CLIError.temporary(
+                        throw HostOperationError.temporary(
                             "\(identity.errorIdentifier)-termination-timeout",
                             "\(identity.displayName) kept running or relaunching until the operation deadline."
                         )
@@ -501,7 +503,7 @@ package struct WorkspaceClient: Sendable {
                 attributes: [.posixPermissions: 0o700]
             )
         } catch {
-            throw CLIError.cannotCreate(
+            throw HostOperationError.cannotCreate(
                 "neo-host-startup-directory",
                 "could not create the NeoSimulator startup directory: \(error.localizedDescription)"
             )
@@ -519,7 +521,7 @@ package struct WorkspaceClient: Sendable {
         } catch let terminationError {
             let message = "NeoSimulator launch failed (\(launchError.localizedDescription)), and pid \(processIdentifier) could not be terminated (\(terminationError.localizedDescription))"
             let failure = launchError as? any LocalizedError
-            throw CLIError(category: .temporary, identifier: "neo-host-launch-cleanup", message: message,
+            throw HostOperationError(category: .temporary, identifier: "neo-host-launch-cleanup", message: message,
                            failureReason: failure?.failureReason == nil ? nil : message,
                            recoverySuggestion: failure?.recoverySuggestion)
         }
@@ -538,33 +540,33 @@ package struct WorkspaceClient: Sendable {
                 let data: Data
                 do { data = try Data(contentsOf: resultURL) }
                 catch {
-                    throw CLIError.io("neo-host-startup-result",
+                    throw HostOperationError.io("neo-host-startup-result",
                         "could not read the NeoSimulator startup result: \(error.localizedDescription)")
                 }
                 let result: RendererStartupResult
                 do { result = try JSONDecoder().decode(RendererStartupResult.self, from: data) }
                 catch {
-                    throw CLIError.configuration("neo-host-startup-result", "NeoSimulator wrote an invalid startup result")
+                    throw HostOperationError.configuration("neo-host-startup-result", "NeoSimulator wrote an invalid startup result")
                 }
                 switch result {
                 case .failed(let message, let recovery):
-                    throw CLIError(category: .temporary, identifier: "neo-host-startup", message: message,
+                    throw HostOperationError(category: .temporary, identifier: "neo-host-startup", message: message,
                                    failureReason: message, recoverySuggestion: recovery)
                 case .ready:
                     await Task.yield()
                     guard !isTerminated() else {
-                        throw CLIError.temporary("neo-host-startup", "NeoSimulator exited during startup")
+                        throw HostOperationError.temporary("neo-host-startup", "NeoSimulator exited during startup")
                     }
                     return
                 }
             }
             guard !isTerminated() else {
-                throw CLIError.temporary("neo-host-startup", "NeoSimulator exited before startup completed")
+                throw HostOperationError.temporary("neo-host-startup", "NeoSimulator exited before startup completed")
             }
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        throw CLIError.temporary(
+        throw HostOperationError.temporary(
             "neo-host-startup-timeout",
             "NeoSimulator did not finish startup within 10 seconds"
         )
@@ -655,7 +657,7 @@ package final class RendererDeviceRequestWaiter {
                     Task { @MainActor in
                         guard acknowledged == deviceID else { return }
                         if let failure {
-                            self?.finish(.failure(CLIError.temporary("renderer-device-request", failure)))
+                            self?.finish(.failure(HostOperationError.temporary("renderer-device-request", failure)))
                         } else {
                             self?.handled = handled
                             self?.finish(self?.cancelledOpen == true ? .failure(CancellationError()) : .success(()))
@@ -663,7 +665,7 @@ package final class RendererDeviceRequestWaiter {
                     }
                 }
                 cancelTimeout = scheduleTimeout(.seconds(timeoutSeconds)) { [weak self] in
-                    self?.finish(.failure(CLIError.temporary("renderer-device-timeout", "The simulator display did not finish the device request.")))
+                    self?.finish(.failure(HostOperationError.temporary("renderer-device-timeout", "The simulator display did not finish the device request.")))
                 }
                 cancelExitObservation = Self.observeExit(of: renderer.processIdentifier) { [weak self] in
                     guard let self, self.activeRequestIdentifier == requestIdentifier else { return }
@@ -672,7 +674,7 @@ package final class RendererDeviceRequestWaiter {
                     // Other requests and the cancellation of an open can no longer be completed.
                     else {
                         self.finish(.failure(self.cancelledOpen ? CancellationError()
-                            : CLIError.temporary("renderer-device-exit", "The simulator display exited before finishing the device request.")))
+                            : HostOperationError.temporary("renderer-device-exit", "The simulator display exited before finishing the device request.")))
                     }
                 }
                 var info = ["action": action, "udid": identifier, "requestIdentifier": requestIdentifier]

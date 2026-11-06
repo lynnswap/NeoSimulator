@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import NeoSimulatorHostSupport
+import NeoSimulatorKit
 
 @main
 enum CoreDeviceInventoryProbe {

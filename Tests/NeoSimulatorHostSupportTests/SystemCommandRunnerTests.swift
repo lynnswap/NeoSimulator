@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 import Synchronization
 import Testing
 

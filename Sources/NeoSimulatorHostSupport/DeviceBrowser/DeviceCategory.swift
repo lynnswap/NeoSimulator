@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 
 private let iPhoneDuoDeviceType = "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"

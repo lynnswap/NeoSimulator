@@ -1,5 +1,6 @@
 import AppKit
 import NeoSimulatorKit
+import NeoSimulatorUI
 
 @main
 enum MinimalSimulatorApp {
@@ -50,22 +51,24 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         let wasShutDown = devices.first { $0.id == id }?.state == .shutDown
         if wasShutDown { guestToShutDown = id }
         _ = try await context.boot(id)
+        // Reading and booting devices above loaded no UI toolkit; presenting one does.
+        let screens = try await SimulatorScreens(context: context)
         let screen: SimulatorScreen
         if arguments.contains("--exercise") {
-            let first = Task.immediate { try await context.openScreen(id) }
-            let cancelled = Task.immediate { try await context.openScreen(id) }
+            let first = Task.immediate { try await screens.open(id) }
+            let cancelled = Task.immediate { try await screens.open(id) }
             cancelled.cancel()
-            let second = Task.immediate { try await context.openScreen(id) }
+            let second = Task.immediate { try await screens.open(id) }
             screen = try await first.value
             guard try await second.value === screen else {
                 throw SimulatorError.operation("Concurrent opens created different screens.")
             }
             do { _ = try await cancelled.value } catch is CancellationError {} catch { throw error }
         } else {
-            screen = try await context.openScreen(id)
+            screen = try await screens.open(id)
         }
         self.screen = screen
-        guard registry.device(for: .simulator(id)) === screen.deviceModel else {
+        guard registry.device(for: .simulator(id)) === screen.session.deviceModel else {
             throw SimulatorError.operation("The screen did not share the registry's device state.")
         }
         screen.onEnd = { print("Screen ended: \($0)") }
@@ -152,18 +155,19 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
         if arguments.contains("--exercise") {
-            guard try await context.openScreen(id) === screen else {
+            guard try await screens.open(id) === screen else {
                 throw SimulatorError.operation("Reopening a screen created a second connection.")
             }
             try await Task.sleep(for: .seconds(2))
+            print("Input: \(screen.session.inputReadiness); pasteboard: \(screen.session.pasteboardReadiness)")
             try screen.detach()
             try screen.showWindow()
             var end: SimulatorScreenEnd?
             screen.onEnd = { end = $0; print("Screen ended: \($0)") }
-            try screen.press(.home) { [weak self] in self?.asynchronousFailures.append($0.localizedDescription) }
+            try screen.session.press(.home) { [weak self] in self?.asynchronousFailures.append($0.localizedDescription) }
             let closing = Task.immediate { try await screen.close() }
             let secondClose = Task.immediate { try await screen.close() }
-            let reopening = Task.immediate { try await context.openScreen(id) }
+            let reopening = Task.immediate { try await screens.open(id) }
             try await closing.value
             try await secondClose.value
             guard screen.isClosed, end == .closed,

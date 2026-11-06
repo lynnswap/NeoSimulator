@@ -1,0 +1,128 @@
+import AppKit
+import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
+
+/// Fits a simulator display to its presentation's available space.
+/// Refits when SimulatorKit asynchronously applies a new screen size.
+@MainActor
+package final class DisplayFitting {
+    package private(set) var display: any SimulatorDisplay
+    private var content: any DisplayContentView
+    /// The display's size at scale 1 when its view last changed.
+    private var size: NSSize
+    private var observer: (any NSObjectProtocol)?
+    /// Whether the window is in full screen or moving into or out of it.
+    package private(set) var isFullScreen = false
+    /// Whether the window is between `windowWillStartLiveResize` and
+    /// `windowDidEndLiveResize`.
+    private var isLiveResizing = false
+    /// App resize mode sends point geometry to the guest; its framebuffer keeps scale 1.
+    package var scalesDisplay = true
+    /// The display's scale and the window's origin when the window entered
+    /// full screen, which Simulator.app restores when the window leaves it.
+    private var geometryBeforeFullScreen: (scale: CGFloat?, origin: NSPoint)?
+    /// An embedded presentation may preserve a fixed scale after a native size change.
+    package var onNaturalSizeChange: (() -> Void)?
+
+    package init(display: any SimulatorDisplay, content: any DisplayContentView) {
+        self.display = display
+        self.content = content
+        size = display.size(for: 1)
+        observe()
+    }
+
+    isolated deinit { invalidate() }
+
+    /// Fits a device's next display, in new content, as after a restart.
+    package func attach(_ display: any SimulatorDisplay, content: any DisplayContentView) {
+        invalidate()
+        self.display = display
+        self.content = content
+        size = display.size(for: 1)
+        if scalesDisplay, let geometry = geometryBeforeFullScreen, geometry.scale == nil {
+            // Keep the returning primary's scale before full-screen fitting overwrites it.
+            geometryBeforeFullScreen = (display.renderScale, geometry.origin)
+        }
+        observe()
+    }
+
+    /// Whether the display fits the window instead of the window taking the
+    /// display's size.
+    package var fitsWindow: Bool { isFullScreen || isLiveResizing }
+
+    /// Gives the display the largest scale at which it fits the content.
+    package func fit() {
+        content.isSizedToDisplay = false
+        resize(to: content.availableDisplaySize)
+        layout()
+    }
+
+    /// Applies the presentation policy to every explicit scale request.
+    package func setScale(_ scale: CGFloat) {
+        display.setRenderScale(scalesDisplay ? scale : 1)
+    }
+
+    package func resize(to size: NSSize) {
+        // The display's frame can still reflect an earlier render scale.
+        if scalesDisplay { setScale(display.scale(for: size)) } else { setScale(1) }
+    }
+
+    /// Lays the display out in the content again.
+    package func layout() {
+        content.needsLayout = true
+        content.layoutSubtreeIfNeeded()
+        content.window?.invalidateShadow()
+    }
+
+    package func willStartLiveResize() {
+        isLiveResizing = true
+        if scalesDisplay { display.beginResize() }
+    }
+
+    package func didEndLiveResize() {
+        isLiveResizing = false
+        fit()
+        if scalesDisplay { display.endResize() }
+    }
+
+    package func willEnterFullScreen() {
+        isFullScreen = true
+        guard let window = content.window else { return }
+        geometryBeforeFullScreen = (scalesDisplay ? display.renderScale : nil, window.frame.origin)
+    }
+
+    package func didFailToEnterFullScreen() {
+        isFullScreen = false
+        geometryBeforeFullScreen = nil
+    }
+
+    /// Leaves full screen, returning the display's scale and the window's
+    /// origin from before it, which the window returns to.
+    package func didExitFullScreen(defaultScale: CGFloat) -> (scale: CGFloat, origin: NSPoint)? {
+        isFullScreen = false
+        defer { geometryBeforeFullScreen = nil }
+        guard let geometry = geometryBeforeFullScreen else { return nil }
+        return (geometry.scale ?? defaultScale, geometry.origin)
+    }
+
+    /// Stops following the display's size.
+    package func invalidate() {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+    }
+
+    private func observe() {
+        display.view.postsFrameChangedNotifications = true
+        observer = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: display.view, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated { self?.displayViewChanged() }
+        }
+    }
+
+    private func displayViewChanged() {
+        let size = display.size(for: 1)
+        guard size != self.size else { return }
+        self.size = size
+        if fitsWindow { fit() } else { onNaturalSizeChange?() }
+    }
+}

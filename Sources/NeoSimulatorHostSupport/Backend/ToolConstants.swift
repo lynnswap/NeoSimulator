@@ -1,5 +1,6 @@
-import NeoSimulatorKit
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 
 extension ToolConstants {
     package static let name = "xcode-simulator-host"

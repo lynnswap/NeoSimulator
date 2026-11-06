@@ -1,8 +1,9 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
-@testable import NeoSimulatorApp
-@testable import NeoSimulatorService
 import AppKit
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorService
+@testable import NeoSimulatorUI
 import Testing
 
 @Suite @MainActor

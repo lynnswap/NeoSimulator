@@ -16,7 +16,7 @@ package struct SystemPreferenceDomains: PreferenceDomainAccessing {
         let output = try await run(["export", domain, "-"], operation: "read")
         let values = try PropertyListSerialization.propertyList(from: output, options: [], format: nil)
         guard let dictionary = values as? [String: Any] else {
-            throw CLIError.configuration("preference-domain-type", "Preferences for \(domain) are not a dictionary with String keys.")
+            throw HostOperationError.configuration("preference-domain-type", "Preferences for \(domain) are not a dictionary with String keys.")
         }
         return dictionary.filter { keys.contains($0.key) }
     }
@@ -32,7 +32,7 @@ package struct SystemPreferenceDomains: PreferenceDomainAccessing {
     private nonisolated(nonsending) func run(_ arguments: [String], operation: String) async throws -> Data {
         let output = try await runner.run(SystemCommand(executable: URL(fileURLWithPath: "/usr/bin/defaults"), arguments: arguments, policy: .uninterrupted))
         guard output.terminationStatus == 0 else {
-            throw CLIError.io("preference-\(operation)", output.stderrText)
+            throw HostOperationError.io("preference-\(operation)", output.stderrText)
         }
         return output.stdout
     }
@@ -183,7 +183,7 @@ package struct DefaultsStore {
         guard CFGetTypeID(valueObject) == CFBooleanGetTypeID(),
               let number = valueObject as? NSNumber
         else {
-            throw CLIError.configuration(
+            throw HostOperationError.configuration(
                 "preference-value-type",
                 "\(preference.domain).\(preference.key) is not Boolean"
             )

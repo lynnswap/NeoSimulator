@@ -1,9 +1,10 @@
-import NeoSimulatorDeviceIO
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
-import SwiftUI
+import NeoSimulatorDeviceIO
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
+import NeoSimulatorUI
 import ObservationBridge
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {

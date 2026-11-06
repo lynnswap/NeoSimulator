@@ -153,7 +153,7 @@ package enum LiveDeviceInventory {
             arguments: ["list", "devices", "--json-output", "-", "--quiet", "--timeout", String(DeviceOperationLimit.devicectlQuery)],
             policy: .cancellable))
         guard result.terminationStatus == 0 else {
-            throw CLIError.io("coredevice-inventory", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
+            throw DeviceDomainError.io("coredevice-inventory", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
         }
         return result.stdout
     }
@@ -189,7 +189,7 @@ package enum LiveDeviceInventory {
             installations: installations.map(\.applicationURL), testingDeviceSetPath: testingPath,
             readCatalog: { xcode, path in
                 let output = try await reads.run(.simctl(xcodeURL: xcode, arguments: ["list", "--json"], deviceSetPath: path, policy: .cancellable))
-                guard output.terminationStatus == 0 else { throw CLIError.io("simulator-inventory", output.stderrText.isEmpty ? output.stdoutText : output.stderrText) }
+                guard output.terminationStatus == 0 else { throw DeviceDomainError.io("simulator-inventory", output.stderrText.isEmpty ? output.stdoutText : output.stderrText) }
                 return output.stdout
             }
         ).read()
@@ -486,7 +486,7 @@ package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
     package init(_ error: any Error) {
         failureReason = (error as? any LocalizedError)?.failureReason
         underlyingRecoverySuggestion = (error as? any LocalizedError)?.recoverySuggestion
-        let identifier = (error as? CLIError)?.identifier ?? ""
+        let identifier = (error as? any IdentifiedFailure)?.identifier ?? ""
         technicalDetails = identifier.isEmpty ? error.localizedDescription : "\(identifier): \(error.localizedDescription)"
         if ["preference-conflict", "ambiguous-intermediate", "inconsistent-preferences"].contains(identifier) || identifier.hasSuffix("-host-invalidated") {
             kind = .preferencesChanged

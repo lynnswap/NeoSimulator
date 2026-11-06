@@ -1,6 +1,7 @@
-import NeoSimulatorKit
 import Darwin
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 
 package struct ReceiptStore {
     package let directoryURL: URL
@@ -14,9 +15,9 @@ package struct ReceiptStore {
         let data: Data
         do { data = try Data(contentsOf: hostSelectionURL) }
         catch CocoaError.fileReadNoSuchFile { return nil }
-        catch { throw CLIError.io("host-selection-read", "Could not read the saved display host: \(error.localizedDescription)") }
+        catch { throw HostOperationError.io("host-selection-read", "Could not read the saved display host: \(error.localizedDescription)") }
         guard let value = String(data: data, encoding: .utf8), let host = SimulatorHost(rawValue: value) else {
-            throw CLIError.configuration("host-selection-decode", "The saved display host at \(hostSelectionURL.path) is invalid.")
+            throw HostOperationError.configuration("host-selection-decode", "The saved display host at \(hostSelectionURL.path) is invalid.")
         }
         return host
     }
@@ -27,7 +28,7 @@ package struct ReceiptStore {
             try Data(host.rawValue.utf8).write(to: hostSelectionURL, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: hostSelectionURL.path)
         } catch {
-            throw CLIError.io("host-selection-write", "Could not save the display host: \(error.localizedDescription)")
+            throw HostOperationError.io("host-selection-write", "Could not save the display host: \(error.localizedDescription)")
         }
     }
 
@@ -42,7 +43,7 @@ package struct ReceiptStore {
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
             ).first else {
-                throw CLIError.cannotCreate(
+                throw HostOperationError.cannotCreate(
                     "application-support",
                     "could not resolve the user Application Support directory"
                 )
@@ -65,7 +66,7 @@ package struct ReceiptStore {
         do {
             data = try Data(contentsOf: receiptURL)
         } catch {
-            throw CLIError.io(
+            throw HostOperationError.io(
                 "receipt-read",
                 "could not read \(receiptURL.path): \(error.localizedDescription)"
             )
@@ -75,10 +76,10 @@ package struct ReceiptStore {
             let receipt = try PropertyListDecoder().decode(RestorationReceipt.self, from: data)
             try receipt.validate()
             return receipt
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             throw error
         } catch {
-            throw CLIError.configuration(
+            throw HostOperationError.configuration(
                 "receipt-decode",
                 "could not decode \(receiptURL.path): \(error.localizedDescription)"
             )
@@ -95,7 +96,7 @@ package struct ReceiptStore {
         do {
             data = try encoder.encode(receipt)
         } catch {
-            throw CLIError.software(
+            throw HostOperationError.software(
                 "receipt-encode",
                 "could not encode restoration receipt: \(error.localizedDescription)"
             )
@@ -108,7 +109,7 @@ package struct ReceiptStore {
                 ofItemAtPath: receiptURL.path
             )
         } catch {
-            throw CLIError.io(
+            throw HostOperationError.io(
                 "receipt-write",
                 "could not write \(receiptURL.path): \(error.localizedDescription)"
             )
@@ -122,7 +123,7 @@ package struct ReceiptStore {
         do {
             try fileManager.removeItem(at: receiptURL)
         } catch {
-            throw CLIError.io(
+            throw HostOperationError.io(
                 "receipt-delete",
                 "could not remove \(receiptURL.path): \(error.localizedDescription)"
             )
@@ -163,13 +164,13 @@ package struct ReceiptStore {
             if errno == ENOENT {
                 return false
             }
-            throw CLIError.io(
+            throw HostOperationError.io(
                 "state-directory",
                 "could not inspect \(directoryURL.path): \(String(cString: strerror(errno)))"
             )
         }
         guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
-            throw CLIError.configuration(
+            throw HostOperationError.configuration(
                 "state-directory",
                 "state path is not a real directory: \(directoryURL.path)"
             )
@@ -181,7 +182,7 @@ package struct ReceiptStore {
         if createIfNeeded {
             try createDirectoryIfNeeded()
         } else if try !stateDirectoryExists() {
-            throw CLIError.temporary(
+            throw HostOperationError.temporary(
                 "operation-lock",
                 "state changed while a read-only snapshot was being prepared; retry"
             )
@@ -199,12 +200,12 @@ package struct ReceiptStore {
         )
         guard descriptor >= 0 else {
             if !createIfNeeded, errno == ENOENT {
-                throw CLIError.temporary(
+                throw HostOperationError.temporary(
                     "operation-lock",
                     "state directory exists without its operation lock; retry"
                 )
             }
-            throw CLIError.cannotCreate(
+            throw HostOperationError.cannotCreate(
                 "operation-lock",
                 "could not open \(lockURL.path): \(String(cString: strerror(errno)))"
             )
@@ -213,13 +214,13 @@ package struct ReceiptStore {
         do {
             var metadata = stat()
             guard Darwin.fstat(descriptor, &metadata) == 0 else {
-                throw CLIError.io(
+                throw HostOperationError.io(
                     "operation-lock",
                     "could not inspect \(lockURL.path): \(String(cString: strerror(errno)))"
                 )
             }
             guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
-                throw CLIError.configuration(
+                throw HostOperationError.configuration(
                     "operation-lock",
                     "operation lock is not a regular file: \(lockURL.path)"
                 )
@@ -227,12 +228,12 @@ package struct ReceiptStore {
 
             guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
                 if errno == EWOULDBLOCK || errno == EAGAIN {
-                    throw CLIError.temporary(
+                    throw HostOperationError.temporary(
                         "operation-lock",
                         "another \(ToolConstants.name) operation is in progress"
                     )
                 }
-                throw CLIError.io(
+                throw HostOperationError.io(
                     "operation-lock",
                     "could not lock \(lockURL.path): \(String(cString: strerror(errno)))"
                 )
@@ -260,13 +261,13 @@ package struct ReceiptStore {
             }
             var metadata = stat()
             guard Darwin.lstat(directoryURL.path, &metadata) == 0 else {
-                throw CLIError.cannotCreate(
+                throw HostOperationError.cannotCreate(
                     "state-directory",
                     "could not inspect \(directoryURL.path): \(String(cString: strerror(errno)))"
                 )
             }
             guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
-                throw CLIError.configuration(
+                throw HostOperationError.configuration(
                     "state-directory",
                     "state path is not a real directory: \(directoryURL.path)"
                 )
@@ -275,10 +276,10 @@ package struct ReceiptStore {
                 [.posixPermissions: 0o700],
                 ofItemAtPath: directoryURL.path
             )
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             throw error
         } catch {
-            throw CLIError.cannotCreate(
+            throw HostOperationError.cannotCreate(
                 "state-directory",
                 "could not prepare \(directoryURL.path): \(error.localizedDescription)"
             )
