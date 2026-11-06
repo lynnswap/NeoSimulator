@@ -46,7 +46,7 @@
       "kind": "remote",
       "repository": "https://github.com/lynnswap/ObservationBridge.git",
       "version": {
-        "version": "0.15.7",
+        "version": "0.15.8",
       },
     },
   ],
