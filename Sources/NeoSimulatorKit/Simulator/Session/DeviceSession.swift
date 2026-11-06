@@ -1659,8 +1659,6 @@ package final class DeviceSession {
     @ObservationIgnored private var externalScreenWait: Task<Void, Never>?
     /// The latest choice made while the session waits, which it applies when the wait ends.
     @ObservationIgnored private var choiceDuringWait: (mode: ExternalDisplayMode, failure: @MainActor (Error) -> Void)?
-    /// What was chosen during this session, which unlike the saved choice tells Disabled from no choice at all.
-    @ObservationIgnored private var externalDisplayChoice: ExternalDisplayMode?
     @ObservationIgnored private let externalScreenTimeout: Duration
     /// Runs on the main actor after `externalScreen` changes.
     @ObservationIgnored package var onExternalScreenChange: (() -> Void)?
@@ -1689,7 +1687,7 @@ package final class DeviceSession {
     }
 
     /// Waits for the adapter's asynchronous enumeration, then applies the latest pending or saved choice.
-    /// A saved Disabled choice leaves an externally enabled display alone on connection.
+    /// A device with no saved choice leaves an externally enabled display alone.
     /// Late reports still connect; failures go to `failure`.
     package func connectExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, !isDisconnected, externalScreenConnection == nil,
@@ -1752,20 +1750,25 @@ package final class DeviceSession {
         if let choice = choiceDuringWait {
             choiceDuringWait = nil
             applyExternalDisplay(choice.mode, failure: choice.failure)
-        } else if let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier)),
-                  mode != .disabled, mode != .carPlay || capabilities.supportsCarPlay {
+        } else if let mode = savedExternalDisplayMode {
+            // A display that is missing or already off has nothing to turn off.
+            if mode == .disabled, externalScreenConnection == nil || externalDisplayMode == .disabled { return }
             applyExternalDisplay(mode, failure: failure)
         }
     }
 
-    /// Brings the display to what is wanted of it now, through the same queue as a choice. A saved Disabled also means
-    /// that nobody chose, and an external tool's display is left alone then, so only this session's choice turns it off.
+    /// Brings the display to what is wanted of it now, through the same queue as a choice.
     private func reapplyExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
         guard externalScreenConnection != nil, externalScreenWait == nil,
-              let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier)),
-              mode != externalDisplayMode, mode != .carPlay || capabilities.supportsCarPlay,
-              mode != .disabled || externalDisplayChoice == .disabled else { return }
+              let mode = savedExternalDisplayMode, mode != externalDisplayMode else { return }
         applyExternalDisplay(mode, failure: failure)
+    }
+
+    /// The device's saved choice, if it has one that this device can show.
+    private var savedExternalDisplayMode: ExternalDisplayMode? {
+        guard let tag = preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier),
+              let mode = ExternalDisplayMode(rawValue: tag), mode != .carPlay || capabilities.supportsCarPlay else { return nil }
+        return mode
     }
 
     /// Saves the choice before applying it, preserving it across restarts and failures.
@@ -1773,7 +1776,6 @@ package final class DeviceSession {
     package func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, mode != .carPlay || capabilities.supportsCarPlay else { return }
         preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.identity.preferenceIdentifier)
-        externalDisplayChoice = mode
         guard canPerformCommands else { return }
         if externalScreenConnection == nil, externalScreenRegistration == nil {
             choiceDuringWait = (mode, failure)
