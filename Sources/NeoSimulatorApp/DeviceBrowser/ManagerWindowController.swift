@@ -1300,23 +1300,18 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return menu
     }
 
+    /// The sidebar's context menu acts on the row it was opened for, or on the whole selection if that row is part of it or
+    /// it was opened for no row. Opening it changes neither the selection nor what the window shows.
     func updateDeviceMenu(for clickedRow: Int) {
-        if clickedRow >= 0 {
-            guard let row = table.item(atRow: clickedRow) as? DeviceRow else {
-                deviceMenu.removeAllItems()
-                return
-            }
-            if !selectedIdentifiers.contains(row.id) {
-                requestPresentation(.main)
-                selectedIdentifiers = [row.id]
-                updatingSelection = true
-                restoreVisibleSelection()
-                updatingSelection = false
-                updateSelection()
-                selectedDeviceChanged(selectionIdentifier)
-            }
+        guard clickedRow >= 0, !table.selectedRowIndexes.contains(clickedRow) else {
+            populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)
+            return
         }
-        populateDeviceMenu(deviceMenu, devices: visibleSelectedDevices)
+        guard let row = table.item(atRow: clickedRow) as? DeviceRow, let device = device(for: row) else {
+            deviceMenu.removeAllItems()
+            return
+        }
+        populateDeviceMenu(deviceMenu, devices: [device])
     }
 
     private func populateDeviceMenu(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
