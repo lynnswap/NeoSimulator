@@ -8185,7 +8185,7 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow != nil)
     }
 
-    @Test func aChangeOfADeviceThatShutDownDoesNotHoldItsNextSession() throws {
+    @Test func aChangeOfADeviceThatShutDownDoesNotHoldItsNextSession() async throws {
         let preferences = MemoryPreferences()
         let changes = ExternalDisplayChanges()
         let screen = TestExternalScreen()
@@ -8196,7 +8196,7 @@ struct InputFocusTests {
         shutDown.perform(.externalDisplay1920x1080)
         display.isBooted = false
         shutDown.invalidate()
-        #expect(!changes.isBusy)
+        try await wait { !changes.isBusy }
         preferences.setExternalDisplayTag(ExternalDisplayMode.size640x480.rawValue, forDevice: "test-device")
         let (booted, _) = try makeExternalDisplayController(screen, preferences: preferences,
                                                             externalDisplayChanges: changes)
@@ -8278,6 +8278,10 @@ struct InputFocusTests {
         #expect(worker.calls == ["another call", "last call"])
         #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay"])
         #expect(screen.carPlaySessions == 0)
+        changes.apply(.carPlay, through: screen, savesCarPlayConfiguration: true) { Issue.record("\($0)") }
+        try await wait { !changes.isBusy }
+        #expect(screen.carPlaySessions == 1)
+        #expect(screen.requests.suffix(2) == ["start carplay", "connect service"])
     }
 
     @Test func aCarPlayServiceRequestThatExpiresBehindAnotherCallIsWithdrawn() async throws {
@@ -8335,7 +8339,6 @@ struct InputFocusTests {
         let changes = ExternalDisplayChanges(carPlayReconnectionDelay: .zero)
         changes.apply(.size1920x1080, through: ended, savesCarPlayConfiguration: false) { Issue.record("\($0)") }
         changes.abandon(changesThrough: ended)
-        #expect(!changes.isBusy)
         changes.apply(.size640x480, through: next, savesCarPlayConfiguration: false) { Issue.record("\($0)") }
 
         try await finishCall(holding, on: worker)
