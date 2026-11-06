@@ -95,8 +95,9 @@ properties change.
 identifiers in user defaults. Selection is restored as devices arrive in the
 inventory, including simulators in custom device sets.
 
-`BackgroundServicesModel` and `DeviceSettingsModel` own reads and accepted edits.
-Their displayed snapshots are recomputed when those inputs change. Inspector
+`DeviceModel` owns each device's reads and accepted edits, and `DeviceRegistry` owns
+those models for as long as the inventory lists the devices. `ManagerSelection` only
+says which of them the manager shows. Inspector
 models own presentation state and send device commands through
 `SimulatorManagerModel`, which owns the operation queue. `ServiceProfileStore`
 owns observable profile instances and per-device overrides. Settings edit the

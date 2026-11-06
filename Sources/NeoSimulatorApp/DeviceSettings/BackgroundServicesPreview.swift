@@ -74,12 +74,12 @@ final class BackgroundServicesPreviewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        manager.backgroundServices.setVisible(true)
+        manager.selection.setServicesVisible(true)
     }
 
     override func viewDidDisappear() {
         super.viewDidDisappear()
-        manager.backgroundServices.setVisible(false)
+        manager.selection.setServicesVisible(false)
     }
 
     private func loadPreview() async {
@@ -97,9 +97,9 @@ final class BackgroundServicesPreviewController: NSViewController {
                                  for: source.device.id, productFamily: "iPhone")
             }
             await manager.refresh()
-            manager.backgroundServices.inspect(source.device, selectionCount: 1)
-            manager.backgroundServices.setVisible(true)
-            await manager.backgroundServices.finishReading()
+            manager.inspect(source.device, selectionCount: 1)
+            manager.selection.setServicesVisible(true)
+            await manager.registry.finishReading()
         } catch {
             inspector.actionIssue = error.localizedDescription
         }
@@ -172,11 +172,10 @@ private actor BackgroundServicesPreviewSource: SimulatorManagerSource {
     func synchronizeXcodeConnections() -> Bool { false }
     func testingDeviceVisibilityDidChange() {}
     func quitRenderer(keepingDevicesRunning: Bool?) {}
-    func deviceSettings(for device: InventoryDevice) throws -> SimulatorDeviceSettings { throw CocoaError(.featureUnsupported) }
-    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for device: InventoryDevice) throws { throw CocoaError(.featureUnsupported) }
-    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for device: InventoryDevice,
-                          updating settings: SimulatorDeviceSettings) throws -> SimulatorDeviceSettings {
-        throw CocoaError(.featureUnsupported)
+    func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
+                      publish: @escaping @Sendable (DeviceSettingsGroupRead) async -> Void) async {
+        for group in groups { await publish(.unsupported(group)) }
     }
+    func write(_ change: DeviceSettingChange, to device: InventoryDevice) throws { throw CocoaError(.featureUnsupported) }
 }
 #endif

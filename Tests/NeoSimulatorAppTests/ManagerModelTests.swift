@@ -321,7 +321,7 @@ struct ManagerModelTests {
                 preparednessState: nil, capabilities: [], lastConnectedAt: nil, visibilityClass: nil)),
         ])
         let model = SimulatorManagerModel(source: source)
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
                                                  menus: MenuController(application: nil), defaults: defaults)
@@ -520,7 +520,7 @@ struct ManagerModelTests {
                 "state": state.merging(["name": name]) { $1 }, "connection": ["state": connection]]]
         }]])
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: try CoreDeviceInventoryDecoder.decode(data).map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
                                                  menus: MenuController(application: nil), defaults: defaults)
@@ -667,7 +667,7 @@ struct ManagerModelTests {
         }
         let source = ManagerModelSource(devices: try devices())
         let model = SimulatorManagerModel(source: source)
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
                                                  menus: MenuController(application: nil), defaults: defaults)
@@ -791,7 +791,7 @@ struct ManagerModelTests {
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.viewdevicescreen"}]}]}}"#.utf8))
         let source = ManagerModelSource(devices: devices.map(InventoryDevice.remote))
         let model = SimulatorManagerModel(source: source)
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         var requested: [DeviceInventoryID] = []
         model.onDeviceOpenRequested = { requested.append($0) }
@@ -800,7 +800,6 @@ struct ManagerModelTests {
         controller.window?.setFrameAutosaveName("")
         defer { controller.window?.close() }
         controller.selectDevice(.coreDevice("A"))
-        await source.returnOnNextRead(SimulatorDeviceSettings())
         let content = try #require(controller.window?.contentView)
         let viewScreen = try #require(inspectorViews(content).compactMap { $0 as? NSButton }
             .first { $0.title == "View Screen" })
@@ -833,7 +832,7 @@ struct ManagerModelTests {
         let a = try #require(devices.first), b = try #require(devices.last)
         let source = ManagerModelSource(devices: devices.map(InventoryDevice.remote))
         let model = SimulatorManagerModel(source: source)
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -893,7 +892,7 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == rendered && renderedController.presentationViewController.parent === pane.liveScreenContainer
         }
         #expect(main.selectedIdentifiers == [selected])
-        #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect((mode == "new-selection" ? aController : bController).presentationViewController.parent == nil)
         #expect(aSession.state == .connected && app.screens.screen(for: aID)?.commandTarget === aController)
         try await aSession.stop()
@@ -906,7 +905,7 @@ struct ManagerModelTests {
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -956,7 +955,7 @@ struct ManagerModelTests {
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -1003,7 +1002,7 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == aID && aController.presentationViewController.parent === pane.liveScreenContainer
         }
         #expect(main.selectedIdentifiers == [aID])
-        #expect(model.settings.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
+        #expect(model.selection.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
         #expect(!bController.isEmbedded && aSession.state == .connected)
         try await aSession.stop()
         try await bSession.stop()
@@ -1016,7 +1015,7 @@ struct ManagerModelTests {
         let a = try #require(devices.first), c = try #require(devices.last)
         let aID = DeviceInventoryID.coreDevice(a.identifier), cID = DeviceInventoryID.coreDevice(c.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -1064,7 +1063,7 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == nil && pane.liveCommandTarget == nil
         }
         #expect(controller.presentationViewController.parent == nil)
-        #expect(main.selectedIdentifiers.count == 3 && model.settings.device == nil)
+        #expect(main.selectedIdentifiers.count == 3 && model.selection.device == nil)
         try await session.stop()
         try await backgroundSession.stop()
     }
@@ -1074,7 +1073,7 @@ struct ManagerModelTests {
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -1124,7 +1123,7 @@ struct ManagerModelTests {
         try await main.presentConnectedScreen(bID, purpose: .automatic)
         #expect(main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == bID)
         #expect(bController.presentationViewController.parent === pane.liveScreenContainer)
-        #expect(model.settings.device?.id == bID && main.deviceInspector.inspection.device?.id == bID)
+        #expect(model.selection.device?.id == bID && main.deviceInspector.inspection.device?.id == bID)
         try await aSession.stop()
         try await bSession.stop()
     }
@@ -1139,7 +1138,7 @@ struct ManagerModelTests {
         let a = try #require(devices.first), b = try #require(devices.last)
         let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -1158,7 +1157,7 @@ struct ManagerModelTests {
         try await main.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
         let selected = initial ? aID : bID
         #expect(main.selectedIdentifiers == [selected])
-        #expect(model.settings.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
         #expect(pane.liveDeviceIdentifier == (initial ? aID : nil))
         #expect((controller.presentationViewController.parent === pane.liveScreenContainer) == initial)
         #expect(session.state == .connected && app.screens.screen(for: aID)?.commandTarget === controller)
@@ -1191,7 +1190,7 @@ struct ManagerModelTests {
         let a = try #require(devices.first)
         let aID = DeviceInventoryID.coreDevice(a.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -1237,7 +1236,7 @@ struct ManagerModelTests {
         let source = ManagerModelSource(devices: devices.map(InventoryDevice.remote))
         var events = source.events.makeAsyncIterator()
         let model = SimulatorManagerModel(source: source)
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -1255,7 +1254,7 @@ struct ManagerModelTests {
         app.screens.attach(bController)
         main.selectDevice(aID)
         try await main.presentConnectedScreen(aID, purpose: .requested)
-        model.setDeviceSetting(.appearance("dark"), for: bID)
+        model.setDeviceSetting(.appearance(.dark), for: bID)
         #expect(await events.next() == .write(bID))
         #expect(!model.isBusy)
         model.openScreen(for: .remote(a))
@@ -1273,7 +1272,6 @@ struct ManagerModelTests {
                 pane.liveDeviceIdentifier == nil && !aController.isEmbedded
             }
         }
-        await source.returnOnNextRead(SimulatorDeviceSettings(appearance: "dark"))
         await source.completeWrite()
         try await wait(timeout: .seconds(5)) {
             !model.isBusy && bController.isEmbedded == selectsAnotherDevice && !aController.isEmbedded
@@ -1292,7 +1290,7 @@ struct ManagerModelTests {
         let a = try #require(devices.first)
         let aID = DeviceInventoryID.coreDevice(a.identifier)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
         app.model = model
@@ -1367,8 +1365,7 @@ struct ManagerModelTests {
         let devices = [simulator(state: "Shutdown"), simulator(deviceSet: "/tmp/OtherDeviceSet", state: "Shutdown")]
         let source = ManagerModelSource(devices: devices)
         let model = SimulatorManagerModel(source: source)
-        model.settings.setReadingSuspended(true)
-        model.backgroundServices.setReadingSuspended(true)
+        model.registry.stopReading()
         await model.refresh()
         func browser() -> ManagerWindowController {
             let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
@@ -1443,7 +1440,7 @@ struct ManagerModelTests {
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
-        model.settings.setReadingSuspended(true)
+        model.registry.stopReading()
         let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
                                                  menus: MenuController(application: nil), defaults: defaults)
         let window = try #require(controller.window)
@@ -1484,7 +1481,7 @@ struct ManagerModelTests {
             #expect(inspector.topAlignedAccessoryViewControllers.first === accessory)
             #expect(window.frame == frame, "Tab \(index), collapsed \(collapsed): frame \(window.frame), original \(frame)")
             #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && (index == 1 || index == 2)))
-            #expect(model.backgroundServices.isVisible == (!collapsed && index == 3))
+            #expect(model.selection.showsServices == (!collapsed && index == 3))
             if let page { #expect(controller.deviceInspector.inspection.page == page) }
         }
 
@@ -1527,8 +1524,8 @@ struct ManagerModelTests {
         #expect(controller.deviceInspector.inspection.content == .applications)
         try click(1, collapsed: false, page: .reports)
         #expect(accessory.isHidden)
-        model.backgroundServices.setReadingSuspended(true)
-        model.backgroundServices.inspect(device, selectionCount: 1)
+        model.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        model.inspect(device, selectionCount: 1)
         try click(3, collapsed: false)
         window.layoutIfNeeded()
         #expect(!servicesAccessory.isHidden && !searchAccessory.isHidden)
@@ -2246,17 +2243,18 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
-    @Test func acceptedEditsMergeSnapshotsAndDrainBeforeQuit() async throws {
+    @Test func acceptedEditsShowAtOnceRunInOrderAndDrainBeforeQuit() async throws {
         let device = simulator()
         let queued = simulator(deviceSet: "/queued-device-set")
         let source = ManagerModelSource(devices: [device, queued])
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         await manager.refresh()
-        manager.settings.inspect(device, selectionCount: 1)
+        manager.inspect(device, selectionCount: 1)
+        let values = try #require(manager.selection.device?.settings)
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "light", contentSize: "medium"))
-        await manager.settings.finishReading()
+        await source.completeRead(settings(appearance: .light, contentSize: .medium))
+        await manager.registry.finishReading()
 
         manager.openDevice(device.id)
         #expect(await events.next() == .open(device.id))
@@ -2265,11 +2263,11 @@ struct ManagerModelTests {
         manager.openDevice(queued.id)
         #expect(await events.next() == .open(queued.id))
         #expect(manager.openingDeviceIDs == [device.id, queued.id])
-        #expect(manager.isBusy && !manager.holdsSettingsEdits)
-        manager.setDeviceSetting(.appearance("dark"), for: device.id)
-        manager.setDeviceSetting(.contentSize("large"), for: device.id)
-        #expect(manager.settings.settings?.appearance == "dark")
-        #expect(manager.settings.settings?.contentSize == "large")
+        #expect(manager.isBusy && manager.canEditSettings(for: device.id))
+        manager.setDeviceSetting(.appearance(.dark), for: device.id)
+        manager.setDeviceSetting(.contentSize(.large), for: device.id)
+        #expect(values.appearance == .dark)
+        #expect(values.contentSize == .large)
         manager.cancelOpening(queued.id)
         // The running device's screen is still connecting when the first edit reaches the device.
         #expect(await events.next() == .write(device.id))
@@ -2279,11 +2277,11 @@ struct ManagerModelTests {
         await source.completeOpen(for: device.id)
         await source.completeOpen(for: queued.id)
         await source.completeWrite()
-        #expect(await events.next() == .write(device.id))
-        let inputs = await source.writeInputs
-        #expect(inputs.count == 2)
-        #expect(inputs[1]?.appearance == "dark")
-        #expect(inputs[1]?.contentSize == "medium")
+        // The first edit's read does not wait for the second, which changes another group.
+        let started = [await events.next(), await events.next()]
+        #expect(started.contains(.write(device.id)) && started.contains(.read(device.id)))
+        #expect(await source.writtenChanges == [.appearance(.dark), .contentSize(.large)])
+        await source.completeRead(settings(appearance: .dark, contentSize: .large))
 
         let beganQuitting = AsyncStream<Void>.makeStream()
         var quitEvents = beganQuitting.stream.makeAsyncIterator()
@@ -2296,10 +2294,14 @@ struct ManagerModelTests {
         #expect(await events.next() == .quit)
         try await quitting.value
         #expect(manager.openingDeviceIDs.isEmpty)
-        #expect(manager.settings.settings?.appearance == "dark")
-        #expect(manager.settings.settings?.contentSize == "large")
-        #expect(await source.readCount == 1)
+        #expect(values.appearance == .dark)
+        #expect(values.contentSize == .large)
+        #expect(await source.readCount == 2)
         manager.resumeAfterCancelledQuit()
+        // What the stopped reads did not confirm is read again.
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .dark, contentSize: .large))
+        await manager.registry.finishReading()
         manager.openDevice(device.id)
         #expect(await events.next() == .open(device.id))
         await source.completeOpen()
@@ -2322,7 +2324,7 @@ struct ManagerModelTests {
         #expect(await events.next() == .close(device.id))
         #expect(await events.next() == .open(device.id))
         #expect(await source.lastOpenBootIfNeeded == true)
-        #expect(manager.holdsSettingsEdits)
+        #expect(!manager.canEditSettings(for: device.id))
         await source.completeOpen()
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
@@ -2460,7 +2462,7 @@ struct ManagerModelTests {
         let label = "com.apple.searchd"
         let device = simulator()
         let changeStarted = Mutex(false)
-        let model = BackgroundServicesModel(source: ServiceChangeSource(backend: SimulatorBackgroundServiceBackend(launchctl: { arguments in
+        let registry = DeviceRegistry(source: ServiceChangeSource(device: device, backend: SimulatorBackgroundServiceBackend(launchctl: { arguments in
             guard ["print-disabled", "list"].contains(arguments[0]) else {
                 changeStarted.withLock { $0 = true }
                 return try await SystemCommandRunner().run(command)
@@ -2469,17 +2471,19 @@ struct ManagerModelTests {
             return try await SystemCommandRunner().run(SystemCommand(executable: URL(fileURLWithPath: "/bin/echo"),
                 arguments: [disabled ? "\"\(label)\" => disabled" : ""], policy: .backgroundServiceCommand))
         }, jobPlists: { _ in [:] }, pause: { _ in }, productFamily: "iPhone")))
-        model.inspect(device, selectionCount: 1)
-        model.setVisible(true)
-        let change = model.accept([.service(label)], enabled: false, for: device)
-        let applying = Task { try await model.apply(change) }
+        try await registry.refresh()
+        let model = try #require(registry.device(for: device.id))
+        let interest = model.keepCurrent(.backgroundServices)
+        defer { interest.release() }
+        let services = model.backgroundServices
+        let applying = Task { try await services.set([.service(label)], enabled: false) }
         let identifier = try #require(try await child.identifier.value)
         applying.cancel()
         let failure = try await #require(throws: SimulatorHostFailure.self) { try await applying.value }
         #expect(kill(identifier, 0) == -1 && errno == ESRCH)
         #expect(failure.failureReason?.contains("disable \(label): sh was stopped before it finished, so what it changed is unknown.") == true)
-        #expect(model.changingDeviceIDs.isEmpty)
-        try await wait { model.services?.disabledLabels == [label] }
+        #expect(!services.isChanging)
+        try await wait { services.services?.disabledLabels == [label] }
     }
 
     /// A read that reports its process identifier to the returned task and then never exits by itself.
@@ -2494,115 +2498,125 @@ struct ManagerModelTests {
             arguments: ["-c", "printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path], policy: .cancellable), identifier)
     }
 
+    /// A registry with `devices`, and the first device's model, whose settings stay current while the test runs.
+    private func settingsFixture(_ source: ManagerModelSource) async throws -> (registry: DeviceRegistry, model: DeviceModel, interest: DeviceReadInterest) {
+        let registry = DeviceRegistry(source: source)
+        try await registry.refresh()
+        let model = try #require(registry.devices.first)
+        return (registry, model, model.keepCurrent(.settings))
+    }
+
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
         var events = source.events.makeAsyncIterator()
-        let model = DeviceSettingsModel(source: source)
-        model.inspect(device, selectionCount: 1)
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "light", contentSize: "medium"))
-        await model.finishReading()
+        await source.completeRead(settings(appearance: .light, contentSize: .medium))
+        await registry.finishReading()
 
-        model.requestRefresh()
+        model.revalidate(.settings)
         #expect(await events.next() == .read(device.id))
-        let beganApplying = AsyncStream<Void>.makeStream()
-        var applyEvents = beganApplying.stream.makeAsyncIterator()
-        let edit = model.accept(.contentSize("large"), for: device)
-        let applying = Task {
-            beganApplying.continuation.yield(())
-            try await model.apply(edit)
-        }
-        await applyEvents.next()
-        await source.completeRead(settings(appearance: "dark", contentSize: "medium"))
+        let values = model.settings
+        let applying = Task { try await values.set(.contentSize(.large)) }
         #expect(await events.next() == .write(device.id))
-        await source.returnOnNextRead(settings(appearance: "dark", contentSize: "large"))
+        // This read began before the edit, so it says nothing of the edited group, though it does of the rest.
+        await source.completeRead(settings(appearance: .dark, contentSize: .medium))
+        #expect(values.appearance == .dark && values.contentSize == .large)
+        await source.returnOnNextRead(settings(appearance: .dark, contentSize: .large))
         await source.completeWrite()
         try await applying.value
-        await model.finishReading()
+        #expect(await events.next() == .read(device.id))
+        await registry.finishReading()
 
-        #expect(model.settings?.appearance == "dark")
-        #expect(model.settings?.contentSize == "large")
+        #expect(values.appearance == .dark)
+        #expect(values.contentSize == .large)
     }
 
     @Test func sameDeviceMetadataKeepsLoadedValuesAndAnInFlightRead() async throws {
         let device = simulator()
-        let renamed = simulator(name: "Renamed Phone")
+        let renamed = simulator(name: "Renamed Phone", lastUsedAt: Date(timeIntervalSinceReferenceDate: 1))
         let source = ManagerModelSource(devices: [device])
         var events = source.events.makeAsyncIterator()
-        let model = DeviceSettingsModel(source: source)
-        model.inspect(device, selectionCount: 1)
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "light"))
-        await model.finishReading()
+        await source.completeRead(settings(appearance: .light))
+        await registry.finishReading()
 
-        model.requestRefresh()
+        model.revalidate(.settings)
         #expect(await events.next() == .read(device.id))
-        model.inspect(renamed, selectionCount: 1)
-        #expect(model.device == renamed && model.settings?.appearance == "light")
-        await source.completeRead(settings(appearance: "dark"))
-        #expect(await events.next() == .read(device.id))
-        #expect(model.settings?.appearance == "dark")
-        await source.completeRead(settings(appearance: "light", contentSize: "large"))
-        await model.finishReading()
-        #expect(model.settings?.contentSize == "large")
+        await source.setDevices([renamed])
+        try await registry.refresh()
+        #expect(registry.device(for: device.id) === model)
+        #expect(model.name == "Renamed Phone" && model.settings.appearance == .light)
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+        // The rename asked nothing of the device, and the read that was running still answers for it.
+        #expect(model.settings.appearance == .dark)
+        #expect(await source.readCount == 2)
 
-        model.inspect(simulator(name: "Renamed Phone", state: "Shutdown"), selectionCount: 1)
-        #expect(model.device?.canInspectSettings == false && model.settings?.contentSize == "large")
-        model.inspect(renamed, selectionCount: 1)
+        await source.setDevices([simulator(name: "Renamed Phone", state: "Shutdown")])
+        try await registry.refresh()
+        #expect(!model.canInspectSettings && model.settings.appearance == .dark)
+        await source.setDevices([renamed])
+        try await registry.refresh()
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "dark", contentSize: "large"))
-        await model.finishReading()
-        #expect(model.device?.canInspectSettings == true && model.settings?.appearance == "dark")
+        await source.completeRead(settings(appearance: .light, contentSize: .large))
+        await registry.finishReading()
+        #expect(model.canInspectSettings && model.settings.contentSize == .large)
     }
 
     @Test func sameDeviceMetadataKeepsAcceptedEditsAndTheirConfirmation() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
         var events = source.events.makeAsyncIterator()
-        let model = DeviceSettingsModel(source: source)
-        model.inspect(device, selectionCount: 1)
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let values = model.settings
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "light", contentSize: "medium"))
-        await model.finishReading()
+        await source.completeRead(settings(appearance: .light, contentSize: .medium))
+        await registry.finishReading()
 
-        model.setReadingSuspended(true)
-        let edit = model.accept(.contentSize("large"), for: device)
-        model.inspect(simulator(name: "Renamed Phone"), selectionCount: 1)
-        #expect(model.settings?.appearance == "light" && model.settings?.contentSize == "large")
-        let applying = Task { try await model.apply(edit) }
+        registry.stopReading()
+        let applying = Task { try await values.set(.contentSize(.large)) }
         #expect(await events.next() == .write(device.id))
-        #expect(await source.writeInputs.last??.appearance == "light")
-        let latest = simulator(name: "Latest Phone")
-        model.inspect(latest, selectionCount: 1)
+        await source.setDevices([simulator(name: "Renamed Phone")])
+        try await registry.refresh()
+        #expect(values.appearance == .light && values.contentSize == .large)
+        await source.setDevices([simulator(name: "Latest Phone")])
+        try await registry.refresh()
         await source.completeWrite()
         try await applying.value
-        #expect(model.device == latest && model.settings?.contentSize == "large")
+        #expect(model.name == "Latest Phone" && values.contentSize == .large)
 
-        model.setReadingSuspended(false)
+        registry.resumeReading()
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(settings(appearance: "dark", contentSize: "large"))
-        await model.finishReading()
-        #expect(model.settings?.appearance == "dark" && model.settings?.contentSize == "large")
+        await source.completeRead(settings(appearance: .dark, contentSize: .large))
+        await registry.finishReading()
+        #expect(values.appearance == .dark && values.contentSize == .large)
     }
 
-    @Test func switchingDeviceSetsDiscardsTheCancelledResult() async throws {
+    @Test func resultsStayWithTheirDeviceAcrossDeviceSets() async throws {
         let first = simulator(deviceSet: "/first")
         let second = simulator(deviceSet: "/second")
         let source = ManagerModelSource(devices: [first, second])
         var events = source.events.makeAsyncIterator()
-        let model = DeviceSettingsModel(source: source)
-        model.inspect(first, selectionCount: 1)
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.inspect(first, selectionCount: 1)
+        let firstValues = try #require(manager.selection.device?.settings)
         #expect(await events.next() == .read(first.id))
-        model.inspect(second, selectionCount: 1)
-        // The source deliberately completes even after cancellation, as an in-flight IPC can.
-        await source.completeRead(settings(appearance: "dark"))
+        manager.inspect(second, selectionCount: 1)
+        let secondValues = try #require(manager.selection.device?.settings)
         #expect(await events.next() == .read(second.id))
-        #expect(model.settings == nil)
-        await source.completeRead(settings(appearance: "light"))
-        await model.finishReading()
-        #expect(model.device?.id == second.id)
-        #expect(model.settings?.appearance == "light")
+        await source.completeRead(settings(appearance: .dark), for: first.id)
+        #expect(secondValues.appearance == nil && firstValues.appearance == .dark)
+        await source.completeRead(settings(appearance: .light), for: second.id)
+        await manager.registry.finishReading()
+        #expect(manager.selection.device?.id == second.id)
+        #expect(secondValues.appearance == .light && firstValues.appearance == .dark)
     }
 
     @Test(arguments: [false, true])
@@ -2615,15 +2629,15 @@ struct ManagerModelTests {
         await manager.refresh()
         let panel = DeviceSettingsPanelModel(manager: manager, screens: DeviceScreens(model: manager),
             preferences: SimulatorPreferences(), customLocation: {})
-        manager.settings.inspect(first, selectionCount: 1)
+        manager.inspect(first, selectionCount: 1)
         #expect(await events.next() == .read(first.id))
-        await source.completeRead(SimulatorDeviceSettings(appearance: "light", boldText: false, liquidGlassOpacity: 0.5))
-        await manager.settings.finishReading()
+        await source.completeRead(SimulatorDeviceSettings(appearance: .light, boldText: false, liquidGlassOpacity: 0.5))
+        await manager.registry.finishReading()
         let toggle = try #require(panel.binding(for: \.boldText))
         let picker = try #require(panel.binding(for: \.appearance))
         let slider = try #require(panel.binding(for: \.liquidGlassOpacity))
 
-        manager.settings.inspect(deselect ? nil : second, selectionCount: deselect ? 0 : 1)
+        manager.inspect(deselect ? nil : second, selectionCount: deselect ? 0 : 1)
         #expect(panel.boldText == nil && panel.appearance == nil && panel.liquidGlassOpacity == nil)
         #expect(toggle.wrappedValue == false)
         #expect(picker.wrappedValue == "light")
@@ -2633,8 +2647,8 @@ struct ManagerModelTests {
         slider.wrappedValue = 0.75
         if !deselect {
             #expect(await events.next() == .read(second.id))
-            await source.completeRead(SimulatorDeviceSettings(appearance: "dark", boldText: true, liquidGlassOpacity: 1))
-            await manager.settings.finishReading()
+            await source.completeRead(SimulatorDeviceSettings(appearance: .dark, boldText: true, liquidGlassOpacity: 1))
+            await manager.registry.finishReading()
             #expect(toggle.wrappedValue == false && picker.wrappedValue == "light" && slider.wrappedValue == 0.5)
             toggle.wrappedValue = false
             picker.wrappedValue = "light"
@@ -2642,7 +2656,7 @@ struct ManagerModelTests {
             #expect(panel.boldText == true && panel.appearance == "dark" && panel.liquidGlassOpacity == 1)
         }
         try await manager.prepareForQuit()
-        #expect(await source.writeInputs.isEmpty)
+        #expect(await source.writtenChanges.isEmpty)
     }
 
     @Test func settingsBindingsTrackEditsAndSurviveUnavailableSettings() async throws {
@@ -2653,36 +2667,51 @@ struct ManagerModelTests {
         await manager.refresh()
         let panel = DeviceSettingsPanelModel(manager: manager, screens: DeviceScreens(model: manager),
             preferences: SimulatorPreferences(), customLocation: {})
-        manager.settings.inspect(device, selectionCount: 1)
+        manager.inspect(device, selectionCount: 1)
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(SimulatorDeviceSettings(appearance: "light", contentSize: "medium", boldText: false))
-        await manager.settings.finishReading()
+        await source.completeRead(SimulatorDeviceSettings(appearance: .light, contentSize: .medium, boldText: false))
+        await manager.registry.finishReading()
         let toggle = try #require(panel.binding(for: \.boldText))
         let picker = try #require(panel.binding(for: \.appearance))
         let slider = try #require(panel.binding(for: \.textSize))
-        let medium = Double(try #require(SimulatorDeviceSettings.contentSizes.firstIndex(of: "medium")))
-        let large = Double(try #require(SimulatorDeviceSettings.contentSizes.firstIndex(of: "large")))
+        let medium = Double(try #require(DeviceContentSize.allCases.firstIndex(of: .medium)))
+        let large = Double(try #require(DeviceContentSize.allCases.firstIndex(of: .large)))
 
         toggle.wrappedValue = true
         picker.wrappedValue = "dark"
         slider.wrappedValue = large
         #expect(toggle.wrappedValue == true && picker.wrappedValue == "dark" && slider.wrappedValue == large)
-        for _ in 0..<3 {
-            #expect(await events.next() == .write(device.id))
-            await source.completeWrite()
+        // Each edit changes its own group, so each is read back at its own outcome, however far the next has got.
+        var writes = 0
+        var reads = 0
+        while writes < 3 || reads < 3 {
+            let event = await events.next()
+            if event == .write(device.id) {
+                writes += 1
+                await source.completeWrite()
+            } else {
+                #expect(event == .read(device.id))
+                reads += 1
+            }
+        }
+        for _ in 0..<reads {
+            await source.completeRead(SimulatorDeviceSettings(appearance: .dark, contentSize: .large, boldText: true))
         }
         try await awaitServiceOperations(manager)
+        await manager.registry.finishReading()
         #expect(panel.boldText == true && panel.appearance == "dark" && panel.textSize == large)
 
-        manager.settings.inspect(simulator(state: "Shutdown"), selectionCount: 1)
+        await source.setDevices([simulator(state: "Shutdown")])
+        await manager.refresh()
         #expect(panel.content == .unavailable)
         toggle.wrappedValue = false
         picker.wrappedValue = "light"
         slider.wrappedValue = medium
-        manager.settings.inspect(device, selectionCount: 1)
+        await source.setDevices([device])
+        await manager.refresh()
         #expect(await events.next() == .read(device.id))
         await source.completeRead(SimulatorDeviceSettings())
-        await manager.settings.finishReading()
+        await manager.registry.finishReading()
         #expect(panel.content == .unavailable)
         #expect(panel.binding(for: \.boldText) == nil)
         #expect(panel.binding(for: \.appearance) == nil)
@@ -2692,57 +2721,63 @@ struct ManagerModelTests {
         picker.wrappedValue = "dark"
         slider.wrappedValue = large
         try await manager.prepareForQuit()
-        #expect(await source.writeInputs.count == 3)
-        #expect(manager.settings.settings?.boldText == nil)
+        #expect(await source.writtenChanges.count == 3)
+        #expect(manager.selection.device?.settings.boldText == nil)
     }
 
-    @Test func clearingSelectionDiscardsTheCancelledResult() async throws {
+    @Test func aClearedSelectionLeavesAResultWithItsDevice() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
         var events = source.events.makeAsyncIterator()
-        let model = DeviceSettingsModel(source: source)
-        model.inspect(device, selectionCount: 1)
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.inspect(device, selectionCount: 1)
         #expect(await events.next() == .read(device.id))
-        model.inspect(nil, selectionCount: 0)
-        await source.completeRead(settings(appearance: "dark"))
-        await model.finishReading()
-        #expect(model.device == nil)
-        #expect(model.settings == nil)
-        #expect(model.issue == nil)
-        #expect(!model.isLoading)
+        manager.inspect(nil, selectionCount: 0)
+        await source.completeRead(settings(appearance: .dark))
+        await manager.registry.finishReading()
+        #expect(manager.selection.device == nil)
+        #expect(manager.registry.device(for: device.id)?.settings.appearance == .dark)
+        manager.inspect(device, selectionCount: 1)
+        await manager.registry.finishReading()
+        #expect(await source.readCount == 1)
     }
 
-    @Test func partialEditConfirmsActualValuesBeforeReportingTheFailure() async throws {
+    @Test func aFailedEditIsReadBackWithoutWaitingForAChangeToAnotherGroup() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
         var events = source.events.makeAsyncIterator()
-        let reported = AsyncStream<(SimulatorHostFailure?, Bool?, String?)>.makeStream()
+        let reported = AsyncStream<(ManagerModelSource.Failure?, Bool?, DeviceContentSize?)>.makeStream()
         var errors = reported.stream.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         manager.onError = { error in
-            reported.continuation.yield((error as? SimulatorHostFailure,
-                manager.settings.settings?.boldText, manager.settings.settings?.contentSize))
+            let values = manager.selection.device?.settings
+            reported.continuation.yield((error as? ManagerModelSource.Failure, values?.boldText, values?.contentSize))
         }
         await manager.refresh()
-        manager.settings.inspect(device, selectionCount: 1)
+        manager.inspect(device, selectionCount: 1)
+        let values = try #require(manager.selection.device?.settings)
         #expect(await events.next() == .read(device.id))
-        await source.completeRead(SimulatorDeviceSettings(contentSize: "medium", boldText: false))
-        await manager.settings.finishReading()
+        await source.completeRead(SimulatorDeviceSettings(contentSize: .medium, boldText: false))
+        await manager.registry.finishReading()
 
         manager.setDeviceSetting(.boldText(true), for: device.id)
         #expect(await events.next() == .write(device.id))
-        manager.setDeviceSetting(.contentSize("large"), for: device.id)
-        await source.failWrite(afterApplying: true)
+        manager.setDeviceSetting(.contentSize(.large), for: device.id)
+        await source.failWrite()
         let failure = try #require(await errors.next())
-        #expect(failure.0?.technicalDetails == "Unavailable")
-        #expect(failure.1 == true && failure.2 == "large")
-        #expect(await events.next() == .write(device.id))
-        #expect(await source.writeInputs.last??.boldText == true)
-        await source.returnOnNextRead(SimulatorDeviceSettings(contentSize: "large", boldText: true))
+        // Only the failed edit stops showing, and what the device did is read rather than assumed.
+        #expect(failure.0 == .unavailable)
+        #expect(failure.1 == false && failure.2 == .large)
+        let started = [await events.next(), await events.next()]
+        #expect(started.contains(.write(device.id)) && started.contains(.read(device.id)))
+        await source.completeRead(SimulatorDeviceSettings(contentSize: .large, boldText: true))
+        #expect(values.boldText == true && values.contentSize == .large)
+        await source.returnOnNextRead(SimulatorDeviceSettings(contentSize: .large, boldText: true))
         await source.completeWrite()
         #expect(await events.next() == .read(device.id))
-        await manager.settings.finishReading()
-        #expect(manager.settings.settings?.boldText == true && manager.settings.settings?.contentSize == "large")
+        await manager.registry.finishReading()
+        #expect(values.boldText == true && values.contentSize == .large)
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
@@ -2755,66 +2790,627 @@ struct ManagerModelTests {
         let manager = SimulatorManagerModel(source: source)
         manager.onError = { failures.continuation.yield($0) }
         await manager.refresh()
-        manager.settings.inspect(device, selectionCount: 1)
+        manager.inspect(device, selectionCount: 1)
+        let values = try #require(manager.selection.device?.settings)
         #expect(await events.next() == .read(device.id))
         await source.completeRead(SimulatorDeviceSettings(showBorders: false, reduceTransparency: false))
-        await manager.settings.finishReading()
+        await manager.registry.finishReading()
 
         manager.setDeviceSetting(.showBorders(true), for: device.id)
-        #expect(manager.settings.settings?.showBorders == true)
+        #expect(values.showBorders == true)
         #expect(await events.next() == .write(device.id))
         manager.setDeviceSetting(.reduceTransparency(true), for: device.id)
         manager.setDeviceSetting(.showBorders(false), for: device.id)
-        #expect(manager.settings.settings?.showBorders == false)
-        #expect(manager.settings.settings?.reduceTransparency == true)
+        #expect(values.showBorders == false)
+        #expect(values.reduceTransparency == true)
         await source.failWrite()
         #expect(await events.next() == .write(device.id))
         #expect(await failureEvents.next() is ManagerModelSource.Failure)
-        #expect(manager.settings.settings?.showBorders == false)
-        #expect(manager.settings.settings?.reduceTransparency == true)
+        #expect(values.showBorders == false)
+        #expect(values.reduceTransparency == true)
         await source.completeWrite()
         #expect(await events.next() == .write(device.id))
-        #expect(manager.settings.settings?.showBorders == false)
-        #expect(manager.settings.settings?.reduceTransparency == true)
+        #expect(values.showBorders == false)
+        #expect(values.reduceTransparency == true)
         await source.returnOnNextRead(SimulatorDeviceSettings(showBorders: false, reduceTransparency: true))
         await source.completeWrite()
         #expect(await events.next() == .read(device.id))
-        await manager.settings.finishReading()
-        #expect(manager.settings.settings?.showBorders == false)
-        #expect(manager.settings.settings?.reduceTransparency == true)
+        await manager.registry.finishReading()
+        #expect(values.showBorders == false)
+        #expect(values.reduceTransparency == true)
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
     @Test(arguments: [false, true])
-    func pendingEditsStayWithTheirDeviceAcrossSelectionChanges(_ partialFailure: Bool) async throws {
+    func pendingEditsStayWithTheirDeviceAcrossSelectionChanges(_ fails: Bool) async throws {
         let first = simulator(deviceSet: "/first")
         let second = simulator(deviceSet: "/second")
         let source = ManagerModelSource(devices: [first, second])
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
         await manager.refresh()
-        manager.settings.inspect(first, selectionCount: 1)
+        manager.inspect(first, selectionCount: 1)
+        let firstValues = try #require(manager.selection.device?.settings)
         #expect(await events.next() == .read(first.id))
         await source.completeRead(SimulatorDeviceSettings(showBorders: false))
-        await manager.settings.finishReading()
+        await manager.registry.finishReading()
         manager.setDeviceSetting(.showBorders(true), for: first.id)
         #expect(await events.next() == .write(first.id))
 
-        manager.settings.inspect(second, selectionCount: 1)
-        #expect(manager.settings.settings == nil)
-        if partialFailure { await source.failWrite(afterApplying: true) }
-        else { await source.completeWrite() }
+        manager.inspect(second, selectionCount: 1)
+        let secondValues = try #require(manager.selection.device?.settings)
+        #expect(secondValues.showBorders == nil && firstValues.showBorders == true)
         #expect(await events.next() == .read(second.id))
-        await source.completeRead(SimulatorDeviceSettings(showBorders: false))
-        await manager.settings.finishReading()
-        #expect(manager.settings.settings?.showBorders == false)
-
-        manager.settings.inspect(first, selectionCount: 1)
+        if fails { await source.failWrite() }
+        else { await source.completeWrite() }
+        // A device nothing shows still confirms what it was asked to change.
         #expect(await events.next() == .read(first.id))
-        await source.completeRead(SimulatorDeviceSettings(showBorders: true))
-        await manager.settings.finishReading()
-        #expect(manager.settings.settings?.showBorders == true)
+        await source.completeRead(SimulatorDeviceSettings(showBorders: false), for: second.id)
+        await source.completeRead(SimulatorDeviceSettings(showBorders: true), for: first.id)
+        await manager.registry.finishReading()
+        #expect(secondValues.showBorders == false)
+
+        manager.inspect(first, selectionCount: 1)
+        await manager.registry.finishReading()
+        #expect(firstValues.showBorders == true)
+        #expect(await source.readCount == 3)
         try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
+    // MARK: Device state ownership
+
+    @Test func returningToAFreshDeviceKeepsItsObjectAndReadsNothing() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.inspect(first, selectionCount: 1)
+        let model = try #require(manager.selection.device)
+        #expect(await events.next() == .read(first.id))
+        await source.completeRead(settings(appearance: .dark))
+        await manager.registry.finishReading()
+        manager.inspect(second, selectionCount: 1)
+        #expect(await events.next() == .read(second.id))
+        await source.completeRead(settings(appearance: .light))
+        await manager.registry.finishReading()
+
+        manager.inspect(first, selectionCount: 1)
+        #expect(manager.selection.device === model)
+        #expect(!model.settings.isLoading && model.settings.appearance == .dark)
+        await manager.registry.finishReading()
+        #expect(await source.readCount == 2)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func unchangedInventoryRefreshReadsNothing() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.inspect(device, selectionCount: 1)
+        let model = try #require(manager.selection.device)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .dark))
+        await manager.registry.finishReading()
+
+        await manager.refresh()
+        await source.setDevices([simulator(lastUsedAt: Date(timeIntervalSinceReferenceDate: 1))])
+        await manager.refresh()
+        await manager.registry.finishReading()
+        #expect(manager.registry.device(for: device.id) === model)
+        #expect(await source.readCount == 1)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func onlyChangedFieldsInvalidateObservers() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let values = model.settings
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .dark, contentSize: .medium))
+        await registry.finishReading()
+
+        final class Invalidations: @unchecked Sendable { nonisolated(unsafe) var names: [String] = [] }
+        let invalidations = Invalidations()
+        withObservationTracking { _ = values.appearance } onChange: { invalidations.names.append("appearance") }
+        withObservationTracking { _ = values.contentSize } onChange: { invalidations.names.append("contentSize") }
+        withObservationTracking { _ = values.status(of: .appearance) } onChange: { invalidations.names.append("status") }
+        withObservationTracking { _ = model.name } onChange: { invalidations.names.append("name") }
+        model.revalidate(.settings)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .dark, contentSize: .large))
+        await registry.finishReading()
+        #expect(invalidations.names == ["contentSize"])
+    }
+
+    @Test func groupsPublishAsTheyFinish() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let values = model.settings
+        #expect(values.isLoading)
+        #expect(await events.next() == .read(device.id))
+
+        await source.publishRead(.values(.appearance) { $0.appearance = .dark })
+        #expect(values.appearance == .dark && !values.isLoading)
+        #expect(values.status(of: .appearance) == .current && values.status(of: .textSize) == .unread)
+        await source.publishRead(.failed(.textSize, "Held up"))
+        #expect(values.status(of: .textSize) == .stale("Held up") && values.failures == ["Held up"])
+        await source.publishRead(.values(.accessibility, failures: ["Show Borders: Held up"]) { $0.reduceMotion = true })
+        #expect(values.reduceMotion == true && values.status(of: .accessibility) == .stale("Show Borders: Held up"))
+        #expect(values.status(of: .voiceOver) == .unread)
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+        #expect(await source.readCount == 1)
+    }
+
+    @Test func readFailureKeepsValuesAndUnsupportedClearsThem() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let values = model.settings
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .dark, contentSize: .large, boldText: true))
+        await registry.finishReading()
+        #expect(values.status(of: .appearance) == .current)
+
+        model.revalidate(.settings)
+        #expect(await events.next() == .read(device.id))
+        await source.publishRead(.failed(.appearance, "No answer"))
+        await source.publishRead(.unsupported(.boldText))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .light, contentSize: .large, boldText: true))
+        await registry.finishReading()
+        #expect(values.appearance == .dark && values.status(of: .appearance) == .stale("No answer"))
+        #expect(values.boldText == nil && values.status(of: .boldText) == .unsupported)
+        #expect(values.contentSize == .large && values.status(of: .textSize) == .current)
+        // A failed read is not tried again by itself, only when something next invalidates it.
+        #expect(await source.readCount == 2)
+    }
+
+    @Test func readsFromBeforeAWriteOrAnOldBootAreDiscarded() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let values = model.settings
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .light))
+        await registry.finishReading()
+
+        // A write accepted while a read runs outlives what that read saw.
+        model.revalidate(.settings)
+        #expect(await events.next() == .read(device.id))
+        let applying = Task { try await values.set(.appearance(.dark)) }
+        #expect(await events.next() == .write(device.id))
+        await source.completeWrite()
+        try await applying.value
+        await source.completeRead(settings(appearance: .light))
+        #expect(values.appearance == .dark)
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+
+        // A read that began before the device stopped describes a boot that is over.
+        model.revalidate(.settings)
+        #expect(await events.next() == .read(device.id))
+        await source.setDevices([simulator(state: "Shutdown")])
+        try await registry.refresh()
+        await source.setDevices([device])
+        try await registry.refresh()
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .light))
+        #expect(values.appearance == .dark)
+        await source.completeRead(settings(appearance: .dark, contentSize: .large))
+        await registry.finishReading()
+        #expect(values.appearance == .dark && values.contentSize == .large)
+    }
+
+    @Test func aFinishedChangeIsConfirmedWhileAnotherGroupOfARunningReadStaysUnanswered() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let values = model.settings
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .light))
+        await registry.finishReading()
+
+        model.revalidate(.settings)
+        #expect(await events.next() == .read(device.id))
+        let applying = Task { try await values.set(.appearance(.dark)) }
+        #expect(await events.next() == .write(device.id))
+        await source.completeWrite()
+        try await applying.value
+        // What this read saw of the group predates the change, so it says nothing. Display Zoom has not answered at all.
+        await source.publishRead(.values(.appearance) { $0.appearance = .light })
+        #expect(values.appearance == .dark)
+        #expect(await events.next() == .read(device.id))
+        #expect(await source.heldReadGroups.last == [.appearance])
+        await source.publishRead(.values(.appearance) { $0.appearance = .dark })
+        #expect(values.appearance == .dark && values.status(of: .appearance) == .current)
+        #expect(await source.heldReadGroups.first?.contains(.displayZoom) == true)
+
+        // The group that was held answers for itself, and nothing is read again.
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+        #expect(values.appearance == .dark)
+        #expect(await source.readCount == 3)
+    }
+
+    @Test func aFinishedChangeIsConfirmedWhileALaterChangeToAnotherGroupStaysHeld() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let values = model.settings
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .light, boldText: false))
+        await registry.finishReading()
+
+        let first = try values.accept(.appearance(.dark))
+        #expect(await events.next() == .write(device.id))
+        let second = try values.accept(.boldText(true))
+        await source.completeWrite()
+        try await first.task.value
+        // The later change has started or is about to. Either way the earlier one is not held for its outcome.
+        var seen = [await events.next(), await events.next()]
+        #expect(seen.contains(.read(device.id)) && seen.contains(.write(device.id)))
+        #expect(await source.heldReadGroups == [[.appearance]])
+        await source.completeRead(SimulatorDeviceSettings(appearance: .dark))
+        #expect(values.status(of: .appearance) == .current && values.boldText == true)
+        await source.completeWrite()
+        try await second.task.value
+        seen = [await events.next()]
+        #expect(seen == [.read(device.id)])
+        #expect(await source.heldReadGroups == [[.boldText]])
+        await source.completeRead(SimulatorDeviceSettings(boldText: true))
+        await registry.finishReading()
+        #expect(values.boldText == true)
+        #expect(await source.groupReadCount == DeviceSettingsGroup.allCases.count + 2)
+    }
+
+    @Test func aHeldWriteOnOneDeviceDoesNotDelayAnother() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.setDeviceSetting(.appearance(.dark), for: first.id)
+        #expect(await events.next() == .write(first.id))
+        manager.setDeviceSetting(.boldText(true), for: first.id)
+        manager.setDeviceSetting(.appearance(.light), for: second.id)
+        // The second device's write reaches it while the first's stays held, and the first's next stays behind it.
+        #expect(await events.next() == .write(second.id))
+        #expect(await source.writtenChanges == [.appearance(.dark), .appearance(.light)])
+        await source.completeWrite(for: second.id)
+        #expect(await events.next() == .read(second.id))
+        #expect(await source.writtenChanges.count == 2)
+        await source.completeRead(SimulatorDeviceSettings(appearance: .light), for: second.id)
+        await source.completeWrite(for: first.id)
+        let started = [await events.next(), await events.next()]
+        #expect(started.contains(.write(first.id)) && started.contains(.read(first.id)))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .dark), for: first.id)
+        await source.completeWrite(for: first.id)
+        #expect(await events.next() == .read(first.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .dark, boldText: true), for: first.id)
+        try await manager.prepareForQuit()
+        #expect(await source.writtenChanges.last == .boldText(true))
+    }
+
+    @Test func aHostOperationFollowsAcceptedWritesAndHoldsLaterOnesOfItsDevice() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        manager.setDeviceSetting(.appearance(.dark), for: first.id)
+        #expect(await events.next() == .write(first.id))
+        manager.closeDevice(first.id, keepingDeviceRunning: true, after: Task {})
+        #expect(!manager.canEditSettings(for: first.id) && manager.canEditSettings(for: second.id))
+        // The close waits for the edit accepted before it. The edit accepted after it waits for the close.
+        manager.setDeviceSetting(.boldText(true), for: first.id)
+        manager.setDeviceSetting(.boldText(true), for: second.id)
+        #expect(await events.next() == .write(second.id))
+        await source.completeWrite(for: second.id)
+        #expect(await events.next() == .read(second.id))
+        await source.completeRead(SimulatorDeviceSettings(boldText: true), for: second.id)
+        await source.completeWrite(for: first.id)
+        // The finished edit's read does not wait for what follows it, which stays in order.
+        let started = [await events.next(), await events.next(), await events.next()]
+        #expect(started.filter { $0 != .read(first.id) } == [.close(first.id), .write(first.id)])
+        await source.completeRead(SimulatorDeviceSettings(appearance: .dark), for: first.id)
+        await source.completeWrite(for: first.id)
+        #expect(await events.next() == .read(first.id))
+        await source.completeRead(SimulatorDeviceSettings(appearance: .dark, boldText: true), for: first.id)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func aChangeHeldWhenAQuitRunsOutReportsWhetherItRan() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.terminationLimit = .milliseconds(50)
+        manager.terminationGrace = .milliseconds(50)
+        manager.uninterruptedCommands = UninterruptedCommands()
+        var reports: [String] = []
+        manager.onError = { reports.append($0.localizedDescription) }
+        await manager.refresh()
+        manager.setDeviceSetting(.appearance(.dark), for: device.id)
+        #expect(await events.next() == .write(device.id))
+        manager.setDeviceSetting(.boldText(true), for: device.id)
+        try await manager.prepareForQuit()
+        #expect(reports.contains { $0.contains("did not run") })
+        #expect(reports.contains { $0.contains("had not finished when NeoSimulator quit") })
+        #expect(await source.writtenChanges == [.appearance(.dark)])
+        await source.completeWrite(for: device.id)
+    }
+
+    @Test func deletionRequiresASuccessfulScope() async throws {
+        let remote = try #require(try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}}}]}}"#.utf8)).first)
+        let xcode = URL(fileURLWithPath: "/Fixture.app")
+        let catalog = DeviceInventoryIssue.Source.simulators(xcodeURL: xcode, deviceSetPath: nil)
+        let otherCatalog = DeviceInventoryIssue.Source.simulators(xcodeURL: URL(fileURLWithPath: "/Other.app"), deviceSetPath: nil)
+        let phone = simulator()
+        let registry = DeviceRegistry(source: ManagerModelSource(devices: []))
+        struct Unread: Error {}
+        registry.apply(DeviceInventorySnapshot(devices: [phone, .remote(remote)], issues: [],
+                                               sources: [phone.id: [catalog, otherCatalog], .coreDevice("A"): [.coreDevice]]))
+        let phoneModel = try #require(registry.device(for: phone.id))
+        let remoteModel = try #require(registry.device(for: .coreDevice("A")))
+
+        registry.apply(DeviceInventorySnapshot(devices: [phone, .remote(remote)], issues: [.init(source: catalog, error: Unread())],
+                                               sources: [phone.id: [otherCatalog], .coreDevice("A"): [.coreDevice]]))
+        registry.apply(DeviceInventorySnapshot(devices: [.remote(remote)], issues: [.init(source: catalog, error: Unread())],
+                                               sources: [.coreDevice("A"): [.coreDevice]]))
+        #expect(registry.device(for: phone.id) === phoneModel)
+
+        // A failed source says nothing of what only it listed, and the sources that read still decide theirs.
+        registry.apply(DeviceInventorySnapshot(devices: [phone], issues: [.init(source: .coreDevice, error: Unread())],
+                                               sources: [phone.id: [catalog]]))
+        #expect(registry.device(for: .coreDevice("A")) === remoteModel)
+        #expect(registry.devices.count == 2)
+        registry.apply(DeviceInventorySnapshot(devices: [.remote(remote)], issues: [.init(source: catalog, error: Unread())],
+                                               sources: [.coreDevice("A"): [.coreDevice]]))
+        #expect(registry.device(for: phone.id) === phoneModel)
+        registry.apply(DeviceInventorySnapshot(devices: [.remote(remote)], issues: [.init(source: .simulators(xcodeURL: nil, deviceSetPath: nil), error: Unread())],
+                                               sources: [.coreDevice("A"): [.coreDevice]]))
+        #expect(registry.device(for: phone.id) === phoneModel)
+        // Renderer ownership lists nothing by itself.
+        registry.apply(DeviceInventorySnapshot(devices: [.remote(remote)], issues: [.init(source: .rendererOwnership, error: Unread())],
+                                               sources: [.coreDevice("A"): [.coreDevice]]))
+        #expect(registry.device(for: phone.id) == nil)
+        // A device that returns is a new device, with nothing of the old one's state.
+        registry.apply(DeviceInventorySnapshot(devices: [phone, .remote(remote)], issues: [],
+                                               sources: [phone.id: [catalog], .coreDevice("A"): [.coreDevice]]))
+        #expect(registry.device(for: phone.id) !== phoneModel)
+        #expect(registry.device(for: .coreDevice("A")) === remoteModel)
+        registry.apply(DeviceInventorySnapshot(devices: [phone], issues: [], sources: [phone.id: [catalog]]))
+        #expect(registry.device(for: .coreDevice("A")) == nil)
+    }
+
+    @Test func aRemovedDeviceKeepsLateReadsAndNewWritesOutOfItsReplacement() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        let presentation = model.beginPresentation {}
+        defer { model.endPresentation(presentation) }
+        #expect(await events.next() == .read(device.id))
+
+        registry.apply(DeviceInventorySnapshot(devices: [], issues: []))
+        await source.completeRead(settings(appearance: .dark))
+        await model.finishReading()
+        try #require(registry.device(for: device.id) == nil)
+        try #require(!model.isAvailable && !model.canInspectSettings)
+        #expect(model.settings.appearance == nil)
+        await #expect(throws: SimulatorError.self) { try await model.settings.set(.boldText(true)) }
+        #expect(await source.writtenChanges.isEmpty)
+
+        registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        let replacement = try #require(registry.device(for: device.id))
+        #expect(replacement !== model)
+        let newInterest = replacement.keepCurrent(.settings)
+        defer { newInterest.release() }
+        #expect(await events.next() == .read(device.id))
+        await source.completeRead(settings(appearance: .light))
+        await registry.finishReading()
+        #expect(replacement.settings.appearance == .light && model.settings.appearance == nil)
+    }
+
+    /// What a screen does as it connects: it reports its own record of the device, and shows the model it gets back.
+    private func connectScreen(_ registry: DeviceRegistry, booted: Bool, name: String = "Test Phone", lastBootDate: Date? = nil) -> DeviceModel {
+        let record = AvailableDevice(identifier: "same-udid", name: name, descriptiveName: name, runtimeIdentifier: "test-runtime",
+                                     runtimeName: "iOS", productFamily: 1, deviceTypeName: "Phone", state: booted ? 3 : 1, deviceSetPath: nil)
+        return registry.presentedModel(of: record, lastBootDate: lastBootDate, ownerXcodeURL: URL(fileURLWithPath: "/Screen Xcode.app"),
+            channel: SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: "same-udid", deviceSetPath: nil))))
+    }
+
+    @Test func aScreenThatConnectsAfterAnInventoryReadUpdatesTheSameModelFromItsOwnRecord() async throws {
+        let stopped = simulator(state: "Shutdown")
+        let catalog = DeviceInventoryIssue.Source.simulators(xcodeURL: URL(fileURLWithPath: "/Catalog Xcode.app"), deviceSetPath: nil)
+        let source = ManagerModelSource(devices: [])
+        var events = source.events.makeAsyncIterator()
+        let registry = DeviceRegistry(source: source)
+        registry.apply(DeviceInventorySnapshot(devices: [stopped], issues: [], sources: [stopped.id: [catalog]]))
+        let model = try #require(registry.device(for: stopped.id))
+        let interest = model.keepCurrent()
+        defer { interest.release() }
+        model.revalidate()
+        await registry.finishReading()
+        #expect(await source.readCount == 0)
+
+        // Asking to open it says nothing. Only a record that says it runs does.
+        #expect(connectScreen(registry, booted: false) === model)
+        #expect(!model.canInspectSettings && !model.canInspectBackgroundServices)
+        await registry.finishReading()
+        #expect(await source.readCount == 0)
+
+        #expect(connectScreen(registry, booted: true, name: "A Screen's Name") === model)
+        try #require(model.canInspectSettings && model.canInspectBackgroundServices)
+        // What else the inventory said of the device, and who said it, stays the inventory's.
+        #expect(registry.devices.map(\.id) == [stopped.id] && model.sources == [catalog] && model.name == "Test Phone")
+        guard case .simulator(let known) = model.inventory else { throw ManagerModelSource.Failure.unavailable }
+        #expect(known.ownerXcodeURL == nil)
+        #expect(await events.next() == .read(stopped.id))
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+        #expect(model.settings.appearance == .dark && model.backgroundServices.status == .current)
+
+        // A later read that agrees is no new generation.
+        await source.setDevices([simulator()])
+        try await registry.refresh()
+        await registry.finishReading()
+        #expect(await source.readCount == 1)
+        // One that says the device stopped is the authority on it.
+        await source.setDevices([stopped])
+        try await registry.refresh()
+        #expect(!model.canInspectSettings)
+    }
+
+    @Test func anInventoryReadFromBeforeAScreenConnectedCannotStopItsDevice() async throws {
+        let stopped = simulator(state: "Shutdown")
+        let source = ManagerModelSource(devices: [stopped])
+        var events = source.events.makeAsyncIterator()
+        let registry = DeviceRegistry(source: source)
+        try await registry.refresh()
+        let model = try #require(registry.device(for: stopped.id))
+        let interest = model.keepCurrent(.settings)
+        defer { interest.release() }
+
+        await source.holdInventoryReads()
+        let reading = Task { try await registry.refresh() }
+        #expect(await events.next() == .inventory)
+        _ = connectScreen(registry, booted: true)
+        #expect(await events.next() == .read(stopped.id))
+        await source.completeInventoryRead()
+        try await reading.value
+        // It began while the device was stopped, so it does not end the generation that the screen found.
+        try #require(model.canInspectSettings)
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+        #expect(model.settings.appearance == .dark)
+        #expect(await source.readCount == 1)
+
+        // A read that began after the screen connected can say that the device has stopped.
+        try await registry.refresh()
+        #expect(!model.canInspectSettings)
+    }
+
+    @Test func aScreenInAProcessWithNoInventoryKeepsItsModelWhenAReadFirstListsIt() async throws {
+        let source = ManagerModelSource(devices: [simulator()])
+        var events = source.events.makeAsyncIterator()
+        let registry = DeviceRegistry(source: source)
+        let model = connectScreen(registry, booted: true)
+        #expect(registry.devices.isEmpty && model.canInspectSettings && model.sources.isEmpty)
+        let interest = model.keepCurrent(.settings)
+        defer { interest.release() }
+        let presentation = model.beginPresentation {}
+        defer { model.endPresentation(presentation) }
+        #expect(await events.next() == .read(model.id))
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+
+        try await registry.refresh()
+        #expect(registry.devices.first === model && !model.sources.isEmpty)
+        await registry.finishReading()
+        #expect(model.settings.appearance == .dark)
+        #expect(await source.readCount == 1)
+    }
+
+    @Test func aScreenThatReconnectsToALaterBootStartsANewGeneration() async throws {
+        let source = ManagerModelSource(devices: [simulator()])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        #expect(await events.next() == .read(model.id))
+        await source.completeRead(settings(appearance: .light))
+        await registry.finishReading()
+
+        // Reopening the boot it already knows asks the device nothing, and neither does a record with no date.
+        let boot = Date(timeIntervalSince1970: 1)
+        _ = connectScreen(registry, booted: true, lastBootDate: boot)
+        _ = connectScreen(registry, booted: true, lastBootDate: boot)
+        _ = connectScreen(registry, booted: true)
+        await registry.finishReading()
+        #expect(await source.readCount == 1)
+
+        // The inventory saw it running both times, so only the date says that this is a different boot.
+        model.revalidate(.settings)
+        #expect(await events.next() == .read(model.id))
+        #expect(connectScreen(registry, booted: true, lastBootDate: Date(timeIntervalSince1970: 2)) === model)
+        #expect(await events.next() == .read(model.id))
+        await source.completeRead(settings(appearance: .light))
+        #expect(model.settings.appearance == .light)
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+        #expect(model.settings.appearance == .dark)
+        #expect(await source.readCount == 3)
+    }
+
+    @Test func aFailedCoreDeviceReadKeepsWhatItAddedToASimulator() async throws {
+        let record = try #require(try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"SIM","properties":{"hardware":{"fidelity":"simulated","udid":"same-udid"},"state":{"name":"Test Phone"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.companiondevicepairing"}]}]}}"#.utf8)).first)
+        guard case .simulator(let phone) = simulator() else { throw ManagerModelSource.Failure.unavailable }
+        let owner = URL(fileURLWithPath: "/Owner.app")
+        let known = InventoryDevice.simulator(phone.inventoryCopy(ownerXcodeURL: owner, coreDevice: record))
+        let registry = DeviceRegistry(source: ManagerModelSource(devices: []))
+        struct Unread: Error {}
+        registry.apply(DeviceInventorySnapshot(devices: [known], issues: []))
+        let model = try #require(registry.device(for: known.id))
+
+        registry.apply(DeviceInventorySnapshot(devices: [.simulator(phone)], issues: [
+            .init(source: .coreDevice, error: Unread()), .init(source: .rendererOwnership, error: Unread())]))
+        #expect(model.inventory == known)
+        registry.apply(DeviceInventorySnapshot(devices: [.simulator(phone)], issues: []))
+        #expect(model.inventory == .simulator(phone))
+    }
+
+    @Test func revalidationReadsOnlyDevicesOfInterest() async throws {
+        let first = simulator(deviceSet: "/first")
+        let second = simulator(deviceSet: "/second")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let (registry, model, interest) = try await settingsFixture(source)
+        defer { interest.release() }
+        #expect(model.id == first.id)
+        #expect(await events.next() == .read(first.id))
+        await source.completeRead(settings(appearance: .dark))
+        await registry.finishReading()
+
+        // However many times it is invalidated while one read runs, each group reads once more when its own read ends.
+        registry.revalidate()
+        #expect(await events.next() == .read(first.id))
+        registry.revalidate()
+        registry.revalidate()
+        await source.completeRead(settings(appearance: .dark))
+        let groups = DeviceSettingsGroup.allCases.count
+        for _ in 0..<groups { #expect(await events.next() == .read(first.id)) }
+        for _ in 0..<groups { await source.completeRead(settings(appearance: .dark)) }
+        await registry.finishReading()
+        #expect(await source.groupReadCount == 3 * groups)
+
+        // What nothing held read when it is next held.
+        let later = try #require(registry.device(for: second.id)).keepCurrent(.settings)
+        defer { later.release() }
+        #expect(await events.next() == .read(second.id))
+        await source.completeRead(settings(appearance: .light))
+        await registry.finishReading()
     }
 
     @Test func serviceProfilesMigrateToFileWithoutChangingIDsNamesOrOverrides() throws {
@@ -3054,12 +3650,13 @@ struct ManagerModelTests {
         let device = simulator()
         let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
         await manager.refresh()
-        manager.backgroundServices.inspect(device, selectionCount: 1)
-        manager.backgroundServices.setVisible(true)
-        await manager.backgroundServices.finishReading()
+        manager.inspect(device, selectionCount: 1)
+        manager.selection.setServicesVisible(true)
+        await manager.registry.finishReading()
         let settings = SettingsWindowController(makeLicenses: SettingsPreview.licenses, model: manager, restart: {},
             makeSimulator: { throw SimulatorError.operation("Unused") },
             preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
@@ -3252,11 +3849,12 @@ struct ManagerModelTests {
         try store.assign(profile.id, to: device.id, pending: false)
         try store.record([.service("com.apple.searchd")], enabled: true, for: device.id, productFamily: "iPhone")
         let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
         await manager.refresh()
-        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.inspect(device, selectionCount: 1)
         manager.selectServiceProfile(ServiceProfile.default.id, for: device.id)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: labels)
@@ -3265,7 +3863,7 @@ struct ManagerModelTests {
         try await awaitServiceOperations(manager)
         #expect(store.binding(for: device.id)?.profileID == ServiceProfile.default.id)
         #expect(store.binding(for: device.id)?.overrides.isEmpty == true)
-        #expect(manager.backgroundServices.configuration?.disabledLabels.isEmpty == true)
+        #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels.isEmpty == true)
         #expect(await source.serviceChanges == [.init(targets: labels.sorted().map { .service($0) }, enabled: true)])
         try await manager.prepareForQuit()
     }
@@ -3298,13 +3896,14 @@ struct ManagerModelTests {
         try store.assign(profile.id, to: device.id, pending: false)
         try store.record([.service(label)], enabled: true, for: device.id, productFamily: "iPhone")
         let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
         var failure: (any Error)?
         manager.onError = { failure = $0 }
         await manager.refresh()
-        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.inspect(device, selectionCount: 1)
         manager.selectServiceProfile(profile.id, for: device.id)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: [])
@@ -3313,7 +3912,7 @@ struct ManagerModelTests {
         try await awaitServiceOperations(manager)
         #expect(failure != nil)
         #expect(store.binding(for: device.id)?.overrides[label] == true)
-        #expect(manager.backgroundServices.configuration?.disabledLabels == [other])
+        #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels == [other])
         #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: false)])
         manager.revertServiceProfile(for: device.id)
         #expect(await events.next() == .readServices(device.id))
@@ -3323,7 +3922,7 @@ struct ManagerModelTests {
         try await awaitServiceOperations(manager)
         #expect(store.binding(for: device.id)?.overrides.isEmpty == true)
         #expect(await source.serviceChanges.last == .init(targets: [label, other].sorted().map { .service($0) }, enabled: false))
-        #expect(manager.backgroundServices.configuration?.disabledLabels == [label, other])
+        #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels == [label, other])
         try await manager.prepareForQuit()
     }
 
@@ -3384,7 +3983,7 @@ struct ManagerModelTests {
         manager.manage(.start, devices: [stopped])
         #expect(await events.next() == .manage(.start, [stopped.id]))
         #expect(await errors.next() != nil)
-        #expect(manager.backgroundServices.changingDeviceIDs.isEmpty)
+        #expect(manager.registry.device(for: stopped.id)?.backgroundServices.isChanging == false)
         try await awaitServiceOperations(manager)
         #expect(store.binding(for: stopped.id)?.pendingApplication == true)
 
@@ -3399,7 +3998,8 @@ struct ManagerModelTests {
 
     private func awaitServiceOperations(_ manager: SimulatorManagerModel) async throws {
         try await wait(timeout: .seconds(5)) {
-            !manager.isBusy && manager.managingDeviceIDs.isEmpty && manager.backgroundServices.changingDeviceIDs.isEmpty
+            !manager.isBusy && manager.managingDeviceIDs.isEmpty
+                && !manager.registry.devices.contains { $0.backgroundServices.isChanging }
         }
     }
 
@@ -3409,15 +4009,16 @@ struct ManagerModelTests {
         let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
         await manager.refresh()
-        manager.backgroundServices.inspect(device, selectionCount: 1)
-        manager.backgroundServices.setVisible(true)
+        manager.inspect(device, selectionCount: 1)
+        manager.selection.setServicesVisible(true)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: ["com.apple.bird"])
-        await manager.backgroundServices.finishReading()
+        await manager.registry.finishReading()
 
         manager.setBackgroundServices([.category("store")], enabled: false, for: device.id)
         #expect(await events.next() == .changeServices(device.id))
@@ -3429,36 +4030,40 @@ struct ManagerModelTests {
         try await manager.prepareForQuit()
     }
 
-    @Test func aServiceReadFailureReplacesCachedValuesUntilRetrySucceeds() async throws {
+    @Test func aServiceReadFailureKeepsCachedValuesUntilRetrySucceeds() async throws {
         let domain = "NeoSimulator.ServiceReadFailure.\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
         let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
         let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
         await manager.refresh()
-        manager.backgroundServices.inspect(device, selectionCount: 1)
-        manager.backgroundServices.setVisible(true)
+        manager.inspect(device, selectionCount: 1)
+        manager.selection.setServicesVisible(true)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: ["com.apple.searchd"])
-        await manager.backgroundServices.finishReading()
+        await manager.registry.finishReading()
         #expect(inspector.content == .simulator(.services))
 
-        manager.backgroundServices.requestRefresh()
+        inspector.requestRefresh()
         #expect(await events.next() == .readServices(device.id))
         await source.failServiceRead()
-        await manager.backgroundServices.finishReading()
-        #expect(inspector.content == .simulator(.failure(ManagerModelSource.Failure.unavailable.localizedDescription)))
+        await manager.registry.finishReading()
+        // What was read stays, with why it may be out of date.
+        #expect(inspector.content == .simulator(.services))
+        #expect(inspector.serviceState?.disabledLabels == ["com.apple.searchd"])
+        #expect(inspector.issue == ManagerModelSource.Failure.unavailable.localizedDescription)
         #expect(!inspector.canSaveProfile)
 
         inspector.requestRefresh()
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: [])
-        await manager.backgroundServices.finishReading()
-        #expect(inspector.content == .simulator(.services))
+        await manager.registry.finishReading()
+        #expect(inspector.content == .simulator(.services) && inspector.issue == nil)
         try await manager.prepareForQuit()
     }
 
@@ -3471,6 +4076,7 @@ struct ManagerModelTests {
         }
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
         let search = try #require(SimulatorBackgroundServiceCategory.all.first { $0.id == "search" })
@@ -3478,19 +4084,20 @@ struct ManagerModelTests {
         let reported = AsyncStream<(any Error, SimulatorBackgroundServiceState?)>.makeStream()
         var errors = reported.stream.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults))
-        manager.onError = { reported.continuation.yield(($0, manager.backgroundServices.services?.state(of: search))) }
+        manager.onError = { reported.continuation.yield(($0, manager.selection.device?.backgroundServices.services?.state(of: search))) }
         await manager.refresh()
-        manager.backgroundServices.setVisible(true)
-        manager.backgroundServices.inspect(device, selectionCount: 1)
+        manager.selection.setServicesVisible(true)
+        manager.inspect(device, selectionCount: 1)
+        let services = try #require(manager.selection.device?.backgroundServices)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: [])
-        await manager.backgroundServices.finishReading()
+        await manager.registry.finishReading()
 
         manager.setBackgroundServices([.category("search")], enabled: false, for: device.id)
         #expect(await events.next() == .changeServices(device.id))
         manager.setBackgroundServices([.service("com.apple.searchd")], enabled: true, for: device.id)
-        #expect(!manager.backgroundServices.isEnabled(search))
-        #expect(manager.backgroundServices.isEnabled("com.apple.searchd"))
+        #expect(!services.isEnabled(search))
+        #expect(services.isEnabled("com.apple.searchd"))
         #expect(!manager.canManage(.erase, deviceIDs: [device.id]))
         #expect(manager.canManage(.forceShutdown, deviceIDs: [device.id]))
 
@@ -3511,7 +4118,7 @@ struct ManagerModelTests {
         try await quitting.value
         #expect(await source.serviceChanges == [.init(targets: [.category("search")], enabled: false),
                                                 .init(targets: [.service("com.apple.searchd")], enabled: true)])
-        #expect(manager.backgroundServices.outcome?.notStartedLabels == ["com.apple.searchd"])
+        #expect(services.outcome?.notStartedLabels == ["com.apple.searchd"])
         let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
         let item = try #require(inspector.categories.flatMap(\.items).first { $0.label == "com.apple.searchd" })
         #expect(item.help.contains("Starts after the simulator restarts."))
@@ -3527,34 +4134,35 @@ struct ManagerModelTests {
         let first = simulator(deviceSet: "/first")
         let second = simulator(deviceSet: "/second")
         let source = ManagerModelSource(devices: [first, second])
+        await source.skipSettingsReads()
         await source.holdServiceReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source, serviceProfiles: ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults))
         await manager.refresh()
-        let model = manager.backgroundServices
-        model.inspect(first, selectionCount: 1)
+        manager.inspect(first, selectionCount: 1)
+        let firstServices = try #require(manager.selection.device?.backgroundServices)
         // launchd is read only while the Background Services page shows.
-        #expect(!model.isLoading)
-        model.setVisible(true)
+        #expect(!firstServices.isReading)
+        manager.selection.setServicesVisible(true)
         #expect(await events.next() == .readServices(first.id))
-        model.inspect(second, selectionCount: 1)
-        await source.completeServiceRead(disabled: ["com.apple.searchd"])
+        manager.inspect(second, selectionCount: 1)
+        let secondServices = try #require(manager.selection.device?.backgroundServices)
         #expect(await events.next() == .readServices(second.id))
-        #expect(model.services == nil)
-        await source.completeServiceRead(disabled: [])
-        await model.finishReading()
-        #expect(model.services?.disabledLabels == [])
+        await source.completeServiceRead(disabled: ["com.apple.searchd"], for: first.id)
+        #expect(secondServices.services == nil)
+        await source.completeServiceRead(disabled: [], for: second.id)
+        await manager.registry.finishReading()
+        #expect(secondServices.services?.disabledLabels == [])
+        #expect(firstServices.services?.disabledLabels == ["com.apple.searchd"])
 
         manager.setBackgroundServices([.category("search")], enabled: false, for: second.id)
         #expect(await events.next() == .changeServices(second.id))
-        model.inspect(first, selectionCount: 1)
-        #expect(!model.isChanging)
+        manager.inspect(first, selectionCount: 1)
+        #expect(!firstServices.isChanging && secondServices.isChanging)
         await source.completeServiceChange(disabled: ["com.apple.searchd"], notStarted: ["com.apple.searchtoold"])
-        #expect(await events.next() == .readServices(first.id))
-        await source.completeServiceRead(disabled: [])
-        await model.finishReading()
-        #expect(model.services?.disabledLabels == [])
-        #expect(model.outcome == nil)
+        await manager.registry.finishReading()
+        #expect(firstServices.services?.disabledLabels == ["com.apple.searchd"])
+        #expect(firstServices.outcome == nil && secondServices.outcome?.notStartedLabels == ["com.apple.searchtoold"])
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
@@ -4033,18 +4641,25 @@ struct ManagerModelTests {
             deviceSetPath: deviceSet, lastUsedAt: lastUsedAt, createdAt: createdAt, capabilities: ["com.apple.dt.coredevice.device.shutdown"]))
     }
 
-    private func settings(appearance: String, contentSize: String? = nil) -> SimulatorDeviceSettings {
+    private func settings(appearance: DeviceAppearance, contentSize: DeviceContentSize? = nil) -> SimulatorDeviceSettings {
         SimulatorDeviceSettings(appearance: appearance, contentSize: contentSize)
     }
 }
 
-private struct ServiceChangeSource: BackgroundServicesSource {
+private struct ServiceChangeSource: DeviceStateSource {
+    let device: InventoryDevice
     let backend: SimulatorBackgroundServiceBackend
+    func inventory() -> DeviceInventorySnapshot { DeviceInventorySnapshot(devices: [device], issues: []) }
+    func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
+                      publish: @escaping @concurrent @Sendable (DeviceSettingsGroupRead) async -> Void) async {}
+    func write(_ change: DeviceSettingChange, to device: InventoryDevice) async throws {}
     func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices { try await backend.read() }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
                                for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
         try await backend.update(targets, enabled: enabled)
     }
+    func stopReads() {}
+    func resumeReads() {}
 }
 
 actor ManagerModelSource: SimulatorManagerSource {
@@ -4079,16 +4694,25 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var holdsManagement = false
     private var failsClose = false
     private var immediateRead: SimulatorDeviceSettings?
-    private var readContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
+    private var skipsSettingsReads = false
+    /// A batch of settings reads that a test holds, and answers whole or a group at a time.
+    private struct HeldRead {
+        let device: DeviceInventoryID
+        var groups: Set<DeviceSettingsGroup>
+        let publish: @concurrent @Sendable (DeviceSettingsGroupRead) async -> Void
+        let finished: CheckedContinuation<Void, Never>
+    }
+    private var heldReads: [HeldRead] = []
     private var openContinuations: [(DeviceInventoryID, CheckedContinuation<Void, any Error>)] = []
-    private var writeContinuation: CheckedContinuation<SimulatorDeviceSettings, any Error>?
-    private var pendingWrite: SimulatorDeviceSettings?
-    private(set) var writeInputs: [SimulatorDeviceSettings?] = []
+    private var heldWrites: [(device: DeviceInventoryID, finished: CheckedContinuation<Void, any Error>)] = []
+    private(set) var writtenChanges: [DeviceSettingChange] = []
     private var holdsServiceReads = false
-    private var serviceRead: CheckedContinuation<SimulatorBackgroundServices, any Error>?
+    private var serviceReads: [(device: DeviceInventoryID, finished: CheckedContinuation<SimulatorBackgroundServices, any Error>)] = []
     private var serviceChange: CheckedContinuation<SimulatorBackgroundServicesUpdate, any Error>?
     private(set) var serviceChanges: [ServiceChange] = []
     private(set) var readCount = 0
+    /// Settings groups read, however they were batched.
+    private(set) var groupReadCount = 0
     private(set) var quitCount = 0
     private(set) var lastOpenXcodeURL: URL?
     private(set) var lastOpenBootIfNeeded: Bool?
@@ -4148,86 +4772,78 @@ actor ManagerModelSource: SimulatorManagerSource {
         return SimulatorHostStatus(host: failsSessionStart ? .deviceHub : .neo, preferredHost: .neo,
                                    restorationAvailable: false, rendererRunning: false)
     }
-    func deviceSettings(for device: InventoryDevice) async throws -> SimulatorDeviceSettings {
+    func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
+                      publish: @escaping @concurrent @Sendable (DeviceSettingsGroupRead) async -> Void) async {
+        if skipsSettingsReads { return }
         readCount += 1
+        groupReadCount += groups.count
         if let immediateRead {
             self.immediateRead = nil
             continuation.yield(.read(device.id))
-            return immediateRead
+            for group in groups { await publish(.values(group) { $0.replace(group, with: immediateRead) }) }
+            return
         }
-        return try await withCheckedThrowingContinuation { waiting in
-            readContinuation = waiting
+        await withCheckedContinuation { waiting in
+            heldReads.append(HeldRead(device: device.id, groups: groups, publish: publish, finished: waiting))
             continuation.yield(.read(device.id))
         }
     }
     func returnOnNextRead(_ settings: SimulatorDeviceSettings) { immediateRead = settings }
-    func completeRead(_ settings: SimulatorDeviceSettings) {
-        let waiting = readContinuation
-        readContinuation = nil
-        waiting?.resume(returning: settings)
+    /// For a test of something else: settings reads answer nothing, at once and without an event.
+    func skipSettingsReads() { skipsSettingsReads = true }
+    /// Answers what the oldest held read of `device` still waits for.
+    func completeRead(_ settings: SimulatorDeviceSettings, for device: DeviceInventoryID? = nil) async {
+        guard let index = heldReads.firstIndex(where: { device == nil || $0.device == device }) else { return }
+        let read = heldReads.remove(at: index)
+        for group in read.groups { await read.publish(.values(group) { $0.replace(group, with: settings) }) }
+        read.finished.resume()
     }
-    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for device: InventoryDevice) async throws {
-        _ = try await write(setting, device: device, updating: nil)
+    /// Answers one group of the oldest held read that has it, which ends once nothing is left to answer.
+    func publishRead(_ result: DeviceSettingsGroupRead) async {
+        guard let index = heldReads.firstIndex(where: { $0.groups.contains(result.group) }) else { return }
+        heldReads[index].groups.remove(result.group)
+        let read = heldReads[index]
+        if read.groups.isEmpty { heldReads.remove(at: index) }
+        await read.publish(result)
+        if read.groups.isEmpty { read.finished.resume() }
     }
-    func setDeviceSetting(_ setting: SimulatorDeviceSetting, for device: InventoryDevice,
-                          updating settings: SimulatorDeviceSettings) async throws -> SimulatorDeviceSettings {
-        try await write(setting, device: device, updating: settings)
-    }
-    private func write(_ setting: SimulatorDeviceSetting, device: InventoryDevice,
-                       updating snapshot: SimulatorDeviceSettings?) async throws -> SimulatorDeviceSettings {
-        writeInputs.append(snapshot)
-        var updated = snapshot ?? SimulatorDeviceSettings()
-        switch setting {
-        case .appearance(let appearance): updated.appearance = appearance
-        case .contentSize(let size): updated.contentSize = size
-        case .boldText(let value): updated.boldText = value
-        case .showBorders(let value): updated.showBorders = value
-        case .reduceTransparency(let value): updated.reduceTransparency = value
+    /// What each held read still waits for, oldest first.
+    var heldReadGroups: [Set<DeviceSettingsGroup>] { heldReads.map(\.groups) }
+    func write(_ change: DeviceSettingChange, to device: InventoryDevice) async throws {
+        writtenChanges.append(change)
+        switch change {
+        case .appearance, .contentSize, .boldText, .showBorders, .reduceTransparency: break
         default: throw Failure.unavailable
         }
-        pendingWrite = updated
-        return try await withCheckedThrowingContinuation { waiting in
-            writeContinuation = waiting
+        try await withCheckedThrowingContinuation { waiting in
+            heldWrites.append((device.id, waiting))
             continuation.yield(.write(device.id))
         }
     }
-    func completeWrite() {
-        let waiting = writeContinuation
-        let updated = pendingWrite
-        writeContinuation = nil
-        pendingWrite = nil
-        if let updated { waiting?.resume(returning: updated) }
+    func completeWrite(for device: DeviceInventoryID? = nil) {
+        guard let index = heldWrites.firstIndex(where: { device == nil || $0.device == device }) else { return }
+        heldWrites.remove(at: index).finished.resume()
     }
-    func failWrite(afterApplying: Bool = false) {
-        let waiting = writeContinuation
-        let updated = pendingWrite
-        writeContinuation = nil
-        pendingWrite = nil
-        if afterApplying, let updated {
-            waiting?.resume(throwing: SimulatorDeviceSettingsUpdateFailure(settings: updated,
-                underlyingError: SimulatorHostFailure(Failure.unavailable)))
-        } else {
-            waiting?.resume(throwing: Failure.unavailable)
-        }
+    func failWrite() {
+        guard !heldWrites.isEmpty else { return }
+        heldWrites.removeFirst().finished.resume(throwing: Failure.unavailable)
     }
     /// Background service reads return no overrides at once unless a test holds them.
     func holdServiceReads() { holdsServiceReads = true }
     func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices {
         guard holdsServiceReads else { return SimulatorBackgroundServices(disabled: [], loaded: [], productFamily: "iPhone") }
         return try await withCheckedThrowingContinuation { waiting in
-            serviceRead = waiting
+            serviceReads.append((device.id, waiting))
             continuation.yield(.readServices(device.id))
         }
     }
-    func completeServiceRead(disabled: Set<String>, loaded: Set<String> = []) {
-        let waiting = serviceRead
-        serviceRead = nil
-        waiting?.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"))
+    func completeServiceRead(disabled: Set<String>, loaded: Set<String> = [], for device: DeviceInventoryID? = nil) {
+        guard let index = serviceReads.firstIndex(where: { device == nil || $0.device == device }) else { return }
+        serviceReads.remove(at: index).finished.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"))
     }
     func failServiceRead() {
-        let waiting = serviceRead
-        serviceRead = nil
-        waiting?.resume(throwing: Failure.unavailable)
+        guard !serviceReads.isEmpty else { return }
+        serviceReads.removeFirst().finished.resume(throwing: Failure.unavailable)
     }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
                                for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
