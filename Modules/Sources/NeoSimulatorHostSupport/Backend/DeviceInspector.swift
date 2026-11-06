@@ -156,7 +156,7 @@ package struct DeviceInspector: Sendable {
         do {
             switch device {
             case .simulator(let simulator):
-                let data = try await simctl(["list", "--json"], operation: "Read Device Info")
+                let data = try await simctl(["list", "--json"], operation: "Read Device Info", policy: .cancellable)
                 let response = try JSONDecoder().decode(DeviceInspectorValue.self, from: data)
                 let devices = response["devices"]?.object?[simulator.runtimeIdentifier]?.array ?? []
                 guard let record = devices.first(where: { $0["udid"]?.string == simulator.identifier })?.object else {
@@ -184,7 +184,7 @@ package struct DeviceInspector: Sendable {
                 }
                 fields.merge(result) { known, _ in known }
             case .remote:
-                fields = try await coreDeviceResult(["device", "info", "details"], operation: "Read Device Info")["properties"]?.object
+                fields = try await coreDeviceResult(["device", "info", "details"], operation: "Read Device Info", policy: .cancellable)["properties"]?.object
                     ?? { throw DeviceInspectorError.invalidResponse("Device details omitted the properties dictionary.") }()
             }
             return DeviceInfoSnapshot(deviceID: device.id, device: device, fields: fields, issues: [])
@@ -231,7 +231,7 @@ package struct DeviceInspector: Sendable {
         guard case .simulator = device else {
             throw failure(DeviceInspectorError.unsupported("Remote application containers must be downloaded before opening in Finder."), operation: "Locate Application Container")
         }
-        let data = try await simctl(["get_app_container", simulatorID, bundleIdentifier, "data"], operation: "Locate Application Container")
+        let data = try await simctl(["get_app_container", simulatorID, bundleIdentifier, "data"], operation: "Locate Application Container", policy: .cancellable)
         let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard path.hasPrefix("/") else { throw failure(DeviceInspectorError.invalidResponse("simctl did not return an absolute container path."), operation: "Locate Application Container") }
         return URL(fileURLWithPath: path, isDirectory: true)
@@ -246,7 +246,7 @@ package struct DeviceInspector: Sendable {
             let result: Result<Data, any Error>
             do {
                 let image = directory.appendingPathComponent("Icon.png")
-                _ = try await coreDevice(["device", "info", "appIcon", "--app-bundle-id", bundleIdentifier, "--destination", image.path], operation: "Read Application Icon", timeout: DeviceOperationLimit.devicectlInspection)
+                _ = try await coreDevice(["device", "info", "appIcon", "--app-bundle-id", bundleIdentifier, "--destination", image.path], operation: "Read Application Icon", timeout: DeviceOperationLimit.devicectlInspection, policy: .cancellable)
                 result = .success(try Data(contentsOf: image))
             } catch { result = .failure(error) }
             do { try FileManager.default.removeItem(at: directory) }
@@ -380,7 +380,7 @@ package struct DeviceInspector: Sendable {
         else { requestedKind = kind }
         var arguments = ["device", "profile", "list"]
         if let requestedKind { arguments += ["--type", requestedKind.rawValue] }
-        let result = try await coreDeviceResult(arguments, operation: "Read Profiles")
+        let result = try await coreDeviceResult(arguments, operation: "Read Profiles", policy: .cancellable)
         let kinds = requestedKind.map { [$0] } ?? DeviceProfileKind.allCases
         let listKeys = kinds.flatMap { [$0.rawValue + "Profiles", "partial" + $0.rawValue.capitalized + "Profiles"] }
         guard listKeys.contains(where: { result[$0]?.array != nil }) else {
@@ -426,7 +426,7 @@ package struct DeviceInspector: Sendable {
             case .simulator:
                 simulator = true
                 let arguments = bundleIdentifier.map { ["appinfo", simulatorID, $0] } ?? ["listapps", simulatorID]
-                let data = try await simctl(arguments, operation: "Read Applications")
+                let data = try await simctl(arguments, operation: "Read Applications", policy: .cancellable)
                 let value = try DeviceInspectorValue.propertyList(PropertyListSerialization.propertyList(from: data, format: nil))
                 guard let object = value.object else { throw DeviceInspectorError.invalidResponse("simctl did not return an application dictionary.") }
                 records = bundleIdentifier == nil ? object.values.compactMap(\.object) : [object]
@@ -434,7 +434,7 @@ package struct DeviceInspector: Sendable {
                 simulator = false
                 var arguments = ["device", "info", "apps", "--include-all-apps", "--include-app-group-identifiers", "--include-container-paths"]
                 if let bundleIdentifier { arguments += ["--bundle-id", bundleIdentifier] }
-                let value = try await coreDeviceResult(arguments, operation: "Read Applications")
+                let value = try await coreDeviceResult(arguments, operation: "Read Applications", policy: .cancellable)
                 guard let apps = value["apps"]?.array else { throw DeviceInspectorError.invalidResponse("devicectl omitted its application list.") }
                 records = apps.compactMap(\.object)
             }
@@ -470,7 +470,7 @@ package struct DeviceInspector: Sendable {
             let application = try await application(bundleIdentifier: bundleIdentifier)
             guard let rawPath = application.bundlePath else { throw failure(DeviceInspectorError.invalidResponse("The application has no executable bundle path."), operation: "Stop Application") }
             let path = rawPath.hasPrefix("file:") ? URL(string: rawPath)?.path ?? rawPath : rawPath
-            let processes = try await coreDeviceResult(["device", "info", "processes"], operation: "Read Processes")
+            let processes = try await coreDeviceResult(["device", "info", "processes"], operation: "Read Processes", policy: .cancellable)
             guard let records = processes["runningProcesses"]?.array else { throw failure(DeviceInspectorError.invalidResponse("devicectl omitted its process list."), operation: "Read Processes") }
             for record in records {
                 guard let rawExecutable = record["executable"]?.string else { continue }
@@ -497,21 +497,22 @@ package struct DeviceInspector: Sendable {
 
     package var simulatorID: String { if case .simulator(let item) = device { item.identifier } else { "" } }
 
-    package func simulatorCommand(_ arguments: [String]) throws -> DeviceInspectorCommand {
+    package func simulatorCommand(_ arguments: [String], policy: CommandPolicy = .uninterrupted) throws -> DeviceInspectorCommand {
         guard case .simulator(let device) = device, let simulatorXcodeURL else {
             throw DeviceInspectorError.unsupported("This operation requires a simulator and its Xcode installation.")
         }
-        return DeviceInspectorCommand(source: .simulator(xcodeURL: simulatorXcodeURL, deviceSetPath: device.deviceSetPath), arguments: arguments)
+        return DeviceInspectorCommand(source: .simulator(xcodeURL: simulatorXcodeURL, deviceSetPath: device.deviceSetPath),
+                                      arguments: arguments, policy: policy)
     }
 
-    @concurrent private func simctl(_ arguments: [String], operation: String) async throws -> Data {
-        do { return try await run(simulatorCommand(arguments), operation: operation) }
+    @concurrent private func simctl(_ arguments: [String], operation: String, policy: CommandPolicy = .uninterrupted) async throws -> Data {
+        do { return try await run(simulatorCommand(arguments, policy: policy), operation: operation) }
         catch { throw failure(error, operation: operation) }
     }
 
-    @concurrent package func coreDeviceResult(_ arguments: [String], operation: String) async throws -> DeviceInspectorValue {
+    @concurrent package func coreDeviceResult(_ arguments: [String], operation: String, policy: CommandPolicy = .uninterrupted) async throws -> DeviceInspectorValue {
         do {
-            let data = try await coreDevice(arguments, operation: operation, timeout: DeviceOperationLimit.devicectlInspection)
+            let data = try await coreDevice(arguments, operation: operation, timeout: DeviceOperationLimit.devicectlInspection, policy: policy)
             let response = try JSONDecoder().decode(DeviceInspectorValue.self, from: data)
             guard let result = response["result"] else { throw DeviceInspectorError.invalidResponse("devicectl omitted the result object.") }
             return result

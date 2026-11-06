@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import AppKit
@@ -26,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var newSimulatorWindows: [DeviceInventoryID?: NewSimulatorWindowController] = [:]
     private var preparingNewSimulators: Set<DeviceInventoryID?> = []
     private var quitting = false
+    /// What went wrong with the operations that a quit waits for. A modal alert here would hold the wait, so a quit
+    /// reports them when it ends.
+    private var quitFailures: [any Error] = []
     private var hasStarted = false
     private var launchURLs: [URL] = []
     private var rendererDevicesObserver: NSObjectProtocol?
@@ -97,7 +101,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try await self?.screens.finishSimulatorManagement(action, devices: devices)
         }
         model.onError = { [weak self] error in
-            if !(error is CancellationError) { self?.present(error) }
+            guard let self, !(error is CancellationError) else { return }
+            if quitting { quitFailures.append(error) } else { present(error) }
         }
     }
 
@@ -224,12 +229,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onboardingWindow?.close()
         updateCoreDeviceInitializationNotice(false)
         screens.beginQuitting()
+        let timeout = HostPreferences.terminationLimit
         let preparation = Task.immediate {
-            await startupTask?.value
+            if let startupTask, await !startupTask.ends(before: .now + timeout) {
+                TerminationAccount.shared.note("NeoSimulator's startup had not finished when it quit.")
+            }
             try await model.prepareForQuit()
         }
         let restoring = restartsAfterQuitting ? screens.restorations() : []
-        Task {
+        var answered = false
+        let answer: @MainActor (Bool) -> Void = { terminates in
+            guard !answered else { return }
+            answered = true
+            sender.reply(toApplicationShouldTerminate: terminates)
+        }
+        let finishing = Task {
             var relaunchProcess: Process?
             do {
                 mainWindow?.stopInspectorReads()
@@ -251,7 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             applicationURL: Bundle.main.bundleURL, deviceURLs: urls).schedule(using: helper)
                     }
                 }
-                sender.reply(toApplicationShouldTerminate: true)
+                await reportQuitOutcome()
+                answer(true)
             } catch {
                 if let relaunchProcess, relaunchProcess.isRunning { relaunchProcess.terminate() }
                 quitting = false
@@ -261,11 +276,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 screens.resumeAfterCancelledQuit()
                 mainWindow?.resumeInspectorAfterCancelledQuit()
                 startInventoryObservation()
+                _ = TerminationAccount.shared.take()
+                let failures = quitFailures
+                quitFailures = []
+                failures.forEach { present($0) }
                 if !(error is CancellationError) { present(error) }
-                sender.reply(toApplicationShouldTerminate: false)
+                answer(false)
             }
         }
+        // Each step that waits on a device has its own bound. This one is for whichever step no bound reaches, such as a
+        // renderer that stopped answering: a quit that was accepted ends, and says what it left.
+        Task {
+            let limit = timeout * 2 + DeviceOperationLimit.terminationGrace * 3
+            guard await !finishing.ends(before: .now + limit) else { return }
+            TerminationAccount.shared.note("NeoSimulator stopped waiting for quitting to finish after \(limit.formatted(.units(width: .wide))).")
+            await reportQuitOutcome()
+            answer(true)
+        }
         return .terminateLater
+    }
+
+    /// Logs what the quit leaves unfinished and says so for a limited time, because nobody may be there to answer.
+    private func reportQuitOutcome() async {
+        var notes = quitFailures.map { error in
+            let failure = error as? any LocalizedError
+            return [error.localizedDescription, failure?.failureReason, failure?.recoverySuggestion]
+                .compactMap { $0 }.joined(separator: "\n")
+        }
+        quitFailures = []
+        notes += TerminationAccount.shared.take()
+        notes += await DeviceIOHub.shared.unresolvedOperations().map(\.description)
+        QuitReport.present(notes)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

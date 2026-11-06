@@ -1,4 +1,5 @@
 import AppKit
+import NeoSimulatorDeviceIO
 
 /// External display choices, using Simulator.app's persisted menu tags.
 /// Fixed sizes use one point per pixel; CarPlay uses `CarPlayConfiguration`.
@@ -363,7 +364,7 @@ package final class ExternalDisplayChanges {
         }
         guard let size = change.mode.pixelSize else {
             // Like Simulator.app, CarPlay ends once the screen is off.
-            return perform(.screen, in: run, { try screen.powerOff(completion: $0) }) { [self] turnedOff in
+            return perform(.screen, in: run, { try await screen.powerOff(completion: $0) }) { [self] turnedOff in
                 guard turnedOff else { return finish(run) }
                 lastPowerOff = .now
                 endCarPlay(in: run) { [self] in finish(run) }
@@ -372,7 +373,7 @@ package final class ExternalDisplayChanges {
         let carPlay = change.mode == .carPlay
         let setMode: @MainActor () -> Void = { [self] in
             perform(.screen, in: run, {
-                try screen.setMode(pixelSize: size, scale: change.mode.scale, carPlay: carPlay, completion: $0)
+                try await screen.setMode(pixelSize: size, scale: change.mode.scale, carPlay: carPlay, completion: $0)
             }) { [self] changed in
                 guard changed, carPlay else { return finish(run) }
                 startCarPlay(in: run) { [self] in finish(run) }
@@ -393,7 +394,7 @@ package final class ExternalDisplayChanges {
         guard carPlay.hasService(in: boot) || carPlay.session(in: boot) == .started else { return next() }
         run.requestBoot = boot
         perform(.carPlayService(creating: false), in: run, {
-            try screen.setCarPlayService(connected: false, completion: $0)
+            try await screen.setCarPlayService(connected: false, completion: $0)
         }) { [self] removed in
             carPlay.serviceAnswered(created: false, succeeded: removed, in: boot)
             guard carPlay.session(in: boot) == .started else { return next() }
@@ -410,7 +411,7 @@ package final class ExternalDisplayChanges {
             guard screen.deviceBootDate == boot else { return next() }
             run.requestBoot = boot
             perform(.carPlayService(creating: true), in: run, {
-                try screen.setCarPlayService(connected: true, completion: $0)
+                try await screen.setCarPlayService(connected: true, completion: $0)
             }) { [self] created in
                 carPlay.serviceAnswered(created: true, succeeded: created, in: boot)
                 next()
@@ -444,7 +445,7 @@ package final class ExternalDisplayChanges {
     private func turnOffForCarPlay(in run: Run, then next: @escaping @MainActor () -> Void) {
         // A state that cannot be read leaves the display as it is.
         guard let state = try? run.change.screen.state(), state.isPoweredOn, !state.isCarPlay else { return next() }
-        perform(.screen, in: run, { try run.change.screen.powerOff(completion: $0) }) { [self] turnedOff in
+        perform(.screen, in: run, { try await run.change.screen.powerOff(completion: $0) }) { [self] turnedOff in
             guard turnedOff else { return finish(run) }
             lastPowerOff = .now
             next()
@@ -463,10 +464,10 @@ package final class ExternalDisplayChanges {
         }
     }
 
-    /// Runs a step, collects failure, and passes success to `next`.
-    /// A thrown error means nothing was sent; a missing completion abandons the change.
+    /// Runs a step, collects failure, and passes success to `next`. A thrown error means no completion follows, and
+    /// that nothing was sent unless it is an unknown outcome; a missing completion abandons the change.
     private func perform(_ step: ExternalDisplayStep, in run: Run,
-                         _ operation: (@escaping @MainActor (Error?) -> Void) throws -> Void,
+                         _ operation: @escaping @MainActor (@escaping @MainActor (Error?) -> Void) async throws -> Void,
                          then next: @escaping @MainActor (Bool) -> Void) {
         guard inFlight === run else { return }
         run.steps += 1
@@ -485,13 +486,36 @@ package final class ExternalDisplayChanges {
             }
             run.timer?.cancel()
             // A request that a restart made moot is not a failure.
-            if let error, !(error is CarPlayRequestMoot) { run.fail(step, error) }
+            if let error, !(error is CarPlayRequestMoot) {
+                self.noteUnknownOutcome(of: step, in: run, error)
+                run.fail(step, error)
+            }
             next(error == nil)
         }
-        do { try operation(completion) } catch {
-            run.timer?.cancel()
-            run.fail(step, error)
-            next(false)
+        // A step's request enters the device's queue before this returns, so steps keep their order.
+        Task.immediate {
+            do { try await operation(completion) } catch {
+                guard self.inFlight === run, run.steps == number else {
+                    hostLog("An abandoned external display change failed: \(error.localizedDescription)")
+                    return
+                }
+                run.timer?.cancel()
+                self.noteUnknownOutcome(of: step, in: run, error)
+                run.fail(step, error)
+                // The native call can still complete; that is no longer this step's answer.
+                run.steps += 1
+                next(false)
+            }
+        }
+    }
+
+    /// A request the device may have acted on leaves the CarPlay state as an unanswered one does.
+    private func noteUnknownOutcome(of step: ExternalDisplayStep, in run: Run, _ error: any Error) {
+        guard case .outcomeUnknown? = error as? DeviceOperationFailure else { return }
+        switch step {
+        case .carPlaySession: carPlay.timedOut(in: run.requestBoot)
+        case .carPlayService: carPlay.serviceUnanswered(in: run.requestBoot)
+        case .carPlayConfiguration, .screen: break
         }
     }
 

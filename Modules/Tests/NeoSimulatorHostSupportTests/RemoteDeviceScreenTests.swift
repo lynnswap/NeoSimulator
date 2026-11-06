@@ -1397,7 +1397,7 @@ struct RemoteDeviceScreenTests {
         let runtime = ABIRuntime.shared
         let peers = GuestHIDPeerFixture()
         let codec = try await GuestHIDCodec(runtime: runtime)
-        let input = try NativeDeviceScreenInput.connect(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
+        let input = try await NativeDeviceScreenInput.connect(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
         let digitizer = try #require(CoreDeviceScreenInput.features[.digitizer])
         let button = try #require(CoreDeviceScreenInput.features[.button])
         #expect(peers.lookUps == [digitizer, button])
@@ -1536,7 +1536,7 @@ struct RemoteDeviceScreenTests {
             xpc_dictionary_set_string(reply, "currentDeviceNonFlatOrientation", nonFlat)
             xpc_dictionary_set_bool(reply, "currentDeviceOrientationLocked", false)
         }
-        let orientation = try GuestDeviceOrientation(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
+        let orientation = try await GuestDeviceOrientation(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
         let initial = try await orientation.read()
         #expect(initial.physical == .portrait && initial.displayAngle == 0)
         let rotated = try await orientation.rotate(left: false)
@@ -1553,7 +1553,7 @@ struct RemoteDeviceScreenTests {
         let peers = GuestHIDPeerFixture()
         peers.holdsReplies = true
         let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
-        let orientation = try GuestDeviceOrientation(guest: guest, timeout: .milliseconds(50))
+        let orientation = try await GuestDeviceOrientation(guest: guest, timeout: .milliseconds(50))
         await #expect { try await orientation.read() } throws: { $0.localizedDescription.contains("timed out") }
         peers.holdsReplies = false
         peers.reply = { _, reply in

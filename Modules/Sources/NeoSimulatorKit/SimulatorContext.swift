@@ -523,6 +523,44 @@ public final class SimulatorScreen {
         controller.session.send(button.input, failure: onFailure)
     }
 
+    /// What is known of the device, held so that reading it asks the device nothing. `refreshDeviceState()` updates it.
+    public var deviceModel: SimulatorDeviceModel { controller.session.model }
+
+    /// Asks the device for what `deviceModel` holds, without waiting for its answer.
+    public func refreshDeviceState() {
+        guard !isClosed else { return }
+        controller.session.refreshGuestState()
+    }
+
+    /// Flips the guest between its light and dark appearance.
+    public func toggleAppearance() async throws {
+        try checkOpen()
+        try await controller.session.toggleAppearance()
+    }
+
+    /// Changes the guest's preferred text size by `delta` steps, stopping at the ends of its range.
+    public func changeTextSize(by delta: Int) async throws {
+        try checkOpen()
+        try await controller.session.changeTextSize(by: delta)
+    }
+
+    public func toggleIncreaseContrast() async throws {
+        try checkOpen()
+        try await controller.session.toggleIncreaseContrast()
+    }
+
+    /// Flips whether biometrics are enrolled, where the device has them. Touch ID, Face ID, and Optic ID share this state.
+    public func toggleBiometricEnrollment() async throws {
+        try checkOpen()
+        try await controller.session.toggleBiometricEnrollment()
+    }
+
+    /// Flips a Core Animation debug option, and throws if the device does not report the new state.
+    public func toggle(_ option: CADebugOption) async throws {
+        try checkOpen()
+        try await controller.session.toggle(option)
+    }
+
     /// Releases this screen's resources without shutting down the guest.
     /// If cleanup fails after the screen closes, this throws and `isClosed` remains true.
     /// Call again, or invalidate the context, to retry the unfinished cleanup.

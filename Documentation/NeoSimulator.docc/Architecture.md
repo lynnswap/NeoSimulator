@@ -194,6 +194,9 @@ Hub mode.
 | `DeviceCommand`, `MenuController` | Define commands and derive menu state from the active window. |
 | `SystemCommandRunner` | Run one subprocess without blocking its caller, from launch until the child is reaped and its output files are removed. Each command's `CommandPolicy` states whether it has a limit and what the caller's cancellation does to the child. |
 | `CommandReads` | Stop every read a controller has running while the operations waiting on them finish, so quitting does not cancel an accepted change and an unresponsive child cannot hold it. A stopped read ends as `CancellationError`, and its consumers publish nothing. |
+| `UninterruptedCommands` | Hold the commands that keep running when their callers are cancelled, so that a quit that has waited for them can stop them and bound the rollbacks that follow. |
+| `SimulatorDeviceChannel`, `DeviceIOHub` | Own each device's native requests, one channel per identifier and device-set path for the life of the process: their order, deadlines, cancellation and what is still in flight. See [Native device requests](#Native-device-requests). |
+| `SimulatorDeviceModel`, `SimulatorDeviceRegistry` | Hold what a device last answered, its health and its last issue, one per device, for everything that presents it. |
 | `DeviceToolRunner` | Run a device's selected-Xcode tools one at a time and let its session cancel the running one. |
 | `PasteboardSync` | Exchange copies between the Mac and connected sessions. |
 | `ExternalDisplayChanges` | Serialize display and CarPlay changes across sessions for one device. |
@@ -242,6 +245,70 @@ Restart and erase disconnect and reconnect the existing window. Session teardown
 cancels commands and ends owned connections. Input releases and external-display
 changes must finish against the session or device that owns them, even after
 the active window changes.
+
+## Native device requests
+
+CoreSimulator's guest requests wait synchronously for the guest's bridge,
+CoreSimulatorService or the device's I/O server, and nothing can cancel such a
+wait. So no UI-facing interface offers them synchronously, and none of them runs
+on MainActor or on an actor's executor. `SimulatorDevice`, the audio, pasteboard and input connections
+and the external screen send them through their device's `SimulatorDeviceChannel`,
+an actor that stays responsive because it only owns the requests. The calls run
+one at a time on the device's serial worker. Reading and changing a value as one
+step, such as Toggle Appearance or a text-size change, is one request, whose
+decision is a pure closure that the session passes in.
+
+A deadline does not stop a call; it only ends the wait for it:
+
+| What happened | What the caller is told |
+| --- | --- |
+| Cancelled before the call started | `CancellationError`, and it never runs. |
+| A read cancelled while running | `CancellationError`. |
+| A change cancelled while running | `outcomeUnknown(.cancelled)`. |
+| A read past its deadline | `noAnswer`. |
+| A change past its deadline | `outcomeUnknown(.timedOut)`. |
+| Requested or waiting behind a call past its deadline | `notSent`. |
+
+A call past its deadline makes the channel `unresponsive` until that call
+actually returns. No replacement worker starts, since CoreSimulator's own state
+could be what holds the call. When it returns, what it created gets its cleanup
+from `lateCompletion` or `cleanUp`, which is never refused. Nothing that was
+refused or abandoned is sent again; instead `DeviceSession` applies what is wanted
+of the guest now: debug settings, keyboard, location, audio route, pasteboard
+synchronization and the external display's saved choice. Connecting a screen does
+not wait for any of these.
+
+Channels keep a device's held call from other devices, with one exception in
+CoreSimulator. `-[SimDevice lookup:error:]` goes through the process's one
+`SimServiceContext` connection to CoreSimulatorService, and a lookup that waits for
+a stopped `launchd_sim` holds the requests behind it on that connection. Until it
+returns, other devices in the process can make no lookup, no first request to a
+guest's bridge, no input connection and no new screen, so those requests fail by
+their deadlines, while requests over a bridge they already reach go on. Stopping
+the device that holds the lookup releases it. Another process has its own
+connection, and so is not affected.
+
+Validating a menu reads `SimulatorDeviceModel` and asks the device nothing. A menu
+that opens, a connection, the session's own changes and a recovery read the guest
+again, one read at a time, and an open menu updates if that changes what it shows.
+Audio route reports coalesce the same way, so a device that does not answer gains
+no queue.
+
+SimulatorKit's `SimDisplayView` is AppKit and stays on MainActor, though creating
+one waits on the device's I/O server. Reads that CoreSimulator answers locally stay
+synchronous: `SimDevice` state and boot date, `supportsFeature:`, its file paths,
+the devices of an open device set, and the screen's properties and modes, which
+ROCKit memoizes. Opening a device set for the first time asks CoreSimulatorService,
+which the host does on MainActor when it starts.
+
+Quitting never waits on a held call. The manager gives accepted work
+`TerminationTimeout`, then reports what has not started as not run and stops the
+uninterrupted commands still running as `terminating`, whose transactions finish
+with what they know. What does not finish in `terminationGrace` is reported as
+unknown. Later uninterrupted commands, such as a rollback, each have that grace too.
+Everything that waits on a device during a quit is bounded and notes what it left
+in `TerminationAccount`; the quit's owner reports those notes and what
+`DeviceIOHub` still holds, logging them and showing them for a limited time.
 
 ## Failure ownership
 

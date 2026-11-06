@@ -6698,21 +6698,21 @@ struct InputFocusTests {
         ])
 
         display.contentSize = 11
-        try session.changeTextSize(by: 1)
-        try session.changeTextSize(by: 1)
+        try await session.changeTextSize(by: 1)
+        try await session.changeTextSize(by: 1)
         #expect(display.contentSize == 12)
-        try session.changeTextSize(by: -1)
+        try await session.changeTextSize(by: -1)
         #expect(display.contentSize == 11)
         display.contentSize = 0
-        #expect(throws: (any Error).self) { try session.changeTextSize(by: -1) }
+        await #expect(throws: (any Error).self) { try await session.changeTextSize(by: -1) }
         #expect(display.contentSize == 0)
 
-        try session.toggleIncreaseContrast()
+        try await session.toggleIncreaseContrast()
         #expect(display.contrastMode == 2)
-        try session.toggleIncreaseContrast()
+        try await session.toggleIncreaseContrast()
         #expect(display.contrastMode == 1)
         display.contrastMode = 0
-        #expect(throws: (any Error).self) { try session.toggleIncreaseContrast() }
+        await #expect(throws: (any Error).self) { try await session.toggleIncreaseContrast() }
         #expect(display.contrastMode == 0)
     }
 
@@ -6843,7 +6843,7 @@ struct InputFocusTests {
         #expect(try String(contentsOf: log, encoding: .utf8) == "spawn test-device launchctl stop com.apple.PineBoard\n")
     }
 
-    @Test func colorOptionsShowTheDeviceStateAndReportDroppedChanges() throws {
+    @Test func colorOptionsShowTheDeviceStateAndReportDroppedChanges() async throws {
         let display = TestDisplay()
         let controller = try makeController(display)
         defer { controller.invalidate() }
@@ -6852,12 +6852,163 @@ struct InputFocusTests {
         #expect(display.caDebugOptions.map(\.rawValue).sorted() == [2, 17])
         let blended = DeviceCommand.command(.colorBlendedLayers)
         #expect(blended.state?(controller) == .on && DeviceCommand.command(.colorCopiedImages).state?(controller) == .off)
-        // Read the guest's state because another host may change it.
+        // Validating a menu shows what the device last reported, without asking it.
+        let reads = display.guestStateReads
         display.caDebugOptions.remove(.colorBlendedLayers)
+        #expect(blended.state?(controller) == .on && display.guestStateReads == reads)
+        // Another host may change it, so opening a menu reads it again.
+        controller.session.refreshGuestState()
         #expect(blended.state?(controller) == .off)
         // CoreSimulator can silently drop writes; read back to detect that.
         display.droppedCADebugOptions = [.colorMisalignedImages]
-        #expect(throws: (any Error).self) { try controller.session.toggle(.colorMisalignedImages) }
+        await #expect(throws: (any Error).self) { try await controller.session.toggle(.colorMisalignedImages) }
+    }
+
+    @Test func validatingAMenuAsksTheDeviceNothingAndOpeningOneReadsItOnceWithoutWaiting() async throws {
+        let display = TestDisplay()
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let model = SimulatorDeviceModel()
+        let controller = try makeController(display, features: [DeviceCapabilities.faceID, DeviceCapabilities.standBy], model: model)
+        defer { controller.invalidate() }
+        display.worker = worker
+        worker.hold()
+        let enrolled = NSMenuItem()
+        for _ in 0..<10 {
+            #expect(DeviceCommand.command(.faceIDEnrolled).validate(enrolled, for: controller))
+            #expect(enrolled.state == .off)
+            #expect(DeviceCommand.command(.toggleStandBy).stateTitle?(controller) == "Show StandBy")
+            #expect(DeviceCommand.command(.colorBlendedLayers).state?(controller) == .off)
+        }
+        #expect(display.guestStateReads == 0)
+
+        // However many menus open while a read is held, one read runs and one more follows it.
+        display.notificationStates["com.apple.BiometricKit.enrollmentChanged"] = 1
+        var changes = 0
+        for _ in 0..<5 { controller.session.refreshGuestState { changes += 1 } }
+        #expect(display.guestStateReads == 1)
+        #expect(model.isBiometricEnrolled == nil)
+        worker.release()
+        try await wait { display.guestStateReads == 2 && changes == 5 }
+        #expect(model.isBiometricEnrolled == true && model.showsStandBy == false)
+        #expect(controller.session.isBiometricEnrolled)
+        DeviceCommand.command(.faceIDEnrolled).validate(enrolled, for: controller)
+        #expect(enrolled.state == .on)
+    }
+
+    @Test func aHeldCallLeavesTheScreenAnsweringReportsWhatItKnowsAndReappliesOnlyWhatIsWantedNow() async throws {
+        let key = HostPreferences.slowMotionAnimation
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(true, forKey: key)
+        let slowMotion = "com.apple.UIKit.SimulatorSlowMotionAnimationState"
+        let display = TestDisplay()
+        let worker = HeldDeviceWorker(limit: .milliseconds(50))
+        defer { worker.release() }
+        let model = SimulatorDeviceModel()
+        model.follow(worker.channel)
+        let controller = try makeController(display, features: [DeviceCapabilities.slowMotionStateful], model: model)
+        defer { controller.invalidate() }
+        let session = controller.session
+        display.worker = worker
+        worker.hold()
+
+        let held = Task { try await session.toggleAppearance() }
+        try await wait { worker.calls == ["toggle the device's appearance"] }
+        let queued = Task { try await session.toggleAppearance() }
+        await #expect(throws: DeviceOperationFailure.outcomeUnknown(operation: "toggle the device's appearance", cause: .timedOut(.milliseconds(50)))) {
+            try await held.value
+        }
+        await #expect(throws: DeviceOperationFailure.notSent(operation: "toggle the device's appearance", heldBy: "toggle the device's appearance")) {
+            try await queued.value
+        }
+        try await wait { model.unresponsiveOperation == "toggle the device's appearance" }
+
+        // Nothing reaches the worker while it is held, or queues behind it.
+        for _ in 0..<100 {
+            await #expect(throws: DeviceOperationFailure.self) { try await session.toggleAppearance() }
+        }
+        session.refreshGuestState()
+        #expect(worker.calls == ["toggle the device's appearance"])
+        #expect(await worker.channel.unresolvedOperations().map(\.operation) == ["toggle the device's appearance"])
+        #expect(display.appearanceToggles == 0)
+
+        // The call's return is what recovers the device. What was refused is not sent, and what is wanted now is.
+        worker.release()
+        try await wait { model.unresponsiveOperation == nil }
+        try await wait { display.notificationStates[slowMotion] == 1 && worker.calls.contains("read the device's state") }
+        #expect(worker.calls.filter { $0 == "toggle the device's appearance" }.count == 1)
+        #expect(display.appearanceToggles == 0)
+    }
+
+    @Test func aPasteboardConnectionThatArrivesAfterTheSessionEndedIsLetGo() async throws {
+        let display = TestDisplay()
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let session = try makeSession(display, features: Self.defaultFeatures.union([DeviceCapabilities.pasteboard]))
+        display.worker = worker
+        worker.hold()
+        var failures: [String] = []
+        session.transferPasteboard(.get) { failures.append($0.localizedDescription) }
+        session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
+        try await wait { worker.calls.count == 1 }
+        session.disconnect()
+        worker.release()
+        try await wait { display.pasteboards.count == 1 && failures.count == 2 }
+        #expect(display.pasteboards[0].isDisconnected && display.pasteboards[0].transfers.isEmpty)
+        #expect(worker.calls == ["connect the device's pasteboard"])
+    }
+
+    @Test func audioRouteChangesWhileAReadIsHeldNeedOneMoreReadNotAQueue() async throws {
+        let display = TestDisplay()
+        let port = TestAudioRoutes([])
+        display.audioPort = port
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let session = try makeSession(display, features: [DeviceCapabilities.routableAudio])
+        session.connectAudioRoutes { _ in }
+        port.worker = worker
+        worker.hold()
+        for _ in 0..<20 { port.changed?(.selectedDevice) }
+        try await wait { worker.calls.count == 1 }
+        #expect(port.stateReads == 2)
+        port.current.inputRoute = "latest"
+        worker.release()
+        try await wait { session.audioRoutes?.inputRoute == "latest" }
+        #expect(port.stateReads == 3)
+        #expect(worker.calls.count == 2)
+    }
+
+    @Test func aRequestWithAnUnknownOutcomeLeavesCarPlayStateUnknownAndItsLateCompletionAdvancesNothing() async throws {
+        let unknown = DeviceOperationFailure.outcomeUnknown(operation: "request", cause: .timedOut(.seconds(10)))
+        let changes = ExternalDisplayChanges(carPlayReconnectionDelay: .zero)
+        let screen = TestExternalScreen()
+        let (controller, _) = try makeExternalDisplayController(screen, features: Self.carPlayFeatures,
+                                                                preferences: MemoryPreferences(), externalDisplayChanges: changes)
+        defer { controller.invalidate() }
+        var failures: [String] = []
+        let report: @MainActor (any Error) -> Void = { failures.append($0.localizedDescription) }
+
+        // The mode may have changed, and the channel's own answer ended the step; the native completion comes later.
+        screen.defersChanges = true
+        screen.unknownOutcome = unknown
+        controller.session.chooseExternalDisplay(.size1920x1080, failure: report)
+        #expect(failures == ["Could not set the external display of Test iPhone to \(ExternalDisplayMode.size1920x1080.title): \(unknown.localizedDescription)"])
+        #expect(!changes.isBusy)
+        screen.deliverCompletions()
+        screen.unknownOutcome = nil
+        screen.defersChanges = false
+        #expect(!changes.isBusy)
+
+        // A session request that may have reached the guest is not followed by another in this boot.
+        failures = []
+        screen.carPlayErrors["start carplay"] = unknown
+        controller.session.chooseExternalDisplay(.carPlay, failure: report)
+        #expect(failures.count == 1)
+        screen.carPlayErrors = [:]
+        let sent = screen.requests.count
+        controller.session.chooseExternalDisplay(.disabled, failure: report)
+        #expect(!screen.requests.dropFirst(sent).contains("stop carplay"))
     }
 
     @Test func memoryWarningRewritesTheTriggerFileInPlaceAndReportsFailures() throws {
@@ -9818,12 +9969,13 @@ struct InputFocusTests {
                                 presentCompactWindow: @escaping (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) },
                                 onClose: @escaping (DeviceWindowController, DeviceLifetimeChoice?) -> Void = { _, _ in },
                                 onRestart: @escaping (DeviceWindowController, Bool) -> Void = { _, _ in },
-                                onShutDown: ((DeviceWindowController) -> Void)? = nil)
+                                onShutDown: ((DeviceWindowController) -> Void)? = nil,
+                                model: SimulatorDeviceModel = SimulatorDeviceModel())
         throws -> DeviceWindowController {
         let session = try makeSession(display, family: family, features: features, framebufferMask: framebufferMask,
                                       simctl: simctl, devicectl: devicectl, recordingProcess: recordingProcess,
                                       openLog: openLog, screenPointsPerInch: screenPointsPerInch, device: identifier,
-                                      preferences: preferences, keyboardLanguage: keyboardLanguage,
+                                      model: model, preferences: preferences, keyboardLanguage: keyboardLanguage,
                                       pasteboard: pasteboard, pasteboardSync: pasteboardSync,
                                       externalDisplayChanges: externalDisplayChanges,
                                       userInterfacePlugin: userInterfacePlugin, runtimeVersion: runtimeVersion,
@@ -9936,6 +10088,7 @@ struct InputFocusTests {
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
                              deviceSetPath: String? = nil,
+                             model: SimulatorDeviceModel = SimulatorDeviceModel(),
                              preferences: MemoryPreferences = MemoryPreferences(),
                              keyboardLanguage: @escaping @MainActor () -> String? = { "fr" },
                              pasteboard: NSPasteboard? = nil,
@@ -9958,7 +10111,7 @@ struct InputFocusTests {
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
-            recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
+            model: model, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
             pasteboardTransport: pasteboardTransport,
             externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100),
@@ -10383,23 +10536,47 @@ private final class TestDisplay: SimulatorDisplay {
         gestures.append(gesture)
         completion(deliveryError)
     }
-    func toggleAppearance() throws {}
+    /// The device's worker, for a test whose guest requests must go through a real one.
+    var worker: HeldDeviceWorker?
+    var appearanceToggles = 0
+    func toggleAppearance() async throws {
+        try await worker?.call("toggle the device's appearance")
+        appearanceToggles += 1
+    }
     var notificationStates: [String: UInt64] = [:]
     var postedNotifications: [String] = []
     var contentSize = 4
     var contrastMode = 1
     func postNotification(_ name: String) throws { postedNotifications.append(name) }
-    func notificationState(_ name: String) throws -> UInt64 { notificationStates[name] ?? 0 }
     var notificationError: Error?
-    func setNotificationState(_ name: String, to state: UInt64) throws {
+    /// Fails only the post, once the state is set.
+    var postError: Error?
+    func sendNotificationState(_ name: String, to state: UInt64) async throws {
+        try await worker?.call("change \(name) in the device")
         if let notificationError { throw notificationError }
         notificationStates[name] = state
+        if let postError { throw GuestNotificationNotPosted(underlying: postError) }
+        postedNotifications.append(name)
     }
-    func contentSizeCategory() throws -> Int { contentSize }
-    func setContentSizeCategory(_ category: Int) throws { contentSize = category }
-    func increaseContrastMode() throws -> Int { contrastMode }
-    func setIncreaseContrast(_ enabled: Bool) throws { contrastMode = enabled ? 2 : 1 }
+    func updateNotificationState(_ name: String, _ change: @escaping @Sendable (UInt64) -> UInt64) async throws {
+        try await sendNotificationState(name, to: change(notificationStates[name] ?? 0))
+    }
+    func updateContentSizeCategory(_ change: @escaping @Sendable (Int) throws -> Int?) throws {
+        if let category = try change(contentSize) { contentSize = category }
+    }
+    func updateIncreaseContrast(_ change: @escaping @Sendable (Int) throws -> Bool) throws {
+        contrastMode = try change(contrastMode) ? 2 : 1
+    }
     func triggerCloudSync() async throws {}
+    /// How many reads of the guest's state have started: reading what the menus show must not be one.
+    private(set) var guestStateReads = 0
+    func guestState(notifications: [String], debugOptions: [CADebugOption]) async throws -> GuestStateReading {
+        guestStateReads += 1
+        try await worker?.read("read the device's state")
+        return GuestStateReading(
+            notifications: Dictionary(uniqueKeysWithValues: notifications.map { ($0, notificationStates[$0] ?? 0) }),
+            debugOptions: Dictionary(uniqueKeysWithValues: debugOptions.map { ($0, caDebugOptions.contains($0)) }))
+    }
     var logFolder = URL(fileURLWithPath: "/nonexistent")
     var memoryWarningURL = URL(fileURLWithPath: "/nonexistent/memory_warning_simulation")
     var caDebugOptions: Set<CADebugOption> = []
@@ -10407,10 +10584,12 @@ private final class TestDisplay: SimulatorDisplay {
     var droppedCADebugOptions: Set<CADebugOption> = []
     func logDirectory() throws -> URL { logFolder }
     func memoryWarningFile() throws -> URL { memoryWarningURL }
-    func caDebugOption(_ option: CADebugOption) throws -> Bool { caDebugOptions.contains(option) }
-    func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
-        guard !droppedCADebugOptions.contains(option) else { return }
-        if enabled { caDebugOptions.insert(option) } else { caDebugOptions.remove(option) }
+    func toggleCADebugOption(_ option: CADebugOption) throws -> CADebugOptionChange {
+        let enabled = !caDebugOptions.contains(option)
+        if !droppedCADebugOptions.contains(option) {
+            if enabled { caDebugOptions.insert(option) } else { caDebugOptions.remove(option) }
+        }
+        return CADebugOptionChange(requested: enabled, observed: caDebugOptions.contains(option))
     }
     var scenarios: [LocationScenario] = []
     var appliedLocations: [AppliedLocation] = []
@@ -10491,7 +10670,8 @@ private final class TestDisplay: SimulatorDisplay {
     /// Fails once, then clears itself.
     var pasteboardError: Error?
     func connectPasteboard(_ pasteboard: NSPasteboard,
-                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
+                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> any SimulatorPasteboard {
+        try await worker?.read("connect the device's pasteboard")
         if let error = pasteboardError {
             pasteboardError = nil
             throw error
@@ -10590,11 +10770,49 @@ private final class TestDisplay: SimulatorDisplay {
     }
 }
 
+/// A device's real channel and worker, whose calls block until `release()` while it holds them, as a native call blocks.
+final class HeldDeviceWorker: Sendable {
+    let channel: SimulatorDeviceChannel
+    private let limit: Duration
+    private let state = Mutex<(calls: [String], gate: DispatchSemaphore?)>(([], nil))
+
+    init(limit: Duration = .seconds(10)) {
+        channel = SimulatorDeviceChannel(address: DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil))
+        self.limit = limit
+    }
+
+    /// The calls that have reached the worker, in order.
+    var calls: [String] { state.withLock { $0.calls } }
+
+    func hold() { state.withLock { $0.gate = DispatchSemaphore(value: 0) } }
+
+    func release() { state.withLock { state in defer { state.gate = nil }; return state.gate }?.signal() }
+
+    func call(_ operation: String) async throws {
+        try await channel.change(operation, limit: limit) { [self] in run(operation) }
+    }
+
+    func read(_ operation: String) async throws {
+        try await channel.read(operation, limit: limit) { [self] in run(operation) }
+    }
+
+    private func run(_ operation: String) {
+        let gate = state.withLock { state in
+            state.calls.append(operation)
+            return state.gate
+        }
+        gate?.wait()
+    }
+}
+
 /// Records "input <route>" and "output <route>" requests; tests report external changes.
 @MainActor
 private final class TestAudioRoutes: SimulatorAudioRoutes {
     var current: AudioRouteState
     private(set) var requests: [String] = []
+    /// The device's worker, for a test whose reads must go through a real one.
+    var worker: HeldDeviceWorker?
+    private(set) var stateReads = 0
     /// Fails completion without changing the route.
     var routeError: Error?
     /// Throws before recording the request.
@@ -10609,7 +10827,11 @@ private final class TestAudioRoutes: SimulatorAudioRoutes {
                                   defaultOutput: devices.first { $0.isDefault(in: .output) }?.uid)
     }
 
-    func state() throws -> AudioRouteState { current }
+    func state() async throws -> AudioRouteState {
+        stateReads += 1
+        try await worker?.read("read the device's audio routes")
+        return current
+    }
 
     func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws {
         if let refusal { throw refusal }
@@ -10682,6 +10904,8 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     var completionError: Error?
     /// Throws before recording the request.
     var refusal: Error?
+    /// Throws after recording the request, whose completion can still arrive through `deliverCompletions()`.
+    var unknownOutcome: Error?
     /// Errors keyed by request name; saving throws and other requests fail completion.
     var carPlayErrors: [String: Error] = [:]
     /// Mirrors CoreSimulatorBridge's session count, including invalid negative counts.
@@ -10709,6 +10933,7 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         complete(completion) {
             $0 = ExternalScreenState(isPoweredOn: true, pixelSize: pixelSize, scale: scale, isCarPlay: carPlay)
         }
+        if let unknownOutcome { throw unknownOutcome }
     }
 
     func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {

@@ -3,7 +3,9 @@ import ObservationBridge
 import AppKit
 import Darwin
 import MachO
+import NeoSimulatorDeviceIO
 import ObjectiveC
+import Synchronization
 
 // SimulatorKit passes rotations as Measurement<UnitAngle>, whose layout only
 // its metadata establishes.
@@ -510,21 +512,21 @@ package protocol SimulatorExternalScreen: AnyObject {
     /// The modes the screen advertises, `supportedScreenModes`, which stay the
     /// same while the device runs; only their order changes between reads.
     func supportedModes() throws -> [ExternalScreenMode]
-    /// Sets a supported screen mode and powers it on, optionally with CarPlay properties.
-    /// A throw means nothing was sent; completion reports the result on the main actor.
+    /// Sets a supported screen mode and powers it on, optionally with CarPlay properties. Completion reports the result
+    /// on the main actor. A throw means no completion follows, and that nothing was sent unless it says otherwise.
     func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
-                 completion: @escaping @MainActor (Error?) -> Void) throws
-    /// `SimScreen setPowerState:0 …`. `completion` receives CoreSimulator's
-    /// result on the main actor; a thrown error means nothing was sent.
-    func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws
+                 completion: @escaping @MainActor (Error?) -> Void) async throws
+    /// `SimScreen setPowerState:0 …`. `completion` receives CoreSimulator's result on the main actor. A throw means no
+    /// completion follows, and that nothing was sent unless it says otherwise.
+    func powerOff(completion: @escaping @MainActor (Error?) -> Void) async throws
     /// Writes the guest configuration read on mode changes: default CarPlay values or `{stark: 0}`.
     func saveCarPlayConfiguration(carPlay: Bool) throws
     /// Sends a counted CarPlay start/end for `boot`. Completion runs on the main actor.
     /// If the device restarted, no request is sent and completion receives `CarPlayRequestMoot`.
     func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void)
-    /// Creates or removes the guest's CarPlay HID service.
-    /// A throw means nothing was sent; completion reports send status on the main actor.
-    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws
+    /// Creates or removes the guest's CarPlay HID service. Completion reports send status on the main actor.
+    /// A throw means no completion follows, and that nothing was sent unless it says otherwise.
+    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) async throws
     /// A display of the screen from the display factory, for its own window.
     func makeDisplay() async throws -> any SimulatorDisplay
     /// Stops the change reports.
@@ -558,11 +560,12 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     private let runtime: SimulatorRuntime
     /// The device's native keyboard, which this screen's displays share with its integrated screen.
     private let keyboard: NativeDeviceKeyboard?
-    private let setCurrentMode: NativeObjCMethod<Void, AnyObject, CGSize, NSDictionary?, DispatchQueue, Completion>
-    private let setPowerState: NativeObjCMethod<Void, Int32, DispatchQueue, Completion>
+    // A proxy's messages go to the device's I/O server, so only the device's worker sends them.
+    private nonisolated(unsafe) let setCurrentMode: NativeObjCMethod<Void, AnyObject, CGSize, NSDictionary?, DispatchQueue, Completion>
+    private nonisolated(unsafe) let setPowerState: NativeObjCMethod<Void, Int32, DispatchQueue, Completion>
     private var events: NativeSwiftValue?
     /// The HID client that sends the CarPlay service's messages, from the first.
-    private var hidClient: AnyObject?
+    private var hidClient: WorkerOwned<AnyObject>?
 
     package init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorRuntime,
          keyboard: NativeDeviceKeyboard? = nil, changed: @escaping @MainActor () -> Void) throws {
@@ -590,7 +593,10 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
             on: screen.object, display.screenPropertyEvents, .main, handler)
     }
 
-    isolated deinit { disconnect() }
+    isolated deinit {
+        disconnect()
+        hidClient?.release(on: device.channel)
+    }
 
     package var deviceBootDate: Date? { device.lastBootDate }
 
@@ -609,7 +615,7 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     package func supportedModes() throws -> [ExternalScreenMode] { try advertisedModes().map(mode) }
 
     package func setMode(pixelSize size: CGSize, scale: CGFloat, carPlay: Bool,
-                 completion: @escaping @MainActor (Error?) -> Void) throws {
+                 completion: @escaping @MainActor (Error?) -> Void) async throws {
         let simScreen = try connectedScreen()
         // One read of the modes, whose order the choice's index refers to.
         let advertised = try advertisedModes()
@@ -619,13 +625,20 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         case .advertised(let index): advertised[index]
         }
         guard let target else { throw SimulatorError.operation("The external display has no current mode.") }
-        try unsafe setCurrentMode.unsafeInvoke(on: simScreen, target, size,
-                                               carPlay ? runtime.display.carPlayProperties : nil, .main,
-                                               Self.completed(completion))
+        nonisolated(unsafe) let message = setCurrentMode, screen = simScreen, mode = target
+        nonisolated(unsafe) let properties = carPlay ? runtime.display.carPlayProperties : nil
+        nonisolated(unsafe) let completed = Self.completed(completion)
+        try await device.channel.change("set the external display's mode") {
+            try unsafe message.unsafeInvoke(on: screen, mode, size, properties, .main, completed)
+        }
     }
 
-    package func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {
-        try unsafe setPowerState.unsafeInvoke(on: connectedScreen(), 0, .main, Self.completed(completion))
+    package func powerOff(completion: @escaping @MainActor (Error?) -> Void) async throws {
+        nonisolated(unsafe) let message = setPowerState, screen = try connectedScreen()
+        nonisolated(unsafe) let completed = Self.completed(completion)
+        try await device.channel.change("turn off the external display") {
+            try unsafe message.unsafeInvoke(on: screen, 0, .main, completed)
+        }
     }
 
     package func saveCarPlayConfiguration(carPlay: Bool) throws {
@@ -633,7 +646,7 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     }
 
     package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
-        Task { [device] in
+        Task.immediate { [device] in
             do {
                 try await device.setCarPlayEnabled(enabled, inBoot: boot)
                 completion(nil)
@@ -643,11 +656,14 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         }
     }
 
-    package func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws {
-        let client = try hidClient ?? runtime.input.connect(to: device)
-        hidClient = client
+    package func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) async throws {
+        let client: WorkerOwned<AnyObject>
+        if let hidClient { client = hidClient } else {
+            client = try await runtime.input.connect(to: device)
+            hidClient = client
+        }
         try runtime.input.sendCarPlayService(connected: connected, hasTouchScreen: CarPlayConfiguration.hasTouchScreen,
-                                             client: client, completion: completion)
+                                             client: client.value, completion: completion)
     }
 
     package func makeDisplay() async throws -> any SimulatorDisplay {
@@ -698,6 +714,24 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
     // CoreSimDeviceIO may ignore the completion queue. Bridge back to the main actor explicitly.
     private nonisolated static func completed(_ completion: @escaping @MainActor (Error?) -> Void) -> Completion {
         { error in DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } } }
+    }
+}
+
+/// A native object that its device's worker creates and releases, since CoreSimulator's own teardown of it can wait on
+/// the device as its creation does. Whatever holds the last use of it releases it through ``release(on:)``.
+package final class WorkerOwned<Value: AnyObject>: @unchecked Sendable {
+    private var object: Value?
+
+    package init(_ object: Value) { self.object = object }
+
+    package var value: Value { object! }
+
+    /// For a late result that the worker itself is finishing.
+    package func releaseNow() { object = nil }
+
+    /// Nothing else may use it after this call.
+    package func release(on channel: SimulatorDeviceChannel) {
+        channel.cleanUp("release a native connection") { self.releaseNow() }
     }
 }
 
@@ -780,11 +814,16 @@ package struct SimulatorInputInterface {
         return byte
     }
 
-    package func connect(to device: SimulatorDevice) throws -> AnyObject {
+    package func connect(to device: SimulatorDevice) async throws -> WorkerOwned<AnyObject> {
         guard let allocated = allocate(clientClass) else {
             throw SimulatorError.unavailable("Could not allocate simulator input")
         }
-        return try unsafe makeClient.unsafeInvoke(on: allocated, device.object)
+        nonisolated(unsafe) let makeClient = makeClient, instance = allocated, object = device.object
+        return try await device.channel.read("connect the device's input", lateCompletion: { result in
+            if case .success(let client) = result { client.releaseNow() }
+        }) {
+            WorkerOwned(try unsafe makeClient.unsafeInvoke(on: instance, object))
+        }
     }
 
     /// Device buttons use states 1/2; Apple TV Remote buttons use their own target and states 1/0.
@@ -990,15 +1029,29 @@ package struct SimulatorPasteboardInterface {
 
     /// Connects without transferring. Synchronization requires `enableRemoteAutosync`.
     package func connect(to device: SimulatorDevice, managing pasteboard: NSPasteboard,
-                 events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> SimulatorPasteboardConnection {
-        let port = try device.lookUp(serviceName)
+                 events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> SimulatorPasteboardConnection {
+        let port = try await device.lookUp(serviceName)
         guard let allocated = allocate(interfaceClass) else {
+            mach_port_deallocate(mach_task_self_, port)
             throw SimulatorError.unavailable("Could not allocate the simulator's pasteboard connection")
         }
         // The interface calls the delegate on the main queue; the connection keeps it.
         let delegate = SimulatorPasteboardDelegate(events)
-        let object = try unsafe makeInterface.unsafeInvoke(on: allocated, port, pasteboard, delegate, .main)
-        return SimulatorPasteboardConnection(object: object, delegate: delegate, interface: self)
+        nonisolated(unsafe) let makeInterface = makeInterface, instance = allocated, pasteboard = pasteboard, target = delegate
+        // Connecting consumes the right, so it stays this caller's only until then.
+        let connecting = Mutex(false)
+        do {
+            let object = try await device.channel.read("connect the device's pasteboard", lateCompletion: { result in
+                if case .success(let object) = result { object.releaseNow() }
+            }) { () throws -> WorkerOwned<AnyObject> in
+                connecting.withLock { $0 = true }
+                return WorkerOwned(try unsafe makeInterface.unsafeInvoke(on: instance, port, pasteboard, target, .main))
+            }
+            return SimulatorPasteboardConnection(object: object, delegate: delegate, interface: self, channel: device.channel)
+        } catch {
+            if !connecting.withLock({ $0 }) { mach_port_deallocate(mach_task_self_, port) }
+            throw error
+        }
     }
 }
 
@@ -1032,41 +1085,52 @@ package enum SimulatorPasteboardEvent {
 @MainActor
 package protocol SimulatorPasteboard: AnyObject {
     /// SimPasteboardPlus `pull`: Edit ▸ Get Pasteboard.
-    func pull() throws
+    func pull() async throws
     /// SimPasteboardPlus `push`: Edit ▸ Send Pasteboard.
-    func push() throws
+    func push() async throws
     /// Sends the managed pasteboard for automatic synchronization rather than for Send Pasteboard, so that its outcome
     /// completes no requested transfer.
-    func pushAutomatically() throws
+    func pushAutomatically() async throws
     /// Enables bidirectional automatic synchronization without an immediate transfer.
-    func setAutomaticSync(_ enabled: Bool) throws
+    func setAutomaticSync(_ enabled: Bool) async throws
     /// Stops the connection's events.
     func disconnect()
 }
 
 extension SimulatorPasteboard {
     /// SimPasteboardPlus reports every push alike.
-    package func pushAutomatically() throws { try push() }
+    package func pushAutomatically() async throws { try await push() }
 }
 
 @MainActor
 package final class SimulatorPasteboardConnection: SimulatorPasteboard {
-    private let object: AnyObject
+    private let object: WorkerOwned<AnyObject>
     private let delegate: SimulatorPasteboardDelegate
     private let interface: SimulatorPasteboardInterface
+    private let channel: SimulatorDeviceChannel
 
-    fileprivate init(object: AnyObject, delegate: SimulatorPasteboardDelegate, interface: SimulatorPasteboardInterface) {
+    fileprivate init(object: WorkerOwned<AnyObject>, delegate: SimulatorPasteboardDelegate,
+                     interface: SimulatorPasteboardInterface, channel: SimulatorDeviceChannel) {
         self.object = object
         self.delegate = delegate
         self.interface = interface
+        self.channel = channel
     }
 
-    package func pull() throws { try unsafe interface.pull.unsafeInvoke(on: object) }
-    package func push() throws { try unsafe interface.push.unsafeInvoke(on: object) }
-    package func setAutomaticSync(_ enabled: Bool) throws {
-        try unsafe (enabled ? interface.enableAutomaticSync : interface.disableAutomaticSync).unsafeInvoke(on: object)
+    isolated deinit { object.release(on: channel) }
+
+    package func pull() async throws { try await send("get the device's pasteboard", interface.pull) }
+    package func push() async throws { try await send("send the pasteboard to the device", interface.push) }
+    package func setAutomaticSync(_ enabled: Bool) async throws {
+        try await send("change the device's pasteboard synchronization",
+                       enabled ? interface.enableAutomaticSync : interface.disableAutomaticSync)
     }
     package func disconnect() { delegate.events = nil }
+
+    private func send(_ operation: String, _ message: NativeObjCMethod<Void>) async throws {
+        nonisolated(unsafe) let message = message
+        try await channel.change(operation) { [object] in try unsafe message.unsafeInvoke(on: object.value) }
+    }
 }
 
 /// Optional SimPasteboardDelegate callbacks arrive on the main queue.
@@ -1118,7 +1182,7 @@ package struct SimulatorAudioInterface {
         deviceIO = try await runtime.resolve(.objc(.method("io", as: (() -> AnyObject?).self)), on: device)
         ioPorts = try await runtime.resolve(.objc(.method("ioPorts", as: (() -> [AnyObject]).self)), on: client)
         // Port and device objects are remote proxies, bound on connection through their protocols.
-        let protocols = [("SimAudioHostRoutable", SimulatorAudioConnection.portSelectors),
+        let protocols = [("SimAudioHostRoutable", SimulatorAudioPort.selectors),
                          ("SimAudioHostDevice", HostAudioDeviceMembers.selectors)]
         for (name, selectors) in protocols {
             guard let declared = objc_getProtocol(name) else {
@@ -1146,22 +1210,28 @@ package struct SimulatorAudioInterface {
     /// Connects to the device's audio route port, which a booted device that
     /// has `SimFeatureRoutableAudio` provides.
     package func connect(to device: SimulatorDevice,
-                 changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> SimulatorAudioConnection {
-        guard let io = try unsafe deviceIO.unsafeInvoke(on: device.object) else {
-            throw SimulatorError.unavailable("The device did not provide its I/O ports.")
-        }
-        var descriptor: NativeObjCMethod<AnyObject?>?
-        for port in try unsafe ioPorts.unsafeInvoke(on: io) {
-            // Every port is a proxy of one class.
-            let method = try descriptor ?? ABIRuntime.shared.object(port)
-                .resolveAndWait(.objc(.method("descriptor", as: (() -> AnyObject?).self))).method
-            descriptor = method
-            if let object = try unsafe method.unsafeInvoke(on: port),
-               (object as? NSObjectProtocol)?.conforms(to: routable) == true {
-                return try SimulatorAudioConnection(port: object, changed: changed)
+                 changed: @escaping @MainActor (AudioRouteChange) -> Void) async throws -> SimulatorAudioConnection {
+        nonisolated(unsafe) let deviceIO = deviceIO, ioPorts = ioPorts, routable = routable, object = device.object
+        let port = try await device.channel.read("connect the device's audio routes", lateCompletion: { result in
+            if case .success(let port) = result { port.disconnect() }
+        }) { () throws -> SimulatorAudioPort in
+            guard let io = try unsafe deviceIO.unsafeInvoke(on: object) else {
+                throw SimulatorError.unavailable("The device did not provide its I/O ports.")
             }
+            var descriptor: NativeObjCMethod<AnyObject?>?
+            for port in try unsafe ioPorts.unsafeInvoke(on: io) {
+                // Every port is a proxy of one class.
+                let method = try descriptor ?? ABIRuntime.shared.object(port)
+                    .resolveAndWait(.objc(.method("descriptor", as: (() -> AnyObject?).self))).method
+                descriptor = method
+                if let found = try unsafe method.unsafeInvoke(on: port),
+                   (found as? NSObjectProtocol)?.conforms(to: routable) == true {
+                    return try SimulatorAudioPort(port: found, changed: changed)
+                }
+            }
+            throw SimulatorError.unavailable("The device has no audio route port.")
         }
-        throw SimulatorError.unavailable("The device has no audio route port.")
+        return SimulatorAudioConnection(port: port, channel: device.channel)
     }
 }
 
@@ -1169,11 +1239,11 @@ package struct SimulatorAudioInterface {
 @MainActor
 package protocol SimulatorAudioRoutes: AnyObject {
     /// The Mac's audio devices and the guest's routes as the port reports them now.
-    func state() throws -> AudioRouteState
-    /// Routes to a device UID or system default. A throw means nothing was sent;
-    /// completion reports on the main actor. CoreSimulator silently uses the default
-    /// if the requested device is absent or lacks channels in this scope.
-    func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws
+    func state() async throws -> AudioRouteState
+    /// Routes to a device UID or system default. Completion reports on the main actor. A throw means no completion
+    /// follows, and that nothing was sent unless it says otherwise. CoreSimulator silently uses the default if the
+    /// requested device is absent or lacks channels in this scope.
+    func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) async throws
     /// Stops the change reports.
     func disconnect()
 }
@@ -1181,7 +1251,40 @@ package protocol SimulatorAudioRoutes: AnyObject {
 /// Observes host-device and guest-route changes, including those made by other processes.
 @MainActor
 package final class SimulatorAudioConnection: SimulatorAudioRoutes {
-    package static let portSelectors = [
+    package nonisolated static var portSelectors: [String] { SimulatorAudioPort.selectors }
+
+    private let port: SimulatorAudioPort
+    private let channel: SimulatorDeviceChannel
+    private var isConnected = true
+
+    fileprivate init(port: SimulatorAudioPort, channel: SimulatorDeviceChannel) {
+        self.port = port
+        self.channel = channel
+    }
+
+    isolated deinit { disconnect() }
+
+    package func state() async throws -> AudioRouteState {
+        try await channel.read("read the device's audio routes") { [port] in try port.state() }
+    }
+
+    package func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) async throws {
+        try await channel.change("route the device's audio") { [port] in
+            try port.route(scope, to: route, completion: completion)
+        }
+    }
+
+    package func disconnect() {
+        guard isConnected else { return }
+        isConnected = false
+        channel.cleanUp("stop the audio route reports") { [port] in port.disconnect() }
+    }
+}
+
+/// The messages of a device's audio port, a proxy of its I/O server. Only the device's worker sends them, and it is the
+/// only one to touch the members it caches.
+private final class SimulatorAudioPort: @unchecked Sendable {
+    static let selectors = [
         "availableHostDevices", "guestInputHostDeviceUID", "guestOutputHostDeviceUID",
         "effectiveDefaultInputDeviceUID", "effectiveDefaultOutputDeviceUID",
         "routeGuestDeviceScope:toHostDeviceUID:completionQueue:completionHandler:",
@@ -1200,9 +1303,8 @@ package final class SimulatorAudioConnection: SimulatorAudioRoutes {
     /// Identifies this connection's change reports.
     private let token = NSUUID()
     private var members: HostAudioDeviceMembers?
-    private var isConnected = true
 
-    fileprivate init(port: AnyObject, changed: @escaping @MainActor (AudioRouteChange) -> Void) throws {
+    init(port: AnyObject, changed: @escaping @MainActor (AudioRouteChange) -> Void) throws {
         let object = ABIRuntime.shared.object(port)
         availableDevices = try object.resolveAndWait(.objc(.method(
             "availableHostDevices", as: (() -> [AnyObject]?).self)))
@@ -1231,28 +1333,26 @@ package final class SimulatorAudioConnection: SimulatorAudioRoutes {
         }
     }
 
-    isolated deinit { disconnect() }
-
     // Audio-port callbacks may ignore the completion queue. Bridge to the main actor explicitly.
-    private nonisolated static func devicesChanged(
+    private static func devicesChanged(
         _ changed: @escaping @MainActor (AudioRouteChange) -> Void
     ) -> SimulatorAudioInterface.DevicesChanged {
         { _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed(.availableDevices) } } }
     }
 
-    private nonisolated static func routeChanged(
+    private static func routeChanged(
         _ changed: @escaping @MainActor (AudioRouteChange) -> Void
     ) -> SimulatorAudioInterface.RouteChanged {
         { _, _ in DispatchQueue.main.async { MainActor.assumeIsolated { changed(.selectedDevice) } } }
     }
 
-    private nonisolated static func routeCompleted(
+    private static func routeCompleted(
         _ completion: @escaping @MainActor (Error?) -> Void
     ) -> SimulatorAudioInterface.RouteCompletion {
         { error in DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } } }
     }
 
-    package func state() throws -> AudioRouteState {
+    func state() throws -> AudioRouteState {
         var devices: [HostAudioDevice] = []
         for object in try unsafe availableDevices.unsafeInvoke() ?? [] {
             let members = try self.members ?? HostAudioDeviceMembers(object)
@@ -1266,13 +1366,11 @@ package final class SimulatorAudioConnection: SimulatorAudioRoutes {
                                defaultOutput: try unsafe defaultOutput.unsafeInvoke())
     }
 
-    package func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws {
+    func route(_ scope: AudioScope, to route: String, completion: @escaping @MainActor (Error?) -> Void) throws {
         try unsafe routeGuest.unsafeInvoke(scope.rawValue, route, .main, Self.routeCompleted(completion))
     }
 
-    package func disconnect() {
-        guard isConnected else { return }
-        isConnected = false
+    func disconnect() {
         do { try unsafe unregister.unsafeInvoke(token) } catch {
             hostLog("Could not stop the audio route reports: \(error.localizedDescription)")
         }
@@ -1281,7 +1379,6 @@ package final class SimulatorAudioConnection: SimulatorAudioRoutes {
 
 /// `SimAudioHostDevice`'s members. The Mac's devices are proxies of one
 /// class, so the members are bound to the first and sent to each.
-@MainActor
 private struct HostAudioDeviceMembers {
     static let selectors = ["uniqueIdentifier", "displayName", "inputChannels", "outputChannels", "isDefaultInScopes"]
 
@@ -1421,7 +1518,7 @@ package enum HIDState: UInt32 { case down = 1, up = 2 }
 
 /// A Core Animation debug option of the guest, numbered as
 /// `SimDevice setCADebugOption:enabled:` numbers it.
-package enum CADebugOption: UInt32 {
+public enum CADebugOption: UInt32, CaseIterable, Sendable {
     case colorCopiedImages = 1
     case colorBlendedLayers = 2
     case colorMisalignedImages = 14
@@ -1537,28 +1634,33 @@ package protocol SimulatorDisplay: AnyObject {
     /// Sends a watch gesture. `completion` receives SimulatorKit's delivery
     /// result; a thrown error means the gesture was not sent.
     func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws
-    func toggleAppearance() throws
+    /// Reads and flips the guest's appearance as one request.
+    func toggleAppearance() async throws
     /// Posts a Darwin notification in the guest.
     func postNotification(_ name: String) async throws
-    /// The guest's state of a Darwin notification.
-    func notificationState(_ name: String) throws -> UInt64
-    func setNotificationState(_ name: String, to state: UInt64) async throws
-    /// The guest's preferred text size, numbered as `SimulatorDevice` numbers it.
-    func contentSizeCategory() throws -> Int
-    func setContentSizeCategory(_ category: Int) throws
-    /// 1 when Increase Contrast is off and 2 when it is on; 0 when unknown.
-    func increaseContrastMode() throws -> Int
-    func setIncreaseContrast(_ enabled: Bool) throws
+    /// Sets a Darwin notification's state in the guest and posts it, as one request. Throws
+    /// ``GuestNotificationNotPosted`` when the state changed and only the post failed.
+    func sendNotificationState(_ name: String, to state: UInt64) async throws
+    /// Reads a Darwin notification's state, then sets and posts what `change` makes of it, as one request. Throws
+    /// ``GuestNotificationNotPosted`` when the state changed and only the post failed.
+    func updateNotificationState(_ name: String, _ change: @escaping @Sendable (UInt64) -> UInt64) async throws
+    /// Reads the guest's preferred text size, numbered as `SimulatorDevice` numbers it, and sets what `change` makes of
+    /// it, if anything, as one request.
+    func updateContentSizeCategory(_ change: @escaping @Sendable (Int) throws -> Int?) async throws
+    /// Reads Increase Contrast's mode, 1 when it is off and 2 when it is on and 0 when unknown, and sets whether it is on
+    /// as `change` decides, as one request.
+    func updateIncreaseContrast(_ change: @escaping @Sendable (Int) throws -> Bool) async throws
     func triggerCloudSync() async throws
+    /// The guest values that `notifications` and `debugOptions` name, read as one request. CoreSimulator drops the error
+    /// of a debug option's read, so false can also mean that it failed.
+    func guestState(notifications: [String], debugOptions: [CADebugOption]) async throws -> GuestStateReading
     /// The folder of the device's logs.
     func logDirectory() throws -> URL
     /// The file whose write makes the guest simulate a memory warning.
     func memoryWarningFile() throws -> URL
-    /// Whether a Core Animation debug option is on. CoreSimulator drops the
-    /// error of this read, so false can also mean that it failed.
-    func caDebugOption(_ option: CADebugOption) throws -> Bool
+    /// Reads a Core Animation debug option, sets the opposite and reads it back, as one request.
     /// CoreSimulator drops the error of this change.
-    func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws
+    func toggleCADebugOption(_ option: CADebugOption) async throws -> CADebugOptionChange
     // Returns recorded routes in CoreSimulator order. Location calls run serially off the main actor.
     func locationScenarios() async throws -> [LocationScenario]
     func clearSimulatedLocation() async throws
@@ -1572,10 +1674,10 @@ package protocol SimulatorDisplay: AnyObject {
     /// Connects to the device's pasteboard service, managing `pasteboard`;
     /// `events` receives the connection's callbacks.
     func connectPasteboard(_ pasteboard: NSPasteboard,
-                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard
+                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> any SimulatorPasteboard
     /// Connects to the device's audio route port. `changed` runs on the main
     /// actor after each change the port reports, until it disconnects.
-    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes
+    func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) async throws -> any SimulatorAudioRoutes
     /// Observes the existing or subsequently connected TVOut screen on the main actor.
     /// Each connection reports property changes through `changed` until disconnected.
     /// Releasing the token ends reports except queued callbacks; nil means no adapter.
@@ -1645,7 +1747,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     package var captureDisplayID: UInt32? {
         get throws { try nativeCanvas?.captureDisplayID ?? connectedDisplayID }
     }
-    private var hidClient: AnyObject?
+    private var hidClient: WorkerOwned<AnyObject>?
     private var disconnected = false
     package var onPropertiesChange: (() -> Void)?
     private var screenEvents: NativeSwiftValue?
@@ -1681,7 +1783,7 @@ package final class SimulatorConnection: SimulatorDisplay {
         connectedDisplayID = screen.identifier
         let display = runtime.display
         buttonTarget = try unsafe display.buttonTarget.unsafeInvoke(on: screen.object)
-        hidClient = try runtime.input.connect(to: device)
+        hidClient = try await runtime.input.connect(to: device)
         if let nativeCanvas {
             view = nativeCanvas.view
             view.frame.size = nativeCanvas.naturalSize
@@ -1900,7 +2002,7 @@ package final class SimulatorConnection: SimulatorDisplay {
             }
         }
         guard let hidClient else { throw SimulatorError.operation("Simulator input is disconnected") }
-        try runtime.input.send(message, client: hidClient, completion: completion)
+        try runtime.input.send(message, client: hidClient.value, completion: completion)
     }
 
     package func message(for touch: TVRemoteTouch) throws -> HIDMessage {
@@ -1910,23 +2012,31 @@ package final class SimulatorConnection: SimulatorDisplay {
 
     package func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws {
         guard let hidClient else { throw SimulatorError.operation("Simulator input is disconnected") }
-        try runtime.input.send(gesture, client: hidClient, completion: completion)
+        try runtime.input.send(gesture, client: hidClient.value, completion: completion)
     }
 
-    package func toggleAppearance() throws { try device.toggleAppearance() }
+    package func toggleAppearance() async throws { try await device.toggleAppearance() }
     package func postNotification(_ name: String) async throws { try await device.postNotification(name) }
-    package func notificationState(_ name: String) throws -> UInt64 { try device.notificationState(name) }
-    package func setNotificationState(_ name: String, to state: UInt64) async throws { try await device.setNotificationState(name, to: state) }
-    package func contentSizeCategory() throws -> Int { try device.contentSizeCategory() }
-    package func setContentSizeCategory(_ category: Int) throws { try device.setContentSizeCategory(category) }
-    package func increaseContrastMode() throws -> Int { try device.increaseContrastMode() }
-    package func setIncreaseContrast(_ enabled: Bool) throws { try device.setIncreaseContrast(enabled) }
+    package func sendNotificationState(_ name: String, to state: UInt64) async throws {
+        try await device.sendNotificationState(name, to: state)
+    }
+    package func updateNotificationState(_ name: String, _ change: @escaping @Sendable (UInt64) -> UInt64) async throws {
+        try await device.updateNotificationState(name, change)
+    }
+    package func updateContentSizeCategory(_ change: @escaping @Sendable (Int) throws -> Int?) async throws {
+        try await device.updateContentSizeCategory(change)
+    }
+    package func updateIncreaseContrast(_ change: @escaping @Sendable (Int) throws -> Bool) async throws {
+        try await device.updateIncreaseContrast(change)
+    }
     package func triggerCloudSync() async throws { try await device.triggerCloudSync() }
+    package func guestState(notifications: [String], debugOptions: [CADebugOption]) async throws -> GuestStateReading {
+        try await device.guestState(notifications: notifications, debugOptions: debugOptions)
+    }
     package func logDirectory() throws -> URL { try device.logDirectory() }
     package func memoryWarningFile() throws -> URL { try device.memoryWarningFile() }
-    package func caDebugOption(_ option: CADebugOption) throws -> Bool { try device.caDebugOption(option) }
-    package func setCADebugOption(_ option: CADebugOption, enabled: Bool) throws {
-        try device.setCADebugOption(option, enabled: enabled)
+    package func toggleCADebugOption(_ option: CADebugOption) async throws -> CADebugOptionChange {
+        try await device.toggleCADebugOption(option)
     }
     package func locationScenarios() async throws -> [LocationScenario] { try await device.locationScenarios() }
     package func clearSimulatedLocation() async throws { try await device.clearSimulatedLocation() }
@@ -1950,11 +2060,11 @@ package final class SimulatorConnection: SimulatorDisplay {
     }
     package func setKeyboardLanguage(_ language: String) async throws { try await device.setKeyboardLanguage(language) }
     package func connectPasteboard(_ pasteboard: NSPasteboard,
-                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) throws -> any SimulatorPasteboard {
-        try runtime.pasteboard.connect(to: device, managing: pasteboard, events: events)
+                           events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> any SimulatorPasteboard {
+        try await runtime.pasteboard.connect(to: device, managing: pasteboard, events: events)
     }
-    package func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) throws -> any SimulatorAudioRoutes {
-        try runtime.audio.connect(to: device, changed: changed)
+    package func connectAudioRoutes(changed: @escaping @MainActor (AudioRouteChange) -> Void) async throws -> any SimulatorAudioRoutes {
+        try await runtime.audio.connect(to: device, changed: changed)
     }
     package func registerForExternalScreen(
         changed: @escaping @MainActor () -> Void,
@@ -2018,9 +2128,7 @@ package final class SimulatorConnection: SimulatorDisplay {
             await previous?.value
             guard let self, !disconnected else { return }
             do {
-                let name = "com.apple.UIKit.SimulatorWantsEdgeSwipes"
-                try await device.setNotificationState(name, to: wants ? 1 : 0)
-                try await device.postNotification(name)
+                try await device.sendNotificationState("com.apple.UIKit.SimulatorWantsEdgeSwipes", to: wants ? 1 : 0)
             } catch {
                 hostLog("Could not tell the device whether edge swipes start on the bezel: \(error.localizedDescription)")
             }
@@ -2082,6 +2190,7 @@ package final class SimulatorConnection: SimulatorDisplay {
         // Releasing the registration ends the screen events.
         screenEvents = nil
         onPropertiesChange = nil
+        hidClient?.release(on: device.channel)
         hidClient = nil
         keyboardResponder?.detach()
         keyboard?.setEnabled(false, for: self)

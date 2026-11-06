@@ -248,7 +248,7 @@ package final class NativeDeviceCanvas {
     /// report their own errors when they are used. `lookUp` returns a caller-owned send right to the guest's Mach service
     /// of a name, as the simulator's `SimDevice` looks it up.
     package static func connect(simulatorUDID: String,
-                                lookUp: @escaping @MainActor (String) throws -> UInt32) async throws -> NativeDeviceCanvas {
+                                lookUp: @escaping @MainActor (String) async throws -> UInt32) async throws -> NativeDeviceCanvas {
         try await CoreDeviceDisplayGeometry.loadRuntime()
         guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID),
               let uuid = UUID(uuidString: identifier) else {

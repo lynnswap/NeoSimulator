@@ -270,7 +270,9 @@ package struct DeviceCommand {
             $0.send(.press(.button(.applePay)))
         },
         DeviceCommand(id: .toggleAppearance, title: "Toggle Appearance", key: "a", modifiers: [.command, .shift],
-                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.toggleAppearance() } },
+                      isSupported: { $0.isPhoneOrPad }) { controller in
+            controller.runGuestCommand { try await controller.session.toggleAppearance() }
+        },
         DeviceCommand(id: .toggleInCallStatusBar, title: "Toggle In-call Status Bar", key: "y",
                       isSupported: { $0.isPhoneOrPad },
                       isEnabled: { $0.session.canPerformToolOperation }) { controller in
@@ -283,11 +285,17 @@ package struct DeviceCommand {
             controller.runAsync { try await controller.session.toggleStandBy() }
         },
         DeviceCommand(id: .increaseTextSize, title: "Increase Preferred Text Size", key: "+", modifiers: [.command, .option],
-                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.changeTextSize(by: 1) } },
+                      isSupported: { $0.isPhoneOrPad }) { controller in
+            controller.runGuestCommand { try await controller.session.changeTextSize(by: 1) }
+        },
         DeviceCommand(id: .decreaseTextSize, title: "Decrease Preferred Text Size", key: "-", modifiers: [.command, .option],
-                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.changeTextSize(by: -1) } },
+                      isSupported: { $0.isPhoneOrPad }) { controller in
+            controller.runGuestCommand { try await controller.session.changeTextSize(by: -1) }
+        },
         DeviceCommand(id: .toggleIncreaseContrast, title: "Toggle Increase Contrast",
-                      isSupported: { $0.isPhoneOrPad }) { controller in controller.run { try controller.session.toggleIncreaseContrast() } },
+                      isSupported: { $0.isPhoneOrPad }) { controller in
+            controller.runGuestCommand { try await controller.session.toggleIncreaseContrast() }
+        },
         DeviceCommand(id: .triggerCloudSync, title: "Trigger iCloud Sync", key: "i", modifiers: [.command, .shift],
                       isEnabled: { $0.session.canPerformToolOperation }) { controller in
             controller.session.run({ [session = controller.session] in try await session.triggerCloudSync() },
@@ -434,10 +442,10 @@ package struct DeviceCommand {
         }
     }
 
-    /// A Core Animation debug option, checked as the device reports it.
+    /// A Core Animation debug option, checked as the device last reported it.
     private static func caDebugOption(_ id: ID, _ option: CADebugOption) -> DeviceCommand {
         DeviceCommand(id: id, title: option.title, state: { $0.session.isOn(option) ? .on : .off }) { controller in
-            controller.run { try controller.session.toggle(option) }
+            controller.runGuestCommand { try await controller.session.toggle(option) }
         }
     }
 

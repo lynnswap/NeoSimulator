@@ -25,7 +25,8 @@ package struct CommandPolicy: Equatable, Sendable {
 /// Every operation's limits, in one place. None of them is a universal limit: an operation that
 /// lists no limit may legitimately run for a long time.
 extension CommandPolicy {
-    /// A preference transaction, management step or inspector command, which must finish so it can report or roll back what it did.
+    /// A preference transaction, management step or inspector change, which must finish so it can report or roll back
+    /// what it did. Only quitting stops it, after waiting for it: see ``UninterruptedCommands``.
     package static let uninterrupted = CommandPolicy(limit: nil, cancellation: .waitsForChild, stopGrace: nil)
     /// A read, or another command its caller may abandon at any point; only the owned child is killed.
     package static let cancellable = CommandPolicy(limit: nil, cancellation: .stopsChild, stopGrace: nil)
@@ -48,4 +49,15 @@ package enum DeviceOperationLimit {
     package static let recordingStart: Duration = .seconds(30)
     package static let recordingFinish: Duration = .seconds(30)
     package static let recordingStopGrace: Duration = .seconds(2)
+    /// How long a device's channel waits for one native call before it stops answering for the device.
+    /// The call itself keeps running; see ``SimulatorDeviceChannel``.
+    package static let bridge: Duration = .seconds(10)
+    /// How long a guest service may take to create a HID service or send what a connection accepted.
+    /// Closing the connection on the limit also ends what it created in the guest.
+    package static let guestService: Duration = .seconds(10)
+    /// How long a request for an iCloud sync waits for CoreSimulator's completion, as long as a management operation.
+    package static let cloudSync: Duration = .seconds(300)
+    /// How long a command stopped by quitting may handle SIGTERM, and how long what it was part of then has to finish.
+    package static let terminationStopGrace: Duration = .seconds(2)
+    package static let terminationGrace: Duration = .seconds(10)
 }

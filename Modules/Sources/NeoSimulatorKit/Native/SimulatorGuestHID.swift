@@ -1,6 +1,7 @@
 import ABIBridge
 import AppKit
 import Darwin
+import NeoSimulatorDeviceIO
 import os
 import XPC
 
@@ -10,11 +11,11 @@ import XPC
 @MainActor
 package struct SimulatorGuestHID {
     package let codec: GuestHIDCodec
-    private let connect: @MainActor (String) throws -> xpc_connection_t
+    private let connect: @MainActor (String) async throws -> xpc_connection_t
 
     /// Prepares the guest services' messages without connecting to the guest. `lookUp` returns a caller-owned send right
     /// to the guest's Mach service of a name, as the simulator's `SimDevice` looks it up.
-    package init(lookUp: @escaping @MainActor (String) throws -> UInt32) async throws {
+    package init(lookUp: @escaping @MainActor (String) async throws -> UInt32) async throws {
         let runtime = ABIRuntime.shared
         codec = try await GuestHIDCodec(runtime: runtime)
         // SimulatorCoreDevicePlugin connects CoreDevice to a simulator's guest services with these.
@@ -23,7 +24,7 @@ package struct SimulatorGuestHID {
         let enableGuestPeer = try await runtime.resolve(.c(.function("xpc_connection_enable_sim2host_4sim",
             as: ((Unmanaged<AnyObject>) -> Void).self)))
         connect = { name in
-            let port = try lookUp(name)
+            let port = try await lookUp(name)
             // A created endpoint owns the send right, and releases it with its last reference; otherwise it remains ours.
             let created: Unmanaged<AnyObject>?
             do { created = try unsafe makeEndpoint.unsafeInvoke(port) } catch {
@@ -48,14 +49,14 @@ package struct SimulatorGuestHID {
     }
 
     /// Reaches each guest service through the connection that `connect` creates for its name and has not activated.
-    package init(codec: GuestHIDCodec, connect: @escaping @MainActor (String) throws -> xpc_connection_t) {
+    package init(codec: GuestHIDCodec, connect: @escaping @MainActor (String) async throws -> xpc_connection_t) {
         self.codec = codec
         self.connect = connect
     }
 
     /// A new connection to the guest service of `feature`, the name of both its Mach service and its messages' feature.
-    package func connection(to feature: String) throws -> GuestHIDConnection {
-        GuestHIDConnection(try connect(feature), feature: feature, codec: codec)
+    package func connection(to feature: String) async throws -> GuestHIDConnection {
+        GuestHIDConnection(try await connect(feature), feature: feature, codec: codec)
     }
 
     /// Ends a connection that was never activated; libxpc requires a connection to be activated before its release.
@@ -106,7 +107,7 @@ package final class GuestHIDConnection {
 
     /// Sends a message and returns the service's reply, whose contents the message type defines. The reply is awaited even
     /// when the caller is cancelled, so that what the message creates in the guest gets an owner. A bounded request
-    /// closes its connection on timeout; it must not create a resource whose reply needs an owner.
+    /// closes its connection on timeout, which also ends what the guest created for the connection.
     package func request(_ type: GuestHIDCodec.MessageType, _ payload: NativeSwiftValue,
                          timeout: Duration? = nil) async throws -> xpc_object_t {
         try await request(codec.message(type, to: feature, payload: payload), timeout: timeout)
@@ -149,9 +150,10 @@ package final class GuestHIDConnection {
     }
 
     /// Creates the guest service that `descriptor`, a CoreDevice `HIDServiceDescriptor`, describes, with the requests
-    /// that CoreDevice's UniversalHID service sends. The service retains this connection.
+    /// that CoreDevice's UniversalHID service sends. The service retains this connection. A guest that does not answer in
+    /// time loses the connection, and with it any service this message creates.
     package func createService(_ descriptor: NativeSwiftValue) async throws -> CoreDeviceHIDService {
-        let reply = try await request(.request, codec.createService(descriptor))
+        let reply = try await request(.request, codec.createService(descriptor), timeout: DeviceOperationLimit.guestService)
         let serviceID = try codec.serviceID(createdBy: reply)
         // The returned service has an owner before cancellation can abandon it.
         return CoreDeviceHIDService(send: { [self] report in try post(.request, codec.send(report, to: serviceID)) },
@@ -164,11 +166,19 @@ package final class GuestHIDConnection {
             })
     }
 
-    /// Waits until the messages sent before have left the connection; cancelling a connection discards those it has not sent.
-    package func flush() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            xpc_connection_send_barrier(connection) { continuation.resume() }
+    /// Waits until the messages sent before have left the connection; cancelling a connection discards those it has not
+    /// sent. A guest that does not take them in time loses the connection, which this reports.
+    package func flush() async throws {
+        let barrier = Task.immediate {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                xpc_connection_send_barrier(connection) { continuation.resume() }
+            }
         }
+        guard await !barrier.ends(before: .now + DeviceOperationLimit.guestService) else { return }
+        let error = CLIError.unavailable("guest-service-timeout", "The guest's \(feature) service did not take the messages sent to it.")
+        if failure == nil { failure = error }
+        xpc_connection_cancel(connection)
+        throw error
     }
 
     private nonisolated static func failure(_ event: xpc_object_t, feature: String) -> CLIError {
@@ -390,9 +400,9 @@ package final class GuestDeviceOrientation {
     private let codec: GuestHIDCodec
     private let timeout: Duration
 
-    package init(guest: SimulatorGuestHID, timeout: Duration = .seconds(30)) throws {
+    package init(guest: SimulatorGuestHID, timeout: Duration = .seconds(30)) async throws {
         self.guest = guest
-        connection = try guest.connection(to: Self.feature)
+        connection = try await guest.connection(to: Self.feature)
         codec = guest.codec
         self.timeout = timeout
     }
@@ -410,7 +420,7 @@ package final class GuestDeviceOrientation {
     }
 
     private func send(_ request: NativeSwiftValue) async throws -> OrientationReading {
-        if connection.hasFailed { connection = try guest.connection(to: Self.feature) }
+        if connection.hasFailed { connection = try await guest.connection(to: Self.feature) }
         return try codec.orientation(from: await connection.request(.orientation, request, timeout: timeout))
     }
 }
@@ -424,9 +434,9 @@ package final class GuestScreenInput: NativeScreenInputTransport {
     private let codec: GuestHIDCodec
     private var pressed = RemoteScreenPressedInputs()
 
-    package init(guest: SimulatorGuestHID) throws {
-        digitizer = try guest.connection(to: CoreDeviceScreenInput.features[.digitizer]!)
-        buttons = try guest.connection(to: CoreDeviceScreenInput.features[.button]!)
+    package init(guest: SimulatorGuestHID) async throws {
+        digitizer = try await guest.connection(to: CoreDeviceScreenInput.features[.digitizer]!)
+        buttons = try await guest.connection(to: CoreDeviceScreenInput.features[.button]!)
         codec = guest.codec
     }
 
@@ -453,8 +463,8 @@ package final class GuestScreenInput: NativeScreenInputTransport {
         for button in pressed.buttons.sorted(by: { ($0.page, $0.usage) < ($1.page, $1.usage) }) {
             do { try await send(.button(button.page, button.usage, .up)) } catch { failures.append(error.localizedDescription) }
         }
-        await digitizer.flush()
-        await buttons.flush()
+        do { try await digitizer.flush() } catch { failures.append(error.localizedDescription) }
+        do { try await buttons.flush() } catch { failures.append(error.localizedDescription) }
         if !failures.isEmpty { throw CLIError.io("remote-input-release", failures.joined(separator: "\n")) }
     }
 }
@@ -495,7 +505,7 @@ package final class GuestButtonInput: NativeScreenInputTransport {
         for button in pressed.buttons.sorted(by: { ($0.page, $0.usage) < ($1.page, $1.usage) }) {
             do { try await send(.button(button.page, button.usage, .up)) } catch { failures.append(error.localizedDescription) }
         }
-        await connection?.flush()
+        do { try await connection?.flush() } catch { failures.append(error.localizedDescription) }
         if !failures.isEmpty { throw CLIError.io("remote-input-release", failures.joined(separator: "\n")) }
     }
 }

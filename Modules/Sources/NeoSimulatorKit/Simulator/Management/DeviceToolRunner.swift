@@ -46,13 +46,13 @@ package final class DeviceTools {
     private let simctlURL: URL
     private let devicectlURL: URL
     private let runner = DeviceToolRunner()
-    private let lookUp: (@MainActor (String) throws -> UInt32)?
+    private let lookUp: (@MainActor (String) async throws -> UInt32)?
     private var guestOrientation: GuestDeviceOrientation?
 
     /// `deviceSetPath` selects a custom set for simctl; devicectl cannot address it.
     /// Executable arguments allow test substitution.
     package init(identifier: String, xcodeURL: URL, deviceSetPath: String? = nil, simctl: URL = DeviceTools.simctl,
-         devicectl: URL = DeviceTools.devicectl, lookUp: (@MainActor (String) throws -> UInt32)? = nil) throws {
+         devicectl: URL = DeviceTools.devicectl, lookUp: (@MainActor (String) async throws -> UInt32)? = nil) throws {
         let developerDirectory = xcodeURL.appendingPathComponent("Contents/Developer").path
         simctlURL = simctl
         devicectlURL = devicectl
@@ -133,7 +133,7 @@ package final class DeviceTools {
         if let guestOrientation { return guestOrientation }
         guard let lookUp else { return nil }
         let guest = try await SimulatorGuestHID(lookUp: lookUp)
-        let orientation = try GuestDeviceOrientation(guest: guest)
+        let orientation = try await GuestDeviceOrientation(guest: guest)
         guestOrientation = orientation
         return orientation
     }

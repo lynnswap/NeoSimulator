@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import AppKit
 
@@ -470,7 +471,12 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
                 if ownerExitRequested || handoverRequested { hostLog(error.localizedDescription) }
                 else { NSAlert(presenting: error).runModal() }
             }
-            for request in requests { await request.value }
+            let deadline = ContinuousClock.now + HostPreferences.terminationLimit
+            for request in requests where await !request.ends(before: deadline) {
+                TerminationAccount.shared.note("A screen had not finished opening when NeoSimulator quit.")
+            }
+            let unresolved = await DeviceIOHub.shared.unresolvedOperations().map(\.description)
+            QuitReport.present(TerminationAccount.shared.take() + unresolved)
             shutdown()
             sender.reply(toApplicationShouldTerminate: true)
         }

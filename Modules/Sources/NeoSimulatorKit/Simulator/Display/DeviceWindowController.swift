@@ -1,4 +1,5 @@
 import AppKit
+import NeoSimulatorDeviceIO
 import QuartzCore
 import UniformTypeIdentifiers
 
@@ -764,6 +765,16 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
     /// Runs a guest command without blocking the main thread.
     package func runAsync(_ action: @escaping @MainActor () async throws -> Void) {
         session.run(action, failure: { [weak self] in self?.present($0) })
+    }
+
+    /// Sends a guest request that does not take the device-operation slot and presents its failure on this window. It
+    /// reaches the device's queue before this returns, so a device's requests keep the order they were made in.
+    package func runGuestCommand(_ action: @escaping @MainActor () async throws -> Void) {
+        Task.immediate { [weak self] in
+            do { try await action() }
+            catch where error.isCancellation { hostLog(error.localizedDescription) }
+            catch { self?.present(error) }
+        }
     }
 
     /// Debug ▸ Open System Log…. Opening Console is not a device operation, so

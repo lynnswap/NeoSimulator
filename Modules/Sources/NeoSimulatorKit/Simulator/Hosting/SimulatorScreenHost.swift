@@ -622,17 +622,17 @@ package final class SimulatorScreenHost: NSObject {
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
+                            model: SimulatorDeviceRegistry.shared.model(for: identifier, channel: device.channel),
                             recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
                             externalDisplayChanges: externalDisplayChanges(of: device),
                             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
-                        do { try await session.applyDebugSettings() } catch {
-                            hostLog("Could not apply debug settings to \(device.name): \(error.localizedDescription)")
-                        }
                         try Task.checkCancellation()
                         session.onApplicationsChange = { [weak self] in self?.onApplicationsChange?(identifier) }
                         if let controller = awaitingReconnect.removeValue(forKey: identifier) {
                             try conflicts.check()
                             controller.reconnect(session, present: !isInProcess)
+                            applyDebugSettings(of: session)
+                            session.refreshGuestState()
                             applyKeyboardSettings(of: session)
                             restoreLocation(of: session)
                             connectAudioRoutes(of: session)
@@ -660,6 +660,8 @@ package final class SimulatorScreenHost: NSObject {
                         try conflicts.check()
                         sessions[identifier] = controller
                         if !isInProcess { controller.showNewWindow(cascadingFrom: &nextWindowPosition) }
+                        applyDebugSettings(of: session)
+                        session.refreshGuestState()
                         applyKeyboardSettings(of: session)
                         restoreLocation(of: session)
                         connectAudioRoutes(of: session)
@@ -759,7 +761,7 @@ package final class SimulatorScreenHost: NSObject {
             let guest = try await SimulatorGuestHID(lookUp: device.lookUp)
             let keyboard = try await NativeDeviceKeyboard.connect(guest: guest)
             let trackpad = try await NativeDeviceTrackpad.connect(guest: guest)
-            let input = try NativeDeviceScreenInput.connect(guest: guest)
+            let input = try await NativeDeviceScreenInput.connect(guest: guest)
             let name = device.name
             keyboard.onFailure = { hostLog("Could not send keyboard input to \(name): \($0.localizedDescription)") }
             trackpad.onFailure = { hostLog("Could not send trackpad input to \(name): \($0.localizedDescription)") }
@@ -770,6 +772,15 @@ package final class SimulatorScreenHost: NSObject {
         } catch {
             hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    /// Applies debug settings on each connection, which no screen waits for; logs failures.
+    private func applyDebugSettings(of session: DeviceSession) {
+        Task.immediate {
+            do { try await session.applyDebugSettings() } catch {
+                hostLog("Could not apply debug settings to \(session.device.name): \(error.localizedDescription)")
+            }
         }
     }
 
@@ -918,8 +929,15 @@ package final class SimulatorScreenHost: NSObject {
     /// removals. Returns each session's failure.
     private func finishDisconnectedInput(of identifier: SimulatorDeviceIdentifier? = nil) async -> [String] {
         var failures: [String] = []
+        let deadline = ContinuousClock.now + HostPreferences.terminationLimit
         for session in disconnectedSessions where identifier == nil || session.device.identity == identifier {
-            do { try await finishInput(of: session) }
+            let finishing = Task { try await finishInput(of: session) }
+            // A quit does not wait on a device that stopped answering, which a retry could not get past either.
+            if isTerminating, await !finishing.ends(before: deadline) {
+                TerminationAccount.shared.note("\(session.device.name): its native input was not removed before quitting.")
+                continue
+            }
+            do { try await finishing.value }
             catch { failures.append("\(session.device.name): \(error.localizedDescription)") }
         }
         return failures
@@ -1088,7 +1106,10 @@ package final class SimulatorScreenHost: NSObject {
         let pending = Array(connections.values) + Array(restarting.values)
         pending.forEach { $0.cancel() }
         bootOperations.values.forEach { $0.cancel() }
-        for task in pending { await task.value }
+        let deadline = ContinuousClock.now + HostPreferences.terminationLimit
+        for task in pending where await !task.ends(before: deadline) {
+            TerminationAccount.shared.note("A device's connection or restart had not stopped when NeoSimulator quit.")
+        }
         for controller in sessions.values { controller.invalidate() }
         disconnectedSessions += sessions.values.map(\.session)
         await recordings.finishAll()
@@ -1161,3 +1182,22 @@ package func withScreenOpenCleanup<Value>(preservingExisting: Bool,
     }
 }
 
+
+/// What a quit tells the user about what it leaves unfinished.
+@MainActor
+package enum QuitReport {
+    /// Logs the notes and shows them, for a limited time because nobody may be there to answer, and a quit must end.
+    package static func present(_ notes: [String], for limit: Duration = .seconds(30)) {
+        guard !notes.isEmpty else { return }
+        for note in notes { hostLog(note) }
+        let alert = NSAlert()
+        alert.messageText = "Some operations did not finish before NeoSimulator quit."
+        alert.informativeText = notes.joined(separator: "\n\n")
+        let timer = Task {
+            guard (try? await Task.sleep(for: limit)) != nil else { return }
+            NSApp.abortModal()
+        }
+        alert.runModal()
+        timer.cancel()
+    }
+}
