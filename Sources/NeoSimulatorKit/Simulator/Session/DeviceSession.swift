@@ -1977,8 +1977,8 @@ package final class DeviceSession {
         }
     }
 
-    /// Whether a recording to a chosen file will replace `file` when it finishes.
-    package func isRecordingDestination(_ file: URL) async -> Bool { await recordings.isReserved(file) }
+    /// Holds a file that a capture is being saved to against recordings, which replace their file when they finish.
+    package func claimCaptureDestination(_ file: URL) async throws -> (@MainActor () -> Void)? { try await recordings.claim(file) }
 
     /// Announces recording state changes to the device plugin. A recording that started after this session lost its
     /// display, which no stop could reach while it was starting, is stopped as soon as it exists.
@@ -2007,18 +2007,20 @@ package final class DeviceSession {
 
     package func stopRecording() { recording?.stop() }
 
-    /// The active recording, once a start in progress has made one or failed.
-    package func activeRecording() async -> VideoRecording? {
-        _ = await recordingStart?.result
+    /// The active recording, once a start in progress has made one or failed. A start that a disk or launch holds past
+    /// the limit throws here and goes on, owned by the recording store.
+    package func activeRecording(startLimit: Duration = DeviceOperationLimit.recordingStart) async throws -> VideoRecording? {
+        if let recordingStart, await !recordingStart.ends(before: .now + startLimit) {
+            throw SimulatorError.operation("The recording has not finished starting.")
+        }
         return recording
     }
 
-    /// Stops an active recording and waits until it is finalized, so that a
-    /// restart does not cut it off. The recording store reports its errors.
-    package func finishRecording() async {
-        guard let recording = await activeRecording() else { return }
-        recording.stop()
-        try? await recording.waitUntilFinished()
+    /// Stops an active recording and waits until it is finalized, so that a restart does not cut it off. The recording
+    /// store reports its errors. A start or stop past its limit throws; the store still owns that recording, which stops
+    /// itself once it exists if this session has lost its display by then.
+    package func finishRecording(startLimit: Duration = DeviceOperationLimit.recordingStart) async throws {
+        try await activeRecording(startLimit: startLimit)?.finish()
     }
 
     /// Called once an import that attempted to install applications ends, whatever its outcome,

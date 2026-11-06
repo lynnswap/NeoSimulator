@@ -29,6 +29,10 @@ package struct CaptureLeftBehind: LocalizedError {
 }
 
 package enum CaptureFile {
+    /// Holds a destination against every other writer for as long as file work may take it. Returns how to let it go, or
+    /// nil if another writer holds it. Throws if it cannot tell, which must not count as free.
+    package typealias Claim = @MainActor (URL) async throws -> (@MainActor () -> Void)?
+
     /// Destinations and private files touched by a transfer, until its owner acknowledges completion.
     package final class Locations: Sendable {
         private let files = Mutex<Set<URL>>([])
@@ -95,17 +99,17 @@ package enum CaptureFile {
         throw SimulatorError.operation("Could not save \(name): \(folder.path) already has files of that name through #99.")
     }
 
-    /// Moves the capture without overwriting, trying suffixes #2 through #99.
-    /// A failure preserves the original file and reports its location.
+    /// Moves the capture without overwriting, trying suffixes #2 through #99, and holds each name's claim until the move
+    /// has taken it or failed. A failure preserves the original file and reports its location.
     @MainActor
     package static func move(_ capture: URL, into folder: URL, named name: String, lane: any CaptureLane = BlockingIOLane(),
-                             isReserved: @MainActor (URL) async -> Bool = { _ in false },
-                             locations: Locations? = nil) async throws -> URL {
+                             claim: Claim = { _ in {} }, locations: Locations? = nil) async throws -> URL {
         let base = (name as NSString).deletingPathExtension, suffix = (name as NSString).pathExtension
         for number in 1...99 {
             let candidate = folder.appendingPathComponent(number == 1 ? name : "\(base) #\(number).\(suffix)")
-            if await isReserved(candidate) { continue }
             do {
+                guard let release = try await claim(candidate) else { continue }
+                defer { release() }
                 try await lane.run { try relocate(capture, to: candidate, locations: locations) }
                 return candidate
             } catch let error as POSIXError where error.code == .EEXIST {

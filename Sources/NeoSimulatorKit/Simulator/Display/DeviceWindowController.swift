@@ -637,7 +637,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         if let window = presentationWindow, let sheet = window.attachedSheet {
             window.endSheet(sheet, returnCode: .cancel)
         }
-        await session.finishRecording()
+        do { try await session.finishRecording() } catch { hostLog(error.localizedDescription) }
         guard !closed else { return }
         customLocation?.close()
         closeExternalDisplayWindow()
@@ -1019,7 +1019,8 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         session.run({ [weak self, session] in
             let folder = try await performBlockingIO { CaptureFile.screenshotFolder() }
             let file = try await session.screenshot(mask: mask)
-            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: self?.captureOwner)
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: self?.captureOwner,
+                                          claim: session.claimCaptureDestination)
             let image = await capture.loadPreview()
             guard let self else {
                 try await capture.saveToDefaultLocation()
@@ -1105,12 +1106,12 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
             return
         }
         let device = session.device.name
-        let isReserved = session.isRecordingDestination
+        let claim = session.claimCaptureDestination
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .black : .ignored
         runAsync { [weak self, session] in
             try await session.startRecording(to: .capture { [weak self] file in
                 let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
-                                              defaultFolder: desktop, owner: self?.captureOwner, isReserved: isReserved)
+                                              defaultFolder: desktop, owner: self?.captureOwner, claim: claim)
                 if let self { try await self.showThumbnail(of: capture, image: nil) } else { try await capture.saveToDefaultLocation() }
             }, mask: mask)
         }

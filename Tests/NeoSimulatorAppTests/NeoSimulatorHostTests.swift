@@ -25,6 +25,9 @@ func wait(timeout: Duration = .seconds(2), sourceLocation: SourceLocation = #_so
     }
 }
 
+@MainActor
+private func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostName == nil }
+
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
     @MainActor private final class RemoteTarget {
@@ -2806,7 +2809,7 @@ struct InputFocusTests {
         // It is reserved before the first wait, while there is no recording to stop yet.
         #expect(session.recording == nil && !session.canStartRecording)
         try await session.startRecording(to: .file(directory.appendingPathComponent("Second.mov")), mask: .ignored)
-        await session.finishRecording()
+        try await session.finishRecording()
         try await start.value
         try await wait { session.recording == nil }
         #expect(recordings == 1)
@@ -2829,10 +2832,71 @@ struct InputFocusTests {
         }
         session.disconnect()
         try await start.value
-        let recording = try #require(await session.activeRecording())
+        let recording = try #require(try await session.activeRecording())
         #expect(recording.isStopping)
-        await session.finishRecording()
+        try await session.finishRecording()
         try await wait { session.recording == nil }
+    }
+
+    @Test func finishingARecordingThatDoesNotStartGivesUpWhileTheStartGoesOnAndStopsItself() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane(passing: 1)
+        let store = RecordingStore(lane: lane)
+        store.onError = { _ in }
+        let session = try makeSession(TestDisplay(), recordingProcess: { _, _ in
+            Self.recorder(then: "while :; do sleep 0.05; done")
+        }, recordings: store)
+        let start = Task.immediate {
+            try await session.startRecording(to: .file(directory.appendingPathComponent("Held.mov")), mask: .ignored)
+        }
+        await lane.untilHeld(1)
+        await #expect(throws: SimulatorError.self) { try await session.finishRecording(startLimit: .milliseconds(50)) }
+        #expect(store.hasActiveRecordings)
+        session.disconnect()
+        lane.open()
+        try await start.value
+        #expect(session.recording?.isStopping == true)
+        try await session.finishRecording()
+        try await wait { session.recording == nil && !store.hasActiveRecordings }
+    }
+
+    /// A real host in this process, with no device and no window. It stops as a public context's does.
+    @Test(.enabled("Another host would refuse this one.") { await noOtherHostIsDisplaying() })
+    func stoppingDoesNotWaitOnAHeldRecordingOutlivesItWithItsFilesNamedAndTheNextStopReturnsItsLateFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane(passing: 1)
+        let store = RecordingStore(lane: lane, finishLimit: .milliseconds(50))
+        let host = try SimulatorScreenHost(runtime: try await makeRuntime(), conflicts: HostConflictMonitor(), inProcess: true,
+                                           recordings: store)
+        var reported: [String] = []
+        host.onError = { reported.append($0.localizedDescription) }
+        let destination = directory.appendingPathComponent("Held.mov")
+        // It exits without a frame, so the recording fails once it has been let go.
+        let start = Task.immediate {
+            try await store.start(to: .file(destination), process: { _ in Self.recorder(then: "exit 0") }, onFinished: {})
+        }
+        await lane.untilHeld(1)
+        do {
+            try await host.stop(keepingDevicesRunning: true)
+            Issue.record("Expected the stop to report the unfinished recording")
+        } catch {
+            #expect(error.localizedDescription.contains(destination.path))
+            #expect(error.localizedDescription.contains("\(directory.path)/.neo-simulator-"))
+        }
+        #expect(store.hasActiveRecordings && reported.isEmpty && host.isStopped)
+        lane.open()
+        let recording = try await start.value
+        #expect(recording.isStopping)
+        try await wait { !store.hasActiveRecordings }
+        #expect(reported.count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        await #expect(throws: SimulatorError.self) { try await host.stop(keepingDevicesRunning: true) }
+        try await host.stop(keepingDevicesRunning: true)
+        #expect(reported.count == 1)
     }
 
     @Test func theToolbarsButtonsShowTheirOptionAlternatesWhileThePointerIsOverTheToolbar() async throws {
@@ -10183,6 +10247,7 @@ struct InputFocusTests {
                              simctl: URL = URL(fileURLWithPath: "/usr/bin/false"),
                              devicectl: URL = URL(fileURLWithPath: "/usr/bin/false"),
                              recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+                             recordings: RecordingStore = RecordingStore(),
                              openLog: @escaping (URL) async throws -> Void = { _ in },
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
@@ -10210,7 +10275,7 @@ struct InputFocusTests {
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
-            model: model, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
+            model: model, recordings: recordings, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
             pasteboardTransport: pasteboardTransport,
             externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100),

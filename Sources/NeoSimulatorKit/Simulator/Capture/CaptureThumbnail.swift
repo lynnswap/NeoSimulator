@@ -23,8 +23,8 @@ package final class CapturedContent {
     package let name: String
     /// Where dismissing the thumbnail saves it, chosen when it was captured.
     package let defaultFolder: URL
-    /// Names another capture will take, which saving skips.
-    private let isReserved: @MainActor (URL) async -> Bool
+    /// Holds a name against recordings for as long as saving may take it.
+    private let claim: CaptureFile.Claim
     private let lane: any CaptureLane
     private let locations = CaptureFile.Locations()
     /// Whether the capture has been saved, deleted, or handed to another app. Set once that has succeeded.
@@ -33,6 +33,8 @@ package final class CapturedContent {
     private var saved: URL?
     /// Whether a save nobody asked for has failed and been reported. Only someone asking moves the capture after that.
     private var automaticSaveFailed = false
+    /// The animated GIF being written from it, whose name other exports must not take.
+    private var exportingGIF: URL?
     /// A screenshot's bytes, read before its thumbnail appears, because a drag cannot wait to offer them.
     package private(set) var png: Data?
     private var lastOperation: Task<Void, Never>?
@@ -41,14 +43,14 @@ package final class CapturedContent {
     private static var working: [ObjectIdentifier: CapturedContent] = [:]
 
     package init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, owner: UUID? = nil, lane: any CaptureLane = BlockingIOLane(),
-         isReserved: @escaping @MainActor (URL) async -> Bool = { _ in false }) {
+         claim: @escaping CaptureFile.Claim = { _ in {} }) {
         self.kind = kind
         self.owner = owner
         self.file = file
         self.name = name
         self.defaultFolder = defaultFolder
         self.lane = lane
-        self.isReserved = isReserved
+        self.claim = claim
     }
 
     /// Runs after the operations asked for so far. It goes on if its caller is cancelled, because its outcome decides
@@ -81,7 +83,7 @@ package final class CapturedContent {
     /// The captures with file work in flight.
     fileprivate static var inFlight: [CapturedContent] { Array(working.values) }
 
-    fileprivate var unfinishedFiles: [URL] { [saved ?? file] + locations.locations }
+    fileprivate var unfinishedFiles: [URL] { [saved ?? file] + locations.locations + [exportingGIF].compactMap(\.self) }
 
     /// Reads a screenshot and returns its decoded image, away from the main actor, and holds its bytes.
     package func loadPreview() async -> NSImage? {
@@ -151,8 +153,7 @@ package final class CapturedContent {
 
     private func move(into folder: URL) async throws -> URL {
         do {
-            let saved = try await CaptureFile.move(file, into: folder, named: name, lane: lane, isReserved: isReserved,
-                                                   locations: locations)
+            let saved = try await CaptureFile.move(file, into: folder, named: name, lane: lane, claim: claim, locations: locations)
             isResolved = true
             self.saved = saved
             return saved
@@ -176,6 +177,10 @@ package final class CapturedContent {
     /// for, and gives up the temporary file.
     package func deliver(to destination: URL) async throws {
         try await inOrder { [self] in
+            guard let release = try await claim(destination) else {
+                throw SimulatorError.operation("Could not save \(name) to \(destination.path): a recording or another capture is saving to that file.")
+            }
+            defer { release() }
             if let saved {
                 let locations = locations
                 return try await lane.run { try CaptureFile.copy(saved, to: destination, locations: locations) }
@@ -192,6 +197,53 @@ package final class CapturedContent {
                 saved = failure.destination
                 throw failure
             }
+        }
+    }
+
+    /// Names an animated GIF where the movie is saved, saving a kept movie first, and begins writing the GIF, which takes
+    /// its turn after this returns. As an operation of this capture it is waited for and located like any other, and
+    /// `report` receives its failure. The temporary movie goes only after a successful export; a failed one saves it.
+    fileprivate func beginAnimatedGIF(keepingMovie: Bool, report: @escaping (Error) -> Void) async throws {
+        try await inOrder { [self] in
+            var folder = defaultFolder, movieName = name
+            if keepingMovie {
+                guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
+                let movie = try await move(into: defaultFolder)
+                folder = movie.deletingLastPathComponent()
+                movieName = movie.lastPathComponent
+            }
+            let gif = try await CaptureFile.unusedFile(in: folder, named: (movieName as NSString).deletingPathExtension + ".gif",
+                                                       lane: lane) { candidate in
+                guard !Self.working.values.contains(where: { $0.exportingGIF == candidate }) else { return false }
+                exportingGIF = candidate
+                return true
+            }
+            Task.immediate { [self] in
+                _ = try? await inOrder { [self] in
+                    defer { exportingGIF = nil }
+                    await writeAnimatedGIF(gif, keepingMovie: keepingMovie, report: report)
+                }
+            }
+        }
+    }
+
+    private func writeAnimatedGIF(_ gif: URL, keepingMovie: Bool, report: (Error) -> Void) async {
+        let movie = saved ?? file, lane = lane
+        do {
+            try await CaptureFile.write(to: gif, extension: "gif", lane: lane, locations: locations) { staged in
+                try await AnimatedGIF.export(movie, to: staged, options: .preferred, lane: lane)
+            }
+            guard !keepingMovie, !isResolved else { return }
+            try await lane.run { try FileManager.default.removeItem(at: movie) }
+            isResolved = true
+        } catch {
+            hostLog("Could not save an animated GIF: \(error.localizedDescription)")
+            var failure = error
+            if !keepingMovie, !isResolved, !automaticSaveFailed {
+                do { try await saveAutomatically() }
+                catch { failure = SimulatorError.operation("\(failure.localizedDescription) \(error.localizedDescription)") }
+            }
+            report(failure)
         }
     }
 
@@ -267,11 +319,9 @@ private struct AppKitCaptureThumbnailTiming: CaptureThumbnailTiming {
 package final class CaptureThumbnail: NSObject {
     /// A new capture dismisses existing thumbnails.
     package private(set) static var active: [CaptureThumbnail] = []
-    /// Captures whose thumbnail has ended but that wait for an animated GIF
-    /// or a drag's file promise; quitting saves those still unresolved.
+    /// Captures whose thumbnail has ended but that wait for a drag's file
+    /// promise; quitting saves those still unresolved.
     private static var pending: [CapturedContent] = []
-    /// Animated GIFs being written, whose names other exports must not take.
-    private static var exportingGIFs: Set<URL> = []
     /// Thumbnails whose menu action is using their capture, which quitting waits for.
     private static var performing: Set<CaptureThumbnail> = []
     /// Reports a failure of a thumbnail whose device window has closed.
@@ -511,9 +561,9 @@ package final class CaptureThumbnail: NSObject {
         }
     }
 
-    /// Ends thumbnails before it first waits, then saves unresolved captures before quitting, including those awaiting
-    /// GIF export, and waits for every file operation of theirs in flight. Failures of what it began are returned; those
-    /// of what was already running go to whoever asked for it.
+    /// Ends thumbnails before it first waits, then saves unresolved captures before quitting, and waits for every file
+    /// operation of theirs in flight, including an animated GIF being written. Failures of what it began are returned;
+    /// those of what was already running go to whoever asked for it.
     @discardableResult
     package static func finishAll(owner: UUID? = nil) async -> [Error] {
         func belongs(_ content: CapturedContent) -> Bool { owner == nil || content.owner == owner }
@@ -621,8 +671,8 @@ package final class CaptureThumbnail: NSObject {
                 try thumbnail.open(try await thumbnail.content.saveToDefaultLocation(), with: "com.apple.Photos")
             }
         case .movie:
-            _ = add("Save as Animated GIF") { try await $0.saveAnimatedGIF(keepingMovie: false) }
-            let copy = add("Save Copy as Animated GIF") { try await $0.saveAnimatedGIF(keepingMovie: true) }
+            _ = add("Save as Animated GIF") { try await $0.content.beginAnimatedGIF(keepingMovie: false, report: $0.report) }
+            let copy = add("Save Copy as Animated GIF") { try await $0.content.beginAnimatedGIF(keepingMovie: true, report: $0.report) }
             copy.isAlternate = true
             copy.keyEquivalentModifierMask = .option
         }
@@ -686,45 +736,6 @@ package final class CaptureThumbnail: NSObject {
             throw SimulatorError.unavailable("The app to open \(name) is not installed.")
         }
         return application
-    }
-
-    /// Exports beside the movie's save location. Deletes the temporary movie only after
-    /// successful export; a failed export saves it instead.
-    private func saveAnimatedGIF(keepingMovie: Bool) async throws {
-        let content = content
-        let movie: URL, gif: URL
-        if keepingMovie {
-            movie = try await content.saveToDefaultLocation()
-            gif = try await CaptureFile.unusedFile(in: movie.deletingLastPathComponent(),
-                                                   named: movie.deletingPathExtension().appendingPathExtension("gif").lastPathComponent,
-                                                   claim: { Self.exportingGIFs.insert($0).inserted })
-        } else {
-            movie = content.file
-            gif = try await CaptureFile.unusedFile(in: content.defaultFolder,
-                                                   named: (content.name as NSString).deletingPathExtension + ".gif",
-                                                   claim: { Self.exportingGIFs.insert($0).inserted })
-        }
-        let report = report
-        if !keepingMovie { Self.pending.append(content) }
-        Task {
-            defer {
-                Self.pending.removeAll { $0 === content }
-                Self.exportingGIFs.remove(gif)
-            }
-            do {
-                do { try await AnimatedGIF.export(movie, to: gif, options: .preferred) }
-                catch { throw await CaptureFile.removing(gif, after: error, lane: BlockingIOLane()) }
-                if !keepingMovie { try await content.delete() }
-            } catch {
-                hostLog("Could not save an animated GIF: \(error.localizedDescription)")
-                var failure = error
-                if !keepingMovie {
-                    do { try await content.saveIfUnresolved() }
-                    catch { failure = SimulatorError.operation("\(failure.localizedDescription) \(error.localizedDescription)") }
-                }
-                report(failure)
-            }
-        }
     }
 
     // MARK: Dragging
@@ -1030,7 +1041,7 @@ package enum AnimatedGIF {
         }
     }
 
-    package static func export(_ movie: URL, to gif: URL, options: Options) async throws {
+    package static func export(_ movie: URL, to gif: URL, options: Options, lane: any CaptureLane = BlockingIOLane()) async throws {
         let asset = AVURLAsset(url: movie)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw SimulatorError.operation("The recording contains no video track")
@@ -1038,7 +1049,7 @@ package enum AnimatedGIF {
         let duration = try await track.load(.timeRange).duration.seconds
         // Reading and encoding every frame blocks for as long as the movie takes. Only that work uses the track from here.
         nonisolated(unsafe) let videoTrack = track
-        try await performBlockingIO { try encode(asset, track: videoTrack, duration: duration, to: gif, options: options) }
+        try await lane.run { try encode(asset, track: videoTrack, duration: duration, to: gif, options: options) }
     }
 
     private static func encode(_ asset: AVURLAsset, track: AVAssetTrack, duration: Double, to gif: URL, options: Options) throws {

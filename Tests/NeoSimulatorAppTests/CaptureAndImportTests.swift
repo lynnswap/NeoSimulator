@@ -410,10 +410,131 @@ struct CaptureAndImportTests {
         let temporary = try #require(handedOver.first)
         #expect(handedOver.count == 1 && temporary.afterStop)
         let capture = CapturedContent(.movie, file: temporary.url, name: "Recording.mov", defaultFolder: directory,
-                                      isReserved: store.isReserved)
+                                      claim: store.claim)
         #expect(try await capture.saveToDefaultLocation().lastPathComponent == "Recording #3.mov")
         #expect(try Data(contentsOf: directory.appendingPathComponent("Recording #3.mov")) == Data(contentsOf: movie))
+        let dropped = directory.appendingPathComponent("dropped")
+        try Data().write(to: dropped)
+        // A drag's destination is fixed, so a file that a recording will replace refuses it.
+        let refused = CapturedContent(.movie, file: dropped, name: "Dropped.mov", defaultFolder: directory, claim: store.claim)
+        await #expect(throws: SimulatorError.self) { try await refused.deliver(to: directory.appendingPathComponent("Recording #2.mov")) }
+        #expect(FileManager.default.fileExists(atPath: dropped.path) && !refused.isResolved)
         await store.finishAll()
+    }
+
+    @Test func aRecordingCannotTakeADestinationWhileACaptureIsBeingMovedThere() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let movie = directory.appendingPathComponent("fixture.mov")
+        try await writeMovie(to: movie)
+        let folder = directory.appendingPathComponent("Saved", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let store = RecordingStore()
+        store.onError = { Issue.record($0) }
+        let captured = directory.appendingPathComponent("captured")
+        try Data("capture".utf8).write(to: captured)
+        let lane = HeldCaptureLane()
+        let content = CapturedContent(.movie, file: captured, name: "Recording.mov", defaultFolder: folder, lane: lane, claim: store.claim)
+        let saving = Task.immediate { try await content.saveToDefaultLocation() }
+        await lane.untilHeld(1)
+        let destination = folder.appendingPathComponent("Recording.mov")
+        // Were it allowed to start, this would replace the capture with the movie when it finishes.
+        let started = try? await store.start(to: .file(destination), process: { url in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", """
+                trap 'cp "$1" "$2"; exit 0' INT
+                echo 'Recording started' >&2
+                while :; do sleep 0.05; done
+                """, "sh", movie.path, url.path]
+            return process
+        }, onFinished: {})
+        lane.open()
+        #expect(try await saving.value == destination)
+        started?.stop()
+        await store.finishAll()
+        #expect(started == nil)
+        #expect(try Data(contentsOf: destination) == Data("capture".utf8))
+        // The move has ended, and the file is an ordinary one that a save panel asks about replacing.
+        let release = try #require(try await store.claim(destination))
+        release()
+    }
+
+    @Test func aDestinationWhoseClaimCannotBeAnsweredIsNotTaken() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let capture = directory.appendingPathComponent("capture")
+        try Data().write(to: capture)
+        do {
+            _ = try await CaptureFile.move(capture, into: directory, named: "Saved.mov", claim: { _ in throw POSIXError(.EIO) })
+            Issue.record("Expected the move to fail")
+        } catch {
+            #expect(error.localizedDescription.contains(capture.path))
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["capture"])
+    }
+
+    @Test func aHeldRecordingDoesNotHoldFinishingWhichNamesItsFilesAndItsLateOutcomeIsStillReported() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane(passing: 1)
+        let store = RecordingStore(lane: lane, finishLimit: .milliseconds(50))
+        var errors: [Error] = []
+        store.onError = { errors.append($0) }
+        var finished = false
+        let destination = directory.appendingPathComponent("Held.mov")
+        // It exits without a frame, so the recording fails once it has been let go.
+        let start = Task.immediate {
+            try await store.start(to: .file(destination), process: { _ in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", "exit 0"]
+                return process
+            }, onFinished: { finished = true })
+        }
+        await lane.untilHeld(1)
+        let failures = await store.finishAll()
+        let description = try #require(failures.first?.localizedDescription)
+        #expect(failures.count == 1 && description.contains(destination.path) && description.contains("\(directory.path)/.neo-simulator-"))
+        #expect(store.hasActiveRecordings && errors.isEmpty && !finished)
+        lane.open()
+        #expect(try await start.value.isStopping)
+        try await wait { finished }
+        #expect(errors.count == 1 && !store.hasActiveRecordings)
+        #expect(await store.finishAll().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+
+        // A launch that fails after finishing gave up on it has nobody else to tell.
+        let launching = HeldCaptureLane(passing: 1)
+        let unlaunchable = RecordingStore(lane: launching, finishLimit: .milliseconds(50))
+        unlaunchable.onError = { errors.append($0) }
+        let failing = Task.immediate {
+            try await unlaunchable.start(to: .file(destination), process: { _ in
+                let process = Process()
+                process.executableURL = directory.appendingPathComponent("missing")
+                return process
+            }, onFinished: {})
+        }
+        await launching.untilHeld(1)
+        #expect(await unlaunchable.finishAll().count == 1)
+        launching.open()
+        await #expect(throws: CancellationError.self) { _ = try await failing.value }
+        #expect(errors.count == 2 && !unlaunchable.hasActiveRecordings)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test func aRecordingThatIgnoresBeingStoppedDoesNotHoldWhoeverFinishesIt() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "trap '' INT; echo 'Recording started' >&2; while :; do sleep 0.05; done"]
+        let recording = try await VideoRecording(process: process)
+        try await wait { recording.hasStarted }
+        await #expect(throws: SimulatorError.self) { try await recording.finish(within: .milliseconds(50)) }
+        process.terminate()
+        try? await recording.waitUntilFinished()
     }
 
     @Test func animatedGIFsKeepTheMoviesFrameTimesUpToTheFrameRate() async throws {
@@ -458,7 +579,7 @@ struct CaptureAndImportTests {
     }
 
     /// Writes black BT.709 frames to an H.264 QuickTime movie.
-    private func writeMovie(to url: URL, frames: Int = 3) async throws {
+    fileprivate func writeMovie(to url: URL, frames: Int = 3) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
@@ -949,6 +1070,86 @@ struct CaptureThumbnailTests {
         #expect(try savedNames(in: directory) == ["Held.png", "Other.png"])
     }
 
+    @Test func quittingWaitsForAnAnimatedGIFAndNamesItsFilesWhileADiskHoldsIt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (window, source) = deviceWindow()
+        defer { window.close() }
+        let owner = UUID()
+        let temporary = directory.appendingPathComponent("Temporary.mov")
+        try await CaptureAndImportTests().writeMovie(to: temporary)
+        let folder = directory.appendingPathComponent("Saved", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // Saving the movie and naming the GIF pass; writing the GIF is held.
+        let lane = HeldCaptureLane(passing: 2)
+        let content = CapturedContent(.movie, file: temporary, name: "Movie.mov", defaultFolder: folder, owner: owner, lane: lane)
+        var reported: [any Error] = []
+        let thumbnail = CaptureThumbnail(content, image: nil, parent: window, source: source, spacing: .zero) { reported.append($0) }
+        let item = try #require(thumbnail.menu().items.first { $0.title == "Save Copy as Animated GIF" })
+        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        await thumbnail.action?.value
+        await lane.untilHeld(1)
+        #expect(content.isResolved)
+        let finishing = Task.immediate { await CaptureThumbnail.finishAll(owner: owner) }
+        let failures = await CaptureThumbnail.failures(of: finishing, before: .now + .milliseconds(50), owner: owner)
+        let description = try #require(failures.first?.localizedDescription)
+        #expect(failures.count == 1)
+        #expect(description.contains(folder.appendingPathComponent("Movie.gif").path))
+        #expect(description.contains(folder.appendingPathComponent("Movie.mov").path))
+        #expect(description.contains("\(folder.path)/.neo-simulator-"))
+        #expect(CaptureThumbnail.unfinishedCaptures(owner: UUID()).isEmpty)
+        lane.open()
+        #expect(await finishing.value.isEmpty)
+        #expect(reported.isEmpty)
+        #expect(try savedNames(in: directory) == ["Movie.gif", "Movie.mov"])
+        #expect(CaptureThumbnail.unfinishedCaptures(owner: owner).isEmpty)
+    }
+
+    @Test func anAnimatedGIFReplacesItsMovieOnlyOnceWholeAndAFailedOneSavesTheMovie() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (window, source) = deviceWindow()
+        defer { window.close() }
+        let owner = UUID()
+        let folder = directory.appendingPathComponent("Saved", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var reported: [any Error] = []
+        func export(_ content: CapturedContent) async throws {
+            let thumbnail = CaptureThumbnail(content, image: nil, parent: window, source: source, spacing: .zero) { reported.append($0) }
+            let item = try #require(thumbnail.menu().items.first { $0.title == "Save as Animated GIF" })
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+            await thumbnail.action?.value
+        }
+        func movie(_ file: String, lane: any CaptureLane = BlockingIOLane()) async throws -> CapturedContent {
+            let temporary = directory.appendingPathComponent(file)
+            try await CaptureAndImportTests().writeMovie(to: temporary)
+            return CapturedContent(.movie, file: temporary, name: "Movie.mov", defaultFolder: folder, owner: owner, lane: lane)
+        }
+        // Naming the first passes and writing it is held, so the second finds its name taken.
+        let lane = HeldCaptureLane(passing: 1)
+        let held = try await movie("Held.mov", lane: lane)
+        try await export(held)
+        await lane.untilHeld(1)
+        #expect(FileManager.default.fileExists(atPath: held.file.path) && !held.isResolved)
+        let other = try await movie("Other.mov")
+        try await export(other)
+        await other.settled()
+        #expect(try savedNames(in: directory) == ["Movie #2.gif"])
+        lane.open()
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+        #expect(held.isResolved && !FileManager.default.fileExists(atPath: held.file.path))
+        #expect(try savedNames(in: directory) == ["Movie #2.gif", "Movie.gif"])
+        #expect(reported.isEmpty)
+
+        let broken = try capture(.movie, named: "Broken.mov", in: directory, owner: owner)
+        try await export(broken)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+        #expect(reported.count == 1 && broken.isResolved)
+        #expect(try savedNames(in: directory) == ["Broken.mov", "Movie #2.gif", "Movie.gif"])
+    }
+
     @Test func aMenuActionOwnsTheCaptureUntilItEndsEvenIfItsThumbnailEnds() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1165,15 +1366,19 @@ struct CaptureThumbnailTests {
 
 }
 
-/// Holds capture work at the lane until it is opened, then runs the real work on the real lane.
-private final class HeldCaptureLane: CaptureLane, Sendable {
+/// Lets the first `passing` pieces of capture work through and holds the rest at the lane until it is opened, then runs
+/// the real work on the real lane.
+final class HeldCaptureLane: CaptureLane, Sendable {
     private struct State {
         var isOpen = false
+        var passing: Int
         var runs = 0
         var held: [CheckedContinuation<Void, Never>] = []
         var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     }
-    private let state = Mutex(State())
+    private let state: Mutex<State>
+
+    init(passing: Int = 0) { state = Mutex(State(passing: passing)) }
 
     /// How many pieces of work have reached the lane.
     var runs: Int { state.withLock { $0.runs } }
@@ -1182,11 +1387,12 @@ private final class HeldCaptureLane: CaptureLane, Sendable {
         await withCheckedContinuation { (passed: CheckedContinuation<Void, Never>) in
             let (proceed, ready) = state.withLock { state -> (Bool, [CheckedContinuation<Void, Never>]) in
                 state.runs += 1
-                if !state.isOpen { state.held.append(passed) }
+                let proceeds = state.isOpen || state.runs <= state.passing
+                if !proceeds { state.held.append(passed) }
                 let count = state.held.count
                 let ready = state.watchers.filter { $0.count <= count }.map(\.continuation)
                 state.watchers.removeAll { $0.count <= count }
-                return (state.isOpen, ready)
+                return (proceeds, ready)
             }
             for watcher in ready { watcher.resume() }
             if proceed { passed.resume() }

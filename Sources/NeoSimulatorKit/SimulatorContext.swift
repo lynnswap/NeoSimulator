@@ -380,6 +380,8 @@ public final class SimulatorContext {
 
     /// Releases every screen without shutting down guests.
     /// A failed call can be retried to finish resources that could not be released.
+    /// Recording and capture file work that outlasts the wait goes on: the error names its files, `onError` receives a
+    /// failure that comes after this returned, and the next call joins that work and throws such a failure too.
     public func invalidate() async throws {
         if let invalidation { try await invalidation.value; return }
         isInvalidating = true
