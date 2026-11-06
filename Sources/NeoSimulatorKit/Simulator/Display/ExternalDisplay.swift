@@ -263,8 +263,9 @@ package struct ExternalDisplayFailure {
 /// session end; session start precedes HID service creation. Failures are collected,
 /// but failed screen changes stop the operation and failed starts skip service creation.
 ///
-/// Disconnection from a stopped device or `completionTimeout` abandons stalled work.
-/// Late completions are ignored so later sessions can proceed.
+/// Disconnection from a stopped device or `completionTimeout` abandons stalled work. Its request is withdrawn if it has
+/// not started, so it cannot act on the device later. One that has started can still finish, with an outcome nobody
+/// knows, and its completion is ignored so later sessions can proceed.
 @MainActor
 package final class ExternalDisplayChanges {
     private struct Change {
@@ -275,13 +276,14 @@ package final class ExternalDisplayChanges {
     }
 
     /// The change in flight: its failures so far, the step that waits for a
-    /// completion, and the timer that abandons it.
+    /// completion, the task that owns the step's request, and the timer that abandons it.
     private final class Run {
         let change: Change
         var failures: [ExternalDisplayFailure] = []
         var step = ExternalDisplayStep.screen
         /// The number of steps sent, which a completion must match.
         var steps = 0
+        var request: Task<Void, Never>?
         var timer: Task<Void, Never>?
         /// The boot that the waiting CarPlay request was decided for.
         var requestBoot: Date?
@@ -433,7 +435,7 @@ package final class ExternalDisplayChanges {
         carPlay.willSend(in: boot)
         run.requestBoot = boot
         perform(.carPlaySession(starting: starting), in: run, {
-            screen.setCarPlayEnabled(starting, inBoot: boot, completion: $0)
+            await screen.setCarPlayEnabled(starting, inBoot: boot, completion: $0)
         }) { [self] succeeded in
             carPlay.sessionAnswered(starting: starting, succeeded: succeeded, in: boot)
             next(succeeded)
@@ -480,10 +482,7 @@ package final class ExternalDisplayChanges {
         }
         // The completion keeps these changes until CoreSimulator calls it.
         let completion: @MainActor (Error?) -> Void = { error in
-            guard self.inFlight === run, run.steps == number else {
-                hostLog("An abandoned external display change completed\(error.map { " with an error: \($0.localizedDescription)" } ?? ".")")
-                return
-            }
+            guard self.inFlight === run, run.steps == number else { return self.logLateAnswer(error) }
             run.timer?.cancel()
             // A request that a restart made moot is not a failure.
             if let error, !(error is CarPlayRequestMoot) {
@@ -493,12 +492,9 @@ package final class ExternalDisplayChanges {
             next(error == nil)
         }
         // A step's request enters the device's queue before this returns, so steps keep their order.
-        Task.immediate {
+        let request = Task.immediate {
             do { try await operation(completion) } catch {
-                guard self.inFlight === run, run.steps == number else {
-                    hostLog("An abandoned external display change failed: \(error.localizedDescription)")
-                    return
-                }
+                guard self.inFlight === run, run.steps == number else { return self.logLateAnswer(error) }
                 run.timer?.cancel()
                 self.noteUnknownOutcome(of: step, in: run, error)
                 run.fail(step, error)
@@ -506,6 +502,17 @@ package final class ExternalDisplayChanges {
                 run.steps += 1
                 next(false)
             }
+        }
+        // A step answered at once has already sent the next, whose request is the one that can still be waiting.
+        if run.steps == number { run.request = request }
+    }
+
+    /// An answer to a step that nothing waits for any more. Only a request that never started ends as a cancellation.
+    private func logLateAnswer(_ error: Error?) {
+        if error is CancellationError {
+            hostLog("An abandoned external display change was withdrawn before it was sent.")
+        } else {
+            hostLog("An abandoned external display change completed\(error.map { " with an error: \($0.localizedDescription)" } ?? ".")")
         }
     }
 
@@ -531,6 +538,9 @@ package final class ExternalDisplayChanges {
         guard inFlight === run else { return }
         run.timer?.cancel()
         inFlight = nil
+        // This reaches the device's queue before anything sent from here on, which a report can do too. A request that
+        // has started goes on, so what follows does not say that nothing was sent.
+        run.request?.cancel()
         hostLog("Stopped waiting for the external display change to \(run.change.mode.title): \(reason).")
         if reporting {
             if case .carPlaySession = run.step {
