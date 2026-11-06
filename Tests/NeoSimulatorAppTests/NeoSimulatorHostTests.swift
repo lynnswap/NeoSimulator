@@ -3396,6 +3396,84 @@ struct InputFocusTests {
         try await host.stop()
     }
 
+    /// A headless in-process host showing a set this test owns, which reads list a device that only they know of. The
+    /// host reads the default set and registers with this one, and it connects to no device and stops none.
+    private func makeHostWithListedTestingDevice() async throws -> (host: SimulatorScreenHost, device: SimulatorDeviceIdentifier,
+                                                                    channel: SimulatorDeviceChannel, cleanUp: @MainActor () -> Void) {
+        let runtime = try await makeRuntime()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        HostPreferences.defaults.set(directory.path, forKey: HostPreferences.testingDeviceSetPath)
+        HostPreferences.defaults.set(true, forKey: HostPreferences.showTestingDevices)
+        let cleanUp: @MainActor () -> Void = {
+            HostPreferences.defaults.removeObject(forKey: HostPreferences.testingDeviceSetPath)
+            HostPreferences.defaults.removeObject(forKey: HostPreferences.showTestingDevices)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        do {
+            let identifier = UUID().uuidString
+            let set = runtime.openDeviceSet(at: directory.path, listing: [identifier])
+            let host = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), headless: true, inProcess: true)
+            try await host.start(attachingBootedDevices: false)
+            #expect(host.isObservingTestingSet)
+            return (host, SimulatorDeviceIdentifier(identifier, deviceSetPath: directory.path), set.channel, cleanUp)
+        } catch {
+            cleanUp()
+            throw error
+        }
+    }
+
+    private func waitForStates(of channel: SimulatorDeviceChannel, _ states: [UnresolvedDeviceOperation.State]) async throws {
+        for _ in 0..<1000 where await channel.unresolvedOperations().map(\.state) != states {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(await channel.unresolvedOperations().map(\.state) == states)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func testingDevicesHiddenDuringAReadAreNotInWhatItReturns() async throws {
+        let (host, device, channel, cleanUp) = try await makeHostWithListedTestingDevice()
+        defer { cleanUp() }
+        #expect(try await host.readAvailableDevices().contains { $0.identity == device })
+
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let holding = Task { try await channel.read("hold the set", limit: .seconds(30)) { release.wait() } }
+        try await waitForStates(of: channel, [.running])
+        let reading = Task { try await host.readAvailableDevices() }
+        try await waitForStates(of: channel, [.running, .waiting])
+        host.toggleShowTestingDevices()
+        release.signal()
+        try await holding.value
+        #expect(try await !reading.value.contains { $0.identity == device })
+        try await host.stop()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aTestingDeviceHiddenWhileItIsReadDoesNotOpen() async throws {
+        let (host, device, channel, cleanUp) = try await makeHostWithListedTestingDevice()
+        defer { cleanUp() }
+        var opened: [SimulatorDeviceIdentifier] = []
+        host.onOpen = { opened.append($0) }
+
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let holding = Task { try await channel.read("hold the set", limit: .seconds(30)) { release.wait() } }
+        try await waitForStates(of: channel, [.running])
+        let opening = Task {
+            try await host.openSimulatorLocally(withIdentifier: device, bootIfNeeded: false, presents: false)
+        }
+        try await waitForStates(of: channel, [.running, .waiting])
+        host.toggleShowTestingDevices()
+        release.signal()
+        try await holding.value
+        let failure = await #expect(throws: SimulatorError.self) { try await opening.value }
+        #expect(failure?.localizedDescription == "The selected simulator is no longer available")
+        // What the read found would claim the device, and start it if it were not running, before anything read it again.
+        #expect(opened.isEmpty)
+        try await host.stop()
+    }
+
     @Test func pasteboardDelegateAnswersSimPasteboardPlus() async throws {
         let runtime = try await makeRuntime()
         #expect(runtime.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
@@ -7275,9 +7353,8 @@ struct InputFocusTests {
         #expect(port.stateReads == 2)
         port.current.inputRoute = "latest"
         worker.release()
-        try await wait { session.audioRoutes?.inputRoute == "latest" }
+        try await wait { session.audioRoutes?.inputRoute == "latest" && worker.calls.count == 2 }
         #expect(port.stateReads == 3)
-        #expect(worker.calls.count == 2)
     }
 
     @Test func aRequestWithAnUnknownOutcomeLeavesCarPlayStateUnknownAndItsLateCompletionAdvancesNothing() async throws {
@@ -8210,7 +8287,7 @@ struct InputFocusTests {
         #expect(controller.externalDisplayWindow != nil)
     }
 
-    @Test func aChangeOfADeviceThatShutDownDoesNotHoldItsNextSession() throws {
+    @Test func aChangeOfADeviceThatShutDownDoesNotHoldItsNextSession() async throws {
         let preferences = MemoryPreferences()
         let changes = ExternalDisplayChanges()
         let screen = TestExternalScreen()
@@ -8221,7 +8298,7 @@ struct InputFocusTests {
         shutDown.perform(.externalDisplay1920x1080)
         display.isBooted = false
         shutDown.invalidate()
-        #expect(!changes.isBusy)
+        try await wait { !changes.isBusy }
         preferences.setExternalDisplayTag(ExternalDisplayMode.size640x480.rawValue, forDevice: "test-device")
         let (booted, _) = try makeExternalDisplayController(screen, preferences: preferences,
                                                             externalDisplayChanges: changes)
@@ -8247,6 +8324,129 @@ struct InputFocusTests {
             "Could not set the external display of Test iPhone to 1920×1080 (1080p): CoreSimulator did not complete the change.",
             "Could not set the external display of Test iPhone to 640×480: CoreSimulator did not complete the change.",
         ])
+    }
+
+    /// A call that has nothing to do with the external display, whose own limit does not pass here, so that what is
+    /// asked of the worker next waits behind it.
+    private func holdWithAnotherCall(_ worker: HeldDeviceWorker) async throws -> Task<Void, any Error> {
+        worker.hold()
+        let holding = Task { try await worker.call("another call") }
+        try await wait { worker.calls == ["another call"] }
+        return holding
+    }
+
+    /// Everything asked of the worker before this has run or been withdrawn when it returns.
+    private func finishCall(_ holding: Task<Void, any Error>, on worker: HeldDeviceWorker) async throws {
+        worker.release()
+        try await holding.value
+        try await worker.call("last call")
+    }
+
+    @Test(arguments: [ExternalDisplayMode.size1920x1080, .disabled])
+    func aScreenRequestThatExpiresBehindAnotherCallIsWithdrawn(mode: ExternalDisplayMode) async throws {
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let holding = try await holdWithAnotherCall(worker)
+        let screen = TestExternalScreen()
+        screen.worker = worker
+        let changes = ExternalDisplayChanges(completionTimeout: .milliseconds(50), carPlayReconnectionDelay: .zero)
+        var failures: [ExternalDisplayFailure] = []
+        changes.apply(mode, through: screen, savesCarPlayConfiguration: false) { failures += $0 }
+        // The choice after it waits for it, and then expires behind the same call.
+        changes.apply(.size640x480, through: screen, savesCarPlayConfiguration: false) { failures += $0 }
+        try await wait { !changes.isBusy }
+        #expect(failures.map(\.step) == [.screen, .screen])
+        #expect(await worker.channel.unresolvedOperations().map(\.state) == [.running])
+
+        try await finishCall(holding, on: worker)
+        #expect(worker.calls == ["another call", "last call"])
+        #expect(screen.requests.isEmpty)
+    }
+
+    /// The screen's request is answered at once, so the session's is made inside the screen's task, which ends first.
+    @Test func aCarPlaySessionRequestThatExpiresBehindAnotherCallIsWithdrawn() async throws {
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let holding = try await holdWithAnotherCall(worker)
+        let screen = TestExternalScreen()
+        screen.carPlayWorker = worker
+        let changes = ExternalDisplayChanges(completionTimeout: .milliseconds(50), carPlayReconnectionDelay: .zero)
+        var failures: [ExternalDisplayFailure] = []
+        changes.apply(.carPlay, through: screen, savesCarPlayConfiguration: true) { failures += $0 }
+        try await wait { !changes.isBusy }
+        #expect(failures.map(\.step) == [.carPlaySession(starting: true)])
+
+        try await finishCall(holding, on: worker)
+        #expect(worker.calls == ["another call", "last call"])
+        #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay"])
+        #expect(screen.carPlaySessions == 0)
+        changes.apply(.carPlay, through: screen, savesCarPlayConfiguration: true) { Issue.record("\($0)") }
+        try await wait { !changes.isBusy }
+        #expect(screen.carPlaySessions == 1)
+        #expect(screen.requests.suffix(2) == ["start carplay", "connect service"])
+    }
+
+    @Test func aCarPlayServiceRequestThatExpiresBehindAnotherCallIsWithdrawn() async throws {
+        let screen = TestExternalScreen()
+        let changes = ExternalDisplayChanges(completionTimeout: .milliseconds(50), carPlayReconnectionDelay: .zero)
+        changes.apply(.carPlay, through: screen, savesCarPlayConfiguration: true) { Issue.record("\($0)") }
+        #expect(screen.requests == ["save carplay", "mode 800x480@2 carplay", "start carplay", "connect service"])
+
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let holding = try await holdWithAnotherCall(worker)
+        screen.carPlayWorker = worker
+        var failures: [ExternalDisplayFailure] = []
+        changes.apply(.disabled, through: screen, savesCarPlayConfiguration: true) { failures += $0 }
+        try await wait { !changes.isBusy }
+        #expect(failures.map(\.step) == [.carPlayService(creating: false)])
+
+        try await finishCall(holding, on: worker)
+        #expect(worker.calls == ["another call", "last call"])
+        #expect(Array(screen.requests.dropFirst(4)) == ["save off", "off"])
+    }
+
+    /// The request is on the worker, where stopping waiting for it stops nothing. It runs once and may still complete,
+    /// and neither the change's failure nor what comes after says that it was not sent.
+    @Test func aRequestAlreadyRunningWhenItsChangeExpiresGoesOnWithAnUnknownOutcome() async throws {
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        worker.hold()
+        let screen = TestExternalScreen()
+        screen.worker = worker
+        screen.defersChanges = true
+        let changes = ExternalDisplayChanges(completionTimeout: .milliseconds(500), carPlayReconnectionDelay: .zero)
+        var failures: [ExternalDisplayFailure] = []
+        changes.apply(.size1920x1080, through: screen, savesCarPlayConfiguration: false) { failures += $0 }
+        try await wait { worker.calls == ["set the external display's mode"] }
+        try await wait { !changes.isBusy }
+        #expect(failures.map(\.error.localizedDescription) == ["CoreSimulator did not complete the change."])
+        #expect(await worker.channel.unresolvedOperations().map(\.state) == [.running])
+
+        worker.release()
+        try await worker.call("last call")
+        #expect(worker.calls == ["set the external display's mode", "last call"])
+        #expect(screen.requests == ["mode 1920x1080@1"])
+        screen.deliver()
+        #expect(!changes.isBusy && failures.count == 1)
+    }
+
+    @Test func aRequestAbandonedWithItsSessionIsWithdrawnBeforeTheNextSessionsChangeRuns() async throws {
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let holding = try await holdWithAnotherCall(worker)
+        let ended = TestExternalScreen(), next = TestExternalScreen()
+        ended.worker = worker
+        next.worker = worker
+        let changes = ExternalDisplayChanges(carPlayReconnectionDelay: .zero)
+        changes.apply(.size1920x1080, through: ended, savesCarPlayConfiguration: false) { Issue.record("\($0)") }
+        changes.abandon(changesThrough: ended)
+        changes.apply(.size640x480, through: next, savesCarPlayConfiguration: false) { Issue.record("\($0)") }
+
+        try await finishCall(holding, on: worker)
+        try await wait { !changes.isBusy }
+        #expect(worker.calls == ["another call", "set the external display's mode", "last call"])
+        #expect(ended.requests.isEmpty && next.requests == ["mode 640x480@1"])
     }
 
     @Test func aDeviceWindowThatClosesTurnsTheExternalDisplayOffAndKeepsTheChoice() throws {
@@ -11380,6 +11580,8 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     var changed: (() -> Void)?
     /// The device's worker, for a test whose writes must go through a real one.
     var worker: HeldDeviceWorker?
+    /// The same for CarPlay's requests alone, which a change reaches after requests that this leaves unheld.
+    var carPlayWorker: HeldDeviceWorker?
     private(set) var displays: [TestDisplay] = []
     private(set) var isDisconnected = false
 
@@ -11390,12 +11592,17 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
                  completion: @escaping @MainActor (Error?) -> Void) async throws {
         if let refusal { throw refusal }
-        try await worker?.call("set the external display's mode")
+        var outcome = unknownOutcome
+        do { try await worker?.call("set the external display's mode") } catch {
+            // A call that has started goes on, and CoreSimulator can still complete it.
+            guard case .outcomeUnknown? = error as? DeviceOperationFailure else { throw error }
+            outcome = error
+        }
         requests.append("mode \(Int(pixelSize.width))x\(Int(pixelSize.height))@\(Int(scale))\(carPlay ? " carplay" : "")")
         complete(completion) {
             $0 = ExternalScreenState(isPoweredOn: true, pixelSize: pixelSize, scale: scale, isCarPlay: carPlay)
         }
-        if let unknownOutcome { throw unknownOutcome }
+        if let outcome { throw outcome }
     }
 
     func powerOff(completion: @escaping @MainActor (Error?) -> Void) async throws {
@@ -11411,8 +11618,9 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         if let error = carPlayErrors[request] { throw error }
     }
 
-    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) async {
         let request = enabled ? "start carplay" : "stop carplay"
+        do { try await carPlayWorker?.call(request) } catch { return completion(error) }
         requests.append(request)
         let answer = { [self] in
             // The device checks its boot when the request executes.
@@ -11430,8 +11638,9 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         for answer in answers { answer() }
     }
 
-    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) throws {
+    func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) async throws {
         let request = connected ? "connect service" : "remove service"
+        try await carPlayWorker?.call(request)
         requests.append(request)
         let answer = { [self] in completion(carPlayErrors[request]) }
         if defersCarPlayServices { pendingServices.append(answer) } else { answer() }

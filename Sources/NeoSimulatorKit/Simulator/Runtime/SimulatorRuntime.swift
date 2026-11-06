@@ -116,10 +116,10 @@ package final class SimulatorRuntime {
     }
 
     /// The owner of the default device set, or of the set at `path`.
-    package func openDeviceSet(at path: String? = nil) -> SimulatorDeviceSet {
+    package func openDeviceSet(at path: String? = nil, listing: [String]? = nil) -> SimulatorDeviceSet {
         SimulatorDeviceSet.shared(
             interface: coreSimulator,
-            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path)
+            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path, listing: listing)
     }
 
     private static var touchPreparation: Task<SimulatorTouchInterface, any Error>?
@@ -503,6 +503,8 @@ package struct SimulatorUserInterfacePlugin {
 
 /// Connection to the device's existing TVOut screen, also used for CarPlay.
 /// CoreSimulator exposes no creatable screen properties for devices without one.
+///
+/// A request belongs to the task that makes it: cancelling the task withdraws a request that has not started.
 @MainActor
 package protocol SimulatorExternalScreen: AnyObject {
     var screenID: UInt32 { get }
@@ -526,7 +528,7 @@ package protocol SimulatorExternalScreen: AnyObject {
     func saveCarPlayConfiguration(carPlay: Bool) throws
     /// Sends a counted CarPlay start/end for `boot`. Completion runs on the main actor.
     /// If the device restarted, no request is sent and completion receives `CarPlayRequestMoot`.
-    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void)
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) async
     /// Creates or removes the guest's CarPlay HID service. Completion reports send status on the main actor.
     /// A throw means no completion follows, and that nothing was sent unless it says otherwise.
     func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) async throws
@@ -645,14 +647,12 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         try CarPlayConfiguration.save(carPlay: carPlay, to: device.extendedDisplayFile())
     }
 
-    package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
-        Task.immediate { [device] in
-            do {
-                try await device.setCarPlayEnabled(enabled, inBoot: boot)
-                completion(nil)
-            } catch {
-                completion(error)
-            }
+    package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) async {
+        do {
+            try await device.setCarPlayEnabled(enabled, inBoot: boot)
+            completion(nil)
+        } catch {
+            completion(error)
         }
     }
 
@@ -662,6 +662,8 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
             client = try await runtime.input.connect(to: device)
             hidClient = client
         }
+        // The change can have been abandoned just as its client arrived, which stays for the next one.
+        try Task.checkCancellation()
         try runtime.input.sendCarPlayService(connected: connected, hasTouchScreen: CarPlayConfiguration.hasTouchScreen,
                                              client: client.value, completion: completion)
     }
