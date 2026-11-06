@@ -145,7 +145,9 @@ struct ModuleBoundaryTests {
                               events: DevicePresentationEvents) throws -> any DevicePresentation {
             throw SimulatorError.unavailable("This presenter presents nothing.")
         }
-        func finishCaptures() -> [any Error] { [] }
+        func beginFinishingCaptures() {}
+        func finishCaptures(before deadline: ContinuousClock.Instant) async -> [any Error] { [] }
+        func acknowledgeCaptureFailures() {}
         func openLog(_ log: URL) async throws {}
         func hostKeyboardLanguage() -> String? { nil }
     }

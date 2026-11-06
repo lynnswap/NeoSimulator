@@ -122,7 +122,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         defer { framebuffer.removeFromSuperview() }
         var failure: (any Error)?
         do { try await disconnect() } catch { failure = error }
-        // Stopping the stream finishes its events, which ends the observation.
+        // Stopping the stream finishes its events at once, which ends the observation even if its session has not closed.
         let task = observation
         observation = nil
         await task?.value
@@ -197,8 +197,11 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     private func disconnect() async throws {
         if let disconnecting { try await disconnecting.value; return }
         let task = Task { [self] in
-            await stream.stop()
-            try await input.stop()
+            var failure: (any Error)?
+            do { try await stream.stop() } catch { failure = error }
+            do { try await input.stop() }
+            catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+            if let failure { throw failure }
         }
         disconnecting = task
         defer { disconnecting = nil }

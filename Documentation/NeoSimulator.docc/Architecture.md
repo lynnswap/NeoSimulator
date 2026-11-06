@@ -192,6 +192,10 @@ Hub mode.
 | `HostApplication` | Compose the renderer's application lifecycle, menus, manager requests, and ownership registration around a `SimulatorScreenHost`. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
 | `DeviceWindowController` | Present the device and forward user actions. |
+| `CapturedContent` | Own one temporary capture until it is saved, deleted or delivered. Its file work runs off MainActor, one operation at a time in the order asked for, so racing saves, deletes and late drag deliveries cannot move or remove the file twice. Writing an animated GIF is one of those operations, through a private file beside its destination, so its owner waits for it and is told its movie, private file and destination if it outlasts the wait. It also owns what became of a save nobody asked for: a capture left unsaved keeps its failure, past its thumbnail, its window and any stop that stopped waiting, until it is resolved, it has gone from the location the failure named, or the owner acknowledges having told the user. |
+| `CaptureThumbnail` | Present a capture on MainActor. Ending one is immediate and begins saving what it holds; stopping waits up to its limit for that file work, returns its failures, and names where a capture remains if a disk holds it longer. The limit ends only that wait: a later failure goes to the capture's error handler once, is not attempted again, and every further stop of its owner returns it for as long as the capture remains unsaved. |
+| `RecordingStore`, `VideoRecording` | Own every destination that a recording will replace or a capture is being moved to: a claim is taken on MainActor and held until the file work ends. Create a recording's file, launch its process and finalize it away from MainActor. Stopping stops recordings, including one that is still launching, and waits up to its limit; one that outlasts it stays owned and is named with its files, its later failure goes to the error handler and the next stop, and the next stop joins it. |
+| `RemoteScreenCaptureStream` | Keep frames and control on its actor's queue and the blocking `AVCaptureSession` calls on a queue of their own. Stopping is accepted at once, each frame stays retained until the GPU finishes with it, and a stop that outlasts its limit is reported while it carries on. |
 | `RemoteDeviceScreenSession` | Own one active physical-device or VM screen transport, its resize assertion and input resources, and unfinished or completed recordings. |
 | `CoreDeviceAppResizeTransport` | Bridge native app-resize eligibility and assertions for Simulator and remote sessions. |
 | `CoreDevicePasteboardTransport` | Transfer a default-set simulator's pasteboard and observe both pasteboards' changes through CoreDevice. Simulators that CoreDevice does not list keep SimPasteboardPlus. |
@@ -379,9 +383,15 @@ observation asks again.
 
 A device's screen opens with what the screen itself needs: its display and, for a Duo, the
 independent canvas that is its screen. Its native input and pasteboard follow from what the device
-is. A device without one is `unsupported`, and only then does SimulatorKit or SimPasteboardPlus serve
-it for good. A transport that did not answer says nothing about the device, so it is `failed`:
-nothing else takes its place, the failure stays visible, and asking again asks the same transport.
+is. Only a connected CoreDevice record that lacks a feature makes the device `unsupported`, and only
+then does SimulatorKit or SimPasteboardPlus serve it for good. A simulator's record can arrive late
+and lists no features until CoreDevice connects, so one `CoreDeviceRecordDiscovery` for each connection
+waits on CoreDevice's `deviceChanges` and `deviceInfoChanges` while the service stays `pending`, with
+no timer. A Duo's screen waits for the record the same way, until `DeviceOperationLimit.coreDeviceRecord`.
+A transport that did not answer says nothing about the device, so it is `failed`: nothing else takes
+its place, the failure stays visible, and asking again asks the same transport. A retry while a device's
+channel holds a call is refused unsent, and the channel saying the call returned starts one more attempt.
+What connected but no display took up stops through its own ports, however late it answered.
 Native input activates on the open screen once the pointer and any button SimulatorKit holds are
 up, the touches first, because the guest drops SimulatorKit's touches and buttons once native
 keyboard or trackpad input starts. A 3D Touch screen keeps SimulatorKit's input throughout, as only
@@ -432,8 +442,9 @@ and a read that began before the device restarted or changed what it can answer 
 answers for nothing. Each accepted change shows at once and stays attached to its
 device, which runs its changes in the order they were accepted, without waiting for
 any other device. Its outcome is what the change's own caller receives, and what
-confirms it is one read after the last change accepted for the device, even if nothing
-shows the device any longer.
+confirms it is one read of its group after the last change accepted to that group,
+even if nothing shows the device any longer. Neither a change nor a read of another
+group holds that read up.
 
 Inventory reads list which sources answered. A failed source says nothing of what
 only it listed, so those records and their state stay; only a successful read of
@@ -441,10 +452,16 @@ every source that listed a device removes it. A device that returns after that i
 new device. An inventory change that alters no answer, such as a new name, asks the
 device nothing.
 
+A screen that connects to a device reports its own record of it, so a device booted
+since the last inventory read can answer on the model that already represents it. The
+record says only whether the device runs and since when. Everything else stays what
+the inventory listed, and a later read has the last word on this too, except one that
+began before the screen connected.
+
 Reads run on an invalidation and never by a timer: a native report, a session's own
 command, the device changing state, an explicit refresh, or the application coming to
-the foreground. Invalidations that arrive while a read runs coalesce into one read
-after it. A value that something outside this process changes, without a signal this
+the foreground. Invalidations that arrive while a group's read runs coalesce into one
+read of that group when it answers, whatever the rest of its batch is doing. A value that something outside this process changes, without a signal this
 process can observe, stays as it was last read until one of those happens. That
 includes another process's registry, which shares no objects with this one.
 
@@ -452,8 +469,10 @@ includes another process's registry, which shares no objects with this one.
 
 Preference or host-switch failures appear in the manager with their remaining
 recovery state. Device errors stay with the relevant window. A failed
-capture keeps its recoverable file; partial imports and device creation retain
-and report completed work. None of these failures changes the selected route
+capture keeps its recoverable file and is not attempted again by itself. A
+capture that reached another volume whole but whose original could not be removed
+counts as saved, and both locations are reported. Partial imports and device
+creation retain and report completed work. None of these failures changes the selected route
 or launches Device Hub as a fallback.
 
 VMs use Screen Sharing when a VNC endpoint is available, with its pasteboard

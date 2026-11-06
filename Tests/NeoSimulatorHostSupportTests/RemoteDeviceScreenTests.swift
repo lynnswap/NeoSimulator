@@ -297,6 +297,35 @@ struct RemoteDeviceScreenTests {
         #expect(try await retry.value.width == 2)
     }
 
+    @Test func aHeldFrameDecodeLeavesTheMainActorFreeAndItsCallerCancellable() async throws {
+        let decodes = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let context = try #require(CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 8,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(context.makeImage())
+        let capture = RemoteScreenFrameCapture(scheduleTimeout: { _, _ in {} }, decode: { [decodes, release] _ in
+            decodes.continuation.yield()
+            var releases = release.stream.makeAsyncIterator()
+            _ = await releases.next()
+            return image
+        })
+        var started = decodes.stream.makeAsyncIterator()
+        var sends = 0
+        let waiting = Task.immediate { try await capture.capture { sends += 1; capture.receive(Data([1])) } }
+        #expect(await started.next() != nil)
+        // The reply has been taken, so a new request goes out while the decode is held.
+        let next = Task.immediate { try await capture.capture { sends += 1; capture.receive(Data([2])) } }
+        #expect(await started.next() != nil)
+        #expect(sends == 2)
+        waiting.cancel()
+        do { _ = try await waiting.value; Issue.record("The cancellation was lost") }
+        catch { #expect(error is CancellationError) }
+        // Finishing both decodes resumes the remaining caller, and the canceled one is not resumed again.
+        release.continuation.yield()
+        release.continuation.yield()
+        #expect(try await next.value.width == 2)
+    }
+
     @Test func startupAndCanceledRepliesDrainBeforeANewCaptureRequestIsSent() async throws {
         let capture = RemoteScreenFrameCapture(scheduleTimeout: { _, _ in {} })
         func png(width: Int) throws -> Data {
@@ -499,7 +528,7 @@ struct RemoteDeviceScreenTests {
         let image = try await stream.snapshot()
         let pixels = try #require(image.dataProvider?.data as Data?)
         #expect(image.width == 4 && image.height == 2 && Array(pixels.prefix(3)) == [0x40, 0x50, 0x60])
-        await stream.stop()
+        try await stream.stop()
         await stream.receive(try capturedFrame(width: 8, height: 2, bgra: [0, 0, 0, 0xFF]))
         await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
         // A failure, or the late frame's new size, would be an event before the stream ended.
@@ -511,7 +540,129 @@ struct RemoteDeviceScreenTests {
         guard case .failure(let error)? = await failures.next() else { Issue.record("A CPU-only frame was accepted"); return }
         #expect((error as? RemoteScreenError)?.identifier == "remote-screen-frame-surface")
         await #expect(throws: RemoteScreenError.self) { try await copying.snapshot() }
-        await copying.stop()
+        try await copying.stop()
+    }
+
+    @Test func aCaptureStreamAnswersAndAcceptsStopWhileItsSessionCallsAreHeld() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let session = HeldCaptureSession()
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: CAMetalLayer()), device: gpu, lifecycle: session.lifecycle)
+        var events = stream.events.makeAsyncIterator()
+        let start = Task { try await stream.start(sourceID: "fixture") }
+        await session.untilEntered("open")
+        // The session call blocks its own queue; frames, sizes and captures are answered meanwhile.
+        await stream.receive(try capturedFrame(width: 4, height: 2, bgra: [0x10, 0x20, 0x30, 0xFF]))
+        guard case .frameSize? = await events.next() else { Issue.record("The first frame was not reported"); return }
+        await stream.acceptDrawableSize(CGSize(width: 8, height: 8))
+        let image = try await stream.snapshot()
+        #expect(image.width == 4)
+
+        // Stopping is accepted at once and ends the start's wait, but nothing runs ahead of the held call.
+        let stop = Task { try await stream.stop() }
+        do { try await start.value; Issue.record("The stop did not end the start") }
+        catch { #expect(error is CancellationError) }
+        #expect(await events.next() == nil)
+        await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
+        #expect(session.entered == ["open"])
+        session.release("open")
+        await session.untilEntered("close")
+        #expect(session.entered == ["open", "close"])
+        session.release("close")
+        try await stop.value
+        try await stream.stop()
+        #expect(session.entered == ["open", "close"])
+    }
+
+    @Test func cancellingACaptureStreamStartLeavesItsSessionForTheStopThatFollows() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let session = HeldCaptureSession()
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: CAMetalLayer()), device: gpu, lifecycle: session.lifecycle)
+        let start = Task { try await stream.start(sourceID: "fixture") }
+        await session.untilEntered("open")
+        start.cancel()
+        do { try await start.value; Issue.record("The cancellation was lost") }
+        catch { #expect(error is CancellationError) }
+        #expect(session.entered == ["open"])
+        session.release("open", "close")
+        try await stream.stop()
+        #expect(session.entered == ["open", "close"])
+    }
+
+    @Test func aCaptureStreamReportsAFailedStartAndStillClosesItsSession() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let session = HeldCaptureSession(openFailure: ScreenFixtureError.stream)
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: CAMetalLayer()), device: gpu, lifecycle: session.lifecycle)
+        session.release("open", "close")
+        await #expect(throws: ScreenFixtureError.self) { try await stream.start(sourceID: "fixture") }
+        try await stream.stop()
+        #expect(session.entered == ["open", "close"])
+    }
+
+    @Test func aStopThatOutlastsItsLimitIsReportedAndCarriesOnWithItsSession() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let session = HeldCaptureSession()
+        session.release("open")
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: CAMetalLayer()), device: gpu, lifecycle: session.lifecycle,
+                                                   stopLimit: .milliseconds(50))
+        try await stream.start(sourceID: "fixture")
+        do { try await stream.stop(); Issue.record("The held session was not reported") }
+        catch { #expect((error as? RemoteScreenError)?.identifier == "remote-screen-capture-stop") }
+        #expect(session.entered == ["open", "close"])
+        // Asking again waits for the same stop, and it does not close twice.
+        await #expect(throws: RemoteScreenError.self) { try await stream.stop() }
+        session.release("close")
+        await session.untilLeft("close")
+        try await stream.stop()
+        #expect(session.entered == ["open", "close"])
+    }
+
+    @Test func aCaptureStreamKeepsItsFramesAndBoundUntilTheGPUFinishesWithoutWaitingOnItsQueue() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let gate = try #require(gpu.makeSharedEvent())
+        let session = HeldCaptureSession()
+        session.release("open", "close")
+        let submissions = Mutex(0)
+        var lifecycle = session.lifecycle
+        lifecycle.encoding = { [gate] buffer in
+            submissions.withLock { $0 += 1 }
+            buffer.encodeWaitForEvent(gate, value: 1)
+        }
+        let layer = CAMetalLayer()
+        layer.device = gpu
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: layer), device: gpu, lifecycle: lifecycle,
+                                                   stopLimit: .milliseconds(100))
+        var events = stream.events.makeAsyncIterator()
+        // Only its retain count is read after the stream has it.
+        nonisolated(unsafe) let first = try capturedFrame(width: 4, height: 2, bgra: [0x10, 0x20, 0x30, 0xFF])
+        let retainedByTest = CFGetRetainCount(first)
+        await stream.receive(first)
+        guard case .frameSize(let size)? = await events.next() else { Issue.record("The first frame was not reported"); return }
+        layer.drawableSize = size
+        await stream.acceptDrawableSize(size)
+        // The first frame's copy is held by the GPU; the next fills the bound, and later ones only replace the waiting frame.
+        for _ in 0..<3 { await stream.receive(try capturedFrame(width: 4, height: 2, bgra: [0x40, 0x50, 0x60, 0xFF])) }
+        #expect(submissions.withLock { $0 } == RemoteScreenCaptureStream.maximumFramesInFlight)
+        #expect(CFGetRetainCount(first) > retainedByTest)
+
+        do { try await stream.stop(); Issue.record("The held GPU work was not reported") }
+        catch { #expect((error as? RemoteScreenError)?.identifier == "remote-screen-capture-stop") }
+        // The stop gave up waiting but not the frame, and its queue still answers.
+        await stream.acceptDrawableSize(size)
+        await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
+        #expect(CFGetRetainCount(first) > retainedByTest)
+        #expect(submissions.withLock { $0 } == RemoteScreenCaptureStream.maximumFramesInFlight)
+
+        gate.signaledValue = 1
+        let deadline = ContinuousClock.now + .seconds(10)
+        var stopped = false
+        while !stopped, ContinuousClock.now < deadline {
+            do { try await stream.stop(); stopped = true } catch {}
+        }
+        #expect(stopped)
+        while CFGetRetainCount(first) > retainedByTest, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(CFGetRetainCount(first) == retainedByTest)
     }
 
     @Test func aCaptureSourceChoiceBelongsToOneCoreDeviceAndIsRequiredBeforeConnecting() async throws {
@@ -1543,18 +1694,18 @@ struct RemoteDeviceScreenTests {
         func failure() -> DeviceOperationFailure? { services.input.failure as? DeviceOperationFailure }
 
         activation.start()
-        while failure() == nil { await Task.yield() }
+        try await waitUntil { failure() != nil }
         let universalHID = CoreDeviceScreenInput.universalHIDFeature
         #expect(failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50)))
         #expect(peers.lookUps.isEmpty)
 
         services.retryInput()
-        while failure() == nil || failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50)) { await Task.yield() }
+        try await waitUntil { !(failure() == nil || failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50))) }
         #expect(failure() == .notSent(operation: "look up \(universalHID)", heldBy: "look up \(universalHID)"))
         #expect(calls.withLock { $0 } == 1 && peers.lookUps.isEmpty && activated == 0)
 
         held.signal()
-        while activated == 0 { await Task.yield() }
+        try await waitUntil { activated != 0 }
         #expect(calls.withLock { $0 } == 3)
         #expect(peers.lookUps == [universalHID, universalHID])
     }
@@ -1578,7 +1729,7 @@ struct RemoteDeviceScreenTests {
             return try await withCheckedThrowingContinuation { answer = $0 }
         }, activate: { _ in activated += 1 })
         activation.start()
-        while answer == nil { await Task.yield() }
+        try await waitUntil { answer != nil }
 
         activation.cancel()
         #expect(await !activation.ends(before: ContinuousClock.now))
@@ -1601,7 +1752,7 @@ struct RemoteDeviceScreenTests {
         let failing = NativeInputActivation(services: refusing, connect: { NativeInputServices(keyboard: refused) },
                                             activate: { _ in throw ScreenFixtureError.stream })
         failing.start()
-        while refusing.input.failure == nil { await Task.yield() }
+        try await waitUntil { refusing.input.failure != nil }
         refused.setEnabled(true, for: display)
         #expect(!refused.isEnabled(for: display))
     }
@@ -2155,6 +2306,74 @@ struct RemoteDeviceScreenTests {
     private func device(identifier: String = "command-identifier") throws -> CoreDeviceDevice {
         let data = Data(#"{"result":{"devices":[{"identifier":"\#(identifier)","properties":{"hardware":{"fidelity":"physical","udid":"hardware-identifier"},"state":{"name":"Fixture Device"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)
         return try #require(CoreDeviceInventoryDecoder.decode(data).first)
+    }
+}
+
+/// Stands in for the blocking AVCaptureSession calls: each really blocks the stream's session queue until released.
+private final class HeldCaptureSession: Sendable {
+    private struct State {
+        var entered: [String] = []
+        var left: Set<String> = []
+        var released: Set<String> = []
+        var gates: [String: DispatchSemaphore] = [:]
+        var watchers: [(String, Bool, CheckedContinuation<Void, Never>)] = []
+    }
+    private let state = Mutex(State())
+    private let openFailure: (any Error)?
+
+    init(openFailure: (any Error)? = nil) { self.openFailure = openFailure }
+
+    var entered: [String] { state.withLock { $0.entered } }
+
+    var lifecycle: RemoteScreenCaptureStream.Lifecycle {
+        RemoteScreenCaptureStream.Lifecycle(open: { [self] _, _, _ in
+            block("open")
+            if let openFailure { throw openFailure }
+        }, close: { [self] in block("close") })
+    }
+
+    private func block(_ call: String) {
+        let gate = DispatchSemaphore(value: 0)
+        let (held, ready) = state.withLock { state -> (Bool, [CheckedContinuation<Void, Never>]) in
+            state.entered.append(call)
+            state.gates[call] = gate
+            let ready = state.watchers.filter { $0.0 == call && !$0.1 }.map(\.2)
+            state.watchers.removeAll { $0.0 == call && !$0.1 }
+            return (!state.released.contains(call), ready)
+        }
+        for watcher in ready { watcher.resume() }
+        if held { gate.wait() }
+        let left = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            state.left.insert(call)
+            let ready = state.watchers.filter { $0.0 == call && $0.1 }.map(\.2)
+            state.watchers.removeAll { $0.0 == call && $0.1 }
+            return ready
+        }
+        for watcher in left { watcher.resume() }
+    }
+
+    func release(_ calls: String...) {
+        let gates = state.withLock { state in
+            calls.compactMap { call -> DispatchSemaphore? in
+                state.released.insert(call)
+                return state.gates[call]
+            }
+        }
+        for gate in gates { gate.signal() }
+    }
+
+    func untilEntered(_ call: String) async { await until(call, left: false) }
+    func untilLeft(_ call: String) async { await until(call, left: true) }
+
+    private func until(_ call: String, left: Bool) async {
+        await withCheckedContinuation { (watcher: CheckedContinuation<Void, Never>) in
+            let ready = state.withLock { state -> Bool in
+                if left ? state.left.contains(call) : state.entered.contains(call) { return true }
+                state.watchers.append((call, left, watcher))
+                return false
+            }
+            if ready { watcher.resume() }
+        }
     }
 }
 

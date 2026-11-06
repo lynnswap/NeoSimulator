@@ -17,7 +17,7 @@ package final class DeviceWindowPresenter: DevicePresenter {
     private let touchPressure = TouchPressure()
     private let tvRemote = TVRemoteController()
     private let cascade = WindowCascade()
-    private let captureOwner = UUID()
+    package let captureOwner = UUID()
 
     package init() {
         let displays = SimulatorDisplaySet()
@@ -40,7 +40,13 @@ package final class DeviceWindowPresenter: DevicePresenter {
             onClose: { events.onClose($0, $1) }, onRestart: { events.onRestart($0, $1) }, onShutDown: onShutDown)
     }
 
-    package func finishCaptures() -> [any Error] { CaptureThumbnail.finishAll(owner: captureOwner) }
+    package func beginFinishingCaptures() { CaptureThumbnail.beginFinishing(owner: captureOwner) }
+
+    package func finishCaptures(before deadline: ContinuousClock.Instant) async -> [any Error] {
+        await CaptureThumbnail.finishAll(owner: captureOwner, before: deadline)
+    }
+
+    package func acknowledgeCaptureFailures() { CaptureThumbnail.acknowledgeFailures(owner: captureOwner) }
 
     package func openLog(_ log: URL) async throws {
         guard let console = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {

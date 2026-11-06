@@ -106,6 +106,8 @@ public final class DeviceModel: Identifiable {
     @ObservationIgnored private var writes: [UUID: Task<Void, any Error>] = [:]
     @ObservationIgnored private var unstartedWrites: Set<UUID> = []
     @ObservationIgnored private var lastWrite: Task<Void, Never>?
+    /// When the device had booted according to the last screen that connected to it.
+    @ObservationIgnored private var connectedBoot: Date?
 
     package init(inventory: InventoryDevice, source: any DeviceStateSource, registry: DeviceRegistry? = nil, readsStopped: Bool = false) {
         id = inventory.id
@@ -179,6 +181,20 @@ public final class DeviceModel: Identifiable {
         backgroundServices.deviceChanged()
         inspection.deviceChanged()
         if Self.answersDiffer(previous, device) { deviceRestarted() } else { inspection.scheduleReads() }
+    }
+
+    /// Takes in what a connecting screen's own record says of whether the device runs and since when. Everything else about
+    /// the device stays the inventory's, as does this once the inventory reads it again.
+    package func observeConnection(to device: AvailableDevice, lastBootDate: Date?) {
+        guard case .simulator(let known) = inventory else { return }
+        let bootChanged = lastBootDate != nil && connectedBoot != nil && lastBootDate != connectedBoot
+        connectedBoot = lastBootDate ?? connectedBoot
+        if (known.state == "Booted") != device.isBooted {
+            let state = SimulatorHostDevice(presenting: device, ownerXcodeURL: nil).state
+            update(.simulator(known.inventoryCopy(ownerXcodeURL: known.ownerXcodeURL, state: state)), sources: sources)
+        } else if bootChanged {
+            deviceRestarted()
+        }
     }
 
     private static func answersDiffer(_ first: InventoryDevice, _ second: InventoryDevice) -> Bool {

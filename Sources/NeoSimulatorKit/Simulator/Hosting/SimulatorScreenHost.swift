@@ -9,7 +9,9 @@ package final class SimulatorScreenHost {
     /// What draws this host's devices. Without one, it reads and manages them but attaches no display.
     package private(set) var presenter: (any DevicePresenter)?
     private let deviceSet: SimulatorDeviceSet
-    private let recordings = RecordingStore()
+    private let recordings: RecordingStore
+    /// How long stopping waits for capture file work, which defaults to TerminationTimeout.
+    package var captureFinishLimit: Duration?
     private let isManaged: Bool
     package let isHeadless: Bool
     private let isInProcess: Bool
@@ -77,9 +79,11 @@ package final class SimulatorScreenHost {
     package init(runtime: SimulatorIORuntime, conflicts: any HostConflictChecking = NoHostConflicts(),
          presenter: (any DevicePresenter)? = nil, isManaged: Bool = false,
          headless: Bool = false, inProcess: Bool = false, pasteboardSync: PasteboardSync? = nil,
-         offersLifetimeChoice: Bool = true, deviceRegistry: DeviceRegistry = DeviceRegistry()) throws {
+         offersLifetimeChoice: Bool = true, deviceRegistry: DeviceRegistry = DeviceRegistry(),
+         recordings: RecordingStore = RecordingStore()) throws {
         try conflicts.check()
         self.deviceRegistry = deviceRegistry
+        self.recordings = recordings
         self.runtime = runtime
         self.conflicts = conflicts
         self.presenter = presenter
@@ -91,9 +95,8 @@ package final class SimulatorScreenHost {
         deviceSet = runtime.openDeviceSet()
         HostPreferences.registerDefaults()
         recordings.onError = { [weak self] error in
-            guard let self else { return }
-            if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
-            else { self.report(error) }
+            guard let self else { hostLog(error.localizedDescription); return }
+            self.noteCaptureFailure(error)
         }
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
@@ -177,11 +180,12 @@ package final class SimulatorScreenHost {
         await restart?.value
         await closing?.value
         if let controller = sessions[identifier] {
-            if let recording = controller.session.recording {
-                recording.stop()
-                do { try await recording.waitUntilFinished() }
-                catch { suppressed.remove(identifier); throw error }
-            }
+            do {
+                if let recording = try await controller.session.activeRecording() {
+                    try await recording.finish()
+                    try await recording.waitUntilFinished()
+                }
+            } catch { suppressed.remove(identifier); throw error }
             controller.invalidate()
             sessions.removeValue(forKey: identifier)
             disconnectedSessions.append(controller.session)
@@ -460,8 +464,8 @@ package final class SimulatorScreenHost {
         }
         presentationRestarts.insert(identifier)
         do {
-            if let recording = controller.session.recording {
-                recording.stop()
+            if let recording = try await controller.session.activeRecording() {
+                try await recording.finish()
                 try await recording.waitUntilFinished()
             }
             awaitingReconnect[identifier] = controller
@@ -696,7 +700,8 @@ package final class SimulatorScreenHost {
             display: connected.display,
             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                    deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
-            model: deviceRegistry.presentedModel(of: available, ownerXcodeURL: runtime.xcodeURL, channel: device.channel),
+            model: deviceRegistry.presentedModel(of: available, lastBootDate: device.lastBootDate,
+                                                 ownerXcodeURL: runtime.xcodeURL, channel: device.channel),
             recordings: recordings, openLog: { [presenter] in try await presenter.openLog($0) },
             hostKeyboardLanguage: { [presenter] in presenter.hostKeyboardLanguage() },
             pasteboardSync: pasteboardSync, optionalServices: connected.optionalServices,
@@ -727,8 +732,7 @@ package final class SimulatorScreenHost {
         return DevicePresentationEvents(
             reportDetachedCapture: { [weak self] error in
                 guard let self else { hostLog(error.localizedDescription); return }
-                if self.isTerminating || self.stopped { self.recordingTerminationErrors.append(error) }
-                else { self.report(error) }
+                self.noteCaptureFailure(error)
             }, onClose: { [weak self] presentation, choice in
                 self?.presentationClosed(presentation, choice: choice)
             }, onRestart: { [weak self] presentation, erasing in
@@ -818,7 +822,7 @@ package final class SimulatorScreenHost {
         updateOwnership()
         if isInProcess {
             let finishing = Task {
-                await session.finishRecording()
+                do { try await session.finishRecording() } catch { report(error) }
                 try await removal.value
             }
             onClose?(identifier, choice, finishing)
@@ -847,7 +851,7 @@ package final class SimulatorScreenHost {
         closingShutdowns[identifier] = Task { [weak self] in
             _ = await removal.result
             await restart?.value
-            await session.finishRecording()
+            do { try await session.finishRecording() } catch { hostLog(error.localizedDescription) }
             guard let self, !self.yieldedToAnotherHost,
                   !Task.isCancelled,
                   await self.isRunning(identifier.identifier, deviceSetPath: tools.deviceSetPath) else {
@@ -1044,6 +1048,28 @@ package final class SimulatorScreenHost {
         if let onError { onError(error) } else { hostLog(error.localizedDescription) }
     }
 
+    /// A recording's or detached capture's failure. A stop in progress returns it. One that outlasted the stop that waited
+    /// for it is reported now, since no other stop may come, and kept for the next, so that a retry cannot claim a clean finish.
+    package func noteCaptureFailure(_ error: any Error) {
+        guard isTerminating || stopped else { report(error); return }
+        recordingTerminationErrors.append(error)
+        if stopped, stoppingTask == nil { report(error) }
+    }
+
+    private func takeRecordingTerminationErrors() -> [any Error] {
+        defer { recordingTerminationErrors.removeAll() }
+        return recordingTerminationErrors
+    }
+
+    /// What a stop says of recordings and captures, once each: a capture's failure that outlasted a stop is also kept by the capture.
+    private func distinctMessages(_ failures: [any Error]) -> [String] {
+        var seen = Set<String>()
+        return failures.map(\.localizedDescription).filter { seen.insert($0).inserted }
+    }
+
+    /// For a caller that has told the user what a stop threw: the next stop does not repeat those unsaved captures.
+    package func acknowledgeCaptureFailures() { presenter?.acknowledgeCaptureFailures() }
+
     package func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
         yieldToAnotherHost()
@@ -1074,7 +1100,8 @@ package final class SimulatorScreenHost {
     package func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
         if let stoppingTask { return stoppingTask }
         isTerminating = true
-        recordingTerminationErrors += presenter?.finishCaptures() ?? []
+        // Thumbnails end before this returns; what they hold is saved while the rest of stopping goes on.
+        presenter?.beginFinishingCaptures()
         let retryingCleanup = stopped
         let keepsRunning = isInProcess || (keepingDevicesRunning
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
@@ -1085,7 +1112,10 @@ package final class SimulatorScreenHost {
             defer { stoppingTask = nil }
             if retryingCleanup {
                 let inputFailures = await finishDisconnectedInput()
+                let recordingFailures = await recordings.finishAll()
+                let captureFailures = await finishCaptures()
                 let failures = inputFailures + (await finishExternalDisplayChanges()) + (await finishObservationRemovals())
+                    + distinctMessages(recordingFailures + captureFailures + takeRecordingTerminationErrors())
                 if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
             } else {
                 try await finishStopping(devices: devices)
@@ -1093,6 +1123,11 @@ package final class SimulatorScreenHost {
         }
         stoppingTask = task
         return task
+    }
+
+    /// Ends the stop of captures that `beginStopping` began, along with any handed over since.
+    private func finishCaptures() async -> [any Error] {
+        await presenter?.finishCaptures(before: .now + (captureFinishLimit ?? HostPreferences.terminationLimit)) ?? []
     }
 
     private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
@@ -1106,20 +1141,21 @@ package final class SimulatorScreenHost {
         }
         for controller in sessions.values { controller.invalidate() }
         disconnectedSessions += sessions.values.map(\.session)
-        await recordings.finishAll()
+        let recordingFailures = await recordings.finishAll()
         sessions.removeAll()
         awaitingReconnect.removeAll()
         presentationRestarts.removeAll()
         let inputFailures = await finishDisconnectedInput()
         let displayFailures = await finishExternalDisplayChanges()
         failures += inputFailures + displayFailures + (await shutDownForTermination(devices))
-        let captureFailures = recordingTerminationErrors + (presenter?.finishCaptures() ?? [])
-        recordingTerminationErrors.removeAll()
+        let captureFailures = recordingFailures + (await finishCaptures())
         shutdown()
         failures += await finishObservationRemovals()
         onChange?()
-        if !failures.isEmpty || !captureFailures.isEmpty {
-            throw SimulatorError.operation((failures + captureFailures.map(\.localizedDescription)).joined(separator: "\n"))
+        // Taken last: what fails from here on has outlasted this stop.
+        let allCaptureFailures = distinctMessages(captureFailures + takeRecordingTerminationErrors())
+        if !failures.isEmpty || !allCaptureFailures.isEmpty {
+            throw SimulatorError.operation((failures + allCaptureFailures).joined(separator: "\n"))
         }
     }
 

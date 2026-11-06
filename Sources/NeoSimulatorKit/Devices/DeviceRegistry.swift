@@ -18,6 +18,8 @@ public final class DeviceRegistry {
     @ObservationIgnored private var readsStopped = false
     @ObservationIgnored private var runningRead: Task<Void, any Error>?
     @ObservationIgnored private var queuedRead: Task<Void, any Error>?
+    /// The devices that a screen connected to after the running inventory read began.
+    @ObservationIgnored private var connectedDuringRead: Set<DeviceInventoryID> = []
 
     /// Reads real devices through CoreSimulator, CoreDevice, and their command-line tools. Nothing is read until ``refresh()``.
     public convenience init() { self.init(source: LiveDeviceStateSource()) }
@@ -39,6 +41,7 @@ public final class DeviceRegistry {
         let task = Task { [weak self, source] in
             _ = await previous?.result
             defer { self?.inventoryReadEnded() }
+            self?.connectedDuringRead = []
             let snapshot = try await source.inventory()
             try Task.checkCancellation()
             self?.apply(snapshot)
@@ -59,13 +62,15 @@ public final class DeviceRegistry {
 
     /// Publishes what an inventory read found. A listed device keeps its object. A device that is not listed has gone only
     /// if every source that listed it read successfully, and a record that another source adds to survives that source's
-    /// failure. Work running for a device that has gone finishes without publishing to anyone looking it up again.
+    /// failure. Work running for a device that has gone finishes without publishing to anyone looking it up again. What a
+    /// screen found by connecting after the read began is newer than what the read says of whether the device runs.
     package func apply(_ snapshot: DeviceInventorySnapshot) {
         var listed: [DeviceModel] = []
         var seen: Set<DeviceInventoryID> = []
         for device in snapshot.devices where seen.insert(device.id).inserted {
             let model = models[device.id]
-            let current = Self.retainingUnreadValues(of: model?.inventory, in: device, snapshot: snapshot)
+            let current = Self.retainingUnreadValues(of: model?.inventory, in: device, snapshot: snapshot,
+                                                     keepingState: connectedDuringRead.contains(device.id))
             let unreadSources = model?.sources.filter { snapshot.retains([$0]) } ?? []
             let sources = snapshot.sources(of: device).union(unreadSources)
             if let model {
@@ -89,7 +94,8 @@ public final class DeviceRegistry {
     }
 
     /// CoreDevice and renderer ownership add to a simulator's record, so failing to read them says nothing of it.
-    private static func retainingUnreadValues(of previous: InventoryDevice?, in device: InventoryDevice, snapshot: DeviceInventorySnapshot) -> InventoryDevice {
+    private static func retainingUnreadValues(of previous: InventoryDevice?, in device: InventoryDevice, snapshot: DeviceInventorySnapshot,
+                                              keepingState: Bool) -> InventoryDevice {
         guard case .simulator(let new) = device, case .simulator(let old)? = previous else { return device }
         var owner = new.ownerXcodeURL
         var capabilities: Set<String>?
@@ -99,7 +105,8 @@ public final class DeviceRegistry {
             capabilities = old.capabilities
             coreDevice = record
         }
-        return .simulator(new.inventoryCopy(ownerXcodeURL: owner, capabilities: capabilities, coreDevice: coreDevice))
+        return .simulator(new.inventoryCopy(ownerXcodeURL: owner, capabilities: capabilities, coreDevice: coreDevice,
+                                            state: keepingState ? old.state : nil))
     }
 
     private func makeModel(_ device: InventoryDevice, channel: SimulatorDeviceChannel? = nil) -> DeviceModel {
@@ -112,14 +119,15 @@ public final class DeviceRegistry {
         return model
     }
 
-    /// The model of a device that a session is about to show, which a process with no inventory has only from here.
-    package func presentedModel(of device: AvailableDevice, ownerXcodeURL: URL?, channel: SimulatorDeviceChannel) -> DeviceModel {
+    /// The model of a device that a session is about to show, which a process with no inventory has only from here. `device`
+    /// and `lastBootDate` are the record that the session connected from, which can be newer than the last inventory read.
+    package func presentedModel(of device: AvailableDevice, lastBootDate: Date?, ownerXcodeURL: URL?, channel: SimulatorDeviceChannel) -> DeviceModel {
         let id = DeviceInventoryID.simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath)
-        if let model = models[id] {
-            model.follow(channel)
-            return model
-        }
-        return makeModel(.simulator(SimulatorHostDevice(presenting: device, ownerXcodeURL: ownerXcodeURL)), channel: channel)
+        let model = models[id] ?? makeModel(.simulator(SimulatorHostDevice(presenting: device, ownerXcodeURL: ownerXcodeURL)), channel: channel)
+        model.follow(channel)
+        model.observeConnection(to: device, lastBootDate: lastBootDate)
+        if runningRead != nil { connectedDuringRead.insert(id) }
+        return model
     }
 
     package func presentationEnded(of model: DeviceModel) {

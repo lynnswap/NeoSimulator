@@ -29,6 +29,25 @@ func wait(timeout: Duration = .seconds(2), sourceLocation: SourceLocation = #_so
     }
 }
 
+@MainActor
+func loadTestRuntime() async throws -> SimulatorPresentationRuntime {
+    let selection = Process()
+    let output = Pipe()
+    selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+    selection.arguments = ["-p"]
+    selection.standardOutput = output
+    try selection.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    selection.waitUntilExit()
+    let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+        ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
+    return try await SimulatorPresentationRuntime.load(xcodeURL: xcode)
+}
+
+@MainActor
+func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostName == nil }
+
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
     @MainActor private final class RemoteTarget {
@@ -1375,15 +1394,15 @@ struct InputFocusTests {
         for id in [DeviceCommand.ID.recordScreen, .recordScreenAs] {
             #expect(!DeviceCommand.command(id).isEnabled(controller))
         }
-        #expect(throws: SimulatorError.self) {
-            try session.startRecording(to: .file(directory.appendingPathComponent("pending.mov")), mask: .ignored)
+        await #expect(throws: SimulatorError.self) {
+            try await session.startRecording(to: .file(directory.appendingPathComponent("pending.mov")), mask: .ignored)
         }
         if let unexpected = session.recording { unexpected.stop(); try await unexpected.waitUntilFinished() }
         #expect(session.recording == nil && !FileManager.default.fileExists(atPath: log.path))
         primary.completeAppDisplayConnection()
         try await wait { session.isResizingApp }
         #expect(DeviceCommand.command(.recordScreen).isEnabled(controller))
-        try session.startRecording(to: .file(directory.appendingPathComponent("app.mov")), mask: .ignored)
+        try await session.startRecording(to: .file(directory.appendingPathComponent("app.mov")), mask: .ignored)
         let recording = try #require(session.recording)
         try await wait { FileManager.default.fileExists(atPath: log.path) }
         #expect(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").contains("--display=47"))
@@ -1501,7 +1520,7 @@ struct InputFocusTests {
             session.toggleAppResize(size: CGSize(width: 500, height: 600))
             try await wait { session.isResizingApp }
             transport.eligibilityUpdates.continuation.yield(.resizing)
-            await Task.yield()
+            try await wait { session.appResizeEligibility == .resizing }
             #expect(session.isResizingApp)
             switch end {
             case 0: transport.eligibilityUpdates.continuation.yield(.unavailable)
@@ -1758,6 +1777,34 @@ struct InputFocusTests {
         try await retrying.value
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func releasingAScreenReportsUnfinishedToolCleanupAndCanFinishItLater(_ failsCleanup: Bool) async throws {
+        let controller = try makeController(TestDisplay())
+        var release: CheckedContinuation<Void, Never>?
+        var cleanedUp = false
+        controller.session.run({
+            await withCheckedContinuation { release = $0 }
+            cleanedUp = true
+            if failsCleanup { throw SimulatorError.operation("The capture's temporary file could not be removed") }
+        }, failure: { _ in })
+        try await wait { release != nil }
+        let stopping = Task.immediate { try await controller.session.stop() }
+        await #expect(throws: SimulatorError.self) { try await stopping.value }
+        #expect(!cleanedUp)
+        release?.resume()
+        if failsCleanup {
+            do {
+                try await controller.session.stop()
+                Issue.record("The stopped screen lost its cleanup failure")
+            } catch {
+                #expect(error.localizedDescription.contains("temporary file could not be removed"))
+            }
+        } else {
+            try await controller.session.stop()
+        }
+        #expect(cleanedUp)
+    }
+
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
@@ -1982,6 +2029,7 @@ struct InputFocusTests {
         try #require(session.canStartRecording)
         let idleControlsSize = controls.fittingSize
         controller.perform(.recordScreen)
+        try await wait { session.recording != nil }
         let recording = try #require(session.recording)
         let firstFrame = AsyncStream<Void>.makeStream()
         withObservationTracking { _ = recording.hasStarted } onChange: {
@@ -2688,13 +2736,13 @@ struct InputFocusTests {
         #expect(NSApp.sendAction(try #require(home.action), to: home.target, from: home))
         #expect(display.buttons == [.home])
         #expect(controller.session.reserve())
-        await Task.yield()
+        try await wait {
+            commands.filter { ["saveScreen", "rotateRight"].contains($0.itemIdentifier.rawValue) }
+                .allSatisfy { !$0.isEnabled }
+        }
         #expect(home.isEnabled)
-        #expect(commands.filter { ["saveScreen", "rotateRight"].contains($0.itemIdentifier.rawValue) }
-            .allSatisfy { !$0.isEnabled })
         controller.session.disconnect()
-        await Task.yield()
-        #expect(commands.allSatisfy { !$0.isEnabled })
+        try await wait { commands.allSatisfy { !$0.isEnabled } }
     }
 
     @Test func toolbarItemChangesStayInTheirOwnDeviceWindow() throws {
@@ -2734,7 +2782,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         try await wait { shows("stop.circle", "Stop Recording") }
         #expect(shows("stop.circle", "Stop Recording"))
@@ -2753,13 +2801,120 @@ struct InputFocusTests {
         #expect(shows("camera.on.rectangle", "Save Screen"))
         #expect(toolbar.items.map(\.itemIdentifier.rawValue) == items)
 
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
         try await wait { shows("stop.circle", "Stop Recording") }
         #expect(shows("stop.circle", "Stop Recording"))
         try await wait { controller.session.recording == nil }
         #expect(controller.session.recording == nil)
         try await wait { shows("camera.on.rectangle", "Save Screen") }
         #expect(shows("camera.on.rectangle", "Save Screen"))
+    }
+
+    @Test func aRecordingThatIsStartingBlocksAnotherAndIsFoundByWhatFinishesIt() async throws {
+        var recordings = 0
+        let display = TestDisplay()
+        let controller = try makeController(display) { _, _ in
+            recordings += 1
+            return Self.recorder(then: "while :; do sleep 0.05; done")
+        }
+        defer { controller.invalidate() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = controller.session
+        let destination = directory.appendingPathComponent("Recording.mov")
+        let start = Task.immediate { try await session.startRecording(to: .file(destination), mask: .ignored) }
+        // It is reserved before the first wait, while there is no recording to stop yet.
+        #expect(session.recording == nil && !session.canStartRecording)
+        try await session.startRecording(to: .file(directory.appendingPathComponent("Second.mov")), mask: .ignored)
+        try await session.finishRecording()
+        try await start.value
+        try await wait { session.recording == nil }
+        #expect(recordings == 1)
+        #expect(display.announcedRecordings == [true, false])
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("Second.mov").path))
+    }
+
+    @Test func aRecordingThatStartsAfterItsSessionDisconnectsStopsAtOnce() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display) { _, _ in
+            Self.recorder(then: "while :; do sleep 0.05; done")
+        }
+        defer { controller.invalidate() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = controller.session
+        let start = Task.immediate {
+            try await session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        }
+        session.disconnect()
+        try await start.value
+        let recording = try #require(try await session.activeRecording())
+        #expect(recording.isStopping)
+        try await session.finishRecording()
+        try await wait { session.recording == nil }
+    }
+
+    @Test func finishingARecordingThatDoesNotStartGivesUpWhileTheStartGoesOnAndStopsItself() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane(passing: 1)
+        let store = RecordingStore(lane: lane)
+        store.onError = { _ in }
+        let session = try makeSession(TestDisplay(), recordingProcess: { _, _ in
+            Self.recorder(then: "while :; do sleep 0.05; done")
+        }, recordings: store)
+        let start = Task.immediate {
+            try await session.startRecording(to: .file(directory.appendingPathComponent("Held.mov")), mask: .ignored)
+        }
+        await lane.untilHeld(1)
+        await #expect(throws: SimulatorError.self) { try await session.finishRecording(startLimit: .milliseconds(50)) }
+        #expect(store.hasActiveRecordings)
+        session.disconnect()
+        lane.open()
+        try await start.value
+        #expect(session.recording?.isStopping == true)
+        try await session.finishRecording()
+        try await wait { session.recording == nil && !store.hasActiveRecordings }
+    }
+
+    /// A real host in this process, with no device and no window. It stops as a public context's does.
+    @Test(.enabled("Another host would refuse this one.") { await noOtherHostIsDisplaying() })
+    func stoppingDoesNotWaitOnAHeldRecordingOutlivesItWithItsFilesNamedAndTheNextStopReturnsItsLateFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lane = HeldCaptureLane(passing: 1)
+        let store = RecordingStore(lane: lane, finishLimit: .milliseconds(50))
+        let host = try SimulatorScreenHost(runtime: try await makeRuntime().io, conflicts: HostConflictMonitor(), inProcess: true,
+                                           recordings: store)
+        var reported: [String] = []
+        host.onError = { reported.append($0.localizedDescription) }
+        let destination = directory.appendingPathComponent("Held.mov")
+        // It exits without a frame, so the recording fails once it has been let go.
+        let start = Task.immediate {
+            try await store.start(to: .file(destination), process: { _ in Self.recorder(then: "exit 0") }, onFinished: {})
+        }
+        await lane.untilHeld(1)
+        do {
+            try await host.stop(keepingDevicesRunning: true)
+            Issue.record("Expected the stop to report the unfinished recording")
+        } catch {
+            #expect(error.localizedDescription.contains(destination.path))
+            #expect(error.localizedDescription.contains("\(directory.path)/.neo-simulator-"))
+        }
+        #expect(store.hasActiveRecordings && reported.isEmpty && host.isStopped)
+        lane.open()
+        let recording = try await start.value
+        #expect(recording.isStopping)
+        try await wait { !store.hasActiveRecordings }
+        #expect(reported.count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        await #expect(throws: SimulatorError.self) { try await host.stop(keepingDevicesRunning: true) }
+        try await host.stop(keepingDevicesRunning: true)
+        #expect(reported.count == 1)
     }
 
     @Test func theToolbarsButtonsShowTheirOptionAlternatesWhileThePointerIsOverTheToolbar() async throws {
@@ -2819,6 +2974,7 @@ struct InputFocusTests {
         pointer.hold(.option)
         #expect(pointer.faces == ButtonFace.optionAlternates)
         #expect(try pointer.click(.saveScreen))
+        try await wait { controller.session.recording != nil }
         let recording = try #require(controller.session.recording)
         try await wait { pointer.faces[2] == .stopRecording }
         #expect(pointer.faces == [.captureKeyboard, .home, .stopRecording, .rotateLeft])
@@ -2985,7 +3141,11 @@ struct InputFocusTests {
             controller.session.run({
                 throw CommandFailure.interrupted(executable: URL(fileURLWithPath: "/simctl"), cause: cause, output: nil)
             }, failure: { failure = $0 })
-            while controller.session.isBusy { await Task.yield() }
+            while controller.session.isBusy {
+                await withCheckedContinuation { continuation in
+                    withObservationTracking { _ = controller.session.isBusy } onChange: { continuation.resume() }
+                }
+            }
         }
         await run(.cancelled)
         #expect(failure == nil)
@@ -3319,7 +3479,11 @@ struct InputFocusTests {
         #expect(device?.state != 0)
 
         let released = try endConnection(of: try #require(device))
-        while try await set.client(withIdentifier: listed.identifier) === device { await Task.yield() }
+        let closedBy = ContinuousClock.now + .seconds(5)
+        while try await set.client(withIdentifier: listed.identifier) === device {
+            try #require(ContinuousClock.now < closedBy, "The closed device client was not retired.")
+            try await Task.sleep(for: .milliseconds(10))
+        }
         let replacement = try #require(try await set.client(withIdentifier: listed.identifier))
         #expect(replacement.channel === device?.channel)
         _ = try await replacement.currentState()
@@ -4475,7 +4639,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         #expect(display.announcedRecordings == [true])
         // Simulator.app's plugin uses toggleVideoRecording: to stop recording.
@@ -4484,7 +4648,7 @@ struct InputFocusTests {
         try await recording.waitUntilFinished()
         try await wait { controller.session.recording == nil }
         #expect(display.announcedRecordings == [true, false])
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Failed.mov")), mask: .ignored)
         try await wait { controller.session.recording == nil }
         #expect(display.announcedRecordings == [true, false, true, false])
     }
@@ -6076,7 +6240,7 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         let recording = try #require(controller.session.recording)
         let saveScreen = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "saveScreen" })
         for _ in 0..<200 where saveScreen.toolTip != "Stop Recording" { try await Task.sleep(for: .milliseconds(10)) }
@@ -6739,7 +6903,7 @@ struct InputFocusTests {
             return process
         })
         defer { controller.invalidate() }
-        try controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
+        try await controller.session.startRecording(to: .file(directory.appendingPathComponent("Recording.mov")), mask: .ignored)
         // SIGINT is safe only after the first-frame acknowledgement.
         let recording = try #require(controller.session.recording)
         while !recording.hasStarted {
@@ -7323,7 +7487,7 @@ struct InputFocusTests {
         worker.hold()
         var failures: [String] = []
         session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
-        try await wait { failures.count == 1 }
+        try await wait { failures.count == 1 && model.unresponsiveOperation != nil }
         let abandoned = try #require(display.connectingPasteboardEvents)
         worker.release()
         try await wait { model.unresponsiveOperation == nil }
@@ -7359,9 +7523,8 @@ struct InputFocusTests {
         #expect(port.stateReads == 2)
         port.current.inputRoute = "latest"
         worker.release()
-        try await wait { session.audioRoutes?.inputRoute == "latest" }
+        try await wait { session.audioRoutes?.inputRoute == "latest" && worker.calls.count == 2 }
         #expect(port.stateReads == 3)
-        #expect(worker.calls.count == 2)
     }
 
     @Test func aRequestWithAnUnknownOutcomeLeavesCarPlayStateUnknownAndItsLateCompletionAdvancesNothing() async throws {
@@ -7970,28 +8133,35 @@ struct InputFocusTests {
     }
 
     /// A session with the external display `screen`, whose device stops answering during `whileHeld` and then answers
-    /// again. It returns once what the device's recovery wants of it has been sent.
+    /// again. It returns once the recovery changes finish, keeping the session alive for the caller's assertions.
     private func recoverExternalDisplay(_ screen: TestExternalScreen, features: Set<String> = Self.externalDisplayFeatures,
                                         preferences: MemoryPreferences = MemoryPreferences(),
-                                        whileHeld: (DeviceSession) async throws -> Void) async throws {
+                                        whileHeld: (DeviceSession) async throws -> Void) async throws -> DeviceSession {
         let display = TestDisplay()
         display.connectExternalScreen(screen)
         let worker = HeldDeviceWorker(limit: .milliseconds(50))
         defer { worker.release() }
         let model = standaloneDeviceModel()
         model.follow(worker.channel)
-        let controller = try makeController(display, features: features, preferences: preferences, model: model)
-        defer { controller.invalidate() }
-        controller.session.connectExternalDisplay { Issue.record($0) }
+        let changes = ExternalDisplayChanges()
+        let session = try makeSession(display, features: features, model: model, preferences: preferences,
+                                      externalDisplayChanges: changes)
+        var recovered = false
+        defer { if !recovered { session.disconnect() } }
+        session.connectExternalDisplay { Issue.record($0) }
         display.deliverScreenReports()
         display.worker = worker
         screen.worker = worker
         worker.hold()
         await #expect(throws: DeviceOperationFailure.self) { try await worker.call("hold the device") }
         try await wait { model.unresponsiveOperation == "hold the device" }
-        try await whileHeld(controller.session)
+        try await whileHeld(session)
         worker.release()
         try await wait { model.unresponsiveOperation == nil && worker.calls.contains("read the device's state") }
+        // Recovery enqueues external-display work before reading command state.
+        try #require(await changes.idle(before: .now + .seconds(2)))
+        recovered = true
+        return session
     }
 
     @Test func aDisabledChoiceThatWasNotSentIsAppliedOnceWhenTheDeviceAnswersAgain() async throws {
@@ -7999,11 +8169,12 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1)
         var failures: [String] = []
-        try await recoverExternalDisplay(screen, preferences: preferences) { session in
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { session in
             session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
             try await wait { failures.count == 1 }
             #expect(screen.requests.isEmpty)
         }
+        defer { session.disconnect() }
         let notSent = DeviceOperationFailure.notSent(operation: "turn off the external display", heldBy: "hold the device")
         #expect(failures == ["Could not turn off the external display of Test iPhone: \(notSent.localizedDescription)"])
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == ExternalDisplayMode.disabled.rawValue)
@@ -8014,10 +8185,11 @@ struct InputFocusTests {
     @Test func aModeChoiceThatWasNotSentIsAppliedOnceWhenTheDeviceAnswersAgain() async throws {
         let screen = TestExternalScreen()
         var failures: [String] = []
-        try await recoverExternalDisplay(screen) { session in
+        let session = try await recoverExternalDisplay(screen) { session in
             session.chooseExternalDisplay(.size1280x720) { failures.append($0.localizedDescription) }
             try await wait { failures.count == 1 }
         }
+        defer { session.disconnect() }
         #expect(screen.requests.filter { $0.hasPrefix("mode") }.count == 1)
         #expect(screen.current.isPoweredOn && screen.current.pixelSize == CGSize(width: 1280, height: 720))
     }
@@ -8029,7 +8201,8 @@ struct InputFocusTests {
         let screen = TestExternalScreen()
         // Another tool turned it on.
         screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1)
-        try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        defer { session.disconnect() }
         #expect(screen.requests.isEmpty)
         #expect(screen.current.isPoweredOn)
         #expect(preferences.externalDisplayTag(forDevice: "test-device") == nil)
@@ -8039,11 +8212,12 @@ struct InputFocusTests {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.disabled.rawValue, forDevice: "test-device")
         let screen = TestExternalScreen()
-        try await recoverExternalDisplay(screen, preferences: preferences) { _ in
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { _ in
             #expect(screen.requests.isEmpty)
             // Another tool turns it on while the device does not answer.
             screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1) }
         }
+        defer { session.disconnect() }
         #expect(screen.requests == ["off"])
         #expect(!screen.current.isPoweredOn)
     }
@@ -8052,7 +8226,8 @@ struct InputFocusTests {
         let preferences = MemoryPreferences()
         preferences.setExternalDisplayTag(ExternalDisplayMode.carPlay.rawValue, forDevice: "test-device")
         let screen = TestExternalScreen()
-        try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        let session = try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        defer { session.disconnect() }
         #expect(screen.requests.isEmpty)
     }
 
@@ -8829,14 +9004,12 @@ struct InputFocusTests {
         controller.invalidate()
         #expect(changes.isBusy)
         let result = Result()
-        let wait = Task { result.idle = await changes.idle(before: .now + .seconds(60)) }
-        await Task.yield()
+        let waiting = Task { result.idle = await changes.idle(before: .now + .seconds(60)) }
         screen.deliver()
-        await Task.yield()
-        #expect(screen.requests == ["mode 1920x1080@1", "off"])
+        try await wait { screen.requests == ["mode 1920x1080@1", "off"] }
         #expect(result.idle == nil)
         screen.deliver()
-        await wait.value
+        await waiting.value
         #expect(result.idle == true && !changes.isBusy)
         #expect(!screen.current.isPoweredOn)
         let held = TestExternalScreen()
@@ -10289,7 +10462,7 @@ struct InputFocusTests {
         #expect(connect.state?(a) == .on && first.keyboard == [true])
 
         a.perform(.connectHardwareKeyboard)
-        for _ in 0..<100 where first.hardwareKeyboard.isEmpty { await Task.yield() }
+        try await wait { !first.hardwareKeyboard.isEmpty }
         #expect(first.hardwareKeyboard == [false])
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "A"))
         #expect(connect.state?(a) == .off && connect.state?(b) == .on)
@@ -10305,7 +10478,7 @@ struct InputFocusTests {
         #expect(second.hardwareKeyboard.isEmpty)
 
         a.perform(.connectHardwareKeyboard)
-        for _ in 0..<100 where first.hardwareKeyboard.count < 2 { await Task.yield() }
+        try await wait { first.hardwareKeyboard.count >= 2 }
         #expect(first.hardwareKeyboard == [false, true] && first.keyboard == [true, false, true])
         #expect(connect.state?(a) == .on && software.isEnabled(a))
     }
@@ -10319,7 +10492,7 @@ struct InputFocusTests {
         controller.showWindow(nil)
         let window = try #require(controller.window)
         controller.perform(.connectHardwareKeyboard)
-        for _ in 0..<100 where window.attachedSheet == nil { await Task.yield() }
+        try await wait { window.attachedSheet != nil }
         #expect(try #require(window.attachedSheet).isVisible)
         // Simulator.app saves before applying; a failed choice remains available for retry.
         #expect(!preferences.connectsHardwareKeyboard(forDevice: "test-device"))
@@ -10639,17 +10812,13 @@ struct InputFocusTests {
         }
     }
 
-    private func yield(until condition: @MainActor () -> Bool) async {
-        while !condition() { await Task.yield() }
-    }
-
     private func isPending(_ readiness: SimulatorServiceReadiness) -> Bool { if case .pending = readiness { true } else { false } }
     private func isReady(_ readiness: SimulatorServiceReadiness) -> Bool { if case .ready = readiness { true } else { false } }
     private func isUnsupported(_ readiness: SimulatorServiceReadiness) -> Bool { if case .unsupported = readiness { true } else { false } }
     private func isNotRouted(_ readiness: SimulatorServiceReadiness) -> Bool { if case .notRouted = readiness { true } else { false } }
 
     @Test(.timeLimit(.minutes(1)))
-    func inputConnectsAfterTheDisplayAndActivatesInPlace() async {
+    func inputConnectsAfterTheDisplayAndActivatesInPlace() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
@@ -10657,14 +10826,14 @@ struct InputFocusTests {
                                                activate: { _ in activations.value += 1 })
         #expect(isPending(services.input))
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         // Nothing the display does waits on this, and starting again joins it.
         #expect(isPending(services.input) && activations.value == 0)
         activation.start()
         services.retryInput()
         #expect(connecting.calls == 1)
         connecting.finish(.success(NativeInputServices()))
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 1)
         // A ready route has nothing to retry.
         services.retryInput()
@@ -10672,47 +10841,47 @@ struct InputFocusTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func aDeviceWithoutTheRouteIsUnsupportedWithoutActivating() async {
+    func aDeviceWithoutTheRouteIsUnsupportedWithoutActivating() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
         let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
                                                activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         connecting.finish(.success(nil))
-        await yield { isUnsupported(services.input) }
+        try await wait { isUnsupported(services.input) }
         services.retryInput()
         #expect(activations.value == 0 && connecting.calls == 1)
     }
 
     /// A transport that did not answer says nothing about the device: this is neither unsupported nor another route.
     @Test(.timeLimit(.minutes(1)))
-    func aFailedRouteStaysFailedUntilItIsRetriedOnTheSameRoute() async {
+    func aFailedRouteStaysFailedUntilItIsRetriedOnTheSameRoute() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
         let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
                                                activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         connecting.finish(.failure(DeviceIOError.temporary("fixture-timeout", "The guest did not answer.")))
-        await yield { services.input.failure != nil }
+        try await wait { services.input.failure != nil }
         #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-timeout")
         #expect(activations.value == 0 && connecting.calls == 1)
 
         services.retryInput()
         #expect(isPending(services.input))
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         #expect(connecting.calls == 2)
         connecting.finish(.success(NativeInputServices()))
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 1)
     }
 
     /// A display that could not take the services over stays on SimulatorKit, says so, and can try again.
     @Test(.timeLimit(.minutes(1)))
-    func aFailedActivationIsTheRoutesFailure() async {
+    func aFailedActivationIsTheRoutesFailure() async throws {
         let services = DeviceOptionalServices()
         let refuses = Counter(1)
         let activations = Counter()
@@ -10721,23 +10890,23 @@ struct InputFocusTests {
             if refuses.value == 1 { throw DeviceIOError.unavailable("fixture-digitizer", "The digitizer has no delegate.") }
         })
         activation.start()
-        await yield { services.input.failure != nil }
+        try await wait { services.input.failure != nil }
         refuses.value = 0
         services.retryInput()
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 2)
     }
 
     /// Connecting sends the guest nothing, so what answers after the display ended is let go without being activated.
     @Test(.timeLimit(.minutes(1)))
-    func aCancelledConnectionActivatesNothing() async {
+    func aCancelledConnectionActivatesNothing() async throws {
         let services = DeviceOptionalServices()
         let connecting = HeldCalls<NativeInputServices?>()
         let activations = Counter()
         let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
                                                activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         activation.cancel()
         // A native call that ignores its cancellation holds its owner's wait, which stop() reports.
         #expect(await !activation.ends(before: ContinuousClock.now))
@@ -10754,14 +10923,14 @@ struct InputFocusTests {
         #expect(isPending(services.pasteboard))
 
         let refused = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         connecting.finish(.failure(DeviceIOError.temporary("fixture-timeout", "CoreDevice did not answer.")))
         await #expect(throws: DeviceIOError.self) { try await refused.value }
         #expect((services.pasteboard.failure as? DeviceIOError)?.identifier == "fixture-timeout")
 
         let transport = TestPasteboardTransport()
         let retried = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-        await yield { connecting.isHolding }
+        try await wait { connecting.isHolding }
         #expect(isPending(services.pasteboard) && connecting.calls == 2)
         connecting.finish(.success(transport))
         #expect(try await retried.value == ObjectIdentifier(transport))
@@ -10847,19 +11016,19 @@ struct InputFocusTests {
             return NativeInputServices()
         }, activate: { _ in activations.value += 1 })
         activation.start()
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         #expect(isPending(services.input) && services.isAwaitingDeviceRecord)
 
         let record = RecordFixture()
         source.current = record
         source.change()
-        await yield { source.followers == 2 }
+        try await wait { source.followers == 2 }
         #expect(isPending(services.input) && activations.value == 0)
 
         record.connected = true
         record.features = ["input"]
         source.change()
-        await yield { isReady(services.input) && source.followers == 0 }
+        try await wait { isReady(services.input) && source.followers == 0 }
         #expect(activations.value == 1 && !services.isAwaitingDeviceRecord)
         #expect(session.display === display)
     }
@@ -10883,19 +11052,19 @@ struct InputFocusTests {
         })
         activation.start()
         let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-        await yield { source.followers == 2 }
+        try await wait { source.followers == 2 }
         #expect(isPending(services.input) && isPending(services.pasteboard))
 
         record.connected = true
         source.change()
-        await yield { isUnsupported(services.input) && isUnsupported(services.pasteboard) }
+        try await wait { isUnsupported(services.input) && isUnsupported(services.pasteboard) }
         #expect(try await transfer.value == nil)
         #expect(activations.value == 0)
     }
 
     /// A read that fails and notifications that end say nothing about the device, and asking again goes through the same owner.
     @Test(.timeLimit(.minutes(1)))
-    func aFailureToReadTheRecordIsNotUnsupportedAndCanBeRetried() async {
+    func aFailureToReadTheRecordIsNotUnsupportedAndCanBeRetried() async throws {
         let services = DeviceOptionalServices()
         let source = RecordSourceFixture()
         let discovery = CoreDeviceRecordDiscovery(source: source)
@@ -10906,16 +11075,16 @@ struct InputFocusTests {
         }, activate: { _ in activations.value += 1 })
         source.readFailure = DeviceIOError.temporary("fixture-read", "CoreDevice did not answer.")
         activation.start()
-        await yield { services.input.failure != nil }
+        try await wait { services.input.failure != nil }
         #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-read")
         #expect(source.followers == 0)
 
         source.readFailure = nil
         services.retryInput()
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         #expect(isPending(services.input))
         source.endStreams(throwing: DeviceIOError.temporary("fixture-stream", "CoreDevice stopped reporting."))
-        await yield { services.input.failure != nil && source.followers == 0 }
+        try await wait { services.input.failure != nil && source.followers == 0 }
         #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-stream")
 
         let record = RecordFixture()
@@ -10923,13 +11092,13 @@ struct InputFocusTests {
         record.features = ["input"]
         source.current = record
         services.retryInput()
-        await yield { isReady(services.input) }
+        try await wait { isReady(services.input) }
         #expect(activations.value == 1)
     }
 
     /// The owner ends with its connection: what waits is cancelled, which says nothing about the device, and nothing is followed.
     @Test(.timeLimit(.minutes(1)))
-    func stoppingTheRecordsOwnerEndsWhatWaitsWithoutAnAnswer() async {
+    func stoppingTheRecordsOwnerEndsWhatWaitsWithoutAnAnswer() async throws {
         let services = DeviceOptionalServices()
         let source = RecordSourceFixture()
         let discovery = CoreDeviceRecordDiscovery(source: source)
@@ -10939,7 +11108,7 @@ struct InputFocusTests {
         })
         let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
         let cancelled = Task.immediate { _ = try await discovery.answer(for: ["input"]) }
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         // One asker's cancellation leaves the other's wait.
         cancelled.cancel()
         await #expect(throws: CancellationError.self) { try await cancelled.value }
@@ -10947,7 +11116,7 @@ struct InputFocusTests {
 
         discovery.stop()
         await #expect(throws: CancellationError.self) { _ = try await transfer.value }
-        await yield { source.followers == 0 }
+        try await wait { source.followers == 0 }
         #expect(isPending(services.pasteboard))
         await #expect(throws: CancellationError.self) { _ = try await discovery.answer(for: ["pasteboard"]) }
     }
@@ -10958,16 +11127,16 @@ struct InputFocusTests {
         let source = RecordSourceFixture()
         let discovery = CoreDeviceRecordDiscovery(source: source)
         let waiting = Task.immediate { try await discovery.record(limit: .seconds(30)) }
-        await yield { source.followers == 1 }
+        try await wait { source.followers == 1 }
         let record = RecordFixture()
         source.current = record
         source.change()
         #expect(try await waiting.value === record)
-        await yield { source.followers == 0 }
+        try await wait { source.followers == 0 }
 
         source.current = nil
         await #expect(throws: DeviceIOError.self) { _ = try await discovery.record(limit: .milliseconds(20)) }
-        await yield { source.followers == 0 }
+        try await wait { source.followers == 0 }
     }
 
     @Test func serviceStatusSaysWhatTheServicesSay() {
@@ -11000,19 +11169,19 @@ struct InputFocusTests {
         services.onRetryInput = { retries += 1 }
 
         services.setInput(.pending)
-        await yield { controller.serviceStatus?.offersRetry == false }
+        try await wait { controller.serviceStatus?.offersRetry == false }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
 
         services.setInput(.failed(DeviceIOError.temporary("fixture", "It did not answer.")))
-        await yield { controller.serviceStatus?.offersRetry == true }
+        try await wait { controller.serviceStatus?.offersRetry == true }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
         services.retryInput()
         #expect(retries == 1)
 
         services.setInput(.ready)
-        await yield { controller.serviceStatus == nil }
+        try await wait { controller.serviceStatus == nil }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
     }
@@ -11049,20 +11218,7 @@ struct InputFocusTests {
     }
 
     /// Loads the selected Xcode's private runtime.
-    private func makeRuntime() async throws -> SimulatorPresentationRuntime {
-        let selection = Process()
-        let output = Pipe()
-        selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        selection.arguments = ["-p"]
-        selection.standardOutput = output
-        try selection.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        selection.waitUntilExit()
-        let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
-            ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
-        return try await SimulatorPresentationRuntime.load(xcodeURL: xcode)
-    }
+    private func makeRuntime() async throws -> SimulatorPresentationRuntime { try await loadTestRuntime() }
 
     private func makeController(_ display: TestDisplay,
                                 family: DeviceCapabilities.Family = .iPhone,
@@ -11220,6 +11376,7 @@ struct InputFocusTests {
                              simctl: URL = URL(fileURLWithPath: "/usr/bin/false"),
                              devicectl: URL = URL(fileURLWithPath: "/usr/bin/false"),
                              recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
+                             recordings: RecordingStore = RecordingStore(),
                              openLog: @escaping (URL) async throws -> Void = { _ in },
                              screenPointsPerInch: Double? = nil,
                              device identifier: String = "test-device",
@@ -11249,7 +11406,7 @@ struct InputFocusTests {
             display: display,
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
-            model: model, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
+            model: model, recordings: recordings, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
             hostKeyboardLanguage: keyboardLanguage, pasteboardSync: pasteboardSync,
             externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100),
             appResizeTransport: appResizeTransport)
@@ -12941,7 +13098,6 @@ struct DeviceToolTests {
         }
         #expect(timeout.interruption == .timedOut(.milliseconds(30)))
         let task = Task { try await runner.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"]) }
-        await Task.yield()
         task.cancel()
         // Whether its child has started by now is up to the scheduler.
         let stopped = try await #require(throws: (any Error).self) { try await task.value }
