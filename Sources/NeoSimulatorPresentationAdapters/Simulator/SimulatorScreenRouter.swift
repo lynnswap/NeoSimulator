@@ -284,7 +284,8 @@ package final class SimulatorScreenRouter {
         // What this connection routes by CoreDevice's word about the device asks here. It ends with the connection.
         let record = CoreDeviceSimulatorRecord(simulatorUDID: device.identifier)
         // DeviceKit's view is the screen of a device that needs it, so opening waits for its record and fails without it.
-        let nativeCanvas = plan == .canvas ? try await NativeDeviceCanvas.connect(record: record, lookUp: device.lookUp) : nil
+        let nativeCanvas = plan == .canvas ? try await NativeDeviceCanvas.connect(record: record,
+            pointsPerInch: device.screenPointsPerInch.map { CGFloat($0) }, lookUp: device.lookUp) : nil
         try Task.checkCancellation()
         let services = DeviceOptionalServices()
         record.onAwaitingChange = { [weak services] in services?.setAwaitingDeviceRecord($0) }

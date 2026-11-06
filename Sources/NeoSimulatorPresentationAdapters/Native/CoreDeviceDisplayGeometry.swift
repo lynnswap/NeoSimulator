@@ -247,6 +247,7 @@ package final class NativeDeviceCanvas {
     /// Waits for the CoreDevice record that identifies this simulator to DeviceKit.
     /// Surrounding controls connect independently. `lookUp` returns a caller-owned Mach send right.
     package static func connect(record: CoreDeviceSimulatorRecord,
+                                pointsPerInch: CGFloat?,
                                 lookUp: @escaping @MainActor (String) async throws -> UInt32) async throws -> NativeDeviceCanvas {
         try await CoreDeviceRuntime.loadDeviceKit()
         let remote = try await record.record(limit: DeviceOperationLimit.coreDeviceRecord)
@@ -283,9 +284,54 @@ package final class NativeDeviceCanvas {
         catch is CancellationError { throw CancellationError() }
         catch { captureDisplay = { throw error } }
         return NativeDeviceCanvas(root: AnyView(root), presentation: presentation,
+            pointsPerInch: pointsPerInch,
+            frameMargin: { try await frameMargin(remote: remote) },
             poseControls: NativeDevicePoseControls(deviceIdentifier: uuid),
             buttons: NativeDeviceScreenInput(input: GuestButtonInput { try await SimulatorGuestHID(lookUp: lookUp) }),
             captureDisplay: captureDisplay, values: [base, activation, shown, hidden] + bindings.environmentValues)
+    }
+
+    /// Reserve the installed artwork's bezel and button extents around each projected screen.
+    /// Zero means no chrome is declared. Nil preserves the full canvas if declared artwork cannot be measured.
+    private static func frameMargin(remote: CoreDeviceRemoteScreenDevice) async throws -> CGFloat? {
+        let bindings = try await CoreDeviceDisplayGeometry.Bindings(runtime: remote.runtime)
+        let frame = try await CoreDeviceDisplayGeometry.FrameBindings(runtime: remote.runtime, abis: bindings.abis)
+        let (changes, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        defer { continuation.finish() }
+        var iterator = changes.makeAsyncIterator()
+        var displays: [NativeSwiftValue] = []
+        while displays.isEmpty {
+            try Task.checkCancellation()
+            let result = withObservationTracking {
+                Result<[NativeSwiftValue], any Error> {
+                    let info = try unsafe bindings.readDeviceInfo.unsafeInvoke(on: remote.object)
+                    guard let info = try unsafe bindings.readDisplayInfo.unsafeInvoke(on: info) else { return [] }
+                    return try unsafe bindings.displays.unsafeInvoke(on: info)
+                }
+            } onChange: { continuation.yield(()) }
+            displays = try result.get()
+            if displays.isEmpty {
+                guard await iterator.next() != nil else { throw CancellationError() }
+            }
+        }
+        var margin: CGFloat = 0
+        for display in displays {
+            let chromeIdentifier = try unsafe frame.chromeIdentifier.unsafeInvoke(on: display)
+            guard chromeIdentifier != nil else { continue }
+            let size = try unsafe bindings.displaySize.unsafeInvoke(on: bindings.makeDisplay.unsafeInvoke(display, nil))
+            let descriptor = RemoteDeviceDisplay(pixelSize: try unsafe frame.pixelSize.unsafeInvoke(on: size),
+                scale: try unsafe frame.scale.unsafeInvoke(on: size), chromeIdentifier: chromeIdentifier, maskIdentifier: nil)
+            guard let resources = try RemoteDeviceChromeResources(display: descriptor, productType: nil) else { return nil }
+            let chrome = try await NativeDeviceChrome(resources: resources)
+            let points = CGSize(width: descriptor.pixelSize.width / descriptor.scale,
+                                height: descriptor.pixelSize.height / descriptor.scale)
+            guard let layout = try chrome.layout(for: descriptor,
+                fitting: CGSize(width: points.width * 2, height: points.height * 2)) else { return nil }
+            let scale = layout.screen.width / points.width
+            margin = max(margin, max(layout.screen.minX, layout.screen.minY,
+                layout.size.width - layout.screen.maxX, layout.size.height - layout.screen.maxY) / scale)
+        }
+        return margin
     }
 
     /// Reads the display when a capture starts: CoreDevice may report no displays until it finds the booted device.
@@ -317,7 +363,9 @@ package final class NativeDeviceCanvas {
         }
     }
 
-    private init(root: AnyView, presentation: NativeCanvasPresentation, poseControls: NativeDevicePoseControls,
+    private init(root: AnyView, presentation: NativeCanvasPresentation, pointsPerInch: CGFloat?,
+                 frameMargin: @escaping @MainActor () async throws -> CGFloat?,
+                 poseControls: NativeDevicePoseControls,
                  buttons: NativeDeviceScreenInput, captureDisplay: @escaping () throws -> UInt32, values: [NativeSwiftValue]) {
         hosting = NativeCanvasHostingView(rootView: root)
         hosting.sizingOptions = []
@@ -327,6 +375,8 @@ package final class NativeDeviceCanvas {
         readCaptureDisplayID = captureDisplay
         self.values = values
         view = hosting
+        hosting.projection = NativeCanvasProjection(hosting: hosting, presentation: presentation,
+            pointsPerInch: pointsPerInch, frameMargin: frameMargin)
         hosting.contentSize = { CGSize(width: presentation.naturalSize.width * presentation.zoom,
                                        height: presentation.naturalSize.height * presentation.zoom) }
         presentation.onSizeChange = { [weak self] in
@@ -335,7 +385,10 @@ package final class NativeDeviceCanvas {
         }
     }
 
-    package func setChromeVisible(_ visible: Bool) { presentation.showsChrome = visible }
+    package func setChromeVisible(_ visible: Bool) {
+        presentation.showsChrome = visible
+        hosting.projection?.invalidate()
+    }
     /// Scales the measured composition, keeping AppKit-backed layout unchanged.
     /// A magnified composition uses its top-leading origin and a scaled frame;
     /// with nil magnification, it is centered at its natural size.
@@ -348,6 +401,7 @@ package final class NativeDeviceCanvas {
         hosting.invalidateIntrinsicContentSize()
     }
     package func disconnect() {
+        hosting.projection = nil
         poseControls.disconnect()
         hosting.content = nil
         hosting.rootView = AnyView(EmptyView())
@@ -358,17 +412,140 @@ package final class NativeDeviceCanvas {
 package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     package var content: AnyView?
     package var contentSize: (() -> CGSize)?
+    package var projection: NativeCanvasProjection?
     private weak var hostingWindow: NSWindow?
+    private var screenObserver: (any NSObjectProtocol)?
     package override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
     package required init(rootView: AnyView) { content = rootView; super.init(rootView: rootView) }
     package required init?(coder: NSCoder) { nil }
+    package override func layout() {
+        super.layout()
+        projection?.invalidate()
+    }
+    isolated deinit {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+    }
+    package override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        projection?.invalidate()
+    }
     package override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        let projection = projection
+        screenObserver = window.map { window in
+            NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: window, queue: .main) {
+                [weak projection] _ in projection?.invalidate()
+            }
+        }
+        projection?.invalidate()
         // Sidebar navigation temporarily detaches the view. Keep its scene for the return to the same window;
         // DeviceKit's screen-layer projection needs a new graph only when the hosting window changes.
         guard let content, let window, hostingWindow !== window else { return }
         hostingWindow = window
         rootView = AnyView(content.id(window.windowNumber))
+    }
+}
+
+/// DeviceKit's 3D canvas includes a large, fixed rendering surface. Its screen layers carry the
+/// projected geometry, including perspective and posture, independently of the surrounding SwiftUI layout.
+@MainActor
+package final class NativeCanvasProjection {
+    private weak var hosting: NativeCanvasHostingView?
+    private let presentation: NativeCanvasPresentation
+    private let pointsPerInch: CGFloat?
+    private let readFrameMargin: @MainActor () async throws -> CGFloat?
+    private var frameMargin: CGFloat?
+    private var marginTask: Task<Void, Never>?
+    private var layers: [CALayer] = []
+    private var observations: [NSKeyValueObservation] = []
+
+    package init(hosting: NativeCanvasHostingView, presentation: NativeCanvasPresentation,
+                 pointsPerInch: CGFloat?, frameMargin: @escaping @MainActor () async throws -> CGFloat?) {
+        self.hosting = hosting
+        self.presentation = presentation
+        self.pointsPerInch = pointsPerInch.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        readFrameMargin = frameMargin
+    }
+
+    isolated deinit { marginTask?.cancel() }
+
+    package func update() {
+        guard let hosting else { return }
+        func screenLayers(in view: NSView) -> [CALayer] {
+            if NSStringFromClass(type(of: view)).hasPrefix("_TtGC31CoreDevicePopDeviceKitExtension19ScreenLayerHostView") {
+                return view.subviews.compactMap(\.layer)
+            }
+            return view.subviews.flatMap { screenLayers(in: $0) }
+        }
+        let current = screenLayers(in: hosting)
+        if current != layers {
+            layers = current
+            observations = current.flatMap { layer in
+                [layer.observe(\.transform) { @Sendable [weak self] _, _ in self?.invalidate() },
+                 layer.observe(\.bounds) { @Sendable [weak self] _, _ in self?.invalidate() },
+                 layer.observe(\.position) { @Sendable [weak self] _, _ in self?.invalidate() },
+                 layer.observe(\.anchorPoint) { @Sendable [weak self] _, _ in self?.invalidate() },
+                 layer.observe(\.isHidden) { @Sendable [weak self] _, _ in self?.invalidate() }]
+            }
+            let parents = Set(current.compactMap(\.superlayer))
+            observations += parents.map { parent in
+                parent.observe(\.bounds) { @Sendable [weak self] _, _ in self?.invalidate() }
+            }
+            if frameMargin == nil { loadFrameMargin() }
+        }
+        guard let screen = hosting.window?.screen else { return }
+        // Keep the complete canvas while its bezel is unknown. Frameless displays need no artwork,
+        // and point conversion is independent of either measurement.
+        let viewport = Self.viewport(for: current, frameMargin: frameMargin, showsChrome: presentation.showsChrome)
+        let pointScale = pointsPerInch.map { $0 / Self.hostDensity(on: screen) } ?? 1
+        if let previous = presentation.viewport, let viewport,
+           abs(viewport.minX - previous.minX) <= 0.25, abs(viewport.minY - previous.minY) <= 0.25,
+           abs(viewport.width - previous.width) <= 0.25, abs(viewport.height - previous.height) <= 0.25,
+           pointScale == presentation.pointScale { return }
+        if viewport == nil, presentation.viewport == nil, pointScale == presentation.pointScale { return }
+        presentation.viewport = viewport
+        presentation.pointScale = pointScale
+        presentation.onSizeChange?()
+    }
+
+    nonisolated package func invalidate() {
+        // A native frame updates several layers together. Read them after that update completes.
+        Task { @MainActor [weak self] in self?.update() }
+    }
+
+    private func loadFrameMargin() {
+        marginTask?.cancel()
+        let read = readFrameMargin
+        marginTask = Task { [weak self] in
+            let margin = try? await read()
+            guard !Task.isCancelled, let self else { return }
+            frameMargin = margin
+            update()
+        }
+    }
+
+    /// Coordinates are relative to the rendering surface's center, independent of SwiftUI's layout timing.
+    package static func viewport(for layers: [CALayer], frameMargin: CGFloat?, showsChrome: Bool = true) -> CGRect? {
+        guard let margin = showsChrome ? frameMargin : 0 else { return nil }
+        var result = CGRect.null
+        for layer in layers where !layer.isHidden {
+            guard let parent = layer.superlayer else { continue }
+            let projected = layer.convert(layer.bounds.insetBy(dx: -margin, dy: -margin), to: parent)
+                .offsetBy(dx: -parent.bounds.midX, dy: -parent.bounds.midY)
+            guard !projected.isEmpty, projected.origin.x.isFinite, projected.origin.y.isFinite,
+                  projected.width.isFinite, projected.height.isFinite else { continue }
+            result = result.union(projected)
+        }
+        return result.isNull ? nil : result
+    }
+
+    private static func hostDensity(on screen: NSScreen?) -> CGFloat {
+        // Match DeviceKit's physical-size projection, including its fallback for virtual displays.
+        guard let number = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let mode = CGDisplayCopyDisplayMode(number.uint32Value) else { return 127 }
+        let density = CGFloat(mode.width) / (CGDisplayScreenSize(number.uint32Value).width / 25.4)
+        return density.isFinite && (50...600).contains(density) ? density : 127
     }
 }
 
@@ -388,7 +565,13 @@ package final class NativeCanvasPresentation {
     package var showsChrome = true
     package var zoom: CGFloat = 1
     package var magnification: CGFloat?
-    package var naturalSize = CGSize(width: 500, height: 700)
+    package var compositionSize = CGSize(width: 500, height: 700)
+    package var viewport: CGRect?
+    package var pointScale: CGFloat = 1
+    package var naturalSize: CGSize {
+        let size = viewport?.size ?? compositionSize
+        return CGSize(width: size.width * pointScale, height: size.height * pointScale)
+    }
     @ObservationIgnored package var onSizeChange: (() -> Void)?
 }
 
@@ -404,15 +587,24 @@ package struct NativeCanvasRoot: View {
         // so the host frame changing on every zoom and pan step does not move it within SwiftUI's
         // pixel grid, and the scale effect maps it onto the frame.
         let magnification = presentation.magnification
+        let viewport = presentation.viewport ?? CGRect(x: -presentation.compositionSize.width / 2,
+            y: -presentation.compositionSize.height / 2, width: presentation.compositionSize.width,
+            height: presentation.compositionSize.height)
+        let scale = presentation.pointScale * presentation.zoom
         (presentation.showsChrome ? shown : hidden)
             .environment(canvasPath, false)
-            .environment(zoomPath, presentation.zoom)
+            // DeviceKit's 1 means physical size. Convert once here, so the rest of the app uses device points.
+            .environment(zoomPath, 1)
             .fixedSize()
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-                guard size.width > 0, size.height > 0, size != presentation.naturalSize else { return }
-                presentation.naturalSize = size
+                guard size.width > 0, size.height > 0, size != presentation.compositionSize else { return }
+                presentation.compositionSize = size
                 presentation.onSizeChange?()
             }
+            .offset(x: -viewport.midX, y: -viewport.midY)
+            .frame(width: viewport.width, height: viewport.height)
+            .scaleEffect(scale)
+            .frame(width: viewport.width * scale, height: viewport.height * scale)
             .scaleEffect(magnification ?? 1, anchor: magnification == nil ? .center : .topLeading)
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                    alignment: magnification == nil ? .center : .topLeading)
