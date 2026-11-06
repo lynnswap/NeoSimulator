@@ -3,6 +3,8 @@ import Darwin
 import Foundation
 import NeoSimulatorDeviceIO
 import ObjectiveC
+import Synchronization
+import XPC
 
 /// A simulator belongs to one device set; a UDID alone is not a session key.
 public struct SimulatorDeviceIdentifier: Hashable, Codable, Sendable, Comparable {
@@ -79,6 +81,15 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
     package let serviceClass: AnyClass
     package let sharedContext: NativeObjCMethod<AnyObject, String>
     package let defaultDeviceSet: NativeObjCMethod<AnyObject>
+    /// An independent context with its own connection to CoreSimulatorService. Connection type 0 is what
+    /// `sharedServiceContextForDeveloperDir:error:` passes.
+    fileprivate let makeContext: NativeObjCMethod<AnyObject, String, Int>
+    fileprivate let serviceConnection: NativeObjCMethod<AnyObject?>
+    fileprivate let setConnectionEndHandler: NativeObjCMethod<Void, ConnectionEndHandler?>
+    fileprivate let setServiceContext: NativeObjCMethod<Void, AnyObject?>
+    fileprivate let devicePairsByUUID: NativeObjCMethod<NSDictionary>
+    fileprivate let removeDevice: NativeObjCMethod<Void, AnyObject>
+    fileprivate let removeDevicePair: NativeObjCMethod<Void, AnyObject>
     fileprivate let deviceSetWithPath: NativeObjCMethod<AnyObject, String>
     fileprivate let setPath: NativeObjCMethod<String?>
     fileprivate let supportedDeviceTypes: NativeObjCMethod<[AnyObject]>
@@ -119,6 +130,7 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
 
     package typealias NotificationHandler = @convention(block) (NSDictionary) -> Void
     package typealias CloudSyncCompletion = @convention(block) (NSError?) -> Void
+    package typealias ConnectionEndHandler = @convention(block) (NSString?) -> Void
 
     @MainActor
     package init(runtime: ABIRuntime) async throws {
@@ -139,6 +151,22 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
         defaultDeviceSet = try await runtime.resolve(
             .objc(.method("defaultDeviceSetWithError:", as: (() throws -> AnyObject).self)),
             on: serviceClass)
+        makeContext = try await runtime.resolve(
+            .objc(.method("initWithDeveloperDir:connectionType:error:", as: ((String, Int) throws -> AnyObject).self)),
+            on: serviceClass)
+        serviceConnection = try await runtime.resolve(
+            .objc(.method("serviceConnection", as: (() -> AnyObject?).self)), on: serviceClass)
+        setConnectionEndHandler = try await runtime.resolve(
+            .objc(.method("setConnectionInvalidationHandler:", as: ((ConnectionEndHandler?) -> Void).self)),
+            on: serviceClass)
+        setServiceContext = try await runtime.resolve(
+            .objc(.method("setServiceContext:", as: ((AnyObject?) -> Void).self)), on: deviceSet)
+        devicePairsByUUID = try await runtime.resolve(
+            .objc(.method("devicePairsByUUID", as: (() -> NSDictionary).self)), on: deviceSet)
+        removeDevice = try await runtime.resolve(
+            .objc(.method("removeDeviceAsync:", as: ((AnyObject) -> Void).self)), on: deviceSet)
+        removeDevicePair = try await runtime.resolve(
+            .objc(.method("removeDevicePairAsync:", as: ((AnyObject) -> Void).self)), on: deviceSet)
         deviceSetWithPath = try await runtime.resolve(
             .objc(.method("deviceSetWithPath:error:", as: ((String) throws -> AnyObject).self)),
             on: serviceClass)
@@ -342,8 +370,13 @@ private struct GuestMessages: @unchecked Sendable {
 
 /// One device's `GuestMessages`, whose calls only its channel's worker makes.
 private struct GuestBridge: @unchecked Sendable {
-    let device: AnyObject
+    let client: NativeDeviceClient
     let messages: GuestMessages
+
+    /// The SimDevice, or a failure once its client has ended.
+    var device: AnyObject {
+        get throws { try client.device() }
+    }
 
     func notificationState(_ name: String) throws -> UInt64 {
         var state: UInt64 = 0
@@ -400,31 +433,32 @@ package struct GuestStateReading: Equatable, Sendable {
     }
 }
 
-/// What a SimDevice reported when its set read it. Its state, name, boot date, runtime and device type all wait on one of
-/// CoreSimulator's queues, so this is captured on the set's worker.
-private struct SimulatorDeviceRecord: @unchecked Sendable {
-    let object: AnyObject
-    let identifier: String
-    let name: String
-    let descriptiveName: String
-    let runtimeIdentifier: String
-    let runtimeName: String
-    let runtimeVersion: UInt32
-    let productFamily: Int
-    let deviceTypeName: String
-    let deviceTypeIdentifier: String
-    let hasFramebufferMask: Bool
-    let screenCornerRadius: Double
-    let supportsEnhancedMultitasking: Bool
-    let screenPointsPerInch: Double?
-    let hasUserInterfacePlugin: Bool
-    let deviceSetPath: String?
-    let lastBootDate: Date?
-    var state: UInt
+/// What a SimDevice reported when it was read. Its state, name, boot date, runtime and device type all wait on one of
+/// CoreSimulator's queues, so this is captured on a worker. It holds only values, so what lists a set's devices cannot
+/// reach a guest with them: that takes the device's ``SimulatorDevice``, from ``SimulatorDeviceSet/client(withIdentifier:)``.
+package struct SimulatorDeviceRecord: Sendable {
+    package let identifier: String
+    package let name: String
+    package let descriptiveName: String
+    package let runtimeIdentifier: String
+    package let runtimeName: String
+    package let runtimeVersion: UInt32
+    package let productFamily: Int
+    package let deviceTypeName: String
+    package let deviceTypeIdentifier: String
+    package let hasFramebufferMask: Bool
+    package let screenCornerRadius: Double
+    package let supportsEnhancedMultitasking: Bool
+    package let screenPointsPerInch: Double?
+    package let hasUserInterfacePlugin: Bool
+    package let deviceSetPath: String?
+    package let lastBootDate: Date?
+    /// SimDeviceState when it was read: 1 shut down, 2 booting, 3 booted, 4 shutting down.
+    package var state: UInt
+    package var identity: SimulatorDeviceIdentifier { SimulatorDeviceIdentifier(identifier, deviceSetPath: deviceSetPath) }
 
-    init?(_ object: AnyObject, deviceSetPath: String?, interface: CoreSimulatorInterface) throws {
+    fileprivate init?(_ object: AnyObject, deviceSetPath: String?, interface: CoreSimulatorInterface) throws {
         guard let identifier = try unsafe interface.identifier.unsafeInvoke(on: object) else { return nil }
-        self.object = object
         self.deviceSetPath = deviceSetPath
         self.identifier = identifier.uuidString
         name = try unsafe interface.name.unsafeInvoke(on: object) ?? "iOS Simulator"
@@ -453,13 +487,17 @@ private struct SimulatorDeviceRecord: @unchecked Sendable {
     }
 }
 
-/// A device as its set last reported it. Its set keeps one object per device and updates it with each report, so reading
-/// these properties waits for nothing and what holds the device sees its state change.
+/// A device's own connection to CoreSimulator, which everything that reaches the device shares, with what its set last
+/// reported. Its set makes one when it is first asked for and updates it with each report, so reading these properties
+/// waits for nothing and what holds the device sees its state change. It stays for closing and reopening a window and for
+/// rebooting the guest. It ends only when its set reports the device's deletion or CoreSimulator ends its connection,
+/// after which its requests fail unsent, and whoever asks the set next gets another. Its context and set stay until the
+/// last thing holding it lets go, since a SimDevice holds its set weakly and SimulatorKit cannot use one without it.
 @MainActor
 package final class SimulatorDevice {
-    private var record: SimulatorDeviceRecord
-    /// The underlying SimDevice.
-    package var object: AnyObject { record.object }
+    package private(set) var record: SimulatorDeviceRecord
+    /// The underlying SimDevice, of the device's own context.
+    package let object: AnyObject
     package var identifier: String { record.identifier }
     package var name: String { record.name }
     /// Runtime, build, and type description shown while Option is held.
@@ -487,14 +525,25 @@ package final class SimulatorDevice {
     /// The owner of this device's requests, which every object made for the device shares.
     package let channel: SimulatorDeviceChannel
     private let interface: CoreSimulatorInterface
-    private var guest: GuestBridge { GuestBridge(device: record.object, messages: interface.guest) }
+    private let client: NativeDeviceClient
+    private let logPath: String?
+    private let memoryWarningFilePath: String?
+    private let dataPath: String?
+    private var guest: GuestBridge { GuestBridge(client: client, messages: interface.guest) }
 
-    fileprivate init(_ record: SimulatorDeviceRecord, interface: CoreSimulatorInterface) {
-        self.record = record
+    fileprivate init(_ opened: NativeDeviceClient.OpenedDevice, client: NativeDeviceClient, interface: CoreSimulatorInterface) {
+        record = opened.record
+        object = opened.object
+        logPath = opened.logPath
+        memoryWarningFilePath = opened.memoryWarningFilePath
+        dataPath = opened.dataPath
+        self.client = client
         self.interface = interface
-        channel = DeviceIOHub.shared.channel(for: .device(DeviceAddress(identifier: record.identifier,
-                                                                        deviceSetPath: record.deviceSetPath)))
+        channel = client.channel
     }
+
+    /// Its set holds it until it ends, so this comes only after that.
+    deinit { client.release() }
 
     fileprivate func update(_ record: SimulatorDeviceRecord) { self.record = record }
     fileprivate func removeFromSet() { record.state = 0 }
@@ -604,9 +653,8 @@ package final class SimulatorDevice {
         if Task.isCancelled { throw DeviceOperationFailure.outcomeUnknown(operation: operation, cause: .cancelled) }
     }
 
-    // These three paths come from the set's path and the UDID, and wait on none of CoreSimulator's queues.
     package func logDirectory() throws -> URL {
-        guard let path = try unsafe interface.logPath.unsafeInvoke(on: object) else {
+        guard let path = logPath else {
             throw SimulatorError.operation("The device did not report its log folder.")
         }
         return URL(fileURLWithPath: path, isDirectory: true)
@@ -614,7 +662,7 @@ package final class SimulatorDevice {
 
     /// Guest file used by SimDevice.simulateMemoryWarning.
     package func memoryWarningFile() throws -> URL {
-        guard let path = try unsafe interface.memoryWarningFilePath.unsafeInvoke(on: object) else {
+        guard let path = memoryWarningFilePath else {
             throw SimulatorError.operation("The device did not report where to signal a memory warning.")
         }
         return URL(fileURLWithPath: path)
@@ -623,7 +671,7 @@ package final class SimulatorDevice {
     /// The guest reads extended_display.plist whenever TVOut modes change.
     /// Its stark flag marks the screen as a CarPlay display.
     package func extendedDisplayFile() throws -> URL {
-        guard let path = try unsafe interface.dataPath.unsafeInvoke(on: object) else {
+        guard let path = dataPath else {
             throw SimulatorError.operation("The device did not report its data folder.")
         }
         return URL(fileURLWithPath: path, isDirectory: true)
@@ -735,7 +783,9 @@ package struct LocationScenario: Equatable, Sendable {
 /// The owner of one device set of one developer directory, which every path to the set shares. CoreSimulator's context and
 /// set are created and read only on the worker of the set's channel, since creating them, listing their devices and
 /// reading a device's state all wait on CoreSimulator's queues or its service. What the set last reported stays readable
-/// here, also while a call is held. Reads are shared: see ``CoalescedChannelRead``.
+/// here as values, also while a call is held. Reads are shared: see ``CoalescedChannelRead``.
+///
+/// It also owns one ``SimulatorDevice`` per device that something asked to reach. Listing devices makes none.
 @MainActor
 package final class SimulatorDeviceSet {
     private static var sets: [DeviceSetAddress: SimulatorDeviceSet] = [:]
@@ -753,11 +803,19 @@ package final class SimulatorDeviceSet {
     package let address: DeviceSetAddress
     package let channel: SimulatorDeviceChannel
     /// Available devices as the set last reported them, ordered by runtime, type, and name.
-    package private(set) var devices: [SimulatorDevice] = []
+    package private(set) var devices: [SimulatorDeviceRecord] = []
     private let interface: CoreSimulatorInterface
     private let native: NativeDeviceSet
     private let reads: CoalescedChannelRead<[SimulatorDeviceRecord]>
-    private var known: [String: SimulatorDevice] = [:]
+    /// By uppercased UDID. An entry outlives a failed or abandoned opening, so that a call still running on the device's
+    /// worker leaves what it opens for the next request.
+    private var clients: [String: DeviceClient] = [:]
+
+    private struct DeviceClient {
+        let native: NativeDeviceClient
+        var device: SimulatorDevice?
+        var opening: SharedTask<SimulatorDevice?>?
+    }
 
     private init(interface: CoreSimulatorInterface, address: DeviceSetAddress) {
         self.interface = interface
@@ -773,7 +831,7 @@ package final class SimulatorDeviceSet {
     /// Reads the set again and returns its devices. `limit` ends only this caller's wait: the read goes on, and what it
     /// finds is published when it returns.
     @discardableResult
-    package func refresh(waitingAtMost limit: Duration? = nil) async throws -> [SimulatorDevice] {
+    package func refresh(waitingAtMost limit: Duration? = nil) async throws -> [SimulatorDeviceRecord] {
         try await reads.refresh(waitingAtMost: limit)
         return devices
     }
@@ -792,11 +850,56 @@ package final class SimulatorDeviceSet {
         }
     }
 
-    package func device(withIdentifier identifier: String) async throws -> SimulatorDevice? {
-        let record = try await channel.read("look up a device in the set", limit: DeviceOperationLimit.deviceSet) { [native] in
-            try native.record(withIdentifier: identifier)
+    /// The device's own connection to CoreSimulator, opened on the device's worker when first asked for, and nil if the
+    /// set does not hold the device. Whoever asks while it opens shares that opening, each for as long as it waits. A failure
+    /// goes to those waiting, and the next request tries again on the same worker, so no two openings or their
+    /// connections' requests ever overlap.
+    package func client(withIdentifier identifier: String) async throws -> SimulatorDevice? {
+        let key = identifier.uppercased()
+        var client = clients[key] ?? DeviceClient(native: makeClient(key))
+        if let device = client.device { return device }
+        let opening = client.opening ?? open(client.native, key)
+        client.opening = opening
+        clients[key] = client
+        return try await opening.value()
+    }
+
+    private func makeClient(_ key: String) -> NativeDeviceClient {
+        let channel = DeviceIOHub.shared.channel(for: .device(DeviceAddress(identifier: key, deviceSetPath: address.path)))
+        return NativeDeviceClient(identifier: key, address: address, channel: channel, interface: interface) {
+            [weak self] client, deviceWasDeleted in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.clientEnded(client, key, deviceWasDeleted: deviceWasDeleted) }
+            }
         }
-        return record.map(device(for:))
+    }
+
+    private func open(_ client: NativeDeviceClient, _ key: String) -> SharedTask<SimulatorDevice?> {
+        let operation = "open the device's connection to CoreSimulator"
+        return SharedTask(operation) { [self] in
+            defer { if clients[key]?.native === client { clients[key]?.opening = nil } }
+            let opened = try await client.channel.read(operation, limit: DeviceOperationLimit.deviceSet) { try client.open() }
+            guard clients[key]?.native === client else {
+                throw SimulatorError.unavailable("The device's connection to CoreSimulator ended while it opened.")
+            }
+            guard let opened else {
+                clients[key] = nil
+                return nil
+            }
+            let device = SimulatorDevice(opened, client: client, interface: interface)
+            clients[key]?.device = device
+            return device
+        }
+    }
+
+    /// The next request opens another client on the same worker, so it cannot overlap a held call of this one. One that no
+    /// device was made from has no holder to release it.
+    private func clientEnded(_ client: NativeDeviceClient, _ key: String, deviceWasDeleted: Bool) {
+        if !deviceWasDeleted { hostLog("CoreSimulator ended the connection of the device \(key).") }
+        guard let current = clients[key], current.native === client else { return client.release() }
+        clients[key] = nil
+        guard let device = current.device else { return client.release() }
+        if deviceWasDeleted { device.removeFromSet() }
     }
 
     /// Registers `handler` for changes to the set's devices, on the main queue.
@@ -818,23 +921,13 @@ package final class SimulatorDeviceSet {
 
     package nonisolated func healthChanges() -> AsyncStream<DeviceChannelHealth> { channel.healthChanges() }
 
+    /// A device that the available list omits may only have lost its runtime, so that says nothing about its client.
     private func publish(_ records: [SimulatorDeviceRecord]) {
-        devices = records.map(device(for:))
-        let listed = Set(records.map(\.identifier))
-        for (identifier, device) in known where !listed.contains(identifier) {
-            device.removeFromSet()
-            known[identifier] = nil
+        devices = records
+        let listed = Dictionary(records.map { ($0.identifier.uppercased(), $0) }) { first, _ in first }
+        for (key, client) in clients {
+            if let record = listed[key] { client.device?.update(record) } else { client.device?.removeFromSet() }
         }
-    }
-
-    private func device(for record: SimulatorDeviceRecord) -> SimulatorDevice {
-        if let device = known[record.identifier] {
-            device.update(record)
-            return device
-        }
-        let device = SimulatorDevice(record, interface: interface)
-        known[record.identifier] = device
-        return device
     }
 }
 
@@ -880,14 +973,6 @@ private final class NativeDeviceSet: @unchecked Sendable {
         return try unsafe interface.availableDevices.unsafeInvoke(on: opened.object).compactMap {
             try SimulatorDeviceRecord($0, deviceSetPath: opened.toolPath, interface: interface)
         }
-    }
-
-    func record(withIdentifier identifier: String) throws -> SimulatorDeviceRecord? {
-        guard let uuid = NSUUID(uuidString: identifier) else { return nil }
-        let opened = try open()
-        let devices = try unsafe interface.devicesByUDID.unsafeInvoke(on: opened.object)
-        guard let device = devices[uuid] else { return nil }
-        return try SimulatorDeviceRecord(device as AnyObject, deviceSetPath: opened.toolPath, interface: interface)
     }
 
     func readCatalog() throws -> SimulatorCatalog.Snapshot {
@@ -945,6 +1030,172 @@ private final class NativeDeviceSet: @unchecked Sendable {
     func stopObservingReportingFailure(_ token: UInt64) {
         do { try unsafe interface.unregisterHandler.unsafeInvoke(on: open().object, token) }
         catch { hostLog("Could not unregister simulator notifications: \(error.localizedDescription)") }
+    }
+}
+
+/// One device's own CoreSimulator context and set, whose connection to CoreSimulatorService no other device's calls wait
+/// on. The worker of the device's channel opens and releases them and alone touches `opened`.
+///
+/// A context and its set retain each other, the connection retains the context, and each device and pair of the set holds a
+/// handler that retains the set. So nothing frees them unless the connection is cancelled and the set lets go of its
+/// context, devices and pairs. Whatever ends the connection, CoreSimulator reports it once, and only after that report and
+/// after whatever holds the device has let go can they be released: a release before the report can leave the context
+/// allocated, and one before the device is let go leaves SimulatorKit a SimDevice without a set, which throws when used.
+/// Cancelling this connection ends only this client: it returns a lookup that the connection holds, but not a bridge call,
+/// which keeps the worker until it returns.
+private final class NativeDeviceClient: @unchecked Sendable {
+    struct OpenedDevice: @unchecked Sendable {
+        let object: AnyObject
+        let record: SimulatorDeviceRecord
+        // These come from the set, so they are read while the device still has it.
+        let logPath: String?
+        let memoryWarningFilePath: String?
+        let dataPath: String?
+    }
+
+    private struct Connection: @unchecked Sendable {
+        var object: xpc_connection_t?
+        var deviceWasDeleted = false
+        var hasEnded = false
+    }
+
+    let channel: SimulatorDeviceChannel
+    private let identifier: String
+    private let address: DeviceSetAddress
+    private let interface: CoreSimulatorInterface
+    private let onEnd: @Sendable (NativeDeviceClient, _ deviceWasDeleted: Bool) -> Void
+    private let events: DispatchQueue
+    private let connection = Mutex(Connection())
+    private var opened: (context: AnyObject, set: AnyObject, device: AnyObject, toolPath: String?)?
+    private var isReleased = false
+
+    init(identifier: String, address: DeviceSetAddress, channel: SimulatorDeviceChannel, interface: CoreSimulatorInterface,
+         onEnd: @escaping @Sendable (NativeDeviceClient, _ deviceWasDeleted: Bool) -> Void) {
+        self.identifier = identifier
+        self.address = address
+        self.channel = channel
+        self.interface = interface
+        self.onEnd = onEnd
+        events = DispatchQueue(label: "dev.lynnswap.NeoSimulator.device-client.\(identifier)", qos: .userInitiated,
+                               autoreleaseFrequency: .workItem)
+    }
+
+    /// Opens once, and what a call opened after its caller stopped waiting stays for the next. Answers nil, with nothing
+    /// left open, if the set does not hold the device.
+    func open() throws -> OpenedDevice? {
+        if let opened { return try read(opened.device, toolPath: opened.toolPath) }
+        // A request that was waiting when this client ended belongs to no one who could release what it opened.
+        guard !isReleased else { throw SimulatorError.unavailable("The device's connection to CoreSimulator ended while it opened.") }
+        guard let uuid = NSUUID(uuidString: identifier) else { return nil }
+        guard let allocated = allocate(interface.serviceClass) else {
+            throw SimulatorError.unavailable("Could not allocate the device's connection to CoreSimulator.")
+        }
+        let context = try unsafe interface.makeContext.unsafeInvoke(on: allocated, address.developerDirectory, 0)
+        let endpoint = try unsafe interface.serviceConnection.unsafeInvoke(on: context) as? xpc_connection_t
+        guard let endpoint else { throw SimulatorError.unavailable("CoreSimulator gave the device no connection.") }
+        connection.withLock { $0 = Connection(object: endpoint) }
+        // It goes on before anything can end the connection, since one set on a dead context leaves that context allocated.
+        let ended = ObjectIdentifier(endpoint)
+        let handler: CoreSimulatorInterface.ConnectionEndHandler = { [weak self] _ in self?.connectionEnded(ended) }
+        var set: AnyObject?
+        do {
+            try unsafe interface.setConnectionEndHandler.unsafeInvoke(on: context, handler)
+            let object: AnyObject
+            if let path = address.path {
+                object = try unsafe interface.deviceSetWithPath.unsafeInvoke(on: context, path)
+            } else {
+                object = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
+            }
+            set = object
+            try watchForDeletion(uuid, in: object)
+            let toolPath = address.path == nil ? nil : try unsafe interface.setPath.unsafeInvoke(on: object) ?? address.path
+            guard let device = try unsafe interface.devicesByUDID.unsafeInvoke(on: object)[uuid],
+                  let read = try read(device as AnyObject, toolPath: toolPath) else {
+                discard(context, set: object)
+                return nil
+            }
+            opened = (context, object, device as AnyObject, toolPath)
+            return read
+        } catch {
+            discard(context, set: set)
+            throw error
+        }
+    }
+
+    /// The SimDevice, for a request on the worker. CoreSimulator answers a message to a device whose context is gone as
+    /// though nothing had failed, so a request after the end must not reach it.
+    func device() throws -> AnyObject {
+        guard let opened, !connection.withLock({ $0.hasEnded }) else {
+            throw SimulatorError.unavailable("The simulator's connection to CoreSimulator has ended, so this request was not sent.")
+        }
+        return opened.device
+    }
+
+    /// Lets go of what is open, once no call holds the worker and before any request waiting there. Nothing waits for it.
+    nonisolated func release() {
+        channel.cleanUp("release the device's connection to CoreSimulator") { [self] in
+            isReleased = true
+            guard let opened else { return }
+            self.opened = nil
+            connection.withLock { $0.object = nil }
+            letGo(of: opened.set)
+        }
+    }
+
+    private func read(_ device: AnyObject, toolPath: String?) throws -> OpenedDevice? {
+        try SimulatorDeviceRecord(device, deviceSetPath: toolPath, interface: interface).map {
+            OpenedDevice(object: device, record: $0, logPath: try unsafe interface.logPath.unsafeInvoke(on: device),
+                         memoryWarningFilePath: try unsafe interface.memoryWarningFilePath.unsafeInvoke(on: device),
+                         dataPath: try unsafe interface.dataPath.unsafeInvoke(on: device))
+        }
+    }
+
+    /// Only a removal that the set itself shows ends a client. It cannot be told from a failed read or a shorter list.
+    private func watchForDeletion(_ uuid: NSUUID, in set: AnyObject) throws {
+        let block: CoreSimulatorInterface.NotificationHandler = { [weak self, weak set, interface] notification in
+            guard notification["notification"] as? String == "device_removed", let self, let set,
+                  let devices = try? unsafe interface.devicesByUDID.unsafeInvoke(on: set), devices[uuid] == nil else { return }
+            self.connection.withLock { connection in
+                connection.deviceWasDeleted = true
+                if let object = connection.object { xpc_connection_cancel(object) }
+            }
+        }
+        _ = try unsafe interface.registerHandler.unsafeInvoke(on: set, events, block)
+    }
+
+    private func connectionEnded(_ ended: ObjectIdentifier) {
+        let deviceWasDeleted = connection.withLock { connection -> Bool? in
+            guard connection.object.map(ObjectIdentifier.init) == ended else { return nil }
+            connection.hasEnded = true
+            return connection.deviceWasDeleted
+        }
+        if let deviceWasDeleted { onEnd(self, deviceWasDeleted) }
+    }
+
+    /// Ends what an opening that failed had, which nobody is waiting to hear about. Without the handler its end cannot race this.
+    private func discard(_ context: AnyObject, set: AnyObject?) {
+        let endpoint = connection.withLock { connection in
+            defer { connection = Connection() }
+            return connection.object
+        }
+        do { try unsafe interface.setConnectionEndHandler.unsafeInvoke(on: context, nil) }
+        catch { hostLog("Could not clear a device connection's handler: \(error.localizedDescription)") }
+        if let endpoint { xpc_connection_cancel(endpoint) }
+        if let set { letGo(of: set) }
+    }
+
+    /// Empties this client's own set, whose connection has ended. Removing only changes its maps and tells its handlers:
+    /// CoreSimulatorService hears nothing of it, and neither does any other context's set.
+    private func letGo(of set: AnyObject) {
+        do {
+            for device in try unsafe interface.devicesByUDID.unsafeInvoke(on: set).allValues {
+                try unsafe interface.removeDevice.unsafeInvoke(on: set, device as AnyObject)
+            }
+            for pair in try unsafe interface.devicePairsByUUID.unsafeInvoke(on: set).allValues {
+                try unsafe interface.removeDevicePair.unsafeInvoke(on: set, pair as AnyObject)
+            }
+            try unsafe interface.setServiceContext.unsafeInvoke(on: set, nil)
+        } catch { hostLog("Could not release a device's connection to CoreSimulator: \(error.localizedDescription)") }
     }
 }
 

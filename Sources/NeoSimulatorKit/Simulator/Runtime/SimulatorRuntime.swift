@@ -714,9 +714,14 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         try runtime.display.screenMessages.send("supportedScreenModes", to: try properties(), as: [AnyObject]?.self) ?? []
     }
 
-    // CoreSimDeviceIO may ignore the completion queue. Bridge back to the main actor explicitly.
+    // CoreSimDeviceIO may ignore the completion queue. Bridge back to the main actor explicitly. It also keeps the block
+    // after calling it, so the block gives up the completion, which holds this connection and so its device.
     private nonisolated static func completed(_ completion: @escaping @MainActor (Error?) -> Void) -> Completion {
-        { error in DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } } }
+        let pending = Mutex<(@MainActor (Error?) -> Void)?>(completion)
+        return { error in
+            guard let completion = pending.withLock({ $0.take() }) else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(error) } }
+        }
     }
 }
 
@@ -1411,8 +1416,7 @@ private struct HostAudioDeviceMembers {
 }
 
 /// An uninitialized instance for an Objective-C initializer, which consumes it.
-@MainActor
-private func allocate(_ type: AnyClass) -> AnyObject? {
+func allocate(_ type: AnyClass) -> AnyObject? {
     (type as? NSObject.Type)?.perform(NSSelectorFromString("alloc"))?.takeRetainedValue()
 }
 

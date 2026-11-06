@@ -222,15 +222,15 @@ package final class SimulatorScreenHost: NSObject {
         sessions[identifier]?.window?.isVisible == true
     }
 
-    private static func isSupported(_ device: SimulatorDevice) -> Bool {
+    private static func isSupported(_ device: SimulatorDeviceRecord) -> Bool {
         DeviceCapabilities.Family(rawValue: device.productFamily) != nil
     }
 
     /// Reads supported product families from the shown device sets. A testing set that cannot be read keeps what it last
     /// reported, since it should not stop the default set's devices from opening.
-    private func readDevices() async throws -> [SimulatorDevice] {
+    private func readDevices() async throws -> [SimulatorDeviceRecord] {
         async let defaultDevices = deviceSet.refresh()
-        var testingDevices: [SimulatorDevice] = []
+        var testingDevices: [SimulatorDeviceRecord] = []
         if showsTestingDevices, let testingSet {
             do { testingDevices = try await testingSet.refresh() }
             catch is CancellationError { throw CancellationError() }
@@ -243,7 +243,7 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     /// Reads a device from its own set, so that opening it depends on no other set.
-    private func readDevice(_ identifier: SimulatorDeviceIdentifier) async throws -> SimulatorDevice? {
+    private func readDevice(_ identifier: SimulatorDeviceIdentifier) async throws -> SimulatorDeviceRecord? {
         let set = identifier.deviceSetPath == nil ? deviceSet : showsTestingDevices ? testingSet : nil
         return try await set?.refresh().first { $0.identity == identifier && Self.isSupported($0) }
     }
@@ -378,7 +378,7 @@ package final class SimulatorScreenHost: NSObject {
         }
     }
 
-    private static func describe(_ device: SimulatorDevice) -> AvailableDevice {
+    private static func describe(_ device: SimulatorDeviceRecord) -> AvailableDevice {
         AvailableDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
                         runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName,
                         productFamily: device.productFamily, deviceTypeName: device.deviceTypeName,
@@ -637,8 +637,8 @@ package final class SimulatorScreenHost: NSObject {
             .union(connections.keys).union(releasingDevices).union(presentationRestarts)
     }
 
-    private func connect(_ device: SimulatorDevice) {
-        let identifier = device.identity
+    private func connect(_ record: SimulatorDeviceRecord) {
+        let identifier = record.identity
         connections[identifier] = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -648,6 +648,11 @@ package final class SimulatorScreenHost: NSObject {
                 rescan()
             }
             do {
+                // Everything below reaches the guest through the device's own connection, which also serves later connections.
+                let set = identifier.deviceSetPath == nil ? deviceSet : testingSet
+                guard let device = try await set?.client(withIdentifier: identifier.identifier) else {
+                    throw SimulatorError.operation("The selected simulator is no longer available")
+                }
                 try await runtime.display.screenAdapter.prepare(for: device.object)
                 // CoreSimulator reports Booted before its integrated screen is ready.
                 var screenFailure: (any Error)?
@@ -718,7 +723,7 @@ package final class SimulatorScreenHost: NSObject {
                                                                  touchRoute: touchRoute)
                         if nativeCanvas != nil { capabilities.controlsOrientation = false }
                         let session = DeviceSession(
-                            device: Self.describe(device), capabilities: capabilities,
+                            device: Self.describe(device.record), capabilities: capabilities,
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
@@ -869,6 +874,11 @@ package final class SimulatorScreenHost: NSObject {
             return (keyboard, trackpad, NativeTouchRoute(input: input, interface: interface))
         } catch is CancellationError {
             throw CancellationError()
+        } catch let failure as DeviceOperationFailure {
+            // An unanswered request says nothing about what the guest supports. The screen stays usable, and until #458
+            // gives input its own readiness, SimulatorKit's is the only input that this connection can have meanwhile.
+            report(failure)
+            return nil
         } catch {
             hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
             return nil
@@ -1278,8 +1288,8 @@ package final class SimulatorScreenHost: NSObject {
 
 
 /// Why a booted device's integrated screen did not appear in time: what reading its screens last failed with, and which
-/// native requests had still not returned then. Another device's unanswered request can be the reason, since CoreSimulator
-/// serves a process's requests one at a time.
+/// native requests had still not returned then. Another device's unanswered request can be the reason, since a device's own
+/// connection does not separate it from what holds CoreSimulatorService itself or SimulatorKit.
 package struct IntegratedScreenUnavailable: LocalizedError {
     package let deviceName: String
     package let lastFailure: (any Error)?
