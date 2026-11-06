@@ -1295,8 +1295,9 @@ package final class SimulatorBootTracker {
             reset()
             return Observation(catalogChanged: changed, devicesToAttach: [])
         }
+        // Only a read outside a change can establish that a cancelled open's boot has ended.
         cancelledAttachments = cancelledAttachments.filter { identifier in
-            !isCurrentObservation(identifier) || current[identifier]?.state != "Shutdown"
+            changing.contains(identifier) || !isCurrentObservation(identifier) || current[identifier]?.state != "Shutdown"
         }
         let booted = Set(current.filter { $0.value.state == "Booted" }.keys)
         pending.formIntersection(booted)

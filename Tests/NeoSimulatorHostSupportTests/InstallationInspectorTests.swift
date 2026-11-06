@@ -851,6 +851,23 @@ struct XcodeConnectionsTests {
         #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
     }
 
+    @Test func aChangeToADeviceLeavesItsCancelledAttachmentRetired() {
+        let tracker = SimulatorBootTracker()
+        func device(_ state: String) -> SimulatorHostDevice {
+            .init(identifier: "A", name: "A", descriptiveName: "A", runtimeIdentifier: "runtime", runtimeName: "iOS",
+                  productFamily: "iPhone", state: state)
+        }
+        let identifier = device("Booted").inventoryID
+        _ = tracker.observe([device("Shutdown")], attachInitially: false)
+        // The cancelled open booted the device, but a read during a rename keeps the catalog's older Shutdown.
+        tracker.didCancelAttachment(identifier)
+        #expect(tracker.observe([device("Booted")], attachInitially: false, changing: [identifier]).devicesToAttach.isEmpty)
+        #expect(tracker.observe([device("Booted")], attachInitially: false).devicesToAttach.isEmpty)
+        // A read outside the change can establish that this boot ended, so the next boot attaches.
+        _ = tracker.observe([device("Shutdown")], attachInitially: false)
+        #expect(tracker.observe([device("Booted")], attachInitially: false).devicesToAttach == [identifier])
+    }
+
     @Test func testingVisibilityChangesReattachClonesAndPreserveNormalWindowChoices() {
         let tracker = SimulatorBootTracker()
         func device(_ identifier: String, _ state: String = "Booted", testing: Bool = false) -> SimulatorHostDevice {
