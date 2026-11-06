@@ -408,7 +408,7 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
     package func showNewSimulator() {
         guard !isStopped, newSimulatorPreparation == nil else { return }
         guard newSimulator == nil else { return presentNewSimulator() }
-        newSimulatorPreparation = Task {
+        newSimulatorPreparation = Task { [self] in
             defer { newSimulatorPreparation = nil }
             let catalog: SimulatorCatalog
             do { catalog = try await engine.creationCatalog() } catch {

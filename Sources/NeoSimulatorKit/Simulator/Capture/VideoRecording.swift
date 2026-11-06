@@ -33,7 +33,7 @@ package final class VideoRecording {
         process.terminationHandler = { process in
             continuation.yield(.exited(process.terminationStatus, process.terminationReason))
         }
-        nonisolated(unsafe) let launching = process
+        let launching = process
         do { try await lane.run { try launching.run() } }
         catch { process.terminationHandler = nil; continuation.finish(); throw error }
         pipe.fileHandleForReading.readabilityHandler = { handle in

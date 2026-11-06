@@ -191,7 +191,7 @@ struct CaptureAndImportTests {
         lane.open()
         let recording = try await start.value
         #expect(recording.isStopping)
-        await finishing.value
+        _ = await finishing.value
         #expect(finished && errors.isEmpty && !store.hasActiveRecordings)
         #expect(handedOver.count == 1)
         try FileManager.default.removeItem(at: try #require(handedOver.first))

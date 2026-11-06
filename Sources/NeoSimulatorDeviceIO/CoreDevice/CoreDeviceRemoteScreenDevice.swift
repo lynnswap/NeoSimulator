@@ -171,7 +171,7 @@ package enum CoreDeviceRuntime {
 }
 
 @MainActor
-package final class CoreDeviceRemoteScreenDevice {
+package final class CoreDeviceRemoteScreenDevice: CoreDeviceFeatureRecord {
     package let identifier: String
     package let runtime: ABIRuntime
     package let object: NativeSwiftValue
@@ -213,7 +213,7 @@ package final class CoreDeviceRemoteScreenDevice {
         let state = try await infoType.resolve(.swift(.getter("state", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
         let rawValue = try await stateType.resolve(.swift(.getter("rawValue", as: (() -> String).self,
             valueABIs: abis, receiverABI: abis[stateType])))
-        let connected = try await stateType.makeEnumCase(named: "connected")
+        let connected = try stateType.makeEnumCase(named: "connected")
         let info = try unsafe deviceInfo.unsafeInvoke(on: object)
         return try unsafe rawValue.unsafeInvoke(on: state.unsafeInvoke(on: info)) == rawValue.unsafeInvoke(on: connected)
     }
