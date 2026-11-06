@@ -152,7 +152,7 @@ public final class SimulatorContext {
                                              offersLifetimeChoice: configuration.offersLifetimeChoice,
                                              deviceRegistry: configuration.deviceRegistry ?? DeviceRegistry())
         let context = SimulatorContext(engine: engine, configuration: configuration)
-        try engine.start(attachingBootedDevices: false)
+        try await engine.start(attachingBootedDevices: false)
         return context
     }
 
@@ -250,7 +250,7 @@ public final class SimulatorContext {
     /// Reads the devices currently available in this context.
     public func devices() async throws -> [SimulatorDeviceSnapshot] {
         try checkActive()
-        return try engine.availableSimulatorDevices().map(SimulatorDeviceSnapshot.init)
+        return try await engine.readAvailableDevices().map(SimulatorDeviceSnapshot.init)
     }
 
     /// Boots the guest and waits for CoreSimulator to report it running, without opening its screen.
@@ -265,7 +265,7 @@ public final class SimulatorContext {
         if let task = boots[id] { return try await CoreDeviceRuntime.preparedValue(of: task) }
         let task = Task {
             defer { self.boots[id] = nil }
-            let device = try self.device(id)
+            let device = try await self.device(id)
             if device.state == 3 { return SimulatorBootOutcome.alreadyRunning }
             if device.state != 2 {
                 let tools = try DeviceTools(identifier: id.identifier, xcodeURL: self.xcodeURL, deviceSetPath: id.deviceSetPath)
@@ -274,7 +274,7 @@ public final class SimulatorContext {
             let deadline = ContinuousClock.now + .seconds(120)
             while true {
                 try Task.checkCancellation()
-                let state = try self.device(id).state
+                let state = try await self.device(id).state
                 if state == 3 { return SimulatorBootOutcome.booted }
                 guard state == 2, ContinuousClock.now < deadline else {
                     throw SimulatorError.operation("The simulator did not finish starting.")
@@ -303,7 +303,7 @@ public final class SimulatorContext {
         let task = Task {
             defer { self.openings[id] = nil }
             if self.engine.hasUnfinishedCleanup(for: id) { try await self.engine.releasePresentation(for: id) }
-            let device = SimulatorDeviceSnapshot(try self.device(id))
+            let device = SimulatorDeviceSnapshot(try await self.device(id))
             let controller = try await self.engine.openPresentation(for: id)
             try self.checkActive()
             if let screen = self.screens[id] { return screen }
@@ -351,14 +351,14 @@ public final class SimulatorContext {
                 let reason: SimulatorScreenEnd
                 if intent.shutsDownGuest {
                     await self.engine.cancelRestart(for: id)
-                    let state = try self.device(id).state
+                    let state = try await self.device(id).state
                     if state != 1 && state != 4 {
                         let tools = try DeviceTools(identifier: id.identifier, xcodeURL: self.xcodeURL,
                                                     deviceSetPath: id.deviceSetPath)
                         try await tools.shutdown()
                     }
                     let deadline = ContinuousClock.now + .seconds(120)
-                    while try self.device(id).state != 1 {
+                    while try await self.device(id).state != 1 {
                         guard ContinuousClock.now < deadline else {
                             throw SimulatorError.operation("The simulator did not finish shutting down.")
                         }
@@ -422,8 +422,8 @@ public final class SimulatorContext {
         try await beginRelease(id, shutsDownGuest: false).value
     }
 
-    private func device(_ id: SimulatorDeviceIdentifier) throws -> AvailableDevice {
-        guard let device = try engine.availableSimulatorDevices().first(where: { $0.identity == id }) else {
+    private func device(_ id: SimulatorDeviceIdentifier) async throws -> AvailableDevice {
+        guard let device = try await engine.readAvailableDevices().first(where: { $0.identity == id }) else {
             throw SimulatorError.operation("The selected simulator is no longer available.")
         }
         return device
@@ -440,9 +440,7 @@ public final class SimulatorContext {
         let opened = engine.openedDeviceIdentifiers
         let ended = screens.keys.filter { releases[$0] == nil && !opened.contains($0) }
         guard !ended.isEmpty else { return }
-        let devices: [AvailableDevice]
-        do { devices = try engine.availableSimulatorDevices() }
-        catch { report(error); return }
+        let devices = engine.availableSimulatorDevices()
         for id in ended {
             let state = devices.first { $0.identity == id }?.state
             let reason: SimulatorScreenEnd = switch state {

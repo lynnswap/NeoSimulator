@@ -7,7 +7,7 @@ import Testing
 @Suite(.timeLimit(.minutes(1)))
 struct SimulatorDeviceChannelTests {
     private func makeChannel(_ identifier: String = "device") -> SimulatorDeviceChannel {
-        SimulatorDeviceChannel(address: DeviceAddress(identifier: identifier, deviceSetPath: nil))
+        SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: identifier, deviceSetPath: nil)))
     }
 
     @Test func aCallThatOutlivesItsDeadlineLeavesItsOutcomeUnknownAndTheQueuedRequestsUnsent() async throws {
@@ -84,6 +84,47 @@ struct SimulatorDeviceChannelTests {
         try await wait(for: channel, toBe: .ready)
         for _ in 0..<100 where cleaned.withLock({ $0.isEmpty }) { try await Task.sleep(for: .milliseconds(10)) }
         #expect(cleaned.withLock { $0 } == [.success("resource")])
+    }
+
+    @Test func aRequestReleasesWhatItCapturedOnceItsCallHasReturned() async throws {
+        let channel = makeChannel()
+        // A deadline this far away cannot be what releases anything.
+        let limit = Duration.seconds(3600)
+        weak var answered: CapturedResource?
+        do {
+            let resource = CapturedResource()
+            answered = resource
+            try await channel.read("read", limit: limit) { withExtendedLifetime(resource) {} }
+        }
+        weak var late: CapturedResource?
+        let call = HeldCall()
+        defer { call.release() }
+        do {
+            let resource = CapturedResource()
+            late = resource
+            let stopped = Task {
+                try await channel.read("connect", limit: limit, lateCompletion: { _ in withExtendedLifetime(resource) {} }) {
+                    withExtendedLifetime(resource) { call.hold() }
+                }
+            }
+            await call.waitUntilHeld()
+            stopped.cancel()
+            await #expect(throws: CancellationError.self) { try await stopped.value }
+            #expect(late != nil)
+            call.release()
+        }
+        weak var cleanedUp: CapturedResource?
+        do {
+            let resource = CapturedResource()
+            cleanedUp = resource
+            channel.cleanUp("release") { withExtendedLifetime(resource) {} }
+        }
+        for _ in 0..<500 where answered != nil || late != nil || cleanedUp != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(answered == nil)
+        #expect(late == nil)
+        #expect(cleanedUp == nil)
     }
 
     @Test func aCleanupIsNotRefusedAndRunsWhenTheHeldCallReturns() async throws {
@@ -176,10 +217,27 @@ struct SimulatorDeviceChannelTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: directory)
         defer { try? FileManager.default.removeItem(at: link) }
         let hub = DeviceIOHub()
-        let channel = hub.channel(for: DeviceAddress(identifier: "abc", deviceSetPath: directory.path))
-        #expect(hub.channel(for: DeviceAddress(identifier: "ABC", deviceSetPath: link.path + "/")) === channel)
-        #expect(hub.channel(for: DeviceAddress(identifier: "ABC", deviceSetPath: nil)) !== channel)
-        #expect(hub.channel(for: DeviceAddress(identifier: "OTHER", deviceSetPath: directory.path)) !== channel)
+        let channel = hub.channel(for: .device(DeviceAddress(identifier: "abc", deviceSetPath: directory.path)))
+        #expect(hub.channel(for: .device(DeviceAddress(identifier: "ABC", deviceSetPath: link.path + "/"))) === channel)
+        #expect(hub.channel(for: .device(DeviceAddress(identifier: "ABC", deviceSetPath: nil))) !== channel)
+        #expect(hub.channel(for: .device(DeviceAddress(identifier: "OTHER", deviceSetPath: directory.path))) !== channel)
+    }
+
+    @Test func everyPathToADeviceSetFindsTheSameChannelWithinItsDeveloperDirectory() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let link = directory.appendingPathExtension("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: directory)
+        defer { try? FileManager.default.removeItem(at: link) }
+        func set(_ developerDirectory: String, _ path: String?) -> DeviceChannelScope {
+            .deviceSet(DeviceSetAddress(developerDirectory: developerDirectory, path: path))
+        }
+        let hub = DeviceIOHub()
+        let channel = hub.channel(for: set("/Xcode/Developer", directory.path))
+        #expect(hub.channel(for: set("/Xcode/Developer/", link.path + "/")) === channel)
+        #expect(hub.channel(for: set("/Other/Developer", directory.path)) !== channel)
+        #expect(hub.channel(for: set("/Xcode/Developer", nil)) !== channel)
     }
 
     @Test func waitingForATaskCanBeGivenUp() async throws {
@@ -225,6 +283,8 @@ struct SimulatorDeviceChannelTests {
 }
 
 private struct DeviceCleanupFixture: Error, Equatable {}
+
+private final class CapturedResource: Sendable {}
 
 /// Blocks the thread that calls ``hold()`` until ``release()``, as a native call blocks its worker.
 private final class HeldCall: Sendable {

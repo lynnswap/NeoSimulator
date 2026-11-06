@@ -75,12 +75,12 @@ package final class SimulatorRuntime {
         try validateLoadedImages()
     }
 
-    package static func creationCatalog(xcodeURL: URL) async throws -> SimulatorCatalog {
+    package static func creationCatalog(xcodeURL: URL) async throws -> SimulatorCatalog.Snapshot {
         try load(URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreSimulator.framework"))
         let interface = try await CoreSimulatorInterface(runtime: .shared)
-        let set = try SimulatorDeviceSet(interface: interface,
-                                         developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path)
-        return try set.readCatalog()
+        let set = SimulatorDeviceSet.shared(interface: interface,
+                                            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path)
+        return try await set.readCatalog()
     }
 
     private static func load(_ url: URL) throws {
@@ -115,9 +115,9 @@ package final class SimulatorRuntime {
         }
     }
 
-    /// Opens the default device set, or the set at `path`.
-    package func openDeviceSet(at path: String? = nil) throws -> SimulatorDeviceSet {
-        try SimulatorDeviceSet(
+    /// The owner of the default device set, or of the set at `path`.
+    package func openDeviceSet(at path: String? = nil) -> SimulatorDeviceSet {
+        SimulatorDeviceSet.shared(
             interface: coreSimulator,
             developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path)
     }
@@ -389,19 +389,22 @@ package struct SimulatorDisplayInterface {
         }
     }
 
-    /// The device's default non-CarPlay screen, or nil while it is not ready.
-    package func defaultScreen(of device: SimulatorDevice) -> (identifier: UInt32, object: AnyObject)? {
+    /// The device's default non-CarPlay screen, or nil while it is not ready. A screen that cannot be read does not hide
+    /// a later one; when none is found, the failure says why.
+    package func defaultScreen(of device: SimulatorDevice) throws -> (identifier: UInt32, object: AnyObject)? {
         // The synchronous screen initializer waits for missing IDs and blocks AppKit during boot.
-        guard let adapter = try? screenAdapter.adapter(of: device.object),
-              let screens = try? unsafe adapterScreens.unsafeInvoke(on: adapter) else { return nil }
-        for (identifier, value) in screens.sorted(by: { $0.key < $1.key }) {
-            guard let screen = try? value.withCopy({ $0 as AnyObject }),
-                let _ = try? unsafe self.screen.unsafeInvoke(on: screen),
-                (try? unsafe isDefault.unsafeInvoke(on: screen)) == true,
-                (try? unsafe isCarPlay.unsafeInvoke(on: screen)) == false
-            else { continue }
-            return (identifier, screen)
+        guard let adapter = try screenAdapter.adapter(of: device.object) else { return nil }
+        var failure: (any Error)?
+        for (identifier, value) in try unsafe adapterScreens.unsafeInvoke(on: adapter).sorted(by: { $0.key < $1.key }) {
+            do {
+                let screen = try value.withCopy { $0 as AnyObject }
+                _ = try unsafe self.screen.unsafeInvoke(on: screen)
+                guard try unsafe isDefault.unsafeInvoke(on: screen),
+                      try unsafe !isCarPlay.unsafeInvoke(on: screen) else { continue }
+                return (identifier, screen)
+            } catch { failure = error }
         }
+        if let failure { throw failure }
         return nil
     }
 
@@ -2218,8 +2221,8 @@ package final class SimulatorConnection: SimulatorDisplay {
         guard !failures.isEmpty else { return }
         let failure = SimulatorError.operation(failures.joined(separator: "\n"))
         // Only a shut-down guest (SimDeviceState 1) no longer holds the input. Shutting down (4) and a state that
-        // cannot be read (read as 0) keep the failure, and the services for the next call.
-        guard device.state == 1 else { throw failure }
+        // cannot be read keep the failure, and the services for the next call.
+        guard (try? await device.currentState()) == 1 else { throw failure }
         hostLog(failure.localizedDescription)
     }
     isolated deinit { disconnect() }

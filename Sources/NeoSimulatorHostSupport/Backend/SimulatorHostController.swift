@@ -1245,4 +1245,3 @@ package enum SimulatorStartupSelection {
         return devices.last(where: { $0.productFamily == "iPhone" }) ?? devices.first
     }
 }
-

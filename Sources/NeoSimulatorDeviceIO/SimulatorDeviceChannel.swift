@@ -12,15 +12,47 @@ package struct DeviceAddress: Hashable, Sendable {
 
     package init(identifier: String, deviceSetPath: String?) {
         self.identifier = identifier.uppercased()
-        self.deviceSetPath = deviceSetPath.map(Self.normalized(setPath:))
+        self.deviceSetPath = deviceSetPath.map(Self.normalized(path:))
     }
 
-    package static func normalized(setPath path: String) -> String {
+    package static func normalized(path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 }
 
-/// How a request ended without the device's own answer. A native call cannot be cancelled, so none of these say
+/// A device set's whole identity: the developer directory whose CoreSimulator context holds it, and its path.
+package struct DeviceSetAddress: Hashable, Sendable {
+    package let developerDirectory: String
+    /// Nil denotes the default device set.
+    package let path: String?
+
+    package init(developerDirectory: String, path: String?) {
+        self.developerDirectory = DeviceAddress.normalized(path: developerDirectory)
+        self.path = path.map(DeviceAddress.normalized(path:))
+    }
+}
+
+/// What a channel's native requests belong to.
+package enum DeviceChannelScope: Hashable, Sendable {
+    case device(DeviceAddress)
+    case deviceSet(DeviceSetAddress)
+
+    fileprivate var workerLabel: String {
+        switch self {
+        case .device(let device): "dev.lynnswap.NeoSimulator.device-worker.\(device.identifier)"
+        case .deviceSet(let set): "dev.lynnswap.NeoSimulator.device-set-worker.\(set.path ?? "default")"
+        }
+    }
+
+    fileprivate var name: String {
+        switch self {
+        case .device(let device): "\(device.identifier)\(device.deviceSetPath.map { " in \($0)" } ?? "")"
+        case .deviceSet(let set): set.path.map { "Device set \($0)" } ?? "Default device set"
+        }
+    }
+}
+
+/// How a request ended without its native call's answer. A native call cannot be cancelled, so none of these say
 /// that it stopped: the channel only stopped waiting for it.
 package enum DeviceOperationFailure: LocalizedError, Equatable {
     package enum Abandonment: Equatable, Sendable {
@@ -49,36 +81,36 @@ package enum DeviceOperationFailure: LocalizedError, Equatable {
     package var errorDescription: String? {
         switch self {
         case .notSent(let operation, let call):
-            "Could not \(operation): the device has not answered an earlier request to \(call), so this one was not sent."
+            "Could not \(operation): an earlier request to \(call) has not returned, so this one was not sent."
         case .outcomeUnknown(let operation, .cancelled):
-            "The request to \(operation) was stopped while the device was handling it, so what it changed is unknown."
+            "The request to \(operation) was stopped before it returned, so what it changed is unknown."
         case .outcomeUnknown(let operation, .timedOut(let limit)):
-            "The device did not finish the request to \(operation) within \(limit.formatted(.units(width: .wide))), so what it changed is unknown."
+            "The request to \(operation) did not return within \(limit.formatted(.units(width: .wide))), so what it changed is unknown."
         case .noAnswer(let operation, let limit):
-            "The device did not answer the request to \(operation) within \(limit.formatted(.units(width: .wide)))."
+            "The request to \(operation) did not return within \(limit.formatted(.units(width: .wide)))."
         }
     }
 }
 
-/// Whether a device's worker can take requests.
+/// Whether a channel's worker can take requests.
 package enum DeviceChannelHealth: Equatable, Sendable {
     case ready
     /// A native call has outlived its deadline. It stays unresponsive until that call actually returns.
     case unresponsive(call: String, since: ContinuousClock.Instant)
 }
 
-/// A request a device's channel still holds.
+/// A request a channel still holds.
 package struct UnresolvedDeviceOperation: Equatable, Sendable {
     package enum State: Equatable, Sendable { case running, waiting, cleanup }
 
-    package let device: DeviceAddress
+    package let scope: DeviceChannelScope
     package let operation: String
     package let changesDevice: Bool
     package let state: State
 
     /// What the owner of a quit should say about it.
     package var description: String {
-        let name = "\(device.identifier)\(device.deviceSetPath.map { " in \($0)" } ?? "")"
+        let name = scope.name
         return switch state {
         case .running where changesDevice:
             "\(name): the request to \(operation) has not returned, so what it changed is unknown."
@@ -89,12 +121,12 @@ package struct UnresolvedDeviceOperation: Equatable, Sendable {
     }
 }
 
-/// The one owner of a device's native requests: their order, deadlines, queued cancellation and what is still in
-/// flight. The channel never runs a native call on its own queue, so it stays able to answer while one is held. The
-/// calls run one at a time on a serial worker, and a held call is never given a replacement thread. Being unresponsive
-/// ends only when the held call returns, whose late result then gets its cleanup.
+/// The one owner of the native requests of a device, or of a device set: their order, deadlines, queued cancellation and
+/// what is still in flight. The channel never runs a native call on its own queue, so it stays able to answer while one
+/// is held. The calls run one at a time on a serial worker, and a held call is never given a replacement thread. Being
+/// unresponsive ends only when the held call returns, whose late result then gets its cleanup.
 package actor SimulatorDeviceChannel {
-    package nonisolated let address: DeviceAddress
+    package nonisolated let scope: DeviceChannelScope
     private let queue: DispatchSerialQueue
     private let worker: DispatchQueue
 
@@ -108,11 +140,10 @@ package actor SimulatorDeviceChannel {
     private var health = DeviceChannelHealth.ready
     private var observers: [UUID: AsyncStream<DeviceChannelHealth>.Continuation] = [:]
 
-    package init(address: DeviceAddress) {
-        self.address = address
+    package init(scope: DeviceChannelScope) {
+        self.scope = scope
         queue = DispatchSerialQueue(label: "dev.lynnswap.NeoSimulator.device-channel", autoreleaseFrequency: .workItem)
-        worker = DispatchQueue(label: "dev.lynnswap.NeoSimulator.device-worker.\(address.identifier)",
-                               qos: .userInitiated, autoreleaseFrequency: .workItem)
+        worker = DispatchQueue(label: scope.workerLabel, qos: .userInitiated, autoreleaseFrequency: .workItem)
     }
 
     // MARK: Requests
@@ -131,7 +162,7 @@ package actor SimulatorDeviceChannel {
         try await perform(operation, changesDevice: false, limit: limit, lateCompletion: lateCompletion, body)
     }
 
-    /// Runs one step that changes the device on the worker, with everything that must not interleave with another
+    /// Runs one step that changes what the channel owns on the worker, with everything that must not interleave with another
     /// request in `body`. Cancelling it before it starts ends it as `CancellationError` without sending anything;
     /// afterwards it ends as ``DeviceOperationFailure/outcomeUnknown(operation:cause:)``.
     package nonisolated(nonsending) func change<Value: Sendable>(
@@ -190,7 +221,7 @@ package actor SimulatorDeviceChannel {
     /// What has not finished. This answers at once, also while a native call is held.
     package func unresolvedOperations() -> [UnresolvedDeviceOperation] {
         func unresolved(_ request: DeviceRequest, _ state: UnresolvedDeviceOperation.State) -> UnresolvedDeviceOperation {
-            UnresolvedDeviceOperation(device: address, operation: request.operation,
+            UnresolvedDeviceOperation(scope: scope, operation: request.operation,
                                       changesDevice: request.changesDevice, state: state)
         }
         return (running.map { [unresolved($0, $0.isCleanup ? .cleanup : .running)] } ?? [])
@@ -226,7 +257,11 @@ package actor SimulatorDeviceChannel {
         else { return }
         running = next
         // The deadline outlives its caller: a cancelled call that stays held still makes the channel unresponsive.
-        let deadline = DispatchWorkItem { [weak self] in self?.assumeIsolated { $0.deadlinePassed(next) } }
+        // Only `running` keeps the request for it, because the queue keeps a cancelled work item until its time comes.
+        let deadline = DispatchWorkItem { [weak self, weak next] in
+            guard let next else { return }
+            self?.assumeIsolated { $0.deadlinePassed(next) }
+        }
         next.deadline = deadline
         let (seconds, attoseconds) = next.limit.components
         queue.asyncAfter(deadline: .now() + Double(seconds) + Double(attoseconds) / 1e18, execute: deadline)
@@ -239,6 +274,7 @@ package actor SimulatorDeviceChannel {
     /// The native call has returned, which is the only thing that makes the channel ready again.
     private func finish(_ request: DeviceRequest, _ completion: DeviceRequest.Completion) {
         request.deadline?.cancel()
+        request.deadline = nil
         running = nil
         if request.isAnswered {
             if !request.isCleanup {
@@ -384,20 +420,20 @@ private func waitUntil(_ deadline: ContinuousClock.Instant, _ wait: @escaping @S
     }
 }
 
-/// The channel of each device this process has used. A channel lives as long as the process, so that an object made
-/// again for the same device finds the worker, and any held call, of the first.
+/// The channel of each device and device set this process has used. A channel lives as long as the process, so that an
+/// object made again for the same device or set finds the worker, and any held call, of the first.
 package final class DeviceIOHub: Sendable {
     package static let shared = DeviceIOHub()
 
-    private let channels = Mutex<[DeviceAddress: SimulatorDeviceChannel]>([:])
+    private let channels = Mutex<[DeviceChannelScope: SimulatorDeviceChannel]>([:])
 
     package init() {}
 
-    package func channel(for address: DeviceAddress) -> SimulatorDeviceChannel {
+    package func channel(for scope: DeviceChannelScope) -> SimulatorDeviceChannel {
         channels.withLock { channels in
-            if let channel = channels[address] { return channel }
-            let channel = SimulatorDeviceChannel(address: address)
-            channels[address] = channel
+            if let channel = channels[scope] { return channel }
+            let channel = SimulatorDeviceChannel(scope: scope)
+            channels[scope] = channel
             return channel
         }
     }

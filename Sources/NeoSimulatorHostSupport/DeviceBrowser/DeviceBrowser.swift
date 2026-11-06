@@ -5,7 +5,10 @@ import SwiftUI
 
 @MainActor
 package protocol DeviceBrowserSource: AnyObject {
-    func availableSimulatorDevices() throws -> [AvailableDevice]
+    /// What the device sets last reported, which waits for nothing.
+    func availableSimulatorDevices() -> [AvailableDevice]
+    /// Reads the device sets again, so that `availableSimulatorDevices()` returns what they report now.
+    func reloadSimulatorDevices() async throws
     func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws
 }
 
@@ -43,16 +46,28 @@ package final class DeviceBrowserModel {
         refresh()
     }
 
+    /// Shows what the device sets last reported.
     package func refresh() {
-        do {
-            devices = try source?.availableSimulatorDevices().sorted {
+        devices = source?.availableSimulatorDevices().sorted {
             let runtimeOrder = $0.runtimeName.compare($1.runtimeName, options: .numeric)
             return runtimeOrder == .orderedSame
                 ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
                 : runtimeOrder == .orderedDescending
-            } ?? []
-            updateSections()
-        } catch { errorMessage = error.localizedDescription }
+        } ?? []
+        updateSections()
+    }
+
+    /// Reads the device sets again and shows what they report. The list stays as it is while they do, and when they fail.
+    @discardableResult
+    package func reload() -> Task<Void, Never>? {
+        guard let source else { return nil }
+        return Task {
+            do {
+                try await source.reloadSimulatorDevices()
+                refresh()
+            } catch is CancellationError {
+            } catch { errorMessage = error.localizedDescription }
+        }
     }
 
     @discardableResult
@@ -77,7 +92,7 @@ package struct DeviceBrowserView: View {
                     Text("Choose a device to open.").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Refresh", systemImage: "arrow.clockwise", action: model.refresh)
+                Button("Refresh", systemImage: "arrow.clockwise") { model.reload() }
                     .labelStyle(.iconOnly)
                     .help("Refresh Simulators")
             }
@@ -180,6 +195,7 @@ package final class DeviceBrowserWindowController: NSWindowController {
 
     package func show() {
         refresh()
+        model.reload()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -204,6 +220,7 @@ private final class PreviewDeviceCatalog: DeviceBrowserSource {
     var devices: [AvailableDevice]
     init(devices: [AvailableDevice]) { self.devices = devices }
     func availableSimulatorDevices() -> [AvailableDevice] { devices }
+    func reloadSimulatorDevices() async throws {}
     func openSimulator(withIdentifier identifier: SimulatorDeviceIdentifier) async throws {
         devices = devices.map {
             var device = $0

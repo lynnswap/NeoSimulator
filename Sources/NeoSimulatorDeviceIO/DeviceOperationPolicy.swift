@@ -52,6 +52,12 @@ package enum DeviceOperationLimit {
     /// How long a device's channel waits for one native call before it stops answering for the device.
     /// The call itself keeps running; see ``SimulatorDeviceChannel``.
     package static let bridge: Duration = .seconds(10)
+    /// How long a device set's channel waits for one CoreSimulator call. Opening the first set of a process can start its
+    /// service, and reading a set captures every device in it. The call itself keeps running.
+    package static let deviceSet: Duration = .seconds(30)
+    /// How long a caller waits for CoreDevice's full initialization, after which it is told so and the delay is shown.
+    /// The one initialization keeps running, and whoever asks later waits on it again; see ``SharedTask``.
+    package static let coreDeviceInitialization: Duration = .seconds(60)
     /// How long a guest service may take to create a HID service or send what a connection accepted.
     /// Closing the connection on the limit also ends what it created in the guest.
     package static let guestService: Duration = .seconds(10)

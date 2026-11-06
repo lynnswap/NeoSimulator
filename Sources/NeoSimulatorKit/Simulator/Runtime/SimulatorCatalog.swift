@@ -56,7 +56,7 @@ package struct SimulatorCatalog {
     package let runtimes: [Runtime]
     /// Supported device-type identifiers keyed by runtime.
     package let supportedDeviceTypes: [String: Set<String>]
-    /// Watch-first CoreSimulator pairing validation.
+    /// Watch-first pairing validation, which CoreSimulator already answered for this catalog.
     package let canPair: @MainActor (_ watchType: String, _ watchRuntime: String,
                              _ phoneType: String, _ phoneRuntime: String) -> Bool
 
@@ -76,7 +76,8 @@ package struct SimulatorCatalog {
 }
 
 extension SimulatorCatalog {
-    /// Transfers the read-only catalog across the Xcode-isolated utility process.
+    /// The read-only catalog as values, with the pairing answers that CoreSimulator gave on the device set's worker. This
+    /// also crosses the Xcode-isolated utility process.
     package struct Snapshot: Codable, Sendable {
         package struct Pairing: Codable, Hashable, Sendable {
             package let watchType: String
@@ -95,19 +96,24 @@ extension SimulatorCatalog {
             try JSONDecoder().decode(Self.self, from: data)
         }
 
-        @MainActor
-        package init(catalog: SimulatorCatalog) {
-            deviceTypes = catalog.deviceTypes
-            runtimes = catalog.runtimes
-            supportedDeviceTypes = catalog.supportedDeviceTypes
+        /// Asks `canPair`, watch first, about every pair of a watch and a phone on runtimes that support them.
+        package init(deviceTypes: [DeviceType], runtimes: [Runtime], supportedDeviceTypes: [String: Set<String>],
+                     canPair: (_ watchType: String, _ watchRuntime: String,
+                               _ phoneType: String, _ phoneRuntime: String) -> Bool) {
+            self.deviceTypes = deviceTypes
+            self.runtimes = runtimes
+            self.supportedDeviceTypes = supportedDeviceTypes
+            func supports(_ runtime: Runtime, _ type: DeviceType) -> Bool {
+                supportedDeviceTypes[runtime.identifier]?.contains(type.identifier) == true
+            }
             var pairings: Set<Pairing> = []
-            let phones = catalog.deviceTypes.filter { $0.productFamily == 1 }
-            let watches = catalog.deviceTypes.filter { $0.productFamily == 4 }
+            let phones = deviceTypes.filter { $0.productFamily == 1 }
+            let watches = deviceTypes.filter { $0.productFamily == 4 }
             for watchRuntime in runtimes {
-                for watch in watches where catalog.runtime(watchRuntime.identifier, supports: watch.identifier) {
+                for watch in watches where supports(watchRuntime, watch) {
                     for phoneRuntime in runtimes {
-                        for phone in phones where catalog.runtime(phoneRuntime.identifier, supports: phone.identifier) {
-                            if catalog.canPair(watch.identifier, watchRuntime.identifier, phone.identifier, phoneRuntime.identifier) {
+                        for phone in phones where supports(phoneRuntime, phone) {
+                            if canPair(watch.identifier, watchRuntime.identifier, phone.identifier, phoneRuntime.identifier) {
                                 pairings.insert(Pairing(watchType: watch.identifier, watchRuntime: watchRuntime.identifier,
                                                         phoneType: phone.identifier, phoneRuntime: phoneRuntime.identifier))
                             }

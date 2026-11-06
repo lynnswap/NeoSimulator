@@ -47,4 +47,3 @@ package struct RestoreReport: Equatable {
     package let receiptURL: URL
     package let terminatedNeoHostCount: Int
 }
-
