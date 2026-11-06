@@ -123,9 +123,12 @@ package enum CaptureFile {
     /// Writes `destination` through a private file beside it, replacing it atomically once `produce` has succeeded.
     @MainActor
     package static func write(to destination: URL, extension suffix: String, lane: any CaptureLane = BlockingIOLane(),
+                              locations: Locations? = nil,
                               produce: (URL) async throws -> Void) async throws {
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".neo-simulator-\(UUID().uuidString).\(suffix)")
+        locations?.insert(temporary)
+        locations?.insert(destination)
         try await lane.run { try createExclusively(temporary) }
         do {
             try await produce(temporary)

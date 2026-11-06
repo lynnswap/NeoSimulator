@@ -232,9 +232,11 @@ struct CaptureAndImportTests {
         try Data("original".utf8).write(to: destination)
         // The move is one attempt, which is reported rather than repeated.
         var attempts = 0
+        let locations = CaptureFile.Locations()
         do {
-            try await CaptureFile.write(to: destination, extension: "png") { temporary in
+            try await CaptureFile.write(to: destination, extension: "png", locations: locations) { temporary in
                 attempts += 1
+                #expect(Set(locations.locations) == [temporary, destination])
                 try Data("new".utf8).write(to: temporary)
                 try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
             }

@@ -460,7 +460,8 @@ package final class DeviceSession {
     /// The transfers the device has not completed, oldest first.
     @ObservationIgnored private var pendingPulls: [PendingTransfer] = []
     @ObservationIgnored private var pendingPushes: [PendingTransfer] = []
-    @ObservationIgnored private var operation: Task<Void, Never>?
+    @ObservationIgnored private var operation: Task<(any Error)?, Never>?
+    @ObservationIgnored private var captureWrites: [UUID: CaptureFile.Locations] = [:]
     /// The delayed steps of hardware inputs, which a disconnect cancels.
     @ObservationIgnored private var inputSteps: [Int: Task<Void, Never>] = [:]
     @ObservationIgnored private var nextInputStep = 0
@@ -1859,8 +1860,8 @@ package final class DeviceSession {
     }
 
     /// Runs one device tool operation at a time. The caller must hold no
-    /// reservation. Errors other than cancellation are passed to `failure`. Only disconnecting stops a running
-    /// tool, and the window that could show its unknown outcome goes with the session, so that is logged instead.
+    /// reservation. Errors other than cancellation are passed to `failure`. Disconnecting cancels the operation;
+    /// stopping also receives a cleanup failure even when the window that would show it has closed.
     package func run(_ body: @escaping @MainActor () async throws -> Void,
              failure: @escaping @MainActor (Error) -> Void) {
         guard canPerformToolOperation else { return }
@@ -1876,8 +1877,9 @@ package final class DeviceSession {
             }
             do { try await body() }
             catch is CancellationError {}
-            catch where error.isCancellation { hostLog(error.localizedDescription) }
-            catch { failure(error) }
+            catch where error.isCancellation { hostLog(error.localizedDescription); return error }
+            catch { failure(error); return error }
+            return nil
         }
     }
 
@@ -1929,7 +1931,11 @@ package final class DeviceSession {
 
     /// Saves the screen to a file chosen in a save panel, replacing it.
     package func saveScreenshot(to destination: URL, mask: DeviceTools.ScreenMask) async throws {
-        try await CaptureFile.write(to: destination, extension: "png") { temporary in
+        let identifier = UUID()
+        let locations = CaptureFile.Locations()
+        captureWrites[identifier] = locations
+        defer { captureWrites.removeValue(forKey: identifier) }
+        try await CaptureFile.write(to: destination, extension: "png", locations: locations) { temporary in
             try await tools.screenshot(to: temporary, mask: mask, displayID: display.captureDisplayID)
             try await Self.checkPNG(at: temporary)
         }
@@ -2076,16 +2082,29 @@ package final class DeviceSession {
         inputRemoval = removeInput()
     }
 
-    /// Disconnects, then waits until the display has sent the native input it accepted and removed its services.
-    /// After a failure, the next call removes what the display's input owners kept.
+    /// Disconnects, then joins native input removal and the tool operation's cleanup. A tool that outlives the stop
+    /// grace remains owned and is reported; the next stop joins it again.
     package func stop() async throws {
         disconnect()
+        let finishingOperation = operation
         let removal = inputRemoval ?? removeInput()
         inputRemoval = removal
+        var failures: [any Error] = []
         do { try await removal.value } catch {
             if inputRemoval == removal { inputRemoval = nil }
-            throw error
+            failures.append(error)
         }
+        if let finishingOperation {
+            if await finishingOperation.ends(before: .now + DeviceOperationLimit.terminationStopGrace) {
+                if let failure = await finishingOperation.value { failures.append(failure) }
+            } else {
+                let locations = Set(captureWrites.values.flatMap(\.locations)).map(\.path).sorted().joined(separator: "\n")
+                let detail = locations.isEmpty ? "" : " Check these file locations:\n\(locations)"
+                failures.append(SimulatorError.operation("A device tool operation did not finish before the screen stopped.\(detail)"))
+            }
+        }
+        if failures.count == 1 { throw failures[0] }
+        if !failures.isEmpty { throw SimulatorError.operation(failures.map(\.localizedDescription).joined(separator: "\n")) }
     }
 
     /// Starts removing the display's native input before returning. The failure is also logged, because a

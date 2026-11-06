@@ -1756,6 +1756,34 @@ struct InputFocusTests {
         try await retrying.value
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func releasingAScreenReportsUnfinishedToolCleanupAndCanFinishItLater(_ failsCleanup: Bool) async throws {
+        let controller = try makeController(TestDisplay())
+        var release: CheckedContinuation<Void, Never>?
+        var cleanedUp = false
+        controller.session.run({
+            await withCheckedContinuation { release = $0 }
+            cleanedUp = true
+            if failsCleanup { throw SimulatorError.operation("The capture's temporary file could not be removed") }
+        }, failure: { _ in })
+        try await wait { release != nil }
+        let stopping = Task.immediate { try await controller.session.stop() }
+        await #expect(throws: SimulatorError.self) { try await stopping.value }
+        #expect(!cleanedUp)
+        release?.resume()
+        if failsCleanup {
+            do {
+                try await controller.session.stop()
+                Issue.record("The stopped screen lost its cleanup failure")
+            } catch {
+                #expect(error.localizedDescription.contains("temporary file could not be removed"))
+            }
+        } else {
+            try await controller.session.stop()
+        }
+        #expect(cleanedUp)
+    }
+
     @Test func embeddedAndCompactPresentationsKeepOneSessionAndInputOwner() async throws {
         _ = NSApplication.shared
         let display = TestDisplay()
