@@ -41,9 +41,9 @@ package final class SimulatorIORuntime {
     }
 
     /// The owner of the default device set, or of the set at `path`.
-    package func openDeviceSet(at path: String? = nil) -> SimulatorDeviceSet {
+    package func openDeviceSet(at path: String? = nil, listing: [String]? = nil) -> SimulatorDeviceSet {
         SimulatorDeviceSet.shared(
             interface: coreSimulator,
-            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path)
+            developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: path, listing: listing)
     }
 }

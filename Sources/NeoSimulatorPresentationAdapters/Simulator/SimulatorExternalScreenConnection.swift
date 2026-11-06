@@ -114,14 +114,12 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         try CarPlayConfiguration.save(carPlay: carPlay, to: device.extendedDisplayFile())
     }
 
-    package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) {
-        Task.immediate { [device] in
-            do {
-                try await device.setCarPlayEnabled(enabled, inBoot: boot)
-                completion(nil)
-            } catch {
-                completion(error)
-            }
+    package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) async {
+        do {
+            try await device.setCarPlayEnabled(enabled, inBoot: boot)
+            completion(nil)
+        } catch {
+            completion(error)
         }
     }
 
@@ -131,6 +129,8 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
             client = try await runtime.input.connect(to: device)
             hidClient = client
         }
+        // The change can have been abandoned just as its client arrived, which stays for the next one.
+        try Task.checkCancellation()
         try runtime.input.sendCarPlayService(connected: connected, hasTouchScreen: CarPlayConfiguration.hasTouchScreen,
                                              client: client.value, completion: completion)
     }

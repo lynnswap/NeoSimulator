@@ -2,6 +2,8 @@ import Foundation
 
 /// Connection to the device's existing TVOut screen, also used for CarPlay.
 /// CoreSimulator exposes no creatable screen properties for devices without one.
+///
+/// A request belongs to the task that makes it: cancelling the task withdraws a request that has not started.
 @MainActor
 package protocol SimulatorExternalScreen: AnyObject {
     var screenID: UInt32 { get }
@@ -25,7 +27,7 @@ package protocol SimulatorExternalScreen: AnyObject {
     func saveCarPlayConfiguration(carPlay: Bool) throws
     /// Sends a counted CarPlay start/end for `boot`. Completion runs on the main actor.
     /// If the device restarted, no request is sent and completion receives `CarPlayRequestMoot`.
-    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void)
+    func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?, completion: @escaping @MainActor (Error?) -> Void) async
     /// Creates or removes the guest's CarPlay HID service. Completion reports send status on the main actor.
     /// A throw means no completion follows, and that nothing was sent unless it says otherwise.
     func setCarPlayService(connected: Bool, completion: @escaping @MainActor (Error?) -> Void) async throws

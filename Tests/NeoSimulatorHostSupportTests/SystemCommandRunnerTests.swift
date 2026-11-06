@@ -247,6 +247,75 @@ struct SystemCommandRunnerTests {
         }
     }
 
+    /// Each command is registered before its task first suspends, so these quits end after they started and not before.
+    /// The second quit is not cancelled: when it has stopped its command, the first's deadline would have passed too.
+    @Test func aCancelledQuitWithdrawsTheDeadlineOfACommandThatStartedDuringIt() async throws {
+        let cancelled = UninterruptedCommands(terminationGrace: .milliseconds(200))
+        let scope = try CommandScope(uninterrupted: cancelled)
+        let held = try HeldChildren(in: scope.directory)
+        defer { held.release() }
+        let command = try held.command(then: "printf finished", policy: .uninterrupted)
+        cancelled.stopForTermination()
+        let kept = Task.immediate { try await scope.runner.run(command) }
+        cancelled.resumeAfterCancelledQuit()
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+
+        let continuing = UninterruptedCommands(terminationGrace: .milliseconds(200))
+        let otherScope = try CommandScope(uninterrupted: continuing)
+        let otherCommand = try held.command(then: "", policy: .uninterrupted)
+        continuing.stopForTermination()
+        let bounded = Task.immediate { try await otherScope.runner.run(otherCommand) }
+        #expect(try await interruption(of: bounded).cause == .terminating)
+
+        #expect(!isGone(identifier))
+        held.release()
+        #expect(try await kept.value.stdoutText == "finished")
+        #expect(try scope.leftovers().isEmpty)
+    }
+
+    @Test func aCancelledQuitLeavesACommandsOwnLimitInPlace() async throws {
+        let commands = UninterruptedCommands()
+        let scope = try CommandScope(uninterrupted: commands)
+        let held = try HeldChildren(in: scope.directory)
+        defer { held.release() }
+        let limit = Duration.milliseconds(100)
+        let command = try held.command(then: "", policy: CommandPolicy(limit: limit, cancellation: .waitsForChild, stopGrace: nil))
+        commands.stopForTermination()
+        let running = Task.immediate { try await scope.runner.run(command) }
+        commands.resumeAfterCancelledQuit()
+        #expect(try await interruption(of: running).cause == .timedOut(limit))
+    }
+
+    /// The child ignores SIGTERM, so only the kill that follows it can end the child.
+    @Test func aCancelledQuitDoesNotTakeBackAStopThatHasBegun() async throws {
+        let commands = UninterruptedCommands()
+        let scope = try CommandScope(uninterrupted: commands)
+        let held = try HeldChildren(in: scope.directory)
+        defer { held.release() }
+        let command = try held.command(then: "", prefix: "trap '' TERM;", policy: .uninterrupted)
+        let running = Task.immediate { try await scope.runner.run(command) }
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+        commands.stopForTermination()
+        commands.resumeAfterCancelledQuit()
+        let failure = try await interruption(of: running)
+        #expect(failure.cause == .terminating && failure.output?.terminationStatus == SIGKILL)
+        #expect(isGone(identifier))
+    }
+
+    @Test func aQuitAfterACancelledOneStopsACommandThatOutlivedIt() async throws {
+        let commands = UninterruptedCommands()
+        let scope = try CommandScope(uninterrupted: commands)
+        let held = try HeldChildren(in: scope.directory)
+        defer { held.release() }
+        let command = try held.command(then: "", policy: .uninterrupted)
+        commands.stopForTermination()
+        let running = Task.immediate { try await scope.runner.run(command) }
+        commands.resumeAfterCancelledQuit()
+        _ = try await held.waitUntilStarted(1)
+        commands.stopForTermination()
+        #expect(try await interruption(of: running).cause == .terminating)
+    }
+
     /// Blocks more reads than the cooperative pool has threads, so reads that occupied its threads would stop the test here.
     @Test func blockingIOLeavesTheCooperativePoolRunning() async throws {
         let pipes = (0...ProcessInfo.processInfo.activeProcessorCount).map { _ in Pipe() }
@@ -308,13 +377,13 @@ private final class CommandScope: Sendable {
     private let root: URL
     let runner: SystemCommandRunner
 
-    init(failsRemoval: Bool = false) throws {
+    init(failsRemoval: Bool = false, uninterrupted: UninterruptedCommands = .shared) throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("SystemCommandRunnerTests-\(UUID().uuidString)", isDirectory: true)
         directory = base.appendingPathComponent("fixture", isDirectory: true)
         root = base.appendingPathComponent("temporary", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        runner = SystemCommandRunner(fileManager: ScopedFileManager(root: root, failsRemoval: failsRemoval))
+        runner = SystemCommandRunner(fileManager: ScopedFileManager(root: root, failsRemoval: failsRemoval), uninterrupted: uninterrupted)
     }
 
     deinit { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
