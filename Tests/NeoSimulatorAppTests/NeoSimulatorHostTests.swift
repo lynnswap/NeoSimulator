@@ -7361,7 +7361,8 @@ struct InputFocusTests {
         worker.release()
         try await wait { session.audioRoutes?.inputRoute == "latest" }
         #expect(port.stateReads == 3)
-        #expect(worker.calls.count == 2)
+        // The held read already returned the latest routes, so the one more read reaches the worker after them.
+        try await wait { worker.calls.count == 2 }
     }
 
     @Test func aRequestWithAnUnknownOutcomeLeavesCarPlayStateUnknownAndItsLateCompletionAdvancesNothing() async throws {
