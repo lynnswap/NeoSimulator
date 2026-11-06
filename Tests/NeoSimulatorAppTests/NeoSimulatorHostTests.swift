@@ -50,6 +50,27 @@ func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostNa
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func simulatorKeyboardKeepsCapturedReleasesWithTheirOriginalInput() throws {
+        _ = NSApplication.shared
+        let view = InputView()
+        let input = SimulatorKeyboardInput()
+        input.start(for: view)
+        defer { input.stop() }
+        func event(_ type: NSEvent.EventType, _ code: UInt16) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, characters: "a", charactersIgnoringModifiers: "a",
+                isARepeat: false, keyCode: code))
+        }
+
+        // Capture Keyboard submits directly to the input view, bypassing application event monitors.
+        input.send(try event(.keyDown, 0), to: view)
+        input.send(try event(.keyDown, 1), to: view)
+        input.send(try event(.keyUp, 0), to: view)
+        #expect(input.hasPressedKeys)
+        input.stop()
+        #expect(!input.hasPressedKeys && view.keyUps.map(\.keyCode) == [0, 1])
+    }
+
     @MainActor private final class RemoteTarget {
         weak var controller: DeviceWindowController?
     }

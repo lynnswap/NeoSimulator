@@ -196,6 +196,8 @@ package final class SharedNativeKeyboard {
 
     package init() {}
 
+    var hasPressedSimulatorKeys: Bool { displays.contains { $0.connection?.hasPressedSimulatorKeys == true } }
+
     /// A display that joins after the keyboard became ready takes it up now.
     func add(_ connection: SimulatorConnection) {
         displays = displays.filter { $0.connection != nil } + [Display(connection: connection)]

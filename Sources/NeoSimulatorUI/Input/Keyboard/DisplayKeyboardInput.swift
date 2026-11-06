@@ -24,10 +24,9 @@ package final class DisplayKeyboardInput {
               window.isKeyWindow, window.attachedSheet == nil else { return false }
         return window.firstResponder === self.display.inputView
     }, forward: { [weak self] event in
-        guard let input = self?.display.inputView else { return }
+        guard let self else { return }
         switch event.type {
-        case .keyDown: input.keyDown(with: event)
-        case .keyUp: input.keyUp(with: event)
+        case .keyDown, .keyUp: self.display.sendKeyboardEvent(event)
         case .flagsChanged:
             // SimulatorKit processes keyboard modifiers in an application event monitor.
             NSApp.sendEvent(event)
@@ -44,7 +43,7 @@ package final class DisplayKeyboardInput {
         commandKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
             guard let self, event.modifierFlags.contains(.command), let window = self.window,
                   event.window === window, window.firstResponder === self.display.inputView else { return event }
-            self.display.inputView.keyUp(with: event)
+            self.display.sendKeyboardEvent(event)
             return nil
         }
     }
