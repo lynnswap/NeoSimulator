@@ -49,17 +49,17 @@ jobs:
 
       - name: Build CoreDevice inventory probe
         run: |
-          xcodebuild build -workspace Tools/PackageTests.xcworkspace \
+          xcodebuild build -workspace NeoSimulator.xcworkspace \
             -scheme CoreDeviceInventoryProbe -configuration Release \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$RUNNER_TEMP/inventory-probe" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
       - name: Check live CoreDevice inventory
-        run: "$RUNNER_TEMP/inventory-probe/Build/Products/Release/CoreDeviceInventoryProbe"
+        run: '"$RUNNER_TEMP/inventory-probe/Build/Products/Release/CoreDeviceInventoryProbe"'
 
       - name: Test package
-        run: xcodebuild test -workspace Tools/PackageTests.xcworkspace -scheme NeoSimulatorKit -destination 'platform=macOS,arch=arm64'
+        run: xcodebuild test -workspace NeoSimulator.xcworkspace -scheme NeoSimulatorKit -destination 'platform=macOS,arch=arm64'
 
       - name: Test app bundle
         run: scripts/test-app-bundle.sh
