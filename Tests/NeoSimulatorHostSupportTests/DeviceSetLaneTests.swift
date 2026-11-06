@@ -183,7 +183,11 @@ struct DeviceSetLaneTests {
         defer { gate.release() }
         var started = 0
         var delays: [Bool] = []
-        CoreDeviceRuntime.onInitializationDelayChanged = { delays.append($0) }
+        let (delayChanges, delayChanged) = AsyncStream.makeStream(of: Void.self)
+        CoreDeviceRuntime.onInitializationDelayChanged = {
+            delays.append($0)
+            if $0 { delayChanged.finish() }
+        }
         defer { CoreDeviceRuntime.onInitializationDelayChanged = nil }
         let (delay, passDelay) = AsyncStream.makeStream(of: Void.self)
         let initialization = CoreDeviceRuntime.makeInitialization(waitUntilDelayed: { for await _ in delay { return } }) {
@@ -202,7 +206,7 @@ struct DeviceSetLaneTests {
         await #expect(throws: timedOut) { try await initialization.value(limit: limit) }
         await gate.waitUntilEntered()
         passDelay.yield()
-        while delays.isEmpty { await Task.yield() }
+        for await _ in delayChanges {}
         await #expect(throws: timedOut) { try await initialization.value(limit: limit) }
         let cancelled = Task.immediate { try await initialization.value() }
         cancelled.cancel()
