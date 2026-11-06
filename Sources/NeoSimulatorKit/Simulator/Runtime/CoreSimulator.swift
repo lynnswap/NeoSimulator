@@ -451,6 +451,28 @@ private struct SimulatorDeviceRecord: @unchecked Sendable {
         lastBootDate = try unsafe interface.guest.lastBootedAt.unsafeInvoke(on: object).map { $0 as Date }
         state = try unsafe interface.guest.state.unsafeInvoke(on: object)
     }
+
+    /// A booted iPhone that no SimDevice stands behind: see ``SimulatorDeviceSet/shared(interface:developerDirectory:path:listing:)``.
+    init(listed identifier: String, deviceSetPath: String?) {
+        object = NSObject()
+        self.identifier = identifier
+        self.deviceSetPath = deviceSetPath
+        name = identifier
+        descriptiveName = identifier
+        runtimeIdentifier = ""
+        runtimeName = ""
+        runtimeVersion = 0
+        productFamily = DeviceCapabilities.Family.iPhone.rawValue
+        deviceTypeName = ""
+        deviceTypeIdentifier = ""
+        hasFramebufferMask = false
+        screenCornerRadius = 0
+        supportsEnhancedMultitasking = false
+        screenPointsPerInch = nil
+        hasUserInterfacePlugin = false
+        lastBootDate = nil
+        state = 3
+    }
 }
 
 /// A device as its set last reported it. Its set keeps one object per device and updates it with each report, so reading
@@ -741,11 +763,14 @@ package final class SimulatorDeviceSet {
     private static var sets: [DeviceSetAddress: SimulatorDeviceSet] = [:]
 
     /// The set's owner. This waits for nothing: the set opens on its worker when it is first used.
+    ///
+    /// `listing` makes a set that is new here report devices of those identifiers on each read, in place of what
+    /// CoreSimulator lists, for what depends on what a read reports and not on a device. Everything else stays native.
     package static func shared(interface: CoreSimulatorInterface, developerDirectory: String,
-                               path: String? = nil) -> SimulatorDeviceSet {
+                               path: String? = nil, listing: [String]? = nil) -> SimulatorDeviceSet {
         let address = DeviceSetAddress(developerDirectory: developerDirectory, path: path)
         if let set = sets[address] { return set }
-        let set = SimulatorDeviceSet(interface: interface, address: address)
+        let set = SimulatorDeviceSet(interface: interface, address: address, listing: listing)
         sets[address] = set
         return set
     }
@@ -759,14 +784,16 @@ package final class SimulatorDeviceSet {
     private let reads: CoalescedChannelRead<[SimulatorDeviceRecord]>
     private var known: [String: SimulatorDevice] = [:]
 
-    private init(interface: CoreSimulatorInterface, address: DeviceSetAddress) {
+    private init(interface: CoreSimulatorInterface, address: DeviceSetAddress, listing: [String]?) {
         self.interface = interface
         self.address = address
         let native = NativeDeviceSet(interface: interface, address: address)
         self.native = native
         channel = DeviceIOHub.shared.channel(for: .deviceSet(address))
         reads = CoalescedChannelRead(channel: channel, operation: "read the device set",
-                                     limit: DeviceOperationLimit.deviceSet) { try native.readDevices() }
+                                     limit: DeviceOperationLimit.deviceSet) {
+            try listing?.map { SimulatorDeviceRecord(listed: $0, deviceSetPath: address.path) } ?? native.readDevices()
+        }
         reads.onRead = { [weak self] in self?.publish($0) }
     }
 

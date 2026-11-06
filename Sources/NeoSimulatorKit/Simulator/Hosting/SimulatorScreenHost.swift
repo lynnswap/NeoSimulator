@@ -41,7 +41,7 @@ package final class SimulatorScreenHost: NSObject {
     private var recordingTerminationErrors: [Error] = []
     private var notificationToken: UInt64?
     private var observationRemovals: [Task<Void, Never>] = []
-    private var healthFollowers: [Task<Void, Never>] = []
+    private var healthFollowers: [DeviceSetAddress: Task<Void, Never>] = [:]
     private var isStarted = false
     private var rescanning: Task<Void, Never>?
     /// Whether another rescan was requested, and whether any request came from the testing devices' visibility changing.
@@ -120,7 +120,7 @@ package final class SimulatorScreenHost: NSObject {
             testingDevicesObservation = DefaultsObservation(HostPreferences.defaults, keys: [HostPreferences.showTestingDevices]) { [weak self] in
                 self?.applyTestingDeviceVisibility()
             }
-            healthFollowers.append(rescanWhenAnsweringAgain(deviceSet))
+            rescanWhenAnsweringAgain(deviceSet)
             let token = try await deviceSet.observe { [weak self] in self?.rescan() }
             guard !stopped else {
                 observationRemovals.append(deviceSet.stopObserving(token))
@@ -135,6 +135,8 @@ package final class SimulatorScreenHost: NSObject {
             }
             // Until here a rescan could attach a device that this start leaves alone.
             isStarted = true
+            // Until here asking for a rescan did nothing, also for a set that answered again meanwhile.
+            if testingSetNeedsOpening { rescan() }
             if !isManaged && !isInProcess { try await scanDevices() }
         } catch {
             shutdown()
@@ -242,13 +244,19 @@ package final class SimulatorScreenHost: NSObject {
                 testingDevices = testingSet.devices
             }
         }
-        return try await (defaultDevices + testingDevices).filter(Self.isSupported)
+        let devices = try await defaultDevices
+        // Hiding the testing devices during these reads closed their windows, which what the reads found must not reopen.
+        return (showsTestingDevices ? devices + testingDevices : devices).filter(Self.isSupported)
     }
 
-    /// Reads a device from its own set, so that opening it depends on no other set.
+    /// Reads a device from its own set, so that opening it depends on no other set. A testing device hidden meanwhile is
+    /// not there to open.
     private func readDevice(_ identifier: SimulatorDeviceIdentifier) async throws -> SimulatorDevice? {
-        let set = identifier.deviceSetPath == nil ? deviceSet : showsTestingDevices ? testingSet : nil
-        return try await set?.refresh().first { $0.identity == identifier && Self.isSupported($0) }
+        var isShown: Bool { identifier.deviceSetPath == nil || showsTestingDevices }
+        guard isShown else { return nil }
+        let set = identifier.deviceSetPath == nil ? deviceSet : testingSet
+        let device = try await set?.refresh().first { $0.identity == identifier && Self.isSupported($0) }
+        return isShown ? device : nil
     }
 
     /// Updates the preference and every open window, including restarting devices.
@@ -261,6 +269,7 @@ package final class SimulatorScreenHost: NSObject {
     // MARK: Parallel testing devices
 
     package var showsTestingDevices: Bool { HostPreferences.defaults.bool(forKey: HostPreferences.showTestingDevices) }
+    package var isObservingTestingSet: Bool { testingNotificationToken != nil }
 
     /// Debug ▸ Show Parallel Testing Devices. Hiding closes the testing
     /// devices' windows without shutting the devices down.
@@ -283,6 +292,8 @@ package final class SimulatorScreenHost: NSObject {
                 ownedDeviceIdentifiers.remove(identifier)
                 controller.invalidate()
             }
+            // The rescan below stops these too, but only once its read returns, which can be after they open a window.
+            for (identifier, connection) in connections where identifier.deviceSetPath != nil { connection.cancel() }
             if hadDeviceWindows && sessions.isEmpty { onNoScreens?() }
         }
         rescan(testingVisibilityChanged: true)
@@ -293,11 +304,13 @@ package final class SimulatorScreenHost: NSObject {
     private func openTestingSet() async {
         guard !stopped, testingSet == nil, !isOpeningTestingSet else { return }
         isOpeningTestingSet = true
+        testingSetNeedsOpening = false
         defer { isOpeningTestingSet = false }
         let path = HostPreferences.defaults.string(forKey: HostPreferences.testingDeviceSetPath)
             .map { NSString(string: $0).expandingTildeInPath }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer/XCTestDevices").path
         let url = URL(fileURLWithPath: path).standardizedFileURL
+        var asked = deviceSet
         do {
             guard url != URL(fileURLWithPath: try await deviceSet.resolvedPath()).standardizedFileURL else {
                 hostLog("TestingDeviceSetPath names the default device set; parallel testing devices are not shown")
@@ -311,6 +324,8 @@ package final class SimulatorScreenHost: NSObject {
             testingSetWatcher?.cancel()
             testingSetWatcher = nil
             let set = runtime.openDeviceSet(at: url.path)
+            asked = set
+            rescanWhenAnsweringAgain(set)
             let token = try await set.observe { [weak self] in self?.rescan() }
             guard !stopped else {
                 observationRemovals.append(set.stopObserving(token))
@@ -318,18 +333,22 @@ package final class SimulatorScreenHost: NSObject {
             }
             testingNotificationToken = token
             testingSet = set
-            healthFollowers.append(rescanWhenAnsweringAgain(set))
         } catch is CancellationError {
         } catch {
             hostLog("Could not open the parallel testing device set: \(error.localizedDescription)")
-            // A call that held its worker is no reason to give the set up. The next rescan tries again.
-            testingSetNeedsOpening = error is DeviceOperationFailure
+            // A call that held its worker is no reason to give the set up. The rescan once it returns tries again.
+            guard error is DeviceOperationFailure else { return }
+            testingSetNeedsOpening = true
+            // The call can return before its failure gets here, and then that rescan has already been and gone.
+            if await asked.channel.currentHealth == .ready { rescan() }
         }
     }
 
-    /// A set that answers again may have changed while its call was held, without a rescan being able to see that.
-    private func rescanWhenAnsweringAgain(_ set: SimulatorDeviceSet) -> Task<Void, Never> {
-        Task { [weak self] in
+    /// A set that answers again may have changed while its call was held, without a rescan being able to see that. A
+    /// request that outlived its deadline has ended by then, so nothing else follows its call: this has to be in place first.
+    private func rescanWhenAnsweringAgain(_ set: SimulatorDeviceSet) {
+        guard healthFollowers[set.address] == nil else { return }
+        healthFollowers[set.address] = Task { [weak self] in
             var wasHeld = false
             for await health in set.healthChanges() {
                 if case .unresponsive = health { wasHeld = true }
@@ -574,10 +593,7 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     private func performRescan(testingVisibilityChanged: Bool) async {
-        if testingSetNeedsOpening {
-            testingSetNeedsOpening = false
-            await openTestingSet()
-        }
+        if testingSetNeedsOpening { await openTestingSet() }
         do { try await scanDevices(testingVisibilityChanged: testingVisibilityChanged) }
         catch is CancellationError {}
         catch let failure as DeviceOperationFailure {
@@ -983,6 +999,12 @@ package final class SimulatorScreenHost: NSObject {
                 self?.updateOwnership()
                 return
             }
+            // Reading the set can suspend until after another host takes ownership.
+            guard !self.yieldedToAnotherHost, !Task.isCancelled else {
+                self.closingShutdowns.removeValue(forKey: identifier)
+                self.updateOwnership()
+                return
+            }
             do { try await tools.shutdown() } catch is CancellationError {
             } catch {
                 hostLog("Could not shut down \(identifier): \(error.localizedDescription)")
@@ -1043,7 +1065,7 @@ package final class SimulatorScreenHost: NSObject {
             let finishing = Task { try await finishInput(of: session) }
             // A quit does not wait on a device that stopped answering, which a retry could not get past either.
             if isTerminating, await !finishing.ends(before: deadline) {
-                TerminationAccount.shared.note("\(session.device.name): its native input was not removed before quitting.")
+                failures.append("\(session.device.name): its native input was not removed before the context stopped.")
                 continue
             }
             do { try await finishing.value }
@@ -1065,6 +1087,7 @@ package final class SimulatorScreenHost: NSObject {
             do { try await set.refresh(waitingAtMost: DeviceOperationLimit.terminationStopGrace) }
             catch { hostLog("Could not read the device set: \(error.localizedDescription)") }
         }
+        guard !yieldedToAnotherHost else { return failures }
         for device in devices where wasLastRunning(device.identifier, deviceSetPath: device.deviceSetPath) {
             do {
                 let tools = try DeviceTools(identifier: device.identifier, xcodeURL: runtime.xcodeURL,
@@ -1231,7 +1254,7 @@ package final class SimulatorScreenHost: NSObject {
                 let inputFailures = await finishDisconnectedInput()
                 let recordingFailures = await recordings.finishAll()
                 let captureFailures = await finishCaptures()
-                let failures = inputFailures + (await finishExternalDisplayChanges())
+                let failures = inputFailures + (await finishExternalDisplayChanges()) + (await finishObservationRemovals())
                     + distinctMessages(recordingFailures + captureFailures + takeRecordingTerminationErrors())
                 if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
             } else {
@@ -1248,12 +1271,13 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
+        var failures: [String] = []
         let pending = Array(connections.values) + Array(restarting.values)
         pending.forEach { $0.cancel() }
         bootOperations.values.forEach { $0.cancel() }
         let deadline = ContinuousClock.now + HostPreferences.terminationLimit
         for task in pending where await !task.ends(before: deadline) {
-            TerminationAccount.shared.note("A device's connection or restart had not stopped when NeoSimulator quit.")
+            failures.append("A device's connection or restart had not finished before the context stopped.")
         }
         for controller in sessions.values { controller.invalidate() }
         disconnectedSessions += sessions.values.map(\.session)
@@ -1263,19 +1287,26 @@ package final class SimulatorScreenHost: NSObject {
         presentationRestarts.removeAll()
         let inputFailures = await finishDisconnectedInput()
         let displayFailures = await finishExternalDisplayChanges()
-        let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
+        failures += inputFailures + displayFailures + (await shutDownForTermination(devices))
         let captureFailures = recordingFailures + (await finishCaptures())
         shutdown()
-        // Registrations leave on the sets' workers, and a quit reports what has not finished: this should not be that.
-        let removalDeadline = ContinuousClock.now + DeviceOperationLimit.terminationStopGrace
-        for removal in observationRemovals { _ = await removal.ends(before: removalDeadline) }
-        observationRemovals.removeAll()
+        failures += await finishObservationRemovals()
         onChange?()
         // Taken last: what fails from here on has outlasted this stop.
         let allCaptureFailures = distinctMessages(captureFailures + takeRecordingTerminationErrors())
         if !failures.isEmpty || !allCaptureFailures.isEmpty {
             throw SimulatorError.operation((failures + allCaptureFailures).joined(separator: "\n"))
         }
+    }
+
+    private func finishObservationRemovals() async -> [String] {
+        let deadline = ContinuousClock.now + DeviceOperationLimit.terminationStopGrace
+        var unfinished: [Task<Void, Never>] = []
+        for removal in observationRemovals where await !removal.ends(before: deadline) {
+            unfinished.append(removal)
+        }
+        observationRemovals = unfinished
+        return unfinished.isEmpty ? [] : ["A device-set observation had not been removed before the context stopped."]
     }
 
     package func shutdown() {
@@ -1290,7 +1321,7 @@ package final class SimulatorScreenHost: NSObject {
             observationRemovals.append(testingSet.stopObserving(testingNotificationToken))
         }
         testingNotificationToken = nil
-        for follower in healthFollowers { follower.cancel() }
+        for follower in healthFollowers.values { follower.cancel() }
         healthFollowers.removeAll()
         rescanRequest = nil
         rescanning?.cancel()
@@ -1312,8 +1343,8 @@ package final class SimulatorScreenHost: NSObject {
 
 
 /// Why a booted device's integrated screen did not appear in time: what reading its screens last failed with, and which
-/// native requests had still not returned then. Another device's unanswered request can be the reason, since CoreSimulator
-/// serves a process's requests one at a time.
+/// native requests had still not returned then. Another device's unanswered request can be the reason, since the devices
+/// read from one set currently share its `SimServiceContext` connection. A separately initialized context has its own.
 package struct IntegratedScreenUnavailable: LocalizedError {
     package let deviceName: String
     package let lastFailure: (any Error)?
@@ -1363,11 +1394,13 @@ package enum QuitReport {
         let alert = NSAlert()
         alert.messageText = "Some operations did not finish before NeoSimulator quit."
         alert.informativeText = notes.joined(separator: "\n\n")
-        let timer = Task {
-            guard (try? await Task.sleep(for: limit)) != nil else { return }
-            NSApp.abortModal()
+        // Not a task: a job that presents this runs inside a drain of the main queue, and until it returns the modal's run
+        // loop does not serve that queue, so nothing on the main actor would run to end it.
+        let timer = Timer(timeInterval: limit / .seconds(1), repeats: false) { _ in
+            MainActor.assumeIsolated { NSApp.abortModal() }
         }
+        RunLoop.main.add(timer, forMode: .modalPanel)
         alert.runModal()
-        timer.cancel()
+        timer.invalidate()
     }
 }
