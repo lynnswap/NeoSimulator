@@ -13,8 +13,8 @@ let package = Package(
         .executable(name: "CoreDeviceInventoryProbe", targets: ["CoreDeviceInventoryProbe"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.16.3"),
-        .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.8"),
+        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.17.0"),
+        .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.9"),
     ],
     targets: [
         .target(name: "NeoSimulatorDeviceIO"),
