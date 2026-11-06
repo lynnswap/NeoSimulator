@@ -7905,13 +7905,30 @@ struct InputFocusTests {
         #expect(screen.current.isPoweredOn && screen.current.pixelSize == CGSize(width: 1280, height: 720))
     }
 
-    @Test func recoveryLeavesADisplayThatNobodyChoseToDisableAlone() async throws {
+    @Test func recoveryLeavesADisplayWithNoSavedChoiceAlone() async throws {
+        let preferences = MemoryPreferences()
+        // A device can have a record of other preferences and still no choice.
+        preferences.set(["test-device": ["WindowScale": 2]], forKey: HostPreferences.devicePreferences)
         let screen = TestExternalScreen()
-        // Another tool turned it on, and the preference reads Disabled because this device has no choice saved.
+        // Another tool turned it on.
         screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1)
-        try await recoverExternalDisplay(screen) { _ in }
+        try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
         #expect(screen.requests.isEmpty)
         #expect(screen.current.isPoweredOn)
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == nil)
+    }
+
+    @Test func recoveryAppliesADisabledChoiceThatAnEarlierSessionSaved() async throws {
+        let preferences = MemoryPreferences()
+        preferences.setExternalDisplayTag(ExternalDisplayMode.disabled.rawValue, forDevice: "test-device")
+        let screen = TestExternalScreen()
+        try await recoverExternalDisplay(screen, preferences: preferences) { _ in
+            #expect(screen.requests.isEmpty)
+            // Another tool turns it on while the device does not answer.
+            screen.report { $0 = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1) }
+        }
+        #expect(screen.requests == ["off"])
+        #expect(!screen.current.isPoweredOn)
     }
 
     @Test func recoveryDoesNotApplyASavedCarPlayTheDeviceCannotShow() async throws {
@@ -8226,12 +8243,12 @@ struct InputFocusTests {
         #expect(screen.requests == ["mode 1280x720@1"])
         #expect(controller.externalDisplayWindow != nil)
         controller.invalidate()
-        // Simulator.app's default Disabled preference leaves an existing external display on.
+        // A saved Disabled is a choice like the others.
         preferences.setExternalDisplayTag(ExternalDisplayMode.disabled.rawValue, forDevice: "test-device")
         let on = TestExternalScreen()
         on.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1)
         let (second, _) = try makeExternalDisplayController(on, preferences: preferences)
-        #expect(on.requests.isEmpty && second.externalDisplayWindow != nil)
+        #expect(on.requests == ["off"] && second.externalDisplayWindow == nil)
         second.invalidate()
         preferences.setExternalDisplayTag(2714, forDevice: "test-device")
         let carPlay = TestExternalScreen()
@@ -8245,6 +8262,67 @@ struct InputFocusTests {
         defer { plain.invalidate() }
         plain.session.connectExternalDisplay { Issue.record($0) }
         #expect(display.externalScreenRegistrations == 0)
+    }
+
+    @Test func connectingLeavesADisplayWithNoSavedChoiceOrAnUnknownOneAlone() throws {
+        let preferences = MemoryPreferences()
+        let on = TestExternalScreen()
+        on.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1)
+        let (first, _) = try makeExternalDisplayController(on, preferences: preferences)
+        #expect(on.requests.isEmpty && first.externalDisplayWindow != nil)
+        first.invalidate()
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == nil)
+
+        preferences.setExternalDisplayTag(1234, forDevice: "test-device")
+        let stillOn = TestExternalScreen()
+        stillOn.current = on.current
+        stillOn.current.isPoweredOn = true
+        let (second, _) = try makeExternalDisplayController(stillOn, preferences: preferences)
+        defer { second.invalidate() }
+        #expect(stillOn.requests.isEmpty && second.externalDisplayWindow != nil)
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == 1234)
+    }
+
+    @Test func aDisabledChoiceThatWasNotSentIsAppliedByTheNextSession() throws {
+        let preferences = MemoryPreferences()
+        let screen = TestExternalScreen()
+        screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1)
+        let (first, _) = try makeExternalDisplayController(screen, preferences: preferences)
+        var failures: [String] = []
+        screen.refusal = DeviceOperationFailure.notSent(operation: "turn off the external display", heldBy: "hold the device")
+        first.session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
+        #expect(failures.count == 1 && screen.requests.isEmpty)
+        first.invalidate()
+
+        let next = TestExternalScreen()
+        next.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1)
+        let (second, _) = try makeExternalDisplayController(next, preferences: preferences)
+        defer { second.invalidate() }
+        #expect(next.requests == ["off"] && second.externalDisplayWindow == nil)
+    }
+
+    @Test func aSavedDisabledChoiceAsksForNothingUnlessADisplayIsOn() throws {
+        let preferences = MemoryPreferences()
+        preferences.setExternalDisplayTag(ExternalDisplayMode.disabled.rawValue, forDevice: "test-device")
+        let adapterless = TestDisplay()
+        adapterless.hasScreenAdapter = false
+        let missing = try makeController(adapterless, features: Self.externalDisplayFeatures, preferences: preferences)
+        defer { missing.invalidate() }
+        missing.session.connectExternalDisplay { Issue.record($0) }
+
+        // Not even the guest's CarPlay configuration is rewritten.
+        let off = TestExternalScreen()
+        let (alreadyOff, _) = try makeExternalDisplayController(off, features: Self.carPlayFeatures, preferences: preferences)
+        defer { alreadyOff.invalidate() }
+        #expect(off.requests.isEmpty)
+
+        let (late, display) = try makeExternalDisplayController(nil, preferences: preferences)
+        defer { late.invalidate() }
+        let on = TestExternalScreen()
+        on.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1920, height: 1080), scale: 1)
+        display.connectExternalScreen(on)
+        display.deliverScreenReports()
+        #expect(on.requests == ["off"] && late.externalDisplayWindow == nil)
     }
 
     @Test func aRestartClosesTheExternalDisplayAndItsReconnectionRestoresIt() async throws {
@@ -11798,14 +11876,24 @@ struct HostBehaviorTests {
 
     @Test func externalDisplayChoicesUseSimulatorAppsDevicePreference() {
         let preferences = MemoryPreferences()
-        #expect(preferences.externalDisplayTag(forDevice: "A") == 2114)
+        #expect(preferences.externalDisplayTag(forDevice: "A") == nil)
+        preferences.set(["A": ["WindowScale": 2]], forKey: HostPreferences.devicePreferences)
+        #expect(preferences.externalDisplayTag(forDevice: "A") == nil)
         preferences.set(["A": ["SimulatorExternalDisplay": "2614"]], forKey: HostPreferences.devicePreferences)
+        #expect(preferences.externalDisplayTag(forDevice: "A") == nil)
+        preferences.set(["A": ["SimulatorExternalDisplay": 2114]], forKey: HostPreferences.devicePreferences)
         #expect(preferences.externalDisplayTag(forDevice: "A") == 2114)
         preferences.set(["A": ["SimulatorExternalDisplay": 2714]], forKey: HostPreferences.devicePreferences)
         #expect(preferences.externalDisplayTag(forDevice: "A") == 2714)
         preferences.setExternalDisplayTag(2614, forDevice: "B")
         #expect(preferences.externalDisplayTag(forDevice: "A") == 2714)
         #expect(preferences.externalDisplayTag(forDevice: "B") == 2614)
+
+        // The same through UserDefaults' own conversions.
+        let defaults = RegisteredDefaults()
+        #expect(defaults.externalDisplayTag(forDevice: "A") == nil)
+        defaults.setExternalDisplayTag(ExternalDisplayMode.disabled.rawValue, forDevice: "A")
+        #expect(defaults.externalDisplayTag(forDevice: "A") == 2114)
     }
 
     @Test func launchConflictIsRetainedBeforeDeferredTeardown() {
