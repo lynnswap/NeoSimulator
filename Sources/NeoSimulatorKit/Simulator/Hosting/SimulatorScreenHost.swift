@@ -241,13 +241,19 @@ package final class SimulatorScreenHost: NSObject {
                 testingDevices = testingSet.devices
             }
         }
-        return try await (defaultDevices + testingDevices).filter(Self.isSupported)
+        let devices = try await defaultDevices
+        // Hiding the testing devices during these reads closed their windows, which what the reads found must not reopen.
+        return (showsTestingDevices ? devices + testingDevices : devices).filter(Self.isSupported)
     }
 
-    /// Reads a device from its own set, so that opening it depends on no other set.
+    /// Reads a device from its own set, so that opening it depends on no other set. A testing device hidden meanwhile is
+    /// not there to open.
     private func readDevice(_ identifier: SimulatorDeviceIdentifier) async throws -> SimulatorDeviceRecord? {
-        let set = identifier.deviceSetPath == nil ? deviceSet : showsTestingDevices ? testingSet : nil
-        return try await set?.refresh().first { $0.identity == identifier && Self.isSupported($0) }
+        var isShown: Bool { identifier.deviceSetPath == nil || showsTestingDevices }
+        guard isShown else { return nil }
+        let set = identifier.deviceSetPath == nil ? deviceSet : testingSet
+        let device = try await set?.refresh().first { $0.identity == identifier && Self.isSupported($0) }
+        return isShown ? device : nil
     }
 
     /// Updates the preference and every open window, including restarting devices.
@@ -283,6 +289,8 @@ package final class SimulatorScreenHost: NSObject {
                 ownedDeviceIdentifiers.remove(identifier)
                 controller.invalidate()
             }
+            // The rescan below stops these too, but only once its read returns, which can be after they open a window.
+            for (identifier, connection) in connections where identifier.deviceSetPath != nil { connection.cancel() }
             if hadDeviceWindows && sessions.isEmpty { onNoScreens?() }
         }
         rescan(testingVisibilityChanged: true)
