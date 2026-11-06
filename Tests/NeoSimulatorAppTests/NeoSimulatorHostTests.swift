@@ -11091,14 +11091,13 @@ struct InputFocusTests {
             guard case .supported(let record) = try await discovery.answer(for: ["input"]) else { return nil }
             return ObjectIdentifier(record)
         }
-        // The list's first notification, which says what is current, may have replaced what the first read found.
-        try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+        try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
 
         source.current = RecordFixture()
         let reads = source.reads
         source.change(of: old)
         try await wait { source.reads > reads }
-        #expect(source.recordFollows == 2 && source.followers(of: old) == 1)
+        #expect(source.recordFollows == 1 && source.followers(of: old) == 1)
 
         let new = RecordFixture()
         source.current = new
@@ -11109,6 +11108,29 @@ struct InputFocusTests {
         new.features = ["input"]
         source.change(of: new)
         #expect(try await waiting.value == ObjectIdentifier(new))
+        try await wait { source.followers == 0 }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func replacementDuringTheInitialDecisionUsesTheCurrentRecord() async throws {
+        let source = RecordSourceFixture()
+        let connection = HeldCalls<Bool>()
+        let old = RecordFixture()
+        old.heldConnection = connection
+        source.current = old
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        defer { discovery.stop() }
+        let answer = Task.immediate { () -> ObjectIdentifier? in
+            guard case .supported(let record) = try await discovery.answer(for: ["input"]) else { return nil }
+            return ObjectIdentifier(record)
+        }
+        try await wait { connection.isHolding }
+        let current = RecordFixture()
+        current.connected = true
+        current.features = ["input"]
+        try await source.changeList(to: current)
+        connection.finish(.success(true))
+        #expect(try await answer.value == ObjectIdentifier(current))
         try await wait { source.followers == 0 }
     }
 
@@ -11129,7 +11151,7 @@ struct InputFocusTests {
             let old = RecordFixture()
             source.current = old
             let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-            try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+            try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
 
             let connection = HeldCalls<Bool>()
             old.heldConnection = connection
@@ -11175,7 +11197,7 @@ struct InputFocusTests {
         let old = RecordFixture()
         source.current = old
         let transfer = Task.immediate { _ = try await route.transport() }
-        try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+        try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
 
         let reads = HeldCalls<RecordFixture?>()
         source.heldReads = reads
