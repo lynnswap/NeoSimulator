@@ -21,7 +21,9 @@ package final class NativeDevicePoseControls {
     }
 
     private var content: Controls?
-    @ObservationIgnored private var readControl: (() throws -> Controls?)?
+    @ObservationIgnored private var readProviders: (() throws -> [Any])?
+    @ObservationIgnored private var prepareControls: (@MainActor ([Any]) async throws -> Controls?)?
+    @ObservationIgnored private var discoveryGeneration = 0
     @ObservationIgnored private var stopped = false
     @ObservationIgnored package lazy var rotationView: NSView = makeView(postures: false)
     @ObservationIgnored package lazy var postureView: NSView = makeView(postures: true)
@@ -78,7 +80,7 @@ package final class NativeDevicePoseControls {
         let errorBody: @MainActor @Sendable (any Error) -> Void = { [weak result] error in result?.onError?(error) }
         let failure = try await bridge(errorBody, runtime: runtime)
             .copyClosure(as: (@MainActor @Sendable (any Error) -> Void).self)
-        result.readControl = {
+        result.readProviders = {
             let owner = try unsafe bindings.providers.unsafeInvoke(on: plugins)
             let values = try owner.withCopy { raw -> [Any] in
                 guard let sequence = raw as? any Sequence else {
@@ -87,10 +89,13 @@ package final class NativeDevicePoseControls {
                 func elements<S: Sequence>(_ sequence: S) -> [Any] { sequence.map { $0 } }
                 return elements(sequence)
             }
+            return values
+        }
+        result.prepareControls = { values in
             for value in values where String(reflecting: type(of: value)) == "CoreDevicePopDeviceKitExtension.PosesActionBarControlProvider" {
-                @MainActor func copy<Value>(_ value: Value) throws -> NativeSwiftValue { try bridge(value, runtime: runtime) }
-                let provider = try _openExistential(value, do: copy).copyUnderlyingValue()
-                let controls = try provider.type.resolveAndWait(.swift(.method(
+                @MainActor func copy<Value>(_ value: Value) async throws -> NativeSwiftValue { try await bridge(value, runtime: runtime) }
+                let provider = try await _openExistential(value, do: copy).copyUnderlyingValue()
+                let controls = try await provider.type.resolve(.swift(.method(
                     "DeviceKit.ActionBarControlProvider.controls(deviceID:onError:)",
                     as: ((UUID, Failure) -> [NativeSwiftValue]).self)))
                 var rotation: AnyView?, postures: AnyView?, divider: AnyView?
@@ -115,36 +120,43 @@ package final class NativeDevicePoseControls {
             }
             return nil
         }
-        try result.discover()
+        try await result.discover()
         return result
     }
 
-    private static func bridge<Value>(_ value: Value, runtime: ABIRuntime) throws -> NativeSwiftValue {
-        let array = try runtime.resolveAndWait(.swift(.type("Swift.Array", genericArguments: [.type(Value.self)])))
-        let read = try array.resolveAndWait(.swift(.getter("Swift.Array.subscript.getter : (Swift.Int) -> A",
+    private static func bridge<Value>(_ value: Value, runtime: ABIRuntime) async throws -> NativeSwiftValue {
+        let array = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type(Value.self)])))
+        let read = try await array.resolve(.swift(.getter("Swift.Array.subscript.getter : (Swift.Int) -> A",
             as: ((Int) -> NativeSwiftValue).self)))
         return try unsafe read.unsafeInvoke(on: [value], 0)
     }
 
-    private func discover() throws {
-        guard !stopped, content == nil, let readControl else { return }
-        let result = withObservationTracking {
-            Result { try readControl() }
+    private func discover() async throws {
+        guard !stopped, content == nil, let readProviders, let prepareControls else { return }
+        discoveryGeneration += 1
+        let generation = discoveryGeneration
+        let providers = withObservationTracking {
+            Result { try readProviders() }
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                do { try self?.discover() }
+                do { try await self?.discover() }
                 catch { self?.onError?(error) }
             }
         }
-        if let control = try result.get() {
+        let control = try await prepareControls(providers.get())
+        guard !stopped, discoveryGeneration == generation, content == nil else { return }
+        if let control {
             content = control
-            self.readControl = nil
+            self.readProviders = nil
+            self.prepareControls = nil
         }
     }
 
     package func disconnect() {
         stopped = true
-        readControl = nil
+        discoveryGeneration += 1
+        readProviders = nil
+        prepareControls = nil
         content = nil
         onError = nil
     }

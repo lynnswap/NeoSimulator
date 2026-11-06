@@ -57,7 +57,9 @@ package final class CoreDeviceScreenInput {
 
     package func connectDisplay(identifier: UInt32) async throws {
         guard let displayUniqueID else { return }
-        let reports = try digitizerReports ?? CoreDeviceDigitizerReports(runtime: remote.runtime)
+        let reports: CoreDeviceDigitizerReports
+        if let existing = digitizerReports { reports = existing }
+        else { reports = try await CoreDeviceDigitizerReports(runtime: remote.runtime) }
         digitizerReports = reports
         let descriptor = try await CoreDeviceHIDService.touchscreenDescriptor(displayID: identifier, uniqueID: displayUniqueID,
                                                                              runtime: remote.runtime)
@@ -180,32 +182,42 @@ package final class CoreDeviceScreenInput {
 
     private func sendNative(_ input: RemoteScreenInput) async throws {
         let runtime = remote.runtime
+        let generation = generations[input.kind, default: 0]
+        func validatePreparedInput() throws {
+            guard generations[input.kind, default: 0] == generation else {
+                throw CLIError.unavailable("remote-input-capability", "The device's input service changed while preparing the input.")
+            }
+        }
         switch input {
         case .key(let usage, let state):
             let implementation = try await implementation(.keyboard, named: "KeyboardHIDCapability")
-            let code = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDKeyboardUsageCode")))
-            let buttonState = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
-            let make = try code.resolveAndWait(.swift(.initializer("init(rawValue:)", as: ((UInt16) -> NativeSwiftValue).self)))
-            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDKeyboard.send(key:state:)",
+            let code = try await runtime.resolve(.swift(.type("CoreDevice.HIDKeyboardUsageCode")))
+            let buttonState = try await runtime.resolve(.swift(.type("CoreDevice.HIDButtonState")))
+            let make = try await code.resolve(.swift(.initializer("init(rawValue:)", as: ((UInt16) -> NativeSwiftValue).self)))
+            let send = try await implementation.type.resolve(.swift(.method("CoreDevice.HIDKeyboard.send(key:state:)",
                 as: ((NativeSwiftValue, NativeSwiftValue) throws -> Void).self)))
+            try validatePreparedInput()
             try unsafe send.unsafeInvoke(on: implementation, make.unsafeInvoke(usage), buttonState.makeEnumCase(named: state.rawValue))
         case .button(let page, let usage, let state):
             let implementation = try await implementation(.button, named: "ButtonHIDCapability")
-            let buttonState = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
-            let send = try implementation.type.resolveAndWait(Self.buttonRequest)
+            let buttonState = try await runtime.resolve(.swift(.type("CoreDevice.HIDButtonState")))
+            let send = try await implementation.type.resolve(Self.buttonRequest)
+            try validatePreparedInput()
             try unsafe send.unsafeInvoke(on: implementation, page, usage, buttonState.makeEnumCase(named: state.rawValue))
         case .pointer(let point):
             guard displayUniqueID == nil else { throw CLIError.unavailable("remote-display-input", "This display has no pointer connection.") }
             let implementation = try await implementation(.pointer, named: "PointerHIDCapability")
-            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDPointer.send(movedTo:)",
+            let send = try await implementation.type.resolve(.swift(.method("CoreDevice.HIDPointer.send(movedTo:)",
                 as: ((CGPoint) async throws -> Void).self)))
+            try validatePreparedInput()
             try await unsafe send.unsafeInvoke(on: implementation, point)
         case .pointerButton(let button, let phase, let clicks, let point):
             guard displayUniqueID == nil else { throw CLIError.unavailable("remote-display-input", "This display has no pointer connection.") }
             let implementation = try await implementation(.pointer, named: "PointerHIDCapability")
-            let pointerPhase = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDPointerButtonPhase")))
-            let send = try implementation.type.resolveAndWait(.swift(.method("CoreDevice.HIDPointer.send(button:phase:clicks:at:)",
+            let pointerPhase = try await runtime.resolve(.swift(.type("CoreDevice.HIDPointerButtonPhase")))
+            let send = try await implementation.type.resolve(.swift(.method("CoreDevice.HIDPointer.send(button:phase:clicks:at:)",
                 as: ((Int, NativeSwiftValue, Int, CGPoint) async throws -> Void).self)))
+            try validatePreparedInput()
             try await unsafe send.unsafeInvoke(on: implementation, button, pointerPhase.makeEnumCase(named: phase.rawValue), clicks, point)
         case .touch(let point, let second, let phase, let edge):
             if displayUniqueID != nil {
@@ -224,11 +236,12 @@ package final class CoreDeviceScreenInput {
                 return
             }
             let implementation = try await implementation(.digitizer, named: "DigitizerHIDCapability")
-            let eventType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEventType")))
-            let nativeEdge = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEdge")))
-            let target = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerTarget")))
-            let send = try implementation.type.resolveAndWait(Self.digitizerRequest)
+            let eventType = try await runtime.resolve(.swift(.type("CoreDevice.DigitizerEventType")))
+            let nativeEdge = try await runtime.resolve(.swift(.type("CoreDevice.DigitizerEdge")))
+            let target = try await runtime.resolve(.swift(.type("CoreDevice.DigitizerTarget")))
+            let send = try await implementation.type.resolve(Self.digitizerRequest)
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
+            try validatePreparedInput()
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
         case .trackpad(let event, let transform):

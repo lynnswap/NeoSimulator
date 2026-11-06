@@ -30,7 +30,7 @@ package final class CoreDeviceManagementClient {
         let client: CoreDeviceManagementClient
         if let current { client = current }
         else {
-            client = try CoreDeviceManagementClient()
+            client = try await CoreDeviceManagementClient()
             current = client
         }
         try await client.perform(action, identifier: identifier)
@@ -50,13 +50,13 @@ package final class CoreDeviceManagementClient {
         }
     }
 
-    private init() throws {
-        manager = try CoreDeviceRuntime.deviceManagerIncludingSimulators()
+    private init() async throws {
+        manager = try await CoreDeviceRuntime.deviceManagerIncludingSimulators()
         runtime = .shared
-        let managerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceManager")))
-        devices = try managerType.resolveAndWait(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
-        remoteType = try runtime.resolveAndWait(.swift(.type("CoreDevice.RemoteDevice")))
-        supportsFeature = try remoteType.resolveAndWait(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
+        let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
+        devices = try await managerType.resolve(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
+        remoteType = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
+        supportsFeature = try await remoteType.resolve(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
     }
 
     private func perform(_ action: DeviceManagementAction, identifier: String) async throws {
@@ -78,14 +78,14 @@ package final class CoreDeviceManagementClient {
         switch action {
         case .start:
             let implementation = try await implementation("BootCapability", on: remote)
-            let snapshot = try runtime.resolveAndWait(.swift(.type("CoreDevice.DeviceStateSnapshot")))
-            let boot = try implementation.type.resolveAndWait(.swift(.method(
+            let snapshot = try await runtime.resolve(.swift(.type("CoreDevice.DeviceStateSnapshot")))
+            let boot = try await implementation.type.resolve(.swift(.method(
                 "VirtualMachineClientSupport.Bootable.boot()", as: (() async throws -> NativeSwiftValue).self,
                 valueABIs: [snapshot: try .opaque(named: snapshot.name)])))
             _ = try await unsafe boot.unsafeInvoke(on: implementation)
         case .shutdown, .forceShutdown:
             let implementation = try await implementation("ShutdownCapability", on: remote)
-            let shutdown = try implementation.type.resolveAndWait(.swift(.method(
+            let shutdown = try await implementation.type.resolve(.swift(.method(
                 "VirtualMachineClientSupport.ShutdownDeviceProtocol.shutdown(forcefully:)", as: ((Bool) async throws -> Void).self)))
             try Task.checkCancellation()
             guard try unsafe supportsFeature.unsafeInvoke(on: remote, feature) else {
@@ -95,24 +95,24 @@ package final class CoreDeviceManagementClient {
         case .pause, .resume:
             let pausing = action == .pause
             let implementation = try await implementation(pausing ? "PauseVirtualMachineCapability" : "ResumeVirtualMachineFromPauseCapability", on: remote)
-            let operation = try implementation.type.resolveAndWait(.swift(.method(
+            let operation = try await implementation.type.resolve(.swift(.method(
                 pausing ? "VirtualMachineClientSupport.PausableVirtualMachine.pause()" : "VirtualMachineClientSupport.ResumableFromPauseVirtualMachine.resume()",
                 as: (() async throws -> Void).self)))
             try await unsafe operation.unsafeInvoke(on: implementation)
         case .remove:
-            let remove = try remoteType.resolveAndWait(.swift(.method("remove()", as: (() async throws -> NativeSwiftValue).self)))
+            let remove = try await remoteType.resolve(.swift(.method("remove()", as: (() async throws -> NativeSwiftValue).self)))
             _ = try await unsafe remove.unsafeInvoke(on: remote)
         default: break
         }
     }
 
     private func implementation(_ name: String, on remote: NativeSwiftValue) async throws -> NativeSwiftValue {
-        let capability = try runtime.resolveAndWait(.swift(.type("VirtualMachineClientSupport." + name)))
-        let markerType = try runtime.resolveAndWait(.swift(.type("CoreDevice.CapabilityStaticMember", genericArguments: [.type(capability)])))
+        let capability = try await runtime.resolve(.swift(.type("VirtualMachineClientSupport." + name)))
+        let markerType = try await runtime.resolve(.swift(.type("CoreDevice.CapabilityStaticMember", genericArguments: [.type(capability)])))
         let abis: [NativeSwiftType: NativeType] = [markerType: try .opaque(named: markerType.name)]
-        let makeMarker = try markerType.resolveAndWait(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
+        let makeMarker = try await markerType.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
         let marker = try unsafe makeMarker.unsafeInvoke()
-        let get = try remoteType.resolveAndWait(.swift(.method("getImplementation(for:)",
+        let get = try await remoteType.resolve(.swift(.method("getImplementation(for:)",
             as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self,
             genericArguments: [.type(capability)], valueABIs: abis)))
         return try await unsafe get.unsafeInvoke(on: remote, marker).copyUnderlyingValue()

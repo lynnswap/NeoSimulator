@@ -25,7 +25,7 @@ package final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTranspor
     package var canCaptureScreenshot: Bool { !stopped }
     package private(set) var canRecordScreen = false
 
-    package init(remote: CoreDeviceRemoteScreenDevice, url: URL, contentView: NSView) throws {
+    package init(remote: CoreDeviceRemoteScreenDevice, url: URL, contentView: NSView) async throws {
         try CoreDeviceRemoteScreenDevice.load("/System/Library/PrivateFrameworks/ScreenSharing.framework/ScreenSharing")
         guard let viewClass = NSClassFromString("SSSessionView") as? NSView.Type,
               let optionsClass = NSClassFromString("SSConnectionOptions") else {
@@ -35,25 +35,25 @@ package final class ScreenSharingDeviceTransport: NSObject, RemoteScreenTranspor
         self.remote = remote
         let input = CoreDeviceScreenInput(remote: remote)
         self.input = input
-        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try CoreDeviceInputCapabilitySource(remote: remote),
+        capabilityObservation = RemoteScreenInputCapabilityObservation(source: try await CoreDeviceInputCapabilitySource(remote: remote),
             read: { try input.capabilities() }, invalidateInputs: { input.discardInputs(for: $0) })
         view = viewClass.init(frame: contentView.bounds)
         view.autoresizingMask = [.width, .height]
         let runtime = remote.runtime
-        let defaults = try runtime.resolveAndWait(.objc(.method("defaultOptions", as: (() -> AnyObject).self)), on: optionsClass, classMethod: true)
+        let defaults = try await runtime.resolve(.objc(.method("defaultOptions", as: (() -> AnyObject).self)), on: optionsClass, classMethod: true)
         options = try unsafe defaults.unsafeInvoke(on: optionsClass)
-        let share = try runtime.resolveAndWait(.objc(.method("setShouldSharePasteboard:", as: ((Bool) -> Void).self)), on: Swift.type(of: options))
+        let share = try await runtime.resolve(.objc(.method("setShouldSharePasteboard:", as: ((Bool) -> Void).self)), on: Swift.type(of: options))
         try unsafe share.unsafeInvoke(on: options, false)
         for selector in ["setShouldSharePasteboard:", "setShouldAllowSendPasteboard:"] {
-            let disable = try runtime.resolveAndWait(.objc(.method(selector, as: ((Bool) -> Void).self)), on: viewClass)
+            let disable = try await runtime.resolve(.objc(.method(selector, as: ((Bool) -> Void).self)), on: viewClass)
             try unsafe disable.unsafeInvoke(on: view, false)
         }
-        connect = try runtime.resolveAndWait(.objc(.method("connectToURLs:withPreferredCredentials:options:",
+        connect = try await runtime.resolve(.objc(.method("connectToURLs:withPreferredCredentials:options:",
             as: ((NSOrderedSet, NSOrderedSet?, AnyObject) -> Void).self)), on: viewClass)
-        close = try runtime.resolveAndWait(.objc(.method("closeSession", as: (() -> Void).self)), on: viewClass)
-        connected = try runtime.resolveAndWait(.objc(.method("isConnected", as: (() -> Bool).self)), on: viewClass)
-        disconnected = try runtime.resolveAndWait(.objc(.method("isDisconnected", as: (() -> Bool).self)), on: viewClass)
-        copyImage = try runtime.resolveAndWait(.objc(.method("copyCGImageFromRemoteScreen", as: (() -> Unmanaged<CGImage>?).self)), on: viewClass)
+        close = try await runtime.resolve(.objc(.method("closeSession", as: (() -> Void).self)), on: viewClass)
+        connected = try await runtime.resolve(.objc(.method("isConnected", as: (() -> Bool).self)), on: viewClass)
+        disconnected = try await runtime.resolve(.objc(.method("isDisconnected", as: (() -> Bool).self)), on: viewClass)
+        copyImage = try await runtime.resolve(.objc(.method("copyCGImageFromRemoteScreen", as: (() -> Unmanaged<CGImage>?).self)), on: viewClass)
         super.init()
         contentView.addSubview(view)
     }

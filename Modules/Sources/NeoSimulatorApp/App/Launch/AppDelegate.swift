@@ -2,6 +2,7 @@ import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import AppKit
 import SwiftUI
+import ObservationBridge
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -113,7 +114,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.screens.setDeviceBezelsVisible(shows)
         }
         installMenu()
-        screens.observeRemoteDevices()
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
         ) { [weak self] notification in
@@ -146,8 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             defer { self.startupTask = nil }
             do {
+                try await PortableObservationTracking.prepare()
                 try await self.requestHostPreferenceAccess()
                 try Task.checkCancellation()
+                self.screens.observeRemoteDevices()
                 self.hasStarted = true
                 self.showDevices(nil)
                 self.model.start()
@@ -323,7 +325,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
-    @objc func showSettings(_ sender: Any?) { showSettings(selectingServiceProfile: nil) }
+    @objc func showSettings(_ sender: Any?) {
+        Task {
+            do {
+                try await PortableObservationTracking.prepare()
+                showSettings(selectingServiceProfile: nil)
+            } catch { present(error) }
+        }
+    }
 
     private func showSettings(selectingServiceProfile profileID: UUID?) {
         if settingsWindow == nil {
@@ -375,6 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             defer { self.preparingNewSimulators.remove(creationID) }
             do {
+                try await PortableObservationTracking.prepare()
                 let content = try await self.makeNewSimulatorModel(pairingWith: device)
                 guard !self.quitting else { return }
                 let form = NewSimulatorWindowController(model: content, reportFailure: { [weak self] error in

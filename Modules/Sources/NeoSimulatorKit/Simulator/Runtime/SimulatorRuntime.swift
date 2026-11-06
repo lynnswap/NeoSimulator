@@ -1,4 +1,5 @@
 import ABIBridge
+import ObservationBridge
 import AppKit
 import Darwin
 import MachO
@@ -62,6 +63,7 @@ package final class SimulatorRuntime {
         Self.loadedUIXcodeURL = requestedUI
         try Self.load(requestedUI.appendingPathComponent("Contents/Frameworks/IDEPlaygroundSimulator.framework"))
         Self.contextXcodeURLs.insert(self.xcodeURL)
+        try await PortableObservationTracking.prepare()
         let runtime = ABIRuntime.shared
         coreSimulator = try await CoreSimulatorInterface(runtime: runtime)
         display = try await SimulatorDisplayInterface(runtime: runtime)
