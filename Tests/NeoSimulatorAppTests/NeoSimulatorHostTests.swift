@@ -7320,9 +7320,8 @@ struct InputFocusTests {
         #expect(port.stateReads == 2)
         port.current.inputRoute = "latest"
         worker.release()
-        try await wait { session.audioRoutes?.inputRoute == "latest" }
+        try await wait { session.audioRoutes?.inputRoute == "latest" && worker.calls.count == 2 }
         #expect(port.stateReads == 3)
-        #expect(worker.calls.count == 2)
     }
 
     @Test func aRequestWithAnUnknownOutcomeLeavesCarPlayStateUnknownAndItsLateCompletionAdvancesNothing() async throws {
