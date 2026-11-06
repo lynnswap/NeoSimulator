@@ -8,11 +8,24 @@ import SwiftUI
 package final class NativeDevicePoseControls {
     package var isEnabled = true
     package var isAvailable: Bool { content != nil }
-    @ObservationIgnored package var onError: ((any Error) -> Void)?
-    private struct Controls {
-        let rotation: AnyView
-        let postures: AnyView
-        let divider: AnyView?
+    /// Receives the controls' failures, including one from before the window that presents them connected.
+    @ObservationIgnored package var onError: ((any Error) -> Void)? {
+        didSet {
+            guard let onError, let failure = unreportedFailure else { return }
+            unreportedFailure = nil
+            onError(failure)
+        }
+    }
+    package struct Controls {
+        package let rotation: AnyView
+        package let postures: AnyView
+        package let divider: AnyView?
+
+        package init(rotation: AnyView, postures: AnyView, divider: AnyView?) {
+            self.rotation = rotation
+            self.postures = postures
+            self.divider = divider
+        }
     }
     /// Provider content without the standalone toolbar's sizing or button style.
     package var actionBarControls: [AnyView] {
@@ -22,9 +35,11 @@ package final class NativeDevicePoseControls {
 
     private var content: Controls?
     @ObservationIgnored private var readProviders: (() throws -> [Any])?
-    @ObservationIgnored private var prepareControls: (@MainActor ([Any]) async throws -> Controls?)?
+    @ObservationIgnored private var prepareControls: (@MainActor ([Any]) async throws -> (() throws -> Controls?)?)?
     @ObservationIgnored private var discoveryGeneration = 0
     @ObservationIgnored private var stopped = false
+    @ObservationIgnored private var unreportedFailure: (any Error)?
+    @ObservationIgnored private var preparation: Task<Void, Never>?
     @ObservationIgnored package lazy var rotationView: NSView = makeView(postures: false)
     @ObservationIgnored package lazy var postureView: NSView = makeView(postures: true)
 
@@ -71,16 +86,31 @@ package final class NativeDevicePoseControls {
         }
     }
 
-    package static func connect(deviceIdentifier: UUID) async throws -> NativeDevicePoseControls {
-        let result = NativeDevicePoseControls()
+    /// Starts finding the device's controls, which the screen they accompany does not wait for: they appear when found.
+    package convenience init(deviceIdentifier: UUID) {
+        self.init { try await $0.connect(deviceIdentifier: deviceIdentifier) }
+    }
+
+    /// Runs `prepare` until `disconnect()`, keeping its failure for `onError`.
+    package init(prepare: @escaping @MainActor (NativeDevicePoseControls) async throws -> Void) {
+        preparation = Task { [weak self] in
+            guard let self else { return }
+            do { try await prepare(self) }
+            catch is CancellationError {}
+            catch { report(error) }
+        }
+    }
+
+    private func connect(deviceIdentifier: UUID) async throws {
         let runtime = ABIRuntime.shared
         let bindings = try await Bindings(runtime: runtime)
         let plugins = try unsafe bindings.shared.unsafeInvoke()
         typealias Failure = NativeSwiftClosure<@MainActor @Sendable (any Error) -> Void>
-        let errorBody: @MainActor @Sendable (any Error) -> Void = { [weak result] error in result?.onError?(error) }
-        let failure = try await bridge(errorBody, runtime: runtime)
+        let errorBody: @MainActor @Sendable (any Error) -> Void = { [weak self] error in self?.report(error) }
+        let failure = try await Self.bridge(errorBody, runtime: runtime)
             .copyClosure(as: (@MainActor @Sendable (any Error) -> Void).self)
-        result.readProviders = {
+        guard !stopped else { return }
+        try await discover(readProviders: {
             let owner = try unsafe bindings.providers.unsafeInvoke(on: plugins)
             let values = try owner.withCopy { raw -> [Any] in
                 guard let sequence = raw as? any Sequence else {
@@ -90,38 +120,53 @@ package final class NativeDevicePoseControls {
                 return elements(sequence)
             }
             return values
-        }
-        result.prepareControls = { values in
+        }, prepareControls: { values in
             for value in values where String(reflecting: type(of: value)) == "CoreDevicePopDeviceKitExtension.PosesActionBarControlProvider" {
-                @MainActor func copy<Value>(_ value: Value) async throws -> NativeSwiftValue { try await bridge(value, runtime: runtime) }
+                @MainActor func copy<Value>(_ value: Value) async throws -> NativeSwiftValue { try await Self.bridge(value, runtime: runtime) }
                 let provider = try await _openExistential(value, do: copy).copyUnderlyingValue()
                 let controls = try await provider.type.resolve(.swift(.method(
                     "DeviceKit.ActionBarControlProvider.controls(deviceID:onError:)",
                     as: ((UUID, Failure) -> [NativeSwiftValue]).self)))
-                var rotation: AnyView?, postures: AnyView?, divider: AnyView?
-                for control in try unsafe controls.unsafeInvoke(on: provider, deviceIdentifier, failure) {
-                    let identifier = try unsafe bindings.readIdentifier.unsafeInvoke(on: control)
-                    let name = try unsafe bindings.readName.unsafeInvoke(on: identifier)
-                    guard name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotate" ||
-                            name == "com.apple.dt.coredevicepop.actionbar.control.v68.poses" ||
-                            name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotateDivider" else { continue }
-                    let view = try unsafe bindings.readView.unsafeInvoke(on: control)
-                    let content = try view.withCopy { raw in
-                        guard let content = raw as? AnyView else {
-                            throw CLIError.unavailable("native-pose-view", "DeviceKit's pose control is not a SwiftUI view.")
+                return {
+                    var rotation: AnyView?, postures: AnyView?, divider: AnyView?
+                    for control in try unsafe controls.unsafeInvoke(on: provider, deviceIdentifier, failure) {
+                        let identifier = try unsafe bindings.readIdentifier.unsafeInvoke(on: control)
+                        let name = try unsafe bindings.readName.unsafeInvoke(on: identifier)
+                        guard name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotate" ||
+                                name == "com.apple.dt.coredevicepop.actionbar.control.v68.poses" ||
+                                name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotateDivider" else { continue }
+                        let view = try unsafe bindings.readView.unsafeInvoke(on: control)
+                        let content = try view.withCopy { raw in
+                            guard let content = raw as? AnyView else {
+                                throw CLIError.unavailable("native-pose-view", "DeviceKit's pose control is not a SwiftUI view.")
+                            }
+                            return content
                         }
-                        return content
+                        if name.hasSuffix(".rotate") { rotation = content }
+                        else if name.hasSuffix(".rotateDivider") { divider = content }
+                        else { postures = content }
                     }
-                    if name.hasSuffix(".rotate") { rotation = content }
-                    else if name.hasSuffix(".rotateDivider") { divider = content }
-                    else { postures = content }
+                    guard let rotation, let postures else { return nil }
+                    return Controls(rotation: rotation, postures: postures, divider: divider)
                 }
-                if let rotation, let postures { return Controls(rotation: rotation, postures: postures, divider: divider) }
             }
             return nil
-        }
-        try await result.discover()
-        return result
+        })
+    }
+
+    /// Finds the controls now and whenever what `readProviders` or the reader from `prepareControls` read changes. The
+    /// reader that `prepareControls` returns reads the provider's controls, which it does not offer while CoreDevice
+    /// reports the device as shut down.
+    package func discover(readProviders: @escaping () throws -> [Any],
+                          prepareControls: @escaping @MainActor ([Any]) async throws -> (() throws -> Controls?)?) async throws {
+        self.readProviders = readProviders
+        self.prepareControls = prepareControls
+        try await discover()
+    }
+
+    private func report(_ error: any Error) {
+        guard !stopped else { return }
+        if let onError { onError(error) } else { unreportedFailure = error }
     }
 
     private static func bridge<Value>(_ value: Value, runtime: ABIRuntime) async throws -> NativeSwiftValue {
@@ -135,25 +180,30 @@ package final class NativeDevicePoseControls {
         guard !stopped, content == nil, let readProviders, let prepareControls else { return }
         discoveryGeneration += 1
         let generation = discoveryGeneration
-        let providers = withObservationTracking {
-            Result { try readProviders() }
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                do { try await self?.discover() }
-                catch { self?.onError?(error) }
-            }
-        }
-        let control = try await prepareControls(providers.get())
-        guard !stopped, discoveryGeneration == generation, content == nil else { return }
-        if let control {
+        let providers = discoveringAgainOnChange { Result { try readProviders() } }
+        let readControls = try await prepareControls(providers.get())
+        guard !stopped, discoveryGeneration == generation, content == nil, let readControls else { return }
+        if let control = try discoveringAgainOnChange({ Result { try readControls() } }).get() {
             content = control
             self.readProviders = nil
             self.prepareControls = nil
         }
     }
 
+    private func discoveringAgainOnChange<Value>(_ read: () -> Value) -> Value {
+        withObservationTracking(read) { [weak self] in
+            Task { @MainActor [weak self] in
+                do { try await self?.discover() }
+                catch { self?.report(error) }
+            }
+        }
+    }
+
     package func disconnect() {
         stopped = true
+        preparation?.cancel()
+        preparation = nil
+        unreportedFailure = nil
         discoveryGeneration += 1
         readProviders = nil
         prepareControls = nil

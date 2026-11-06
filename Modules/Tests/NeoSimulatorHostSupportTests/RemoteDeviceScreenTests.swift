@@ -1427,6 +1427,52 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func guestButtonsConnectToTheirServiceAtAPressAndConnectAgainWithoutResendingAfterTheConnectionEnds() async throws {
+        let runtime = ABIRuntime.shared
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: runtime)
+        let button = try #require(CoreDeviceScreenInput.features[.button])
+        var lookUpFailures = 1
+        let input = GuestButtonInput {
+            SimulatorGuestHID(codec: codec) { name in
+                if lookUpFailures > 0 {
+                    lookUpFailures -= 1
+                    throw CLIError.unavailable("fixture-lookup", "The guest is not booted.")
+                }
+                return try peers.connect(name)
+            }
+        }
+        let home = (page: 0x0c, usage: 0x40), lock = (page: 0x0c, usage: 0x30)
+
+        // The press that could not connect receives the guest's error. The press after it tries again.
+        await #expect(throws: CLIError.unavailable("fixture-lookup", "The guest is not booted.")) {
+            try await input.send(.button(home.page, home.usage, .down))
+        }
+        #expect(peers.lookUps.isEmpty)
+        try await input.send(.button(home.page, home.usage, .down))
+        #expect(peers.lookUps == [button])
+        _ = await peers.messages(to: button, count: 1)
+
+        // Once the guest ends the connection, a press connects again and sends only itself.
+        peers.endConnections()
+        while peers.lookUps.count < 2 {
+            try await input.send(.button(home.page, home.usage, .up))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(peers.lookUps == [button, button])
+
+        // Stopping releases what the guest holds and sends it before the connection goes.
+        try await input.send(.button(lock.page, lock.usage, .down))
+        try await input.stop()
+        let received = await peers.messages(to: button, count: 4)
+        let events = try IndigoFixtureEvents(runtime: runtime)
+        let expected = try [events.button(0x0c, 0x40, "down"), events.button(0x0c, 0x40, "up"),
+                            events.button(0x0c, 0x30, "down"), events.button(0x0c, 0x30, "up")]
+            .map { try codec.message(.buttonEvent, to: button, payload: $0) }
+        #expect(received.count == 4 && zip(received, expected).allSatisfy { xpc_equal($0, $1) })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func guestKeyboardCreatesItsServiceWithCoreDevicesRequestsAndRetriesOneThatTheGuestRefused() async throws {
         let runtime = ABIRuntime.shared
         let peers = GuestHIDPeerFixture()
@@ -2321,6 +2367,12 @@ private final class GuestHIDPeerFixture {
             await withCheckedContinuation { waiters.append((name, count, $0)) }
         }
         return received[name, default: []]
+    }
+
+    /// Ends the connections that the services have, as a guest service that went away does.
+    func endConnections() {
+        connections.forEach(xpc_connection_cancel)
+        connections.removeAll()
     }
 
     private func accept(_ peer: xpc_connection_t, for name: String) {

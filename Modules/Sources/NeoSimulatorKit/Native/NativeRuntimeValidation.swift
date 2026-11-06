@@ -40,8 +40,8 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
     @MainActor
     package static func prepareOptionalBindings() async -> Self {
         let canvas = await Preparation.check("nativeCanvas", unverified: [
-            "Device capability and button implementation", "DeviceView construction and rendering",
-            "Active capture display and display-info access",
+            "DeviceView construction and rendering", "Active capture display and display-info access",
+            "Guest button service delivery",
         ], load: { try await CoreDeviceDisplayGeometry.loadRuntime() }, prepare: {
             _ = try await NativeDeviceCanvas.Bindings(runtime: .shared)
         })
