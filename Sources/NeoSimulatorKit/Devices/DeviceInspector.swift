@@ -1,7 +1,5 @@
-import NeoSimulatorDeviceIO
-import NeoSimulatorKit
 import Foundation
-import CoreFoundation
+import NeoSimulatorDeviceIO
 
 package enum DeviceInspectorPartialCompletion: Equatable, Sendable {
     /// The incomplete download is retained at this URL for recovery.
@@ -35,31 +33,34 @@ package struct DeviceInfoSnapshot: Sendable {
     package let issues: [DeviceInspectorFailure]
 }
 
-package struct DeviceApplication: Equatable, Sendable, Identifiable {
-    package var id: String { bundleIdentifier }
-    package let bundleIdentifier: String
-    package let name: String
-    package let version: String?
-    package let build: String?
+/// An application installed on a device, as the device listed it.
+public struct DeviceApplication: Equatable, Sendable, Identifiable {
+    public var id: String { bundleIdentifier }
+    public let bundleIdentifier: String
+    public let name: String
+    public let version: String?
+    public let build: String?
     /// A path on the destination device, not necessarily a Mac file URL.
-    package let bundlePath: String?
-    package let dataContainerPath: String?
-    package let groupContainerPaths: [String: String]
-    package let isContainerAccessible: Bool
-    package let isDeveloperApplication: Bool?
-    package let isRemovable: Bool?
+    public let bundlePath: String?
+    public let dataContainerPath: String?
+    public let groupContainerPaths: [String: String]
+    public let isContainerAccessible: Bool
+    public let isDeveloperApplication: Bool?
+    public let isRemovable: Bool?
     package let metadata: [String: DeviceInspectorValue]
 }
 
-package enum DeviceProfileKind: String, CaseIterable, Sendable { case configuration, provisioning }
+public enum DeviceProfileKind: String, CaseIterable, Sendable { case configuration, provisioning }
 
-package struct DeviceProfile: Equatable, Sendable, Identifiable {
+/// A profile installed on a device, as the device listed it.
+public struct DeviceProfile: Equatable, Sendable, Identifiable {
     /// The payload identifier for configuration profiles, or UUID for provisioning profiles.
-    package let identifier: String
-    package let kind: DeviceProfileKind
-    package var id: String { "\(kind.rawValue):\(identifier)" }
-    package let name: String
-    package let uuid: String?
+    public let identifier: String
+    public let kind: DeviceProfileKind
+    public var id: String { "\(kind.rawValue):\(identifier)" }
+    public let name: String
+    public let uuid: String?
+    public var isRemovalDisallowed: Bool { metadata["removalDisallowed"]?.boolean == true }
     /// Metadata actually returned by devicectl. Installed configuration payload bodies and
     /// provisioning entitlement values are not supplied by its public list operation.
     package let metadata: [String: DeviceInspectorValue]
@@ -74,7 +75,7 @@ package struct DeviceProfilesSnapshot: Sendable {
 }
 
 /// Info, application, and profile operations for one inventory destination.
-/// Create through SimulatorHostController to retain the simulator's Xcode and device set.
+/// Create through a device's state source to retain the simulator's Xcode and device set.
 package struct DeviceInspector: Sendable {
     package let device: InventoryDevice
     package let simulatorXcodeURL: URL?
@@ -539,23 +540,4 @@ package struct DeviceInspectorTransport: Sendable {
         case .file: throw DeviceInspectorError.invalidResponse("A file operation cannot be executed as a device command.")
         }
     }
-}
-
-extension SimulatorHostController {
-    /// Resolves a destination without acquiring the renderer-operation FIFO.
-    /// A simulator uses its running renderer's Xcode, then the inventory's owner or catalog Xcode;
-    /// installed Xcodes are searched only when the inventory records neither.
-    package func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
-        let preferred: URL?
-        if case .simulator(let simulator) = device {
-            let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(simulator.inventoryID) }
-            preferred = owner.map { URL(fileURLWithPath: $0.xcodePath) } ?? simulator.ownerXcodeURL ?? simulator.catalogXcodeURL
-        } else { preferred = nil }
-        return try await makeDeviceInspector(device: device, preferredXcodeURL: preferred, reads: reads)
-    }
-}
-
-@concurrent private func makeDeviceInspector(device: InventoryDevice, preferredXcodeURL: URL?, reads: CommandReads) async throws -> DeviceInspector {
-    guard case .simulator(let simulator) = device else { return DeviceInspector(device: device, simulatorXcodeURL: nil) }
-    return DeviceInspector(device: device, simulatorXcodeURL: try await LiveDeviceInventory.xcodeURL(for: simulator, preferring: preferredXcodeURL, using: reads))
 }

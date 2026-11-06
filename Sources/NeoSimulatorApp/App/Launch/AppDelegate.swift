@@ -16,7 +16,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screens = DeviceScreens(model: self.model)
         screens.onError = { [weak self] error in self?.present(error) }
         screens.onShowInMainWindow = { [weak self] identifier in self?.prepareMainWindow().showDevice(identifier) }
-        screens.onApplicationsChange = { [weak self] identifier in self?.mainWindow?.applicationsChanged(on: identifier) }
         return screens
     }()
     private(set) var mainWindow: ManagerWindowController?

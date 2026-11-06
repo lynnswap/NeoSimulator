@@ -14,20 +14,18 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private typealias Content = DeviceInspectorModel.Content
     let inspection = DeviceInspectorModel()
     private let model: SimulatorManagerModel
-    private var device: InventoryDevice? { get { inspection.device } set { inspection.device = newValue } }
-    private var inspector: DeviceInspector? { get { inspection.inspector } set { inspection.inspector = newValue } }
+    private var device: DeviceModel? { get { inspection.device } set { inspection.device = newValue } }
     private var page: Page { get { inspection.page } set { inspection.page = newValue } }
     private var content: Content { get { inspection.content } set { inspection.select(newValue) } }
     private var isManaging: Bool { get { inspection.isManaging } set { inspection.isManaging = newValue } }
     private var isVisible: Bool { get { inspection.isVisible } set { inspection.isVisible = newValue } }
-    private var generation: Int { inspection.generation }
     private var recordsObservation: PortableObservationTracking.Token?
     private var stateObservation: PortableObservationTracking.Token?
     private var revealTask: Task<Void, Never>?
     private var iconTask: Task<Void, Never>?
-    private var applications: [DeviceApplication] { inspection.applications }
-    private var profiles: [DeviceProfile] { get { inspection.profiles } set { inspection.profiles = newValue } }
-    private var reports: [DeviceReport] { inspection.reports }
+    private var applications: [DeviceApplication] { device?.inspection.applications ?? [] }
+    private var profiles: [DeviceProfile] { inspection.profiles }
+    private var reports: [DeviceReport] { device?.inspection.reports ?? [] }
     private var reportRows: [DeviceReport] = []
     private let reportFilter = NSPopUpButton()
     private var reportTypeFilter: String?
@@ -63,7 +61,12 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         pairingMenu: { [weak self] in self?.onPairingMenu?($0) ?? NSMenu() },
         deviceMenu: { [weak self] in self?.onDeviceMenu?($0) ?? NSMenu() },
         unpair: { [weak self] in self?.model.manage(.unpair, devices: [.simulator($0)]) })
-    private lazy var info = NSHostingController(rootView: DeviceInformationView(model: information))
+    private lazy var info: NSHostingController<DeviceInformationView> = {
+        let host = NSHostingController(rootView: DeviceInformationView(model: information))
+        // With nothing being read it is all that shows, and it fills the inspector whatever its content's size.
+        host.sizingOptions = []
+        return host
+    }()
     private var showingInfo: Bool { page == .info && content == .info }
     private var showingApplications: Bool { page == .info && content == .applications }
     private var showingProfiles: Bool { page == .info && (content == .configuration || content == .provisioning) }
@@ -78,6 +81,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private let launchButton = NSButton(image: NSImage(systemSymbolName: "play", accessibilityDescription: "Launch Application")!, target: nil, action: nil)
     private let actions = NSPopUpButton(frame: .zero, pullsDown: true)
     private let reloadButton = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh Inspector")!, target: nil, action: nil)
+    private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
     private let buttons = NSStackView()
     private let footer = NSStackView()
     private var fullHeightTopConstraint: NSLayoutConstraint?
@@ -85,7 +89,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var stackBottomConstraint: NSLayoutConstraint?
     private let contentView = NSView()
     private let infoView = NSView()
-    private var lastIssue: String? { get { inspection.lastIssue } set { inspection.lastIssue = newValue } }
+    private var actionIssue: String? { get { inspection.actionIssue } set { inspection.actionIssue = newValue } }
     private var reading: Bool { inspection.reading }
 
     init(model: SimulatorManagerModel) {
@@ -207,6 +211,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         buttons.spacing = 6
         footer.addArrangedSubview(progress)
         footer.addArrangedSubview(status)
+        footer.addArrangedSubview(retryButton)
         footer.orientation = .horizontal
         footer.alignment = .top
         footer.spacing = 6
@@ -217,6 +222,9 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.setAccessibilityLabel("Inspector Status")
+        retryButton.target = self
+        retryButton.action = #selector(refreshInspector(_:))
+        retryButton.controlSize = .small
         let stack = NSStackView(views: [contentView, infoView, unavailableView, buttons, footer])
         stack.orientation = .vertical
         stack.distribution = .fill
@@ -263,34 +271,37 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         changedContent()
     }
 
-    func update(device: InventoryDevice?, isManaging: Bool, isVisible: Bool) {
+    func update(device: DeviceModel?, isManaging: Bool, isVisible: Bool) {
         _ = view
-        let selectionChanged = self.device?.id != device?.id
-        let snapshotChanged = self.device != device
-        let becameVisible = !self.isVisible && isVisible
+        let selectionChanged = self.device !== device
         let previousContent = content
-        self.device = device
+        // The same model's new inventory record can change which kinds of profile it has.
+        if selectionChanged { self.device = device } else { inspection.select(previousContent) }
         self.isManaging = isManaging
         self.isVisible = isVisible
         if selectionChanged {
             dismissReportPreview()
             stopReading()
-            inspection.reset()
             reportTypeFilter = nil
             rebuildReportFilter()
             selectedRecordID = nil
-            lastIssue = nil
+            actionIssue = nil
             updateRows()
         }
         if page == .info && content != previousContent { changedContent() }
-        else if isVisible && (snapshotChanged || becameVisible) { reload() }
         else if !isVisible { stopReading(); dismissReportPreview() }
+        holdShownGroup()
         updateVisibility()
         updateControls()
     }
 
+    /// Keeps only what shows current, which is nothing while hidden or without one selected device.
+    private func holdShownGroup() {
+        model.selection.setInspection(isVisible && device != nil ? inspection.shownGroup : [])
+    }
+
+    /// Stops what this view asked of the device itself. Reading belongs to the device's model.
     func stopReading() {
-        inspection.stopReading()
         revealTask?.cancel()
         revealTask = nil
         iconTask?.cancel()
@@ -299,9 +310,9 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
 
     private func observeRecords() {
         recordsObservation = withPortableContinuousObservation { [weak self, inspection] event in
-            _ = inspection.applications
+            _ = inspection.device?.inspection.applications
             _ = inspection.profiles
-            _ = inspection.reports
+            _ = inspection.device?.inspection.reports
             guard event.kind != .initial else { return }
             Task { @MainActor [weak self] in
                 self?.rebuildReportFilter()
@@ -321,13 +332,13 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         guard let device else { return ("No Selection", "Select one device to inspect it.", "cursorarrow") }
         if showingApplications && !canReadApplications {
             let message = device.kind == .simulator ? "Start the simulator to add or customize apps."
-                : inspection.canInstallApplications ? "Installed applications cannot be listed on this device."
+                : device.isAvailable && inspection.canInstallApplications ? "Installed applications cannot be listed on this device."
                 : "Connect and unlock this device to inspect its applications."
             return ("Apps", message, "app")
         }
         if showingProfiles && !canReadProfiles {
             let message: String
-            if case .simulator(let simulator) = device {
+            if case .simulator(let simulator) = device.inventory {
                 if simulator.deviceSetPath != nil {
                     message = "Profiles are unavailable for simulators in custom device sets."
                 } else if !simulatorIsRunning {
@@ -341,7 +352,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         if showingReports && device.kind == .simulator {
             return ("Reports", "Crash, log, spin, and diagnostic reports are unavailable for simulators.", "text.page.slash.fill")
         }
-        if showingReports, let inspector, !inspector.supportsReportListing {
+        if showingReports && !inspection.canReadReports {
             return ("Reports", "Connect and unlock this device to inspect its reports.", "text.document")
         }
         return nil
@@ -396,19 +407,19 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var canReplaceData: Bool {
         canTransferData && (simulatorIsRunning || (supports("processcontrol") && supports("streamprocesslist") && canReadApplications))
     }
-    private var available: Bool { device != nil && inspector != nil && !isManaging && !reading && !preparingToQuit }
+    private var available: Bool { device != nil && !isManaging && !reading && !preparingToQuit }
 
     private func updateControls() {
         let apps = showingApplications
         infoPicker.isEnabled = !isManaging
         profileKindPicker.isEnabled = !isManaging
         addButton.isEnabled = available && (apps ? inspection.canInstallApplications : canReadProfiles)
-        removeButton.isEnabled = available && (apps ? selectedApp != nil && selectedApp?.isRemovable != false && (simulatorIsRunning || supports("uninstallapp")) : selectedProfile != nil && canReadProfiles && selectedProfile?.metadata["removalDisallowed"]?.boolean != true)
+        removeButton.isEnabled = available && (apps ? selectedApp != nil && selectedApp?.isRemovable != false && (simulatorIsRunning || supports("uninstallapp")) : selectedProfile != nil && canReadProfiles && selectedProfile?.isRemovalDisallowed != true)
         launchButton.isHidden = !apps || unavailableState != nil
         launchButton.isEnabled = available && selectedApp != nil && (simulatorIsRunning || supports("launchapplication") || supports("applicationcontrol"))
         actions.isHidden = !apps || unavailableState != nil
         actions.isEnabled = available && selectedApp != nil
-        let reportTransfer = available && selectedReport?.resources.isReadable != false && inspector?.supportsReportDownload == true
+        let reportTransfer = available && selectedReport?.resources.isReadable != false && device?.inventory.canDownloadReports == true
         previewButton.isEnabled = reportTransfer && selectedReport != nil && selectedReport?.resources.isDirectory == false && activePreviewTask == nil
         downloadButton.isEnabled = reportTransfer && selectedReport != nil
         reportFilter.isEnabled = !reading
@@ -420,23 +431,13 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         else if isManaging { message = "An operation is in progress on this device…" }
         else if reading { message = "Loading…" }
         else if activePreviewTask != nil { message = "Preparing preview…" }
-        else { message = lastIssue ?? "" }
+        else { message = actionIssue ?? inspection.readMessage ?? "" }
         if status.stringValue != message { status.stringValue = message }
         status.isHidden = status.stringValue.isEmpty || unavailableState != nil
+        // The other pages' refresh button is what retries them.
+        retryButton.isHidden = !showingInfo || !inspection.readFailed || reading || isManaging
         footer.isHidden = (showingInfo || unavailableState != nil) && progress.isHidden && status.isHidden
         stackBottomConstraint?.constant = showingInfo && footer.isHidden ? 0 : -8
-    }
-
-    func reload() {
-        guard !preparingToQuit else { return }
-        stopReading()
-        inspection.reload { [model] in try await model.inspector(for: $0) }
-    }
-
-    /// Reloads listed applications that an operation outside the inspector changed.
-    func applicationsChanged(on deviceID: DeviceInventoryID) {
-        guard device?.id == deviceID, showingApplications else { return }
-        reload()
     }
 
     @objc private func changeInfoCategory(_ sender: NSSegmentedControl) {
@@ -455,15 +456,20 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
 
     private func changedContent() {
         dismissReportPreview()
+        stopReading()
+        actionIssue = nil
+        holdShownGroup()
         updateVisibility()
         selectedRecordID = nil
-        profiles = []
         search.stringValue = ""
         search.placeholderString = showingApplications ? "Search Applications" : (showingReports ? "Search Reports" : "Search Profiles")
         updateRows()
-        reload()
     }
-    @objc private func refreshInspector(_ sender: Any?) { reload() }
+    @objc private func refreshInspector(_ sender: Any?) {
+        actionIssue = nil
+        device?.revalidate(inspection.shownGroup)
+        updateControls()
+    }
     func controlTextDidChange(_ notification: Notification) { updateRows() }
 
     private func updateRows() {
@@ -534,18 +540,17 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             detail.setProperties(app.metadata)
             if device?.kind == .simulator, let path = app.bundlePath { headerImage.image = NSWorkspace.shared.icon(forFile: path) }
             else { headerImage.image = NSImage(systemSymbolName: "app", accessibilityDescription: nil) }
-            if supports("fetchappicons"), let inspector {
-                let request = generation
+            if supports("fetchappicons"), let state = device?.inspection {
                 iconTask = Task { [weak self] in
                     do {
-                        let data = try await inspector.applicationIcon(bundleIdentifier: app.bundleIdentifier)
-                        guard let self, !Task.isCancelled, generation == request, selectedApp?.id == app.id else { return }
+                        let data = try await state.inspector().applicationIcon(bundleIdentifier: app.bundleIdentifier)
+                        guard let self, !Task.isCancelled, selectedApp?.id == app.id else { return }
                         if let image = NSImage(data: data) { headerImage.image = image }
                     } catch {
-                        guard let self, !Task.isCancelled, generation == request, selectedApp?.id == app.id else { return }
+                        guard let self, !Task.isCancelled, selectedApp?.id == app.id else { return }
                         if let failure = error as? DeviceInspectorFailure,
                            case .cleanupFailed = failure.error as? DeviceInspectorError {
-                            lastIssue = error.localizedDescription
+                            actionIssue = error.localizedDescription
                             updateControls()
                         }
                     }
@@ -618,21 +623,23 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     }
 
     @objc private func downloadReport(_ sender: Any?) {
-        guard available, downloadButton.isEnabled, let report = selectedReport, let inspector, let window = view.window else { return }
+        guard available, downloadButton.isEnabled, let report = selectedReport, let device, let window = view.window else { return }
         let panel = NSSavePanel()
         panel.title = "Download Report"
-        panel.message = "Download \(report.name) from \(inspector.device.name)."
+        panel.message = "Download \(report.name) from \(device.name)."
         panel.nameFieldStringValue = (report.relativePath as NSString).lastPathComponent
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            self.mutate(using: inspector) { _ = try await $0.downloadReport(report, to: url, replacingExistingFile: true) }
+            self.mutate(affecting: []) { _ = try await $0.downloadReport(report, to: url, replacingExistingFile: true) }
         }
     }
 
     @objc private func quickLookReport(_ sender: Any?) {
-        guard available, previewButton.isEnabled, !preparingToQuit, let report = selectedReport, let inspector else { return }
+        guard available, previewButton.isEnabled, !preparingToQuit, let report = selectedReport, let device else { return }
+        let deviceName = device.name
+        let state = device.inspection
         dismissReportPreview()
         let request = previewGeneration
         let taskID = UUID()
@@ -644,24 +651,24 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
                 if previewGeneration == request { activePreviewTask = nil; updateControls() }
             }
             do {
-                let preview = try await inspector.previewReport(report, in: cache)
+                let preview = try await state.inspector().previewReport(report, in: cache)
                 retainedPreviews[preview.url] = preview
                 guard !Task.isCancelled, previewGeneration == request, !preparingToQuit,
-                      device?.id == report.deviceID, selectedReport?.id == report.id else {
+                      self.device?.id == report.deviceID, selectedReport?.id == report.id else {
                     removePreview(preview)
                     return
                 }
                 currentPreview = preview
-                let window = ManagerReportPreviewWindowController(report: report, deviceName: inspector.device.name, url: preview.url)
+                let window = ManagerReportPreviewWindowController(report: report, deviceName: deviceName, url: preview.url)
                 window.onClose = { [weak self] in self?.dismissReportPreview(closeWindow: false) }
                 previewWindow = window
                 window.showWindow(nil)
             } catch {
                 if let failure = error as? DeviceInspectorFailure, case .cleanupFailed(let directory, _, _) = failure.error as? DeviceInspectorError {
                     cleanupFailures[directory] = error
-                    if !preparingToQuit { model.onError?(InspectorOperationFailure(deviceName: inspector.device.name, error: error)) }
+                    if !preparingToQuit { model.onError?(InspectorOperationFailure(deviceName: deviceName, error: error)) }
                 } else if !Task.isCancelled, previewGeneration == request {
-                    lastIssue = error.localizedDescription
+                    actionIssue = error.localizedDescription
                 }
             }
         }
@@ -720,25 +727,19 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         if let failure = cleanupFailures.values.first { throw failure }
     }
 
-    func resumeAfterCancelledQuit() {
-        preparingToQuit = false
-        reload()
-    }
+    func resumeAfterCancelledQuit() { preparingToQuit = false }
 
-    private func mutate(using inspector: DeviceInspector, operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
-        let destination = inspector.device
-        model.performInspectorOperation(for: destination, operation: { try await operation(inspector) }) { [weak self] in
-            guard let self, self.device?.id == destination.id else { return }
-            self.reload()
-        }
+    private func mutate(affecting groups: DeviceStateGroups, operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
+        guard let device else { return }
+        model.performInspectorChange(on: device, affecting: groups, operation: operation)
     }
 
     @objc private func install(_ sender: Any?) {
-        guard available, let inspector, let window = view.window else { return }
+        guard available, let device, let window = view.window else { return }
         let content = self.content
         let installsApplication = showingApplications
         let panel = NSOpenPanel()
-        panel.message = installsApplication ? "Choose an application to install on \(inspector.device.name)." : "Choose a profile to install on \(inspector.device.name)."
+        panel.message = installsApplication ? "Choose an application to install on \(device.name)." : "Choose a profile to install on \(device.name)."
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.treatsFilePackagesAsDirectories = false
@@ -747,70 +748,70 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             : [UTType(filenameExtension: content == .configuration ? "mobileconfig" : "mobileprovision") ?? .data]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            self.mutate(using: inspector) { inspector in
+            self.mutate(affecting: content.group) { inspector in
                 if installsApplication { try await inspector.installApplication(at: url) }
                 else { try await inspector.installProfile(at: url, kind: content.profileKind) }
             }
         }
     }
     @objc private func remove(_ sender: Any?) {
-        guard available, removeButton.isEnabled, let inspector, let window = view.window else { return }
+        guard available, removeButton.isEnabled, let device, let window = view.window else { return }
         let app = selectedApp
         let profile = selectedProfile
         guard app != nil || profile != nil else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Remove \(app?.name ?? profile!.name) from \(inspector.device.name)?"
+        alert.messageText = "Remove \(app?.name ?? profile!.name) from \(device.name)?"
         alert.informativeText = app != nil ? "The application and its data will be removed." : "Settings supplied by this profile will be removed."
         alert.addButton(withTitle: "Remove").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
-            self.mutate(using: inspector) { inspector in
+            self.mutate(affecting: profile.map { DeviceStateGroups.profiles(of: $0.kind) } ?? .applications) { inspector in
                 if let app { try await inspector.uninstallApplication(bundleIdentifier: app.bundleIdentifier) }
                 else if let profile { try await inspector.removeProfile(identifier: profile.identifier, kind: profile.kind) }
             }
         }
     }
     @objc private func launch(_ sender: Any?) {
-        guard available, launchButton.isEnabled, let app = selectedApp, let inspector else { return }
-        mutate(using: inspector) { try await $0.launchApplication(bundleIdentifier: app.bundleIdentifier) }
+        guard available, launchButton.isEnabled, let app = selectedApp else { return }
+        mutate(affecting: []) { try await $0.launchApplication(bundleIdentifier: app.bundleIdentifier) }
     }
     @objc private func revealContainer(_ sender: Any?) {
-        guard available, simulatorIsRunning, let app = selectedApp, let inspector else { return }
-        let request = generation
+        guard available, simulatorIsRunning, let app = selectedApp, let state = device?.inspection else { return }
+        revealTask?.cancel()
         revealTask = Task { [weak self] in
             do {
-                let url = try await inspector.applicationContainerURL(bundleIdentifier: app.bundleIdentifier)
-                guard let self, generation == request, !Task.isCancelled else { return }
+                let url = try await state.inspector().applicationContainerURL(bundleIdentifier: app.bundleIdentifier)
+                guard self != nil, !Task.isCancelled else { return }
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } catch {
-                guard let self, generation == request, !Task.isCancelled else { return }
-                lastIssue = error.localizedDescription
+                guard let self, !Task.isCancelled else { return }
+                actionIssue = error.localizedDescription
                 updateControls()
             }
         }
     }
     @objc private func exportData(_ sender: Any?) {
-        guard available, canTransferData, let app = selectedApp, let inspector, let window = view.window else { return }
+        guard available, canTransferData, let app = selectedApp, let device, let window = view.window else { return }
         let panel = NSSavePanel()
         panel.title = "Export Application Data"
-        panel.message = "Export data for \(app.name) on \(inspector.device.name)."
+        panel.message = "Export data for \(app.name) on \(device.name)."
         panel.nameFieldStringValue = app.bundleIdentifier + ".xcappdata"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         if let type = UTType(filenameExtension: "xcappdata") { panel.allowedContentTypes = [type] }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            self.mutate(using: inspector) {
+            self.mutate(affecting: []) {
                 try await $0.downloadApplicationData(bundleIdentifier: app.bundleIdentifier, to: url, replacingExistingFile: true)
             }
         }
     }
     @objc private func importData(_ sender: Any?) {
-        guard available, canReplaceData, let app = selectedApp, let inspector, let window = view.window else { return }
+        guard available, canReplaceData, let app = selectedApp, let device, let window = view.window else { return }
         let panel = NSOpenPanel()
-        panel.message = "Choose application data to replace \(app.name)’s data on \(inspector.device.name)."
+        panel.message = "Choose application data to replace \(app.name)’s data on \(device.name)."
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
@@ -819,13 +820,13 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
             guard response == .OK, let url = panel.url, let self else { return }
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Replace \(app.name)’s data on \(inspector.device.name)?"
+            alert.messageText = "Replace \(app.name)’s data on \(device.name)?"
             alert.informativeText = "The application will be stopped and its current data replaced with the selected data."
             alert.addButton(withTitle: "Replace")
             alert.addButton(withTitle: "Cancel")
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard response == .alertFirstButtonReturn else { return }
-                self?.mutate(using: inspector) { try await $0.replaceApplicationData(bundleIdentifier: app.bundleIdentifier, from: url) }
+                self?.mutate(affecting: .applications) { try await $0.replaceApplicationData(bundleIdentifier: app.bundleIdentifier, from: url) }
             }
         }
     }

@@ -173,9 +173,9 @@ Hub mode.
 | `SimulatorHostController` | Serialize route changes, track renderer ownership, and resolve the Xcode for each device. |
 | `SimulatorManagerModel` | Own observable inventory and its DeviceKit Active values, loading state, and the accepted operation queue. |
 | `DeviceRegistry` | Keep one stable `DeviceModel` for each device for as long as the inventory lists it. A record leaves only when a source that lists it read successfully without it. An application owns its registry, and each process has its own. |
-| `DeviceModel`, `DeviceSettingsState`, `BackgroundServicesState` | Hold what one device last answered, for everything in the process that presents it: its settings field by field, its background services, its command state, audio routes and location, its health and its last issue. Own that device's accepted changes and their order, independently of other devices. See [Device state](#Device-state). |
+| `DeviceModel`, `DeviceSettingsState`, `BackgroundServicesState`, `DeviceInspectionState` | Hold what one device last answered, for everything in the process that presents it: its settings field by field, its background services, its command state, audio routes and location, its health and its last issue. Own that device's accepted changes and their order, independently of other devices. See [Device state](#Device-state). |
 | `ManagerSelection` | Hold which device the manager shows, and keep that device's state current while it does. It holds no device state itself. |
-| `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
+| `DeviceInspectorModel` | Say which part of the selected device's inspection shows, and what its status means there. It holds no device state itself. |
 | `ManagerWindowController` | Present the sidebar, device screen pane, and settings inspector in `NSSplitViewController`, own the selection, the toolbar, and the latest placement choice for the selected device, and decide where each opened or restored screen goes. |
 | `DeviceScreenViewController` | Show the selected device's screen or preview in the center pane, with its canvas controls and activity footer; move screens in the order the window accepts them, stopping a move once a later choice replaces it; and return to the preview when that screen closes. |
 | `DeviceScreens` | Index the manager's open screens by device, own a public `SimulatorContext` and `SimulatorScreens` for each Xcode and the remote screen connections, and stop them without shutting devices down. |
@@ -414,6 +414,18 @@ others, and changes only the properties whose values changed, so a view updates 
 for what it read. A failed read keeps the group's values and reports its reason in
 `status(of:)`; `unsupported` clears only that group. Only the next invalidation reads
 a failed group again.
+
+A device's details, applications, each kind of profile and reports read the same way,
+each as a group of `DeviceInspectionState`. A failed read keeps the group's values, and
+an incomplete one keeps what it could read, with the reason in `status(of:)`.
+`unsupported` comes only from what the inventory says the device can do, never from a
+failed command; a simulator that has not started or a device that has not connected
+keeps what it has, and `canRead(_:)` says that it cannot answer now. Installing or
+removing an application or profile, and a screen's application drop, mark only the
+list they can have changed as out of date, including when they fail, because a failure
+can leave the device changed. A record that changes in the inventory marks only the
+details, and restarting marks everything. Reading stays per group: the commands run in
+`DeviceInspector`, which `DeviceStateSource` makes for a device.
 
 A read that began before an accepted change does not answer for the group it changed,
 and a read that began before the device restarted or changed what it can answer for

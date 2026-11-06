@@ -14,6 +14,8 @@ package protocol DeviceStateSource: Sendable {
     func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
                                for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate
+    /// What runs a device's inspection commands. Making one reads nothing of the device.
+    func inspector(for device: InventoryDevice) async throws -> DeviceInspector
     /// Stops the reads running now and refuses new ones until ``resumeReads()``, without stopping any change.
     nonisolated func stopReads()
     nonisolated func resumeReads()
@@ -86,6 +88,10 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
         return try await backend.update(targets, enabled: enabled)
+    }
+
+    package func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
+        DeviceInspector(device: device, simulatorXcodeURL: try await xcodeURL(device))
     }
 
     private func serviceBackend(for device: InventoryDevice) async throws -> SimulatorBackgroundServiceBackend {

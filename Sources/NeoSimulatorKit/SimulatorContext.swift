@@ -80,7 +80,6 @@ package struct SimulatorContextConfiguration {
     package var offersLifetimeChoice = false
     package var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
     package var onError: ((any Error) -> Void)?
-    package var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
     package var guestLifetime: ManagedGuestLifetime?
     package var onHostConflictBegan: ((SimulatorContext, String) -> Void)?
     package var onHostConflictEnded: ((SimulatorContext, (any Error)?) -> Void)?
@@ -254,7 +253,6 @@ public final class SimulatorContext {
         guestLifetime = configuration.guestLifetime
         onError = configuration.onError
         engine.onOpen = configuration.onOpen
-        engine.onApplicationsChange = configuration.onApplicationsChange
         engine.onChange = { [weak self] in self?.reconcileScreens() }
         engine.onClose = { [weak self] id, choice, finishing in
             guard let self else { return }

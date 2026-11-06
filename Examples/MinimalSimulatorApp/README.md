@@ -11,8 +11,11 @@ A screen is usable before its optional services are: `session.inputReadiness` an
 `session.pasteboardReadiness` say how far they have come, a failure there never switches to another
 route, and `session.retryInput()` connects the same input route again.
 Keep a `DeviceReadInterest` returned by `model.keepCurrent(.settings)` while a settings
-view needs updates; returning to a device reuses its values. Call `registry.revalidate()`
-when the application returns to the foreground to refresh changes made elsewhere.
+view needs updates; returning to a device reuses its values. `model.inspection` holds the
+device's details, applications, profiles and reports the same way, through
+`model.keepCurrent(.applications)` and the other groups of `.inspection`. Call
+`registry.revalidate()` when the application returns to the foreground to refresh changes
+made elsewhere.
 
 Requirements match NeoSimulator: Apple Silicon, macOS 26.4, and Xcode 27 with a
 simulator runtime installed. Quit Apple's Simulator and Device Hub before opening
