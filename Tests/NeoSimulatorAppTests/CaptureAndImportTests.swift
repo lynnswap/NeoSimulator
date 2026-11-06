@@ -904,7 +904,7 @@ struct CaptureThumbnailTests {
         }
         #expect(lane.runs == 1)
         #expect(!content.isResolved && FileManager.default.fileExists(atPath: content.file.path))
-        try await content.saveIfUnresolved()
+        await content.saveIfUnresolved { Issue.record($0) }
         #expect(lane.runs == 2 && content.isResolved)
         #expect(try savedNames(in: directory) == ["Kept.png"])
 
@@ -913,11 +913,12 @@ struct CaptureThumbnailTests {
         try Data("unsaved".utf8).write(to: file)
         let unsaved = CapturedContent(.screenshot, file: file, name: "Unsaved.png", defaultFolder: missing, lane: lane)
         let before = lane.runs
-        await #expect(throws: SimulatorError.self) { try await unsaved.saveIfUnresolved() }
-        #expect(lane.runs == before + 1)
-        try await unsaved.saveIfUnresolved()
-        try await unsaved.settleAfterDrop()
-        #expect(lane.runs == before + 1)
+        var reported: [any Error] = []
+        await unsaved.saveIfUnresolved { reported.append($0) }
+        #expect(lane.runs == before + 1 && reported.count == 1)
+        await unsaved.saveIfUnresolved { reported.append($0) }
+        await unsaved.settleAfterDrop { reported.append($0) }
+        #expect(lane.runs == before + 1 && reported.count == 1)
         #expect(!unsaved.isResolved && FileManager.default.fileExists(atPath: file.path))
         // Someone asking still can.
         try await unsaved.save(into: directory.appendingPathComponent("Saved"))
@@ -931,24 +932,13 @@ struct CaptureThumbnailTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let whole = directory.appendingPathComponent("Whole.png")
         try Data("whole".utf8).write(to: whole)
-        // Its first work reports what a move across volumes reports when it cannot remove the original.
-        final class LeavingBehind: CaptureLane, Sendable {
-            let whole: URL
-            let runs = Mutex(0)
-            init(whole: URL) { self.whole = whole }
-            @concurrent func run<Value: Sendable>(_ work: @escaping @Sendable () throws -> Value) async throws -> Value {
-                let run = runs.withLock { $0 += 1; return $0 }
-                if run == 1 { throw CaptureLeftBehind(destination: whole, original: whole, cleanup: CocoaError(.fileWriteNoPermission)) }
-                return try await performBlockingIO(work)
-            }
-        }
         let lane = LeavingBehind(whole: whole)
         let content = try capture(named: "Whole.png", in: directory, lane: lane)
         await #expect(throws: CaptureLeftBehind.self) { try await content.saveToDefaultLocation() }
         #expect(content.isResolved)
         // Nothing moves it again, and it stays where the failure said it is.
-        try await content.saveIfUnresolved()
-        try await content.settleAfterDrop()
+        await content.saveIfUnresolved { Issue.record($0) }
+        await content.settleAfterDrop { Issue.record($0) }
         #expect(lane.runs.withLock { $0 } == 1)
         #expect(FileManager.default.fileExists(atPath: content.file.path))
         let destination = directory.appendingPathComponent("Dropped.png")
@@ -1050,13 +1040,13 @@ struct CaptureThumbnailTests {
         let lane = HeldCaptureLane()
         let content = try capture(named: "Held.png", in: directory, owner: owner, lane: lane)
         CaptureThumbnail(content, image: nil, parent: window, source: source, spacing: .zero) { _ in }.show()
-        let finishing = Task.immediate { await CaptureThumbnail.finishAll(owner: owner) }
+        CaptureThumbnail.beginFinishing(owner: owner)
         await lane.untilHeld(1)
         let other = try capture(named: "Other.png", in: directory, owner: UUID(), lane: lane)
         let otherSave = Task.immediate { try await other.saveToDefaultLocation() }
         await lane.untilHeld(2)
         _ = TerminationAccount.shared.take()
-        let failures = await CaptureThumbnail.failures(of: finishing, before: .now + .milliseconds(50), owner: owner)
+        let failures = await CaptureThumbnail.finishAll(owner: owner, before: .now + .milliseconds(50))
         #expect(failures.count == 1 && failures[0].localizedDescription.contains(content.file.path))
         #expect(!failures[0].localizedDescription.contains(other.file.path))
         #expect(TerminationAccount.shared.take().isEmpty)
@@ -1064,7 +1054,7 @@ struct CaptureThumbnailTests {
         #expect(FileManager.default.fileExists(atPath: content.file.path))
         lane.open()
         _ = try await otherSave.value
-        #expect(await CaptureThumbnail.failures(of: finishing, before: .now + .seconds(30)).isEmpty)
+        #expect(await CaptureThumbnail.finishAll(owner: owner, before: .now + .seconds(30)).isEmpty)
         #expect(TerminationAccount.shared.take().isEmpty)
         #expect(content.isResolved && !CaptureThumbnail.unfinishedCaptures().contains(content.file))
         #expect(try savedNames(in: directory) == ["Held.png", "Other.png"])
@@ -1114,6 +1104,281 @@ struct CaptureThumbnailTests {
         #expect(first.isResolved && next.isResolved && reported.isEmpty)
     }
 
+    /// The saving host: a real one in this process, with no device, which stops as a public context's does. Its captures
+    /// report as those of its device windows do once those have closed.
+    private func stoppingHost(limit: Duration = .milliseconds(50)) async throws -> (host: SimulatorScreenHost, reported: () -> [String]) {
+        let host = try SimulatorScreenHost(runtime: try await loadTestRuntime(), conflicts: HostConflictMonitor(), inProcess: true)
+        host.captureFinishLimit = limit
+        final class Reports { var messages: [String] = [] }
+        let reports = Reports()
+        host.onError = { reports.messages.append($0.localizedDescription) }
+        return (host, { reports.messages })
+    }
+
+    @Test(.enabled("Another host would refuse this one.") { await noOtherHostIsDisplaying() })
+    func aFailureThatOutlastsAStopReachesOnErrorOnceAndNoRetryClaimsACleanFinishWhileTheCaptureIsUnsaved() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (host, reported) = try await stoppingHost()
+        let lane = HeldCaptureLane()
+        defer { lane.open() }
+        let file = directory.appendingPathComponent("Temporary.png")
+        try Data("capture".utf8).write(to: file)
+        let folder = directory.appendingPathComponent("Missing", isDirectory: true)
+        let content = CapturedContent(.screenshot, file: file, name: "Held.png", defaultFolder: folder, owner: host.captureOwner, lane: lane)
+        Task.immediate { await content.saveIfUnresolved { host.noteCaptureFailure($0) } }
+
+        do {
+            try await host.stop(keepingDevicesRunning: true)
+            Issue.record("Expected the stop to report the unfinished save")
+        } catch { #expect(error.localizedDescription.contains(file.path)) }
+        #expect(reported().isEmpty && host.isStopped)
+
+        // The deadline ended only that wait: the disk fails now, with nobody waiting.
+        lane.open()
+        try? await wait(timeout: .seconds(5)) { reported().count == 1 }
+        #expect(reported().count == 1 && reported().first?.contains(file.path) == true)
+        #expect(!content.isResolved && FileManager.default.fileExists(atPath: file.path))
+
+        // Every retry says so while the capture is unsaved, and none repeats the save, though it would succeed now.
+        host.captureFinishLimit = nil
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for _ in 1...2 {
+            do {
+                try await host.stop(keepingDevicesRunning: true)
+                Issue.record("A retry claimed a clean finish with the capture unsaved")
+            } catch {
+                // Once, though the host heard of it from the sink as well as from the capture.
+                #expect(error.localizedDescription.contains(file.path) && !error.localizedDescription.contains("\n"))
+            }
+        }
+        #expect(reported().count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+
+        // Whoever read where it remains can take it, which settles it.
+        try FileManager.default.removeItem(at: file)
+        try await host.stop(keepingDevicesRunning: true)
+        #expect(reported().count == 1)
+        #expect(CaptureThumbnail.unfinishedCaptures(owner: host.captureOwner).isEmpty)
+    }
+
+    /// A parent for a thumbnail that is never shown, for tests of what becomes of its capture.
+    private func unshownWindow() -> NSWindow {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 360), styleMask: .borderless, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
+    /// A capture that fails to save, because its default folder is missing, until a test makes that folder.
+    private func unsaveable(_ kind: CapturedContent.Kind = .screenshot, named name: String, in directory: URL, owner: UUID,
+                            lane: any CaptureLane = BlockingIOLane()) throws -> CapturedContent {
+        let content = try capture(kind, named: name, in: directory, owner: owner, lane: lane)
+        try? FileManager.default.removeItem(at: content.defaultFolder)
+        return content
+    }
+
+    @Test(.enabled("Another host would refuse this one.") { await noOtherHostIsDisplaying() })
+    func aFailureArrivingWhileARetriedStopWaitsIsThrownByThatStopAloneUntilAcknowledged() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (host, reported) = try await stoppingHost()
+        let lane = HeldCaptureLane()
+        defer { lane.open() }
+        let content = try unsaveable(named: "Held.png", in: directory, owner: host.captureOwner, lane: lane)
+        Task.immediate { await content.saveIfUnresolved { host.noteCaptureFailure($0) } }
+        await #expect(throws: SimulatorError.self) { try await host.stop(keepingDevicesRunning: true) }
+
+        host.captureFinishLimit = nil
+        let retry = Task.immediate { try await host.stop(keepingDevicesRunning: true) }
+        lane.open()
+        do {
+            try await retry.value
+            Issue.record("A retry claimed a clean finish with the capture unsaved")
+        } catch {
+            #expect(error.localizedDescription.contains(content.file.path))
+            #expect(!error.localizedDescription.contains("did not finish"))
+        }
+        #expect(reported().isEmpty && !content.isResolved)
+
+        // A caller that has told the user lets the next stop finish. That does not save the capture, or forget where it is.
+        host.acknowledgeCaptureFailures()
+        try await host.stop(keepingDevicesRunning: true)
+        #expect(reported().isEmpty && !content.isResolved)
+        #expect(FileManager.default.fileExists(atPath: content.file.path))
+    }
+
+    @Test(.enabled("Another host would refuse this one.") { await noOtherHostIsDisplaying() })
+    func aSaveThatSucceedsAfterAStopGaveUpSettlesOnceWithNothingToReport() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (host, reported) = try await stoppingHost()
+        let lane = HeldCaptureLane()
+        defer { lane.open() }
+        let content = try capture(named: "Held.png", in: directory, owner: host.captureOwner, lane: lane)
+        Task.immediate { await content.saveIfUnresolved { host.noteCaptureFailure($0) } }
+        do {
+            try await host.stop(keepingDevicesRunning: true)
+            Issue.record("Expected the stop to name the capture a disk holds")
+        } catch { #expect(error.localizedDescription.contains(content.file.path)) }
+
+        lane.open()
+        try await wait(timeout: .seconds(5)) { content.isResolved }
+        host.captureFinishLimit = nil
+        try await host.stop(keepingDevicesRunning: true)
+        #expect(reported().isEmpty)
+        #expect(try savedNames(in: directory) == ["Held.png"])
+    }
+
+    @Test func aStopAnswersOnlyForItsOwnersCaptures() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let owner = UUID(), other = UUID()
+        let lane = HeldCaptureLane()
+        defer { lane.open() }
+        let held = try unsaveable(named: "Held.png", in: directory, owner: owner, lane: lane)
+        let elsewhere = try unsaveable(named: "Elsewhere.png", in: directory, owner: other)
+        var reported: [any Error] = [], reportedElsewhere: [any Error] = []
+        Task.immediate { await held.saveIfUnresolved { reported.append($0) } }
+        let stopping = Task.immediate { await CaptureThumbnail.finishAll(owner: owner) }
+        await lane.untilHeld(1)
+
+        // This fails during that stop, which does not answer for it.
+        await elsewhere.saveIfUnresolved { reportedElsewhere.append($0) }
+        #expect(reportedElsewhere.count == 1)
+        // This one it does, and nobody has heard of it to acknowledge it yet.
+        let alongside = try unsaveable(named: "Alongside.png", in: directory, owner: owner)
+        await alongside.saveIfUnresolved { reported.append($0) }
+        CaptureThumbnail.acknowledgeFailures(owner: owner)
+        lane.open()
+        let failures = await stopping.value.map(\.localizedDescription)
+        #expect(failures.count == 2 && reported.isEmpty)
+        #expect(failures.contains { $0.contains(held.file.path) } && failures.contains { $0.contains(alongside.file.path) })
+
+        // Neither owner's retry, nor an acknowledgment by one, touches the other's.
+        CaptureThumbnail.acknowledgeFailures(owner: owner)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+        let others = await CaptureThumbnail.finishAll(owner: other)
+        #expect(others.count == 1 && others.first?.localizedDescription.contains(elsewhere.file.path) == true)
+        #expect(reported.isEmpty && reportedElsewhere.count == 1)
+        CaptureThumbnail.acknowledgeFailures(owner: other)
+    }
+
+    @Test func aDroppedCaptureThatAStopGaveUpOnReportsItsLateFailureToItsOwnSink() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let window = unshownWindow()
+        let owner = UUID()
+        let lane = HeldCaptureLane()
+        defer { lane.open() }
+        let content = try unsaveable(named: "Dropped.png", in: directory, owner: owner, lane: lane)
+        var reported: [String] = []
+        CaptureThumbnail(content, image: nil, parent: window, source: .zero, spacing: .zero) {
+            reported.append($0.localizedDescription)
+        }.dragEnded(.copy)
+        let failures = await CaptureThumbnail.finishAll(owner: owner, before: .now + .milliseconds(50))
+        #expect(failures.count == 1 && failures.first?.localizedDescription.contains(content.file.path) == true)
+        #expect(reported.isEmpty)
+
+        lane.open()
+        try await wait(timeout: .seconds(5)) { reported.count == 1 }
+        #expect(reported.first?.contains(content.file.path) == true)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).map(\.localizedDescription) == reported)
+        try FileManager.default.removeItem(at: content.file)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+        #expect(reported.count == 1 && content.isResolved)
+    }
+
+    @Test func aFailedSaveIsNotForgottenOnceReportedButEndsWhenTheCaptureHasGone() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let window = unshownWindow()
+        let owner = UUID()
+        let content = try unsaveable(named: "Dismissed.png", in: directory, owner: owner)
+        var reported: [String] = []
+        CaptureThumbnail(content, image: nil, parent: window, source: .zero, spacing: .zero) {
+            reported.append($0.localizedDescription)
+        }.hide(animated: false)
+        await content.settled()
+        #expect(reported.count == 1)
+        #expect(CaptureThumbnail.unfinishedCaptures(owner: owner) == [content.file])
+        #expect(await CaptureThumbnail.finishAll(owner: owner).map(\.localizedDescription) == reported)
+        #expect(reported.count == 1 && !content.isResolved)
+
+        try FileManager.default.removeItem(at: content.file)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+        #expect(content.isResolved && CaptureThumbnail.unfinishedCaptures(owner: owner).isEmpty)
+    }
+
+    @Test func aHeldGIFThatFailsAfterAStopGaveUpKeepsBothFailuresAndDoesNotSaveItsMovieAgain() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let window = unshownWindow()
+        let owner = UUID()
+        // Naming the GIF passes; what follows is held.
+        let lane = HeldCaptureLane(passing: 1)
+        defer { lane.open() }
+        let content = try unsaveable(.movie, named: "Broken.mov", in: directory, owner: owner, lane: lane)
+        var reported: [String] = []
+        let thumbnail = CaptureThumbnail(content, image: nil, parent: window, source: .zero, spacing: .zero) {
+            reported.append($0.localizedDescription)
+        }
+        let item = try #require(thumbnail.menu().items.first { $0.title == "Save as Animated GIF" })
+        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        await thumbnail.action?.value
+        await lane.untilHeld(1)
+        let failures = await CaptureThumbnail.finishAll(owner: owner, before: .now + .milliseconds(50))
+        #expect(failures.count == 1 && failures.first?.localizedDescription.contains(content.file.path) == true)
+        #expect(reported.isEmpty)
+
+        lane.open()
+        try await wait(timeout: .seconds(5)) { reported.count == 1 }
+        let failure = try #require(reported.first)
+        // The GIF's failure comes first, then the failed save's, which says where the movie remains.
+        #expect(!failure.hasPrefix("Could not save") && failure.contains(" Could not save ") && failure.contains(content.file.path))
+        try FileManager.default.createDirectory(at: content.defaultFolder, withIntermediateDirectories: true)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).map(\.localizedDescription) == [failure])
+        #expect(reported.count == 1 && !content.isResolved)
+        #expect(try savedNames(in: directory).isEmpty)
+        try FileManager.default.removeItem(at: content.file)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+    }
+
+    @Test func aCaptureLeftBehindIsToldOnceWithItsOriginalAndCleanupFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let owner = UUID()
+        let whole = directory.appendingPathComponent("Whole.png")
+        try Data("whole".utf8).write(to: whole)
+        var reported: [any Error] = []
+
+        // A stop waiting for it returns the failure.
+        let stopped = try capture(named: "Stopped.png", in: directory, owner: owner, lane: LeavingBehind(whole: whole))
+        CaptureThumbnail.beginFinishing(owner: owner)
+        await stopped.saveIfUnresolved { reported.append($0) }
+        let failures = await CaptureThumbnail.finishAll(owner: owner)
+        let failure = try #require(failures.first as? CaptureLeftBehind)
+        #expect(failures.count == 1 && reported.isEmpty && stopped.isResolved)
+        #expect(failure.localizedDescription.contains(whole.path))
+        #expect(failure.localizedDescription.contains(CocoaError(.fileWriteNoPermission).localizedDescription))
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+
+        // With nobody waiting `report` hears, and no stop repeats it: the capture is saved.
+        let dismissed = try capture(named: "Dismissed.png", in: directory, owner: owner, lane: LeavingBehind(whole: whole))
+        await dismissed.saveIfUnresolved { reported.append($0) }
+        #expect(reported.count == 1 && reported.first is CaptureLeftBehind && dismissed.isResolved)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
+    }
+
     @Test func quittingWaitsForAnAnimatedGIFAndNamesItsFilesWhileADiskHoldsIt() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1135,8 +1400,7 @@ struct CaptureThumbnailTests {
         await thumbnail.action?.value
         await lane.untilHeld(1)
         #expect(content.isResolved)
-        let finishing = Task.immediate { await CaptureThumbnail.finishAll(owner: owner) }
-        let failures = await CaptureThumbnail.failures(of: finishing, before: .now + .milliseconds(50), owner: owner)
+        let failures = await CaptureThumbnail.finishAll(owner: owner, before: .now + .milliseconds(50))
         let description = try #require(failures.first?.localizedDescription)
         #expect(failures.count == 1)
         #expect(description.contains(folder.appendingPathComponent("Movie.gif").path))
@@ -1144,7 +1408,7 @@ struct CaptureThumbnailTests {
         #expect(description.contains("\(folder.path)/.neo-simulator-"))
         #expect(CaptureThumbnail.unfinishedCaptures(owner: UUID()).isEmpty)
         lane.open()
-        #expect(await finishing.value.isEmpty)
+        #expect(await CaptureThumbnail.finishAll(owner: owner).isEmpty)
         #expect(reported.isEmpty)
         #expect(try savedNames(in: directory) == ["Movie.gif", "Movie.mov"])
         #expect(CaptureThumbnail.unfinishedCaptures(owner: owner).isEmpty)
@@ -1412,6 +1676,18 @@ struct CaptureThumbnailTests {
 
 /// Lets the first `passing` pieces of capture work through and holds the rest at the lane until it is opened, then runs
 /// the real work on the real lane.
+/// Its first work reports what a move across volumes reports when it cannot remove the original.
+final class LeavingBehind: CaptureLane, Sendable {
+    let whole: URL
+    let runs = Mutex(0)
+    init(whole: URL) { self.whole = whole }
+    @concurrent func run<Value: Sendable>(_ work: @escaping @Sendable () throws -> Value) async throws -> Value {
+        let run = runs.withLock { $0 += 1; return $0 }
+        if run == 1 { throw CaptureLeftBehind(destination: whole, original: whole, cleanup: CocoaError(.fileWriteNoPermission)) }
+        return try await performBlockingIO(work)
+    }
+}
+
 final class HeldCaptureLane: CaptureLane, Sendable {
     private struct State {
         var isOpen = false

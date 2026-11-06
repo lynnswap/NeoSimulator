@@ -26,7 +26,23 @@ func wait(timeout: Duration = .seconds(2), sourceLocation: SourceLocation = #_so
 }
 
 @MainActor
-private func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostName == nil }
+func loadTestRuntime() async throws -> SimulatorRuntime {
+    let selection = Process()
+    let output = Pipe()
+    selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+    selection.arguments = ["-p"]
+    selection.standardOutput = output
+    try selection.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    selection.waitUntilExit()
+    let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+        ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
+    return try await SimulatorRuntime.load(xcodeURL: xcode)
+}
+
+@MainActor
+func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostName == nil }
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
@@ -10088,20 +10104,7 @@ struct InputFocusTests {
     }
 
     /// Loads the selected Xcode's private runtime.
-    private func makeRuntime() async throws -> SimulatorRuntime {
-        let selection = Process()
-        let output = Pipe()
-        selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        selection.arguments = ["-p"]
-        selection.standardOutput = output
-        try selection.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        selection.waitUntilExit()
-        let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
-            ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
-        return try await SimulatorRuntime.load(xcodeURL: xcode)
-    }
+    private func makeRuntime() async throws -> SimulatorRuntime { try await loadTestRuntime() }
 
     private func makeController(_ display: TestDisplay,
                                 family: DeviceCapabilities.Family = .iPhone,

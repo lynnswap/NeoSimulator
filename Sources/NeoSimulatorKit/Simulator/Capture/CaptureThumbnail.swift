@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
 /// This object is the capture's one owner. File work runs away from the main actor, one operation at a time in the order
 /// they were asked for, and each reads what the one before it settled. So a save, a delete and a late delivery that race
 /// cannot move or remove the file twice, and none repeats what another attempted.
+///
+/// It also owns what became of a save nobody asked for, past its thumbnail, its window and any stop that gave up waiting.
+/// Hearing of a failure does not save the capture, so a stop of its owner goes on saying so until something settles it.
 @MainActor
 package final class CapturedContent {
     package enum Kind { case screenshot, movie }
@@ -28,11 +31,15 @@ package final class CapturedContent {
     private let lane: any CaptureLane
     private let locations = CaptureFile.Locations()
     /// Whether the capture has been saved, deleted, or handed to another app. Set once that has succeeded.
-    package private(set) var isResolved = false
+    package private(set) var isResolved = false {
+        didSet { if isResolved { forgetFailures() } }
+    }
     /// Where it was saved, from which a late drag delivery copies it.
     private var saved: URL?
     /// Whether a save nobody asked for has failed and been reported. Only someone asking moves the capture after that.
     private var automaticSaveFailed = false
+    /// What a stop of its owner has to say about it.
+    private var failures: [any Error] = []
     /// The animated GIF being written from it, whose name other exports must not take.
     private var exportingGIF: URL?
     /// A screenshot's bytes, read before its thumbnail appears, because a drag cannot wait to offer them.
@@ -41,6 +48,8 @@ package final class CapturedContent {
     private var operations = 0
     /// Captures with file work in flight, which quitting waits for.
     private static var working: [ObjectIdentifier: CapturedContent] = [:]
+    /// Captures with failures kept for their owners, which nothing else may still hold.
+    private static var failed: [ObjectIdentifier: CapturedContent] = [:]
 
     package init(_ kind: Kind, file: URL, name: String, defaultFolder: URL, owner: UUID? = nil, lane: any CaptureLane = BlockingIOLane(),
          claim: @escaping CaptureFile.Claim = { _ in {} }) {
@@ -122,32 +131,71 @@ package final class CapturedContent {
     package func saveToDefaultLocation() async throws -> URL { try await save(into: defaultFolder) }
 
     /// Saves the capture where dismissing would, once, unless something has resolved it by the time this runs.
-    package func saveIfUnresolved() async throws {
-        try await inOrder { [self] in
+    package func saveIfUnresolved(report: @escaping (Error) -> Void) async {
+        _ = try? await inOrder { [self] in
             guard !isResolved, !automaticSaveFailed else { return }
-            try await saveAutomatically()
+            do { _ = try await move(into: defaultFolder) } catch { keep(error, report: report) }
         }
     }
 
     /// Does the same for a capture that a drop may have taken through its file URL, which moved the temporary file away
     /// and resolves it.
-    package func settleAfterDrop() async throws {
-        try await inOrder { [self] in
+    package func settleAfterDrop(report: @escaping (Error) -> Void) async {
+        _ = try? await inOrder { [self] in
             guard !isResolved, !automaticSaveFailed else { return }
             let file = file
-            guard try await lane.run({ FileManager.default.fileExists(atPath: file.path) }) else {
-                isResolved = true
-                return
-            }
-            try await saveAutomatically()
+            do {
+                guard try await lane.run({ FileManager.default.fileExists(atPath: file.path) }) else {
+                    isResolved = true
+                    return
+                }
+                _ = try await move(into: defaultFolder)
+            } catch { keep(error, report: report) }
         }
     }
 
-    private func saveAutomatically() async throws {
-        do { _ = try await move(into: defaultFolder) }
-        catch {
-            automaticSaveFailed = !isResolved
-            throw error
+    /// Keeps a failed automatic save's outcome. While a stop of its owner waits, that stop returns it. With nobody waiting,
+    /// `report` hears now, and a later stop hears again for as long as the capture remains unsaved. A capture saved with its
+    /// original left behind is settled, so it is told once. Deciding this within the operation tells no failure to both.
+    private func keep(_ failure: any Error, report: (Error) -> Void) {
+        hostLog(failure.localizedDescription)
+        automaticSaveFailed = !isResolved
+        failures.append(failure)
+        Self.failed[ObjectIdentifier(self)] = self
+        guard !CaptureThumbnail.isFinishing(owner) else { return }
+        if isResolved { forgetFailures() }
+        report(failure)
+    }
+
+    private func forgetFailures() {
+        failures.removeAll()
+        Self.failed.removeValue(forKey: ObjectIdentifier(self))
+    }
+
+    /// Captures with failures kept for `owner`, in a stable order.
+    fileprivate static func failedCaptures(owner: UUID?) -> [CapturedContent] {
+        failed.values.filter { owner == nil || $0.owner == owner }.sorted { $0.file.path < $1.file.path }
+    }
+
+    /// What a stop of `owner` has to say. A capture that remains unsaved stays, for the next stop.
+    fileprivate static func takeFailures(owner: UUID?) -> [any Error] {
+        let captures = failedCaptures(owner: owner)
+        defer { for content in captures where content.isResolved { content.forgetFailures() } }
+        return captures.flatMap(\.failures)
+    }
+
+    /// Lets go of `owner`'s failures. The captures stay where those failures said, and are not saved again.
+    fileprivate static func forgetFailures(owner: UUID?) {
+        for content in failedCaptures(owner: owner) { content.forgetFailures() }
+    }
+
+    /// Settles a capture that has gone from where its failure said it remained, because whoever read that may take it.
+    /// This only looks, and never attempts the save again.
+    fileprivate func noticeRemoval() async {
+        _ = try? await inOrder { [self] in
+            guard !isResolved else { return }
+            let file = file
+            if try await !lane.run({ FileManager.default.fileExists(atPath: file.path) }) { isResolved = true }
         }
     }
 
@@ -240,10 +288,10 @@ package final class CapturedContent {
             hostLog("Could not save an animated GIF: \(error.localizedDescription)")
             var failure = error
             if !keepingMovie, !isResolved, !automaticSaveFailed {
-                do { try await saveAutomatically() }
+                do { _ = try await move(into: defaultFolder) }
                 catch { failure = SimulatorError.operation("\(failure.localizedDescription) \(error.localizedDescription)") }
             }
-            report(failure)
+            if isResolved { report(failure) } else { keep(failure, report: report) }
         }
     }
 
@@ -321,7 +369,9 @@ package final class CaptureThumbnail: NSObject {
     package private(set) static var active: [CaptureThumbnail] = []
     /// Captures whose thumbnail has ended but that wait for a drag's file
     /// promise; quitting saves those still unresolved.
-    private static var pending: [CapturedContent] = []
+    private static var pending: [(content: CapturedContent, report: (Error) -> Void)] = []
+    /// The owners with a stop in progress, which returns their captures' failures; nil is a stop of every owner.
+    private static var finishing: Set<UUID?> = []
     /// Thumbnails whose menu action is using their capture, which quitting waits for.
     private static var performing: Set<CaptureThumbnail> = []
     /// Reports a failure of a thumbnail whose device window has closed.
@@ -531,11 +581,10 @@ package final class CaptureThumbnail: NSObject {
         hide(animated: true)
     }
 
-    /// Ends the thumbnail now. Saving what it holds has then begun, in the order asked for, and the returned task ends with
-    /// its failure. A menu action in progress keeps the capture instead, and saves it if it fails.
-    @discardableResult
-    private func finish(reporting: Bool = true) -> Task<(any Error)?, Never>? {
-        guard !finished else { return nil }
+    /// Ends the thumbnail now. Saving what it holds has then begun, in the order asked for. A menu action in progress keeps
+    /// the capture instead, and saves it if it fails.
+    private func finish() {
+        guard !finished else { return }
         finished = true
         hiding = true
         cancelTimer?()
@@ -547,54 +596,60 @@ package final class CaptureThumbnail: NSObject {
         window.orderOut(nil)
         window.close()
         Self.active.removeAll { $0 === self }
-        guard !dismissedExplicitly, !Self.performing.contains(self), !content.isResolved else { return nil }
+        guard !dismissedExplicitly, !Self.performing.contains(self), !content.isResolved else { return }
         let content = content, report = report
-        return Task.immediate {
-            do {
-                try await content.saveIfUnresolved()
-                return nil
-            } catch {
-                hostLog(error.localizedDescription)
-                if reporting { report(error) }
-                return error
-            }
-        }
+        Task.immediate { await content.saveIfUnresolved(report: report) }
     }
 
-    /// Ends thumbnails before it first waits, then saves unresolved captures before quitting, and waits for every file
-    /// operation of theirs in flight, including an animated GIF being written. Failures of what it began are returned;
-    /// those of what was already running go to whoever asked for it.
-    @discardableResult
-    package static func finishAll(owner: UUID? = nil) async -> [Error] {
+    fileprivate static func isFinishing(_ owner: UUID?) -> Bool { finishing.contains(nil) || finishing.contains(owner) }
+
+    /// Begins a stop of `owner`'s captures, which `finishAll` ends: thumbnails have ended and saving what they hold has
+    /// begun when this returns, and until then those captures' failures wait for `finishAll` instead of being reported.
+    package static func beginFinishing(owner: UUID? = nil) {
         func belongs(_ content: CapturedContent) -> Bool { owner == nil || content.owner == owner }
-        let saves = active.filter { belongs($0.content) }.compactMap { $0.finish(reporting: false) }
-        let settling = pending.filter(belongs).map { content in
-            Task.immediate { () -> (any Error)? in
-                do { try await content.settleAfterDrop(); return nil } catch { return error }
-            }
+        finishing.insert(owner)
+        for thumbnail in active where belongs(thumbnail.content) { thumbnail.finish() }
+        for (content, report) in pending where belongs(content) {
+            Task.immediate { await content.settleAfterDrop(report: report) }
         }
-        pending.removeAll(where: belongs)
-        for thumbnail in performing where belongs(thumbnail.content) { await thumbnail.action?.value }
-        var failures: [Error] = []
-        for task in saves + settling { if let failure = await task.value { failures.append(failure) } }
-        await CapturedContent.finishOperations(owner: owner)
-        return failures
+        pending.removeAll { belongs($0.content) }
     }
 
-    /// What `finishing` reports if it ends before `deadline`. A disk that holds it longer does not hold a quit, which then
-    /// says where each capture remains; the work carries on until the process ends, and cannot lose the original.
-    package static func failures(of finishing: Task<[Error], Never>, before deadline: ContinuousClock.Instant,
-                                 owner: UUID? = nil) async -> [Error] {
-        if await finishing.ends(before: deadline) { return await finishing.value }
+    /// Saves unresolved captures and waits until `deadline` for every file operation of theirs in flight, including an animated
+    /// GIF being written, then returns the failures their owner has to hear. A disk that holds them longer does not hold a
+    /// quit, which is told where each capture remains. Only this wait ends: the work carries on, cannot lose the original,
+    /// and a failure from here on goes to whoever began it, and to the next stop while the capture remains unsaved.
+    @discardableResult
+    package static func finishAll(owner: UUID? = nil,
+                                  before deadline: ContinuousClock.Instant = .now + HostPreferences.terminationLimit) async -> [Error] {
+        func belongs(_ content: CapturedContent) -> Bool { owner == nil || content.owner == owner }
+        beginFinishing(owner: owner)
+        defer { finishing.remove(owner) }
+        let settling = Task.immediate {
+            for content in CapturedContent.failedCaptures(owner: owner) { await content.noticeRemoval() }
+            for thumbnail in performing where belongs(thumbnail.content) { await thumbnail.action?.value }
+            await CapturedContent.finishOperations(owner: owner)
+        }
+        let settled = await settling.ends(before: deadline)
+        let failures = CapturedContent.takeFailures(owner: owner)
+        guard !settled else { return failures }
         let locations = unfinishedCaptures(owner: owner).map(\.path).joined(separator: "\n")
         let detail = locations.isEmpty ? "" : " Check these file locations:\n\(locations)"
-        return [SimulatorError.operation("Capture file work did not finish before the context stopped.\(detail)")]
+        return failures + [SimulatorError.operation("Capture file work did not finish before the context stopped.\(detail)")]
+    }
+
+    /// For an owner that has told the user what a stop returned and will not hold anything on those captures, which stay
+    /// where that said: its next stop does not repeat them.
+    package static func acknowledgeFailures(owner: UUID? = nil) {
+        guard !isFinishing(owner) else { return }
+        CapturedContent.forgetFailures(owner: owner)
     }
 
     /// Original, saved and staged files that unfinished capture work may still be using.
     package static func unfinishedCaptures(owner: UUID? = nil) -> [URL] {
         func belongs(_ content: CapturedContent) -> Bool { owner == nil || content.owner == owner }
-        let unresolved = (active.map(\.content) + pending).filter { belongs($0) && !$0.isResolved }.map(\.file)
+        let unresolved = (active.map(\.content) + pending.map(\.content) + CapturedContent.failedCaptures(owner: owner))
+            .filter { belongs($0) && !$0.isResolved }.map(\.file)
         let working = CapturedContent.inFlight.filter(belongs).flatMap(\.unfinishedFiles)
         return Set(unresolved + working).sorted { $0.path < $1.path }
     }
@@ -715,7 +770,7 @@ package final class CaptureThumbnail: NSObject {
                     return
                 }
                 report(error)
-                do { try await content.saveIfUnresolved() } catch { report(error) }
+                await content.saveIfUnresolved(report: report)
             }
         }
     }
@@ -765,11 +820,11 @@ package final class CaptureThumbnail: NSObject {
             // A late promise delivery may follow thumbnail dismissal, so preserve the capture
             // and copy from its saved location if delivery arrives later.
             let content = content, report = report
-            Self.pending.append(content)
+            Self.pending.append((content, report))
             Task {
                 try? await Task.sleep(for: .seconds(5))
-                Self.pending.removeAll { $0 === content }
-                do { try await content.settleAfterDrop() } catch { report(error) }
+                Self.pending.removeAll { $0.content === content }
+                await content.settleAfterDrop(report: report)
             }
         }
         finish()
@@ -991,7 +1046,7 @@ private final class CaptureDelivery: NSObject, NSFilePromiseProviderDelegate {
                     completionHandler(nil)
                 } catch {
                     // A failed delivery keeps the capture by saving it where dismissing would.
-                    do { try await content.saveIfUnresolved() } catch { report(error) }
+                    await content.saveIfUnresolved(report: report)
                     completionHandler(error)
                 }
             }

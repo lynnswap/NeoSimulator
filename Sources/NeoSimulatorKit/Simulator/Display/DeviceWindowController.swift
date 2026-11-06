@@ -1016,25 +1016,33 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
     package func saveScreen() {
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
-        session.run({ [weak self, session] in
+        let report = reportCapture
+        session.run({ [weak self, session, captureOwner] in
             let folder = try await performBlockingIO { CaptureFile.screenshotFolder() }
             let file = try await session.screenshot(mask: mask)
-            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: self?.captureOwner,
+            let capture = CapturedContent(.screenshot, file: file, name: name, defaultFolder: folder, owner: captureOwner,
                                           claim: session.claimCaptureDestination)
             let image = await capture.loadPreview()
             guard let self else {
-                try await capture.saveToDefaultLocation()
+                await capture.saveIfUnresolved(report: report)
                 return
             }
-            try await self.showThumbnail(of: capture, image: image)
-        }, failure: { [weak self] in self?.present($0) })
+            await self.showThumbnail(of: capture, image: image)
+        }, failure: { report($0) })
+    }
+
+    /// Where a capture's failure goes: to this window while it can present it, and after that to its owner.
+    private var reportCapture: (Error) -> Void {
+        { [weak self, reportDetachedCapture] error in
+            if let self, !self.closed { self.present(error) } else { reportDetachedCapture(error) }
+        }
     }
 
     /// Shows a capture's thumbnail beside this window, or saves the capture
     /// when the window has closed.
-    private func showThumbnail(of capture: CapturedContent, image: NSImage?) async throws {
+    private func showThumbnail(of capture: CapturedContent, image: NSImage?) async {
         guard !closed, let window = presentationWindow, window.isVisible, !CaptureThumbnail.savesImmediately else {
-            try await capture.saveToDefaultLocation()
+            await capture.saveIfUnresolved(report: reportCapture)
             return
         }
         let display = session.display.view, screen = session.display.inputView
@@ -1050,9 +1058,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         let thumbnail = CaptureThumbnail(capture, image: image, parent: window, source: source,
                                          rotation: session.isResizingApp ? 0 : session.displayAngle,
                                          cornerRadius: (session.appResizeGeometry?.cornerRadius ?? CGFloat(session.capabilities.screenCornerRadius)) * scale,
-                                         spacing: NSSize(width: horizontal, height: ceil(scale * base))) { [weak self, reportDetachedCapture] error in
-            if let self, !self.closed { self.present(error) } else { reportDetachedCapture(error) }
-        }
+                                         spacing: NSSize(width: horizontal, height: ceil(scale * base)), report: reportCapture)
         thumbnail.show()
     }
 
@@ -1108,11 +1114,12 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         let device = session.device.name
         let claim = session.claimCaptureDestination
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .black : .ignored
-        runAsync { [weak self, session] in
+        let report = reportCapture
+        runAsync { [weak self, session, captureOwner] in
             try await session.startRecording(to: .capture { [weak self] file in
                 let capture = CapturedContent(.movie, file: file, name: CaptureFile.recordingName(device: device, date: Date()),
-                                              defaultFolder: desktop, owner: self?.captureOwner, claim: claim)
-                if let self { try await self.showThumbnail(of: capture, image: nil) } else { try await capture.saveToDefaultLocation() }
+                                              defaultFolder: desktop, owner: captureOwner, claim: claim)
+                if let self { await self.showThumbnail(of: capture, image: nil) } else { await capture.saveIfUnresolved(report: report) }
             }, mask: mask)
         }
     }

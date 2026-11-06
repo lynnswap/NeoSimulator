@@ -479,10 +479,10 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
             catch {
                 if ownerExitRequested || handoverRequested { hostLog(error.localizedDescription) }
                 else { NSAlert(presenting: error).runModal() }
+                engine.acknowledgeCaptureFailures()
             }
             let deadline = ContinuousClock.now + HostPreferences.terminationLimit
-            let captures = Task.immediate { await CaptureThumbnail.finishAll() }
-            for failure in await CaptureThumbnail.failures(of: captures, before: deadline) {
+            for failure in await CaptureThumbnail.finishAll(before: deadline) {
                 TerminationAccount.shared.note(failure.localizedDescription)
             }
             for request in requests where await !request.ends(before: deadline) {

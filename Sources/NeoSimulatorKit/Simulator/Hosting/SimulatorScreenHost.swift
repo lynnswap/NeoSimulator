@@ -8,7 +8,9 @@ package final class SimulatorScreenHost: NSObject {
     private let conflicts: HostConflictMonitor
     private let deviceSet: SimulatorDeviceSet
     private let recordings: RecordingStore
-    private let captureOwner = UUID()
+    package let captureOwner = UUID()
+    /// How long stopping waits for capture file work, which defaults to TerminationTimeout.
+    package var captureFinishLimit: Duration?
     private let isManaged: Bool
     package let isHeadless: Bool
     private let isInProcess: Bool
@@ -1165,7 +1167,7 @@ package final class SimulatorScreenHost: NSObject {
 
     /// A recording's or detached capture's failure. A stop in progress returns it. One that outlasted the stop that waited
     /// for it is reported now, since no other stop may come, and kept for the next, so that a retry cannot claim a clean finish.
-    private func noteCaptureFailure(_ error: any Error) {
+    package func noteCaptureFailure(_ error: any Error) {
         guard isTerminating || stopped else { report(error); return }
         recordingTerminationErrors.append(error)
         if stopped, stoppingTask == nil { report(error) }
@@ -1175,6 +1177,15 @@ package final class SimulatorScreenHost: NSObject {
         defer { recordingTerminationErrors.removeAll() }
         return recordingTerminationErrors
     }
+
+    /// What a stop says of recordings and captures, once each: a capture's failure that outlasted a stop is also kept by the capture.
+    private func distinctMessages(_ failures: [any Error]) -> [String] {
+        var seen = Set<String>()
+        return failures.map(\.localizedDescription).filter { seen.insert($0).inserted }
+    }
+
+    /// For a caller that has told the user what a stop threw: the next stop does not repeat those unsaved captures.
+    package func acknowledgeCaptureFailures() { CaptureThumbnail.acknowledgeFailures(owner: captureOwner) }
 
     package func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
@@ -1207,7 +1218,7 @@ package final class SimulatorScreenHost: NSObject {
         if let stoppingTask { return stoppingTask }
         isTerminating = true
         // Thumbnails end before this returns; what they hold is saved while the rest of stopping goes on.
-        let endingCaptures = Task.immediate { [captureOwner] in await CaptureThumbnail.finishAll(owner: captureOwner) }
+        CaptureThumbnail.beginFinishing(owner: captureOwner)
         let retryingCleanup = stopped
         let keepsRunning = isInProcess || (keepingDevicesRunning
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
@@ -1219,19 +1230,24 @@ package final class SimulatorScreenHost: NSObject {
             if retryingCleanup {
                 let inputFailures = await finishDisconnectedInput()
                 let recordingFailures = await recordings.finishAll()
-                let captureFailures = await CaptureThumbnail.failures(of: endingCaptures, before: .now + HostPreferences.terminationLimit, owner: captureOwner)
+                let captureFailures = await finishCaptures()
                 let failures = inputFailures + (await finishExternalDisplayChanges())
-                    + (recordingFailures + captureFailures + takeRecordingTerminationErrors()).map(\.localizedDescription)
+                    + distinctMessages(recordingFailures + captureFailures + takeRecordingTerminationErrors())
                 if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
             } else {
-                try await finishStopping(devices: devices, endingCaptures: endingCaptures)
+                try await finishStopping(devices: devices)
             }
         }
         stoppingTask = task
         return task
     }
 
-    private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)], endingCaptures: Task<[any Error], Never>) async throws {
+    /// Ends the stop of captures that `beginStopping` began, along with any handed over since.
+    private func finishCaptures() async -> [any Error] {
+        await CaptureThumbnail.finishAll(owner: captureOwner, before: .now + (captureFinishLimit ?? HostPreferences.terminationLimit))
+    }
+
+    private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
         let pending = Array(connections.values) + Array(restarting.values)
         pending.forEach { $0.cancel() }
         bootOperations.values.forEach { $0.cancel() }
@@ -1248,13 +1264,7 @@ package final class SimulatorScreenHost: NSObject {
         let inputFailures = await finishDisconnectedInput()
         let displayFailures = await finishExternalDisplayChanges()
         let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
-        let captureDeadline = ContinuousClock.now + HostPreferences.terminationLimit
-        let endedCaptures = await CaptureThumbnail.failures(of: endingCaptures, before: captureDeadline, owner: captureOwner)
-        // Captures may have been handed over since stopping began.
-        let lastCaptures = await CaptureThumbnail.failures(of: Task.immediate { [captureOwner] in
-            await CaptureThumbnail.finishAll(owner: captureOwner)
-        }, before: captureDeadline, owner: captureOwner)
-        let captureFailures = recordingFailures + endedCaptures + lastCaptures
+        let captureFailures = recordingFailures + (await finishCaptures())
         shutdown()
         // Registrations leave on the sets' workers, and a quit reports what has not finished: this should not be that.
         let removalDeadline = ContinuousClock.now + DeviceOperationLimit.terminationStopGrace
@@ -1262,9 +1272,9 @@ package final class SimulatorScreenHost: NSObject {
         observationRemovals.removeAll()
         onChange?()
         // Taken last: what fails from here on has outlasted this stop.
-        let allCaptureFailures = captureFailures + takeRecordingTerminationErrors()
+        let allCaptureFailures = distinctMessages(captureFailures + takeRecordingTerminationErrors())
         if !failures.isEmpty || !allCaptureFailures.isEmpty {
-            throw SimulatorError.operation((failures + allCaptureFailures.map(\.localizedDescription)).joined(separator: "\n"))
+            throw SimulatorError.operation((failures + allCaptureFailures).joined(separator: "\n"))
         }
     }
 
