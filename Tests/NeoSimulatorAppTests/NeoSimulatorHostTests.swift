@@ -7085,6 +7085,148 @@ struct InputFocusTests {
         #expect(worker.calls == ["connect the device's pasteboard"])
     }
 
+    @Test func aPasteboardActivationWhileConnectingIsTheFirstSoTheNextCompletesThePush() async throws {
+        let display = TestDisplay()
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard])
+        defer { session.disconnect() }
+        display.worker = worker
+        worker.hold()
+        var failures: [String] = []
+        session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
+        try await wait { worker.calls == ["connect the device's pasteboard"] }
+
+        // The interface reports on the main queue while the worker is still returning it.
+        let events = try #require(display.connectingPasteboardEvents)
+        events(.activated)
+        worker.release()
+        try await wait { display.pasteboards.first?.transfers == [.send] }
+        let connection = display.pasteboards[0]
+        connection.send(.activated)
+        connection.send(.lostConnection)
+        #expect(failures.isEmpty)
+    }
+
+    @Test func aPasteboardConnectionThatClosesWhileConnectingIsNotKeptAndTheNextStartsAfresh() async throws {
+        let display = TestDisplay()
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard])
+        defer { session.disconnect() }
+        display.worker = worker
+        worker.hold()
+        var failures: [String] = []
+        session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
+        try await wait { worker.calls == ["connect the device's pasteboard"] }
+
+        let events = try #require(display.connectingPasteboardEvents)
+        events(.lostConnection)
+        worker.release()
+        try await wait { failures.count == 1 }
+        #expect(failures == ["Could not send the pasteboard to the simulator: The simulator closed its pasteboard connection."])
+        #expect(display.pasteboards.count == 1)
+        #expect(display.pasteboards[0].isDisconnected && display.pasteboards[0].transfers.isEmpty)
+
+        failures = []
+        session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
+        try await wait { display.pasteboards.last?.transfers == [.send] }
+        #expect(display.pasteboards.count == 2)
+        let next = display.pasteboards[1]
+        next.send(.activated)
+        next.send(.activated)
+        next.send(.lostConnection)
+        #expect(failures.isEmpty)
+    }
+
+    @Test func aSynchronizedPasteboardThatClosesWhileConnectingConnectsAgain() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let display = TestDisplay()
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardSync: sync)
+        sessions.append(session)
+        defer { session.disconnect() }
+        display.worker = worker
+        worker.hold()
+        session.updatePasteboardSync()
+        try await wait { worker.calls == ["connect the device's pasteboard"] }
+
+        // What applied before the connection arrived still counts, unlike the connection itself once it has closed.
+        let events = try #require(display.connectingPasteboardEvents)
+        events(.applied(generation: pasteboard.changeCount))
+        events(.lostConnection)
+        worker.release()
+        try await wait { display.pasteboards.count == 2 && display.pasteboards[1].automaticSync == [true] }
+        #expect(display.pasteboards[0].isDisconnected)
+        #expect(!display.pasteboards[1].isDisconnected)
+        session.sendSynchronizedPasteboard()
+        #expect(display.pasteboards[1].transfers.isEmpty)
+    }
+
+    @Test func aPasteboardConnectionThatFailedAsksForNothingWhenItCloses() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let preferences = MemoryPreferences()
+        preferences.values[HostPreferences.pasteboardAutomaticSync] = true
+        var sessions: [DeviceSession] = []
+        let sync = PasteboardSync(preferences: preferences) { sessions }
+        let display = TestDisplay()
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], pasteboard: pasteboard,
+                                      pasteboardSync: sync)
+        sessions.append(session)
+        defer { session.disconnect() }
+        display.pasteboardError = SimulatorError.operation("Unable to lookup in current state: Shutdown")
+        session.updatePasteboardSync()
+        #expect(display.pasteboardConnectionAttempts == 1)
+        let abandoned = try #require(display.connectingPasteboardEvents)
+
+        abandoned(.lostConnection)
+        #expect(display.pasteboardConnectionAttempts == 1)
+        session.updatePasteboardSync()
+        #expect(display.pasteboardConnectionAttempts == 2)
+        #expect(display.pasteboards.count == 1 && !display.pasteboards[0].isDisconnected)
+    }
+
+    @Test func whatAPasteboardConnectionGivenUpOnStillReportsLeavesTheNextAlone() async throws {
+        let display = TestDisplay()
+        let worker = HeldDeviceWorker(limit: .milliseconds(50))
+        defer { worker.release() }
+        let model = SimulatorDeviceModel()
+        model.follow(worker.channel)
+        let session = try makeSession(display, features: [DeviceCapabilities.pasteboard], model: model)
+        defer { session.disconnect() }
+        display.worker = worker
+        worker.hold()
+        var failures: [String] = []
+        session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
+        try await wait { failures.count == 1 }
+        let abandoned = try #require(display.connectingPasteboardEvents)
+        worker.release()
+        try await wait { model.unresponsiveOperation == nil }
+
+        failures = []
+        session.transferPasteboard(.send) { failures.append($0.localizedDescription) }
+        try await wait { display.pasteboards.first?.transfers == [.send] }
+        let current = display.pasteboards[0]
+        abandoned(.activated)
+        abandoned(.activated)
+        abandoned(.lostConnection)
+        #expect(!current.isDisconnected)
+        #expect(failures.isEmpty)
+
+        // The push is still this connection's to complete.
+        current.send(.activated)
+        current.send(.lostConnection)
+        #expect(failures == ["Could not send the pasteboard to the simulator: The simulator closed its pasteboard connection."])
+    }
+
     @Test func audioRouteChangesWhileAReadIsHeldNeedOneMoreReadNotAQueue() async throws {
         let display = TestDisplay()
         let port = TestAudioRoutes([])
@@ -7708,6 +7850,76 @@ struct InputFocusTests {
             "CarPlay (disabled)",
         ])
         #expect(externalDisplayItems(for: nil).allSatisfy { $0.hasSuffix("(disabled)") && !$0.contains("✓") })
+    }
+
+    /// A session with the external display `screen`, whose device stops answering during `whileHeld` and then answers
+    /// again. It returns once what the device's recovery wants of it has been sent.
+    private func recoverExternalDisplay(_ screen: TestExternalScreen, features: Set<String> = Self.externalDisplayFeatures,
+                                        preferences: MemoryPreferences = MemoryPreferences(),
+                                        whileHeld: (DeviceSession) async throws -> Void) async throws {
+        let display = TestDisplay()
+        display.connectExternalScreen(screen)
+        let worker = HeldDeviceWorker(limit: .milliseconds(50))
+        defer { worker.release() }
+        let model = SimulatorDeviceModel()
+        model.follow(worker.channel)
+        let controller = try makeController(display, features: features, preferences: preferences, model: model)
+        defer { controller.invalidate() }
+        controller.session.connectExternalDisplay { Issue.record($0) }
+        display.deliverScreenReports()
+        display.worker = worker
+        screen.worker = worker
+        worker.hold()
+        await #expect(throws: DeviceOperationFailure.self) { try await worker.call("hold the device") }
+        try await wait { model.unresponsiveOperation == "hold the device" }
+        try await whileHeld(controller.session)
+        worker.release()
+        try await wait { model.unresponsiveOperation == nil && worker.calls.contains("read the device's state") }
+    }
+
+    @Test func aDisabledChoiceThatWasNotSentIsAppliedOnceWhenTheDeviceAnswersAgain() async throws {
+        let preferences = MemoryPreferences()
+        let screen = TestExternalScreen()
+        screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1)
+        var failures: [String] = []
+        try await recoverExternalDisplay(screen, preferences: preferences) { session in
+            session.chooseExternalDisplay(.disabled) { failures.append($0.localizedDescription) }
+            try await wait { failures.count == 1 }
+            #expect(screen.requests.isEmpty)
+        }
+        let notSent = DeviceOperationFailure.notSent(operation: "turn off the external display", heldBy: "hold the device")
+        #expect(failures == ["Could not turn off the external display of Test iPhone: \(notSent.localizedDescription)"])
+        #expect(preferences.externalDisplayTag(forDevice: "test-device") == ExternalDisplayMode.disabled.rawValue)
+        #expect(screen.requests == ["off"])
+        #expect(!screen.current.isPoweredOn)
+    }
+
+    @Test func aModeChoiceThatWasNotSentIsAppliedOnceWhenTheDeviceAnswersAgain() async throws {
+        let screen = TestExternalScreen()
+        var failures: [String] = []
+        try await recoverExternalDisplay(screen) { session in
+            session.chooseExternalDisplay(.size1280x720) { failures.append($0.localizedDescription) }
+            try await wait { failures.count == 1 }
+        }
+        #expect(screen.requests.filter { $0.hasPrefix("mode") }.count == 1)
+        #expect(screen.current.isPoweredOn && screen.current.pixelSize == CGSize(width: 1280, height: 720))
+    }
+
+    @Test func recoveryLeavesADisplayThatNobodyChoseToDisableAlone() async throws {
+        let screen = TestExternalScreen()
+        // Another tool turned it on, and the preference reads Disabled because this device has no choice saved.
+        screen.current = ExternalScreenState(isPoweredOn: true, pixelSize: CGSize(width: 1280, height: 720), scale: 1)
+        try await recoverExternalDisplay(screen) { _ in }
+        #expect(screen.requests.isEmpty)
+        #expect(screen.current.isPoweredOn)
+    }
+
+    @Test func recoveryDoesNotApplyASavedCarPlayTheDeviceCannotShow() async throws {
+        let preferences = MemoryPreferences()
+        preferences.setExternalDisplayTag(ExternalDisplayMode.carPlay.rawValue, forDevice: "test-device")
+        let screen = TestExternalScreen()
+        try await recoverExternalDisplay(screen, preferences: preferences) { _ in }
+        #expect(screen.requests.isEmpty)
     }
 
     private func externalDisplaySubtitles(for controller: DeviceWindowController) -> [String] {
@@ -10795,8 +11007,13 @@ private final class TestDisplay: SimulatorDisplay {
     var pasteboards: [TestPasteboard] = []
     /// Fails once, then clears itself.
     var pasteboardError: Error?
+    /// What the latest connection reports to, from before it returns.
+    private(set) var connectingPasteboardEvents: (@MainActor (SimulatorPasteboardEvent) -> Void)?
+    private(set) var pasteboardConnectionAttempts = 0
     func connectPasteboard(_ pasteboard: NSPasteboard,
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> any SimulatorPasteboard {
+        connectingPasteboardEvents = events
+        pasteboardConnectionAttempts += 1
         try await worker?.read("connect the device's pasteboard")
         if let error = pasteboardError {
             pasteboardError = nil
@@ -11045,6 +11262,8 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     private var pendingReports: [() -> Void] = []
     private var pendingCompletions: [() -> Void] = []
     var changed: (() -> Void)?
+    /// The device's worker, for a test whose writes must go through a real one.
+    var worker: HeldDeviceWorker?
     private(set) var displays: [TestDisplay] = []
     private(set) var isDisconnected = false
 
@@ -11053,8 +11272,9 @@ private final class TestExternalScreen: SimulatorExternalScreen {
     func supportedModes() throws -> [ExternalScreenMode] { modes }
 
     func setMode(pixelSize: CGSize, scale: CGFloat, carPlay: Bool,
-                 completion: @escaping @MainActor (Error?) -> Void) throws {
+                 completion: @escaping @MainActor (Error?) -> Void) async throws {
         if let refusal { throw refusal }
+        try await worker?.call("set the external display's mode")
         requests.append("mode \(Int(pixelSize.width))x\(Int(pixelSize.height))@\(Int(scale))\(carPlay ? " carplay" : "")")
         complete(completion) {
             $0 = ExternalScreenState(isPoweredOn: true, pixelSize: pixelSize, scale: scale, isCarPlay: carPlay)
@@ -11062,8 +11282,9 @@ private final class TestExternalScreen: SimulatorExternalScreen {
         if let unknownOutcome { throw unknownOutcome }
     }
 
-    func powerOff(completion: @escaping @MainActor (Error?) -> Void) throws {
+    func powerOff(completion: @escaping @MainActor (Error?) -> Void) async throws {
         if let refusal { throw refusal }
+        try await worker?.call("turn off the external display")
         requests.append("off")
         complete(completion) { $0.isPoweredOn = false }
     }

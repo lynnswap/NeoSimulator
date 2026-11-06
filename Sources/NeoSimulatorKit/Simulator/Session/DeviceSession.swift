@@ -450,6 +450,9 @@ package final class DeviceSession {
     /// synchronizing, until the device closes it or the session disconnects.
     @ObservationIgnored private var pasteboardConnection: (any SimulatorPasteboard)?
     @ObservationIgnored private var isConnectingPasteboard = false
+    /// Which connection's events count. A connection can report while the worker is still making it, and one that was
+    /// given up on can report after that, so closing moves this on and what is left is ignored.
+    @ObservationIgnored private var pasteboardConnectionNumber = 0
     /// What waits for the connection that is being made.
     @ObservationIgnored private var pasteboardWaiters: [CheckedContinuation<Void, Never>] = []
     /// Mac pasteboard generation last received from this device; nil after a failed replacement.
@@ -1200,11 +1203,7 @@ package final class DeviceSession {
             else { audioRoutesChanged(.availableDevices, failure: report) }
         }
         updatePasteboardSync()
-        if externalScreenConnection != nil, externalScreenWait == nil,
-           let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier)),
-           mode != externalDisplayMode {
-            applyExternalDisplayAfterWait(failure: report)
-        }
+        reapplyExternalDisplay(failure: report)
         refreshGuestState()
     }
 
@@ -1417,20 +1416,33 @@ package final class DeviceSession {
     /// A connection that arrives after the session ended has no owner left, so it is let go here.
     private func connectPasteboard() async throws -> any SimulatorPasteboard {
         let pasteboard = hostPasteboard ?? .general
-        let events: @MainActor (SimulatorPasteboardEvent) -> Void = { [weak self] in self?.handlePasteboard($0) }
+        pasteboardConnectionNumber += 1
+        let number = pasteboardConnectionNumber
+        isPasteboardActive = false
+        let events: @MainActor (SimulatorPasteboardEvent) -> Void = { [weak self] event in
+            guard let self, self.pasteboardConnectionNumber == number else { return }
+            self.handlePasteboard(event)
+        }
         let connection: any SimulatorPasteboard
         if let pasteboardTransport {
             connection = NativePasteboardConnection(transport: pasteboardTransport, managing: pasteboard, sync: pasteboardSync,
                                                     events: events)
         } else {
-            connection = try await display.connectPasteboard(pasteboard, events: events)
+            do { connection = try await display.connectPasteboard(pasteboard, events: events) } catch {
+                closePasteboard()
+                throw error
+            }
         }
         guard !isDisconnected else {
             connection.disconnect()
             throw CancellationError()
         }
+        // It closed before it arrived: its events have told everything that was waiting, and whatever asks next connects.
+        guard pasteboardConnectionNumber == number else {
+            connection.disconnect()
+            throw SimulatorError.operation("The simulator closed its pasteboard connection.")
+        }
         pasteboardConnection = connection
-        isPasteboardActive = false
         setAutomaticSync(of: connection)
         return connection
     }
@@ -1496,6 +1508,7 @@ package final class DeviceSession {
     }
 
     private func closePasteboard() {
+        pasteboardConnectionNumber += 1
         pasteboardConnection?.disconnect()
         pasteboardConnection = nil
         pendingPulls.removeAll()
@@ -1646,6 +1659,8 @@ package final class DeviceSession {
     @ObservationIgnored private var externalScreenWait: Task<Void, Never>?
     /// The latest choice made while the session waits, which it applies when the wait ends.
     @ObservationIgnored private var choiceDuringWait: (mode: ExternalDisplayMode, failure: @MainActor (Error) -> Void)?
+    /// What was chosen during this session, which unlike the saved choice tells Disabled from no choice at all.
+    @ObservationIgnored private var externalDisplayChoice: ExternalDisplayMode?
     @ObservationIgnored private let externalScreenTimeout: Duration
     /// Runs on the main actor after `externalScreen` changes.
     @ObservationIgnored package var onExternalScreenChange: (() -> Void)?
@@ -1743,11 +1758,22 @@ package final class DeviceSession {
         }
     }
 
+    /// Brings the display to what is wanted of it now, through the same queue as a choice. A saved Disabled also means
+    /// that nobody chose, and an external tool's display is left alone then, so only this session's choice turns it off.
+    private func reapplyExternalDisplay(failure: @escaping @MainActor (Error) -> Void) {
+        guard externalScreenConnection != nil, externalScreenWait == nil,
+              let mode = ExternalDisplayMode(rawValue: preferences.externalDisplayTag(forDevice: device.identity.preferenceIdentifier)),
+              mode != externalDisplayMode, mode != .carPlay || capabilities.supportsCarPlay,
+              mode != .disabled || externalDisplayChoice == .disabled else { return }
+        applyExternalDisplay(mode, failure: failure)
+    }
+
     /// Saves the choice before applying it, preserving it across restarts and failures.
     /// Retries external-screen discovery when needed. Reports all failures for a choice together.
     package func chooseExternalDisplay(_ mode: ExternalDisplayMode, failure: @escaping @MainActor (Error) -> Void) {
         guard capabilities.supportsExternalDisplays, mode != .carPlay || capabilities.supportsCarPlay else { return }
         preferences.setExternalDisplayTag(mode.rawValue, forDevice: device.identity.preferenceIdentifier)
+        externalDisplayChoice = mode
         guard canPerformCommands else { return }
         if externalScreenConnection == nil, externalScreenRegistration == nil {
             choiceDuringWait = (mode, failure)
