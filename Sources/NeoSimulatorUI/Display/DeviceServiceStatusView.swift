@@ -37,6 +37,7 @@ final class DeviceServiceStatusView: NSVisualEffectView {
     init(onRetry: @escaping () -> Void) {
         self.onRetry = onRetry
         super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
         material = .hudWindow
         blendingMode = .withinWindow
         wantsLayer = true
