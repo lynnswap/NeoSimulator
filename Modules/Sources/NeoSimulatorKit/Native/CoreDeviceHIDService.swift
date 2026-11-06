@@ -288,12 +288,15 @@ package struct CoreDeviceEventReports {
             let results = try unsafe process.unsafeInvoke(on: observer, event)
             let reports = try unsafe count.unsafeInvoke(on: results)
             return try (0..<reports).map { index in
-                let report = try unsafe element.unsafeInvoke(on: results, index).copyTupleElement(at: 0)
-                guard report.type == systemReport else {
-                    throw CLIError.unavailable("native-event-report", "UniversalHIDKit returned \(report.type.name) from "
-                        + "\(String(describing: report.type.image)) instead of the system UniversalHID report.")
+                let result = try unsafe element.unsafeInvoke(on: results, index)
+                // Keep the report as a Swift value: projecting a runtime handle for each tuple element rediscovers
+                // its type and implementation image on every keyboard or pointer event.
+                return try result.withCopy { value in
+                    guard let (report, _) = value as? (Any, UInt64) else {
+                        throw CLIError.unavailable("native-event-report", "UniversalHIDKit returned an unexpected event report.")
+                    }
+                    return try unsafe makeReport.unsafeInvoke(readData.unsafeInvoke(on: report))
                 }
-                return try unsafe makeReport.unsafeInvoke(readData.unsafeInvoke(on: report))
             }
         }
         self.makeObserver = observe
