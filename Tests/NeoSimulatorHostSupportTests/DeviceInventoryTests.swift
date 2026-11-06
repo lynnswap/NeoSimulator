@@ -248,7 +248,7 @@ struct DeviceInventoryTests {
         controller.stopReads()
         await #expect(throws: CancellationError.self) { try await catalog.value }
         #expect(kill(identifier, 0) == -1 && errno == ESRCH)
-        #expect(try await controller.operation { true })
+        #expect(try await controller.operation(.hostTransition) { true })
     }
 
     @Test func cancellingTheSelectedXcodeReadEndsDiscoveryInsteadOfSkippingThatXcode() async throws {

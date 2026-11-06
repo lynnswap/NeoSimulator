@@ -141,9 +141,11 @@ final class SimulatorManagerModel {
     private var managementRequests: [UUID: ManagementRequest] = [:]
     private(set) var isBusy = false
     /// Whether queued work holds later edits of every device. A running device's screen that is attaching does not.
-    private var holdsAllEdits = false
+    private(set) var holdsAllEdits = false
     /// The devices whose later edits queued work holds.
     private var heldEditDeviceIDs: Set<DeviceInventoryID> = []
+    /// The devices that queued work concerns, including one whose screen is only attaching.
+    private(set) var queuedDeviceIDs: Set<DeviceInventoryID> = []
     private(set) var activity = ""
     private(set) var backgroundIssue: String?
     /// What is known of each device, which this process's screens also use.
@@ -209,14 +211,15 @@ final class SimulatorManagerModel {
     /// Accepted operations that have not ended, with what waits for them.
     @ObservationIgnored private var unfinishedOperations: [UUID: [CheckedContinuation<Void, Never>]] = [:]
     private(set) var openingDeviceIDs: Set<DeviceInventoryID> = []
-    private struct ActiveOpen {
+    private struct ActiveDeviceOperation {
         let id: UUID
-        let request: SimulatorScreenOpenRequest
+        /// The screen open that this operation is, which can be cancelled.
+        let request: SimulatorScreenOpenRequest?
         var task: Task<Void, any Error>?
         let activity: String
         let attaches: Bool
     }
-    @ObservationIgnored private var activeOpens: [DeviceInventoryID: ActiveOpen] = [:]
+    @ObservationIgnored private var activeDeviceOperations: [DeviceInventoryID: ActiveDeviceOperation] = [:]
     @ObservationIgnored private var pendingOperations: [PendingOperation] = []
     @ObservationIgnored private var runningOperation: PendingOperation?
     @ObservationIgnored private var operationsChanged: CheckedContinuation<Void, Never>?
@@ -228,8 +231,8 @@ final class SimulatorManagerModel {
             finishOperation(operation.id)
             return true
         }
-        if let active = activeOpens[identifier], let task = active.task {
-            active.request.cancel()
+        if let active = activeDeviceOperations[identifier], let request = active.request, let task = active.task {
+            request.cancel()
             task.cancel()
         } else { openingDeviceIDs.remove(identifier) }
         // A withdrawn open can uncover an operation that may run beside the attaching screen.
@@ -467,12 +470,40 @@ final class SimulatorManagerModel {
         await refresh()
     }
 
+    /// Whether the device's screen can open now, or is opening and can be cancelled.
+    func canViewScreen(_ device: InventoryDevice) -> Bool {
+        if openingDeviceIDs.contains(device.id) { return true }
+        guard !managingDeviceIDs.contains(device.id) else { return false }
+        switch device {
+        case .simulator(let simulator):
+            return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
+        case .remote(let remote):
+            return !holdsAllEdits && !queuedDeviceIDs.contains(device.id) && remote.isAvailable
+                && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
+        }
+    }
+
+    /// Whether `action` applies to this selection, whatever is running now.
+    func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
+        guard !devices.isEmpty, devices.allSatisfy({ $0.supports(action) }) else { return false }
+        switch action {
+        case .rename, .clone: return devices.count == 1
+        case .pair:
+            guard devices.count == 2,
+                  case .simulator(let first) = devices[0], case .simulator(let second) = devices[1] else { return false }
+            return Set([first.productFamily, second.productFamily]) == Set(["iPhone", "Apple Watch"])
+                && first.deviceSetPath == second.deviceSetPath
+        default: return true
+        }
+    }
+
     func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
         guard !stopping, !deviceIDs.isEmpty else { return false }
         // A background service change spans many launchctl calls; only Force Shut Down may interrupt it.
         guard action == .forceShutdown || !deviceIDs.contains(where: { registry.device(for: $0)?.backgroundServices.isChanging == true }) else { return false }
         let overlapping = managementRequests.values.filter { !$0.identifiers.isDisjoint(with: deviceIDs) }
-        if overlapping.isEmpty { return !isBusy }
+        // Work on another device does not stop this one, unlike work that concerns every device.
+        if overlapping.isEmpty { return !holdsAllEdits && queuedDeviceIDs.isDisjoint(with: deviceIDs) }
         guard action == .forceShutdown, overlapping.count == 1, let shutdown = overlapping.first,
               shutdown.action == DeviceManagementAction.shutdown, deviceIDs.isSubset(of: shutdown.identifiers) else { return false }
         return shutdown.identifiers.allSatisfy(\.isSimulator)
@@ -802,8 +833,8 @@ final class SimulatorManagerModel {
         func holds(_ deviceID: DeviceInventoryID?, attaches: Bool) -> Bool {
             deviceID == nil || (deviceID == identifier && (waitsForAttach || !attaches))
         }
-        var operations = Set(activeOpens.filter { holds($0.key, attaches: $0.value.attaches) }.values.map(\.id))
-        if let runningOperation, holds(runningOperation.deviceID, attaches: false) { operations.insert(runningOperation.id) }
+        var operations = Set(activeDeviceOperations.filter { holds($0.key, attaches: $0.value.attaches) }.values.map(\.id))
+        if let runningOperation { operations.insert(runningOperation.id) }
         for operation in pendingOperations where holds(operation.deviceID, attaches: attachesOnAdmission(operation)) {
             operations.insert(operation.id)
         }
@@ -837,7 +868,7 @@ final class SimulatorManagerModel {
 
     func prepareForQuit() async throws {
         stopping = true
-        let openings = activeOpens.values.compactMap(\.task)
+        let openings = activeDeviceOperations.values.filter { $0.request != nil }.compactMap(\.task)
         cancelPendingOpens()
         registry.stopReading()
         // Accepted changes finish below, but no child that only reads state can hold them or this wait.
@@ -896,7 +927,7 @@ final class SimulatorManagerModel {
     /// Returns the openings that are still held at `deadline`.
     private func waitForStoppedWork(openings: Set<Task<Void, any Error>>, before deadline: ContinuousClock.Instant) async
         -> Set<Task<Void, any Error>> {
-        let activity = runningOperation?.activity
+        let activity = runningOperation?.activity ?? activeDeviceOperations.values.first { $0.request == nil }?.activity
         if let operationTask, await !operationTask.ends(before: deadline) { onError?(QuitOutcome.unknown(activity ?? "A change")) }
         for accepted in acceptedWrites where !abandonedWrites.contains(accepted.write.id) {
             if await !accepted.write.task.ends(before: deadline) { onError?(QuitOutcome.unknown(accepted.activity)) }
@@ -945,8 +976,9 @@ final class SimulatorManagerModel {
         enqueue(PendingOperation(activity: activity, deviceID: device, openDevice: openDevice) { _ in try await operation() })
     }
 
-    /// Admits independent screen opens together. Other operations retain their accepted order and wait for
-    /// connecting screens. Each follows the changes accepted before it for the devices it concerns.
+    /// Admits operations on different devices together, each device's in accepted order. An operation without a device
+    /// follows all accepted before it and holds all accepted after it. Each follows the changes accepted before it for
+    /// the devices it concerns.
     private func enqueue(_ operation: PendingOperation) {
         guard !stopping else { return }
         var operation = operation
@@ -964,25 +996,26 @@ final class SimulatorManagerModel {
                 self.publishQueueState()
                 self.reconcileDevicePostures()
             }
-            while !self.pendingOperations.isEmpty || !self.activeOpens.isEmpty {
-                guard let next = self.pendingOperations.first, self.canAdmit(next) else {
+            while !self.pendingOperations.isEmpty || !self.activeDeviceOperations.isEmpty {
+                guard let index = self.nextAdmissibleOperation() else {
                     self.publishQueueState()
                     await withCheckedContinuation { self.operationsChanged = $0 }
                     continue
                 }
-                self.pendingOperations.removeFirst()
+                let next = self.pendingOperations.remove(at: index)
                 // Earlier operations, such as a close that shut the device down, have left the inventory that decides
                 // this open. The host rejects an attach to a device that stops later instead of booting it.
                 let attaches = self.attachesOnAdmission(next)
-                if let request = next.openDevice {
+                if let device = next.deviceID {
                     let task = Task {
                         for write in next.followsWrites { _ = await write.result }
                         try await next.run(attaches)
                         try Task.checkCancellation()
                     }
-                    self.activeOpens[request.deviceID] = ActiveOpen(id: next.id, request: request, task: task, activity: next.activity, attaches: attaches)
+                    self.activeDeviceOperations[device] = ActiveDeviceOperation(id: next.id, request: next.openDevice, task: task,
+                                                                                activity: next.activity, attaches: attaches)
                     self.publishQueueState()
-                    Task { await self.finishOpen(request, task) }
+                    Task { await self.finishDeviceOperation(on: device, task) }
                 } else {
                     self.runningOperation = next
                     self.publishQueueState()
@@ -999,9 +1032,10 @@ final class SimulatorManagerModel {
         }
     }
 
-    private func finishOpen(_ request: SimulatorScreenOpenRequest, _ task: Task<Void, any Error>) async {
+    private func finishDeviceOperation(on device: DeviceInventoryID, _ task: Task<Void, any Error>) async {
+        let opens = activeDeviceOperations[device]?.request != nil
         defer {
-            if let open = activeOpens.removeValue(forKey: request.deviceID) { finishOperation(open.id) }
+            if let operation = activeDeviceOperations.removeValue(forKey: device) { finishOperation(operation.id) }
             publishQueueState()
             resumeOperations()
         }
@@ -1009,29 +1043,35 @@ final class SimulatorManagerModel {
         var refreshesCatalog = true
         do { try await task.value }
         catch {
-            refreshesCatalog = false
-            if !(error is CancellationError) { failure = error }
+            refreshesCatalog = !opens
+            if !opens || !(error is CancellationError) { failure = error }
         }
         // Presentation and owned cleanup have finished, so the refresh below is not part of the cancellable open.
-        activeOpens[request.deviceID]?.task = nil
-        openingDeviceIDs.remove(request.deviceID)
+        activeDeviceOperations[device]?.task = nil
+        if opens { openingDeviceIDs.remove(device) }
         if !stopping, refreshesCatalog || inventoryRefreshRequested { await refreshCatalog() }
-        if let failure, !stopping { onError?(failure) }
+        // A quit throws an opening's failure from its task.
+        if let failure, !opens || !stopping { onError?(failure) }
     }
 
     private func publishQueueState() {
-        isBusy = !activeOpens.isEmpty || runningOperation != nil || !pendingOperations.isEmpty
-        let holding = (runningOperation.map { [$0] } ?? []) + pendingOperations.filter { !attachesOnAdmission($0) }
-        holdsAllEdits = holding.contains { $0.deviceID == nil }
-        heldEditDeviceIDs = Set(holding.compactMap(\.deviceID)).union(activeOpens.filter { !$0.value.attaches }.keys)
-        activity = runningOperation?.activity ?? activeOpens.values.first?.activity ?? pendingOperations.first?.activity
+        isBusy = !activeDeviceOperations.isEmpty || runningOperation != nil || !pendingOperations.isEmpty
+        holdsAllEdits = runningOperation != nil || pendingOperations.contains { $0.deviceID == nil }
+        heldEditDeviceIDs = Set(pendingOperations.filter { !attachesOnAdmission($0) }.compactMap(\.deviceID))
+            .union(activeDeviceOperations.filter { !$0.value.attaches }.keys)
+        queuedDeviceIDs = Set(activeDeviceOperations.keys).union(pendingOperations.compactMap(\.deviceID))
+        activity = runningOperation?.activity ?? activeDeviceOperations.values.first?.activity ?? pendingOperations.first?.activity
             ?? acceptedWrites.first?.activity ?? ""
     }
 
-    private func canAdmit(_ operation: PendingOperation) -> Bool {
-        if activeOpens.isEmpty { return true }
-        guard let request = operation.openDevice else { return false }
-        return activeOpens[request.deviceID] == nil
+    /// The earliest pending operation that nothing running or accepted before it holds.
+    private func nextAdmissibleOperation() -> Int? {
+        let held = Set(activeDeviceOperations.keys)
+        for (index, operation) in pendingOperations.enumerated() {
+            guard let device = operation.deviceID else { return held.isEmpty ? index : nil }
+            if !held.contains(device) { return index }
+        }
+        return nil
     }
 
     /// Whether admitting `operation` now would only attach the screen of its running device.

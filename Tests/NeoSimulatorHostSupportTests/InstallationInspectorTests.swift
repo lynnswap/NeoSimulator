@@ -851,6 +851,63 @@ struct XcodeConnectionsTests {
         #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
     }
 
+    @Test func aChangeToADeviceLeavesItsCancelledAttachmentRetired() {
+        let tracker = SimulatorBootTracker()
+        func device(_ state: String) -> SimulatorHostDevice {
+            .init(identifier: "A", name: "A", descriptiveName: "A", runtimeIdentifier: "runtime", runtimeName: "iOS",
+                  productFamily: "iPhone", state: state)
+        }
+        let identifier = device("Booted").inventoryID
+        _ = tracker.observe([device("Shutdown")], attachInitially: false)
+        // The cancelled open booted the device, but a read during a rename keeps the catalog's older Shutdown.
+        tracker.didCancelAttachment(identifier)
+        #expect(tracker.observe([device("Booted")], attachInitially: false, changing: [identifier]).devicesToAttach.isEmpty)
+        #expect(tracker.observe([device("Booted")], attachInitially: false).devicesToAttach.isEmpty)
+        // A read outside the change can establish that this boot ended, so the next boot attaches.
+        _ = tracker.observe([device("Shutdown")], attachInitially: false)
+        #expect(tracker.observe([device("Booted")], attachInitially: false).devicesToAttach == [identifier])
+    }
+
+    @Test(arguments: ["Booted", "Shutdown"])
+    func aFirstObservationDuringAChangeKeepsThatDevicesInitialAttachment(_ observed: String) {
+        func device(_ identifier: String, _ state: String) -> SimulatorHostDevice {
+            .init(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime", runtimeName: "iOS",
+                  productFamily: "iPhone", state: state)
+        }
+        let a = device("A", "Booted").inventoryID
+        let b = device("B", "Booted").inventoryID
+        let running = [device("A", "Booted"), device("B", "Booted")]
+
+        // With attachment on start off, whatever step of the change the read saw, A attaches only after a later stop.
+        let off = SimulatorBootTracker()
+        let first = off.observe([device("A", observed), device("B", "Booted")], attachInitially: false, changing: [a])
+        #expect(first.catalogChanged && first.devicesToAttach.isEmpty)
+        #expect(off.observe(running, attachInitially: false).devicesToAttach.isEmpty)
+        _ = off.observe([device("A", "Shutdown"), device("B", "Booted")], attachInitially: false)
+        #expect(off.observe(running, attachInitially: false).devicesToAttach == [a])
+
+        // With it on, B attaches now, and A once the change has settled if it is running then.
+        let on = SimulatorBootTracker()
+        #expect(on.observe([device("A", observed), device("B", "Booted")], attachInitially: true, changing: [a]).devicesToAttach == [b])
+        on.didAttach(b)
+        #expect(on.observe(running, attachInitially: true).devicesToAttach == [a])
+        let stopped = SimulatorBootTracker()
+        #expect(stopped.observe([device("A", observed)], attachInitially: true, changing: [a]).devicesToAttach.isEmpty)
+        #expect(stopped.observe([device("A", "Shutdown")], attachInitially: true).devicesToAttach.isEmpty)
+
+        // A cancelled open still retires that boot.
+        let cancelled = SimulatorBootTracker()
+        cancelled.didCancelAttachment(a)
+        #expect(cancelled.observe([device("A", observed)], attachInitially: true, changing: [a]).devicesToAttach.isEmpty)
+        #expect(cancelled.observe([device("A", "Booted")], attachInitially: true).devicesToAttach.isEmpty)
+
+        // A device that first appears after the first read and during a change is a new device once that settles.
+        let later = SimulatorBootTracker()
+        _ = later.observe([], attachInitially: false)
+        #expect(later.observe([device("A", observed)], attachInitially: false, changing: [a]).devicesToAttach.isEmpty)
+        #expect(later.observe([device("A", "Booted")], attachInitially: false).devicesToAttach == [a])
+    }
+
     @Test func testingVisibilityChangesReattachClonesAndPreserveNormalWindowChoices() {
         let tracker = SimulatorBootTracker()
         func device(_ identifier: String, _ state: String = "Booted", testing: Bool = false) -> SimulatorHostDevice {

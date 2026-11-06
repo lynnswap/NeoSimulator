@@ -126,8 +126,8 @@ package struct SimulatorShutdownPreparation: Sendable {
 
 extension SimulatorHostController {
     /// Runs each requested target once, preserving completed work and target-specific failures.
-    /// Simulator mutations share the existing operation FIFO with opens and host changes.
-    /// Force shutdown may join a matching all-simulator shutdown without giving up that FIFO ownership.
+    /// Simulator mutations hold only their own devices, in the order that ``operation(_:_:)`` gives them.
+    /// Force shutdown may join a matching all-simulator shutdown without giving up that ownership.
     package func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) async -> DeviceManagementReport {
         await manage(action, devices: devices, preparingDisplay: nil)
     }
@@ -188,7 +188,7 @@ extension SimulatorHostController {
             if let shutdown { shutdownTransactions.removeAll { $0 === shutdown } }
         }
         do {
-            return try await operation {
+            return try await operation(.devices(seen)) {
                 if let shutdown { return await shutdown.run() }
                 if action == .forceShutdown { return await backend.forceShutdown(devices, preparingDisplay: preparingDisplay) }
                 for device in devices { try await preparingDisplay?(device) }

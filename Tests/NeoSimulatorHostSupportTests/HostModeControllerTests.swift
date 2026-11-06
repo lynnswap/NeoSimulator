@@ -16,14 +16,14 @@ struct HostModeControllerTests {
         let entered = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         let first = Task {
-            try await controller.operation { @Sendable in
+            try await controller.operation(.hostTransition) { @Sendable in
                 entered.continuation.yield(())
                 for await _ in release.stream { break }
             }
         }
         var events = entered.stream.makeAsyncIterator()
         await events.next()
-        let cancelled = Task { try await controller.operation { @Sendable in true } }
+        let cancelled = Task { try await controller.operation(.hostTransition) { @Sendable in true } }
         cancelled.cancel()
         release.continuation.yield(())
         try await first.value
@@ -31,7 +31,7 @@ struct HostModeControllerTests {
             _ = try await cancelled.value
             Issue.record("A cancelled open entered the controller operation")
         } catch is CancellationError {}
-        let value = try await controller.operation { @Sendable in 42 }
+        let value = try await controller.operation(.hostTransition) { @Sendable in 42 }
         #expect(value == 42)
     }
 
@@ -115,7 +115,7 @@ struct HostModeControllerTests {
         var events = entered.stream.makeAsyncIterator()
         await events.next()
         try await controller.screenOpen(second) {
-            let value = try await controller.operation { @Sendable in 42 }
+            let value = try await controller.operation(.hostTransition) { @Sendable in 42 }
             #expect(value == 42)
         }
         first.cancel()
@@ -134,7 +134,7 @@ struct HostModeControllerTests {
         let presented = Mutex(false)
         let opening = Task {
             defer { completed.fulfill() }
-            try await controller.operation { @Sendable in
+            try await controller.operation(.independent) { @Sendable in
                 try await controller.screenOpen(automatic) {
                     entered.continuation.yield(())
                     for await _ in release.stream { break }
@@ -157,14 +157,14 @@ struct HostModeControllerTests {
         #expect(!presented.withLock { $0 })
 
         do {
-            try await controller.operation { @Sendable in try await controller.screenOpen(queued) { presented.withLock { $0 = true } } }
+            try await controller.operation(.independent) { @Sendable in try await controller.screenOpen(queued) { presented.withLock { $0 = true } } }
             Issue.record("A cancelled queued intent entered the open pipeline")
         } catch is CancellationError {}
         #expect(!presented.withLock { $0 })
         // A new explicit request and a different device set are independent of the retired intent.
         let reopened = controller.makeScreenOpenRequest(for: device)
-        try await controller.operation { @Sendable in try await controller.screenOpen(reopened) {} }
-        try await controller.operation { @Sendable in try await controller.screenOpen(clone) {} }
+        try await controller.operation(.independent) { @Sendable in try await controller.screenOpen(reopened) {} }
+        try await controller.operation(.independent) { @Sendable in try await controller.screenOpen(clone) {} }
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -179,7 +179,7 @@ struct HostModeControllerTests {
         let release = AsyncStream<Void>.makeStream()
         let opened = Mutex<[DeviceInventoryID]>([])
         let batch = Task {
-            try await controller.operation { @Sendable in
+            try await controller.operation(.independent) { @Sendable in
                 let catalog = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
                 return try await controller.synchronizeBootedDevices(catalog, attachInitially: true, ownedIdentifiers: { [] }) { id in
                     opened.withLock { $0.append(id) }
@@ -214,7 +214,7 @@ struct HostModeControllerTests {
                                          runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
         let opened = Mutex<[DeviceInventoryID]>([])
         let poll: @Sendable ([SimulatorHostDevice]) async throws -> Void = { devices in
-            try await controller.operation { @Sendable in
+            try await controller.operation(.independent) { @Sendable in
                 let catalog = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
                 _ = try await controller.synchronizeBootedDevices(catalog, attachInitially: true, ownedIdentifiers: { [] }) { id in
                     opened.withLock { $0.append(id) }

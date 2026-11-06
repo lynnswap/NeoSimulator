@@ -188,7 +188,27 @@ private final class ScreenOpenCancellations: Sendable {
 package struct ScreenOpenCatalogObservation: Sendable {
     package let catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])]
     fileprivate let cancellationIdentities: [DeviceInventoryID: UUID]
+    /// The devices that a change was altering during the read, so that their states may be only steps of it.
+    fileprivate let changingDevices: Set<DeviceInventoryID>
     package var devices: [SimulatorHostDevice] { catalogs.flatMap(\.devices) }
+}
+
+/// What an operation of ``SimulatorHostController`` concerns, which decides what it follows in accepted order.
+package enum HostOperationScope {
+    /// A change of the host, its preferences or a renderer's lifetime. Follows all earlier work and holds all later work.
+    case hostTransition
+    /// Work on these devices. Follows only earlier work on them and earlier host transitions.
+    case devices(Set<DeviceInventoryID>)
+    /// Reads, and work on no existing device. Follows only earlier host transitions.
+    case independent
+
+    fileprivate func conflicts(with other: Self) -> Bool {
+        switch (self, other) {
+        case (.hostTransition, _), (_, .hostTransition): true
+        case (.devices(let first), .devices(let second)): !first.isDisjoint(with: second)
+        default: false
+        }
+    }
 }
 
 /// Serializes preference transactions while each Xcode owns a separate renderer process.
@@ -208,8 +228,16 @@ package actor SimulatorHostController {
     private var startupDeviceIdentifier: DeviceInventoryID?
     private var screenOpenTasks: [DeviceInventoryID: (id: UUID, task: Task<Void, any Error>)] = [:]
     private var connectionSynchronization: Task<Bool, any Error>?
-    private var operationInProgress = false
-    private var operationWaiters: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
+    private struct AcceptedOperation {
+        let id: UUID
+        var scope: HostOperationScope
+        /// Present while the operation waits for its turn.
+        var continuation: CheckedContinuation<Void, any Error>?
+    }
+    /// Running and waiting operations, in accepted order.
+    private var operations: [AcceptedOperation] = []
+    /// The devices being changed at some time during each catalog read in progress.
+    private var catalogReads: [UUID: Set<DeviceInventoryID>] = [:]
     var shutdownTransactions: [SimulatorShutdownTransaction] = []
 
     package init(rendererApplicationURL: URL,
@@ -223,8 +251,11 @@ package actor SimulatorHostController {
     package nonisolated func stopReads() { reads.stop() }
     package nonisolated func resumeReads() { reads.resume() }
 
+    /// The operations waiting for their turn.
+    package var waitingOperations: Int { operations.count { $0.continuation != nil } }
+
     package func status() async throws -> SimulatorHostStatus {
-        try await operation {
+        try await operation(.independent) {
             let preferred = try await self.savedHostSelectionStatus()
             let selection = self.effectiveSelection(preferred)
             return SimulatorHostStatus(
@@ -238,7 +269,7 @@ package actor SimulatorHostController {
 
     /// Applies the preferred display host and enables automatic hosting without opening a screen.
     package func beginSession() async throws {
-        try await operation {
+        try await operation(.hostTransition) {
             let xcode = try await self.resolveXcode(nil)
             try await self.beginHostSession(xcodeURL: xcode.applicationURL)
             self.allowsSessionHosting = true
@@ -248,11 +279,11 @@ package actor SimulatorHostController {
     /// Ends automatic hosting for this controller while preserving the selected display settings.
     package func endSession() async throws {
         await cancelConnectionSynchronization()
-        try await operation { self.allowsSessionHosting = false }
+        try await operation(.hostTransition) { self.allowsSessionHosting = false }
     }
 
     package func installedXcodes() async throws -> [SimulatorXcode] {
-        try await operation {
+        try await operation(.independent) {
             try await self.availableXcodes().map {
                 SimulatorXcode(url: $0.applicationURL, version: $0.version.description, name: $0.applicationURL.deletingPathExtension().lastPathComponent)
             }
@@ -260,13 +291,13 @@ package actor SimulatorHostController {
     }
 
     package func creationCatalog() async throws -> SimulatorCreationContext {
-        try await operation { try await self.readCreationCatalog() }
+        try await operation(.independent) { try await self.readCreationCatalog() }
     }
 
     /// Uses the selected simulator's Xcode and device set for companion creation.
     package func creationCatalog(for deviceID: DeviceInventoryID) async throws -> SimulatorCreationContext {
         let address = try deviceID.simulatorAddress
-        return try await operation {
+        return try await operation(.independent) {
             let xcodeURL = try await self.resolvedXcodeURL(for: deviceID)
             return try await self.readCreationCatalog(xcodeURL: xcodeURL, deviceSetPath: address.deviceSetPath)
         }
@@ -304,7 +335,7 @@ package actor SimulatorHostController {
     }
 
     package func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String {
-        try await operation {
+        try await operation(.independent) {
             let xcode = try await self.resolveXcode(context.xcodeURL)
             let output = try await self.runSimctl(xcode: xcode, arguments: ["create", name, deviceType, runtime], deviceSetPath: context.deviceSetPath)
             return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -312,7 +343,8 @@ package actor SimulatorHostController {
     }
 
     package func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
-        try await operation {
+        let devices = Set([watch, phone].map { DeviceInventoryID.simulator(udid: $0, deviceSetPath: context.deviceSetPath) })
+        try await operation(.devices(devices)) {
             let xcode = try await self.resolveXcode(context.xcodeURL)
             _ = try await self.runSimctl(xcode: xcode, arguments: ["pair", watch, phone], deviceSetPath: context.deviceSetPath)
         }
@@ -320,11 +352,11 @@ package actor SimulatorHostController {
 
     package func selectHost(_ host: SimulatorHost, xcodeURL: URL? = nil) async throws {
         await cancelConnectionSynchronization()
-        try await operation { try await self.select(host, xcodeURL: xcodeURL) }
+        try await operation(.hostTransition) { try await self.select(host, xcodeURL: xcodeURL) }
     }
 
     package func activate(xcodeURL: URL? = nil) async throws {
-        try await operation {
+        try await operation(.hostTransition) {
             if try await self.hostSelectionStatus().host == .deviceHub {
                 let xcode = try await self.resolveXcode(xcodeURL)
                 let workspace = await WorkspaceClient.live
@@ -345,7 +377,7 @@ package actor SimulatorHostController {
 
     package func restore(force: Bool = false) async throws {
         await cancelConnectionSynchronization()
-        try await operation {
+        try await operation(.hostTransition) {
             do { try await self.restoreHost(force: force) }
             catch {
                 self.invalidateHostAfterFailedChange(error)
@@ -358,7 +390,7 @@ package actor SimulatorHostController {
     }
 
     package func devices(xcodeURL: URL? = nil) async throws -> [SimulatorHostDevice] {
-        try await operation {
+        try await operation(.independent) {
             let catalogs: [SimulatorHostDevice]
             if let xcodeURL {
                 catalogs = try await self.deviceCatalog(xcode: self.resolveXcode(xcodeURL))
@@ -450,7 +482,7 @@ package actor SimulatorHostController {
     private func openDeviceBody(deviceID: DeviceInventoryID, xcodeURL: URL?, bootIfNeeded: Bool = true,
                                 catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])] = [],
                                 purpose: SimulatorPresentationContext.Purpose) async throws {
-        let open: @Sendable () async throws -> Void = try await operation {
+        let open = try await prepareOpen(of: deviceID) { startingRenderer in
             try Task.checkCancellation()
             let (identifier, _) = try deviceID.simulatorAddress
             let selection = try await self.hostSelectionStatus()
@@ -466,7 +498,8 @@ package actor SimulatorHostController {
             }
             let (xcode, device) = try await self.resolveDevice(deviceID: deviceID, preferredURL: xcodeURL, catalogs: catalogs)
             if selection.host == .neo {
-                let open = try await self.prepareRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose)
+                guard let open = try await self.prepareRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose,
+                                                                      startingRenderer: startingRenderer) else { return nil }
                 return {
                     if let owner { try await RendererDeviceRequestWaiter().release(deviceID, from: owner) }
                     try Task.checkCancellation()
@@ -483,7 +516,20 @@ package actor SimulatorHostController {
                 }, launch: { try await self.launchHost(.deviceHub, xcodeURL: xcode.applicationURL) })
             }
         }
-        try await open()
+        try await open?()
+    }
+
+    /// Prepares an open in its device's order. An open that needs a new renderer prepares again as a host transition in
+    /// the same place, which `prepare` must then complete.
+    func prepareOpen(of deviceID: DeviceInventoryID,
+                     _ prepare: (_ startingRenderer: Bool) async throws -> (@Sendable () async throws -> Void)?)
+        async throws -> (@Sendable () async throws -> Void)? {
+        let id = UUID()
+        return try await runOperation(id, .devices([deviceID])) {
+            if let open = try await prepare(false) { return open }
+            try await self.escalateToHostTransition(id)
+            return try await prepare(true)
+        }
     }
 
     package nonisolated static func openDeviceHub(boot: @Sendable () async throws -> Void,
@@ -497,18 +543,24 @@ package actor SimulatorHostController {
 
     private func openRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, bootIfNeeded: Bool = true,
                                     purpose: SimulatorPresentationContext.Purpose) async throws {
-        let open = try await operation {
-            try await self.prepareRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose)
+        let open = try await prepareOpen(of: deviceID) { startingRenderer in
+            try await self.prepareRendererDevice(deviceID, xcode: xcode, bootIfNeeded: bootIfNeeded, purpose: purpose,
+                                                 startingRenderer: startingRenderer)
         }
-        try await open()
+        try await open?()
     }
 
-    /// Called inside the preference/renderer transaction; guest boot and screen connection run after it.
+    /// Called inside an operation; guest boot and screen connection run after it.
+    /// Returns nil if the Xcode needs a new renderer and the operation is not `startingRenderer`.
     private func prepareRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, bootIfNeeded: Bool,
-                                       purpose: SimulatorPresentationContext.Purpose) async throws -> @Sendable () async throws -> Void {
+                                       purpose: SimulatorPresentationContext.Purpose,
+                                       startingRenderer: Bool) async throws -> (@Sendable () async throws -> Void)? {
         let launchesRenderer = try await !registeredRenderers().contains(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) })
         try Task.checkCancellation()
-        if launchesRenderer { try await launchHost(.neo, xcodeURL: xcode.applicationURL) }
+        if launchesRenderer {
+            guard startingRenderer else { return nil }
+            try await launchHost(.neo, xcodeURL: xcode.applicationURL)
+        }
         guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
             throw HostOperationError.temporary("renderer-startup", "The simulator display exited before opening the device.")
         }
@@ -548,7 +600,7 @@ package actor SimulatorHostController {
     /// Closes the presentation's backend ownership, optionally leaving the guest running.
     package func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws {
         _ = try deviceID.simulatorAddress
-        try await operation {
+        try await operation(.devices([deviceID])) {
             guard let owner = try await self.registeredRenderers().first(where: { $0.deviceIdentifiers.contains(deviceID) }) else { return }
             try await RendererDeviceRequestWaiter().close(deviceID, in: owner, keepingDeviceRunning: keepingDeviceRunning)
         }
@@ -574,14 +626,15 @@ package actor SimulatorHostController {
 
     private func synchronizeConnections() async throws -> Bool {
         self.retireCancelledScreenOpens()
-        let (observedCatalog, selection) = try await operation {
+        let (observedCatalog, selection) = try await operation(.independent) {
             let catalog = try await self.readScreenOpenCatalog { try await self.availableCatalogs() }
             return (catalog, try await self.hostSelectionStatus())
         }
         var catalogs = observedCatalog.catalogs
         let catalog = observedCatalog.devices
         guard selection.allowsAutomaticHosting else {
-            let observation = self.bootTracker.observe(catalog, attachInitially: false, allowsAttachments: false)
+            let observation = self.bootTracker.observe(catalog, attachInitially: false, allowsAttachments: false,
+                                                       changing: observedCatalog.changingDevices)
             self.startupHandled = true
             self.startupDeviceIdentifier = nil
             return observation.catalogChanged
@@ -596,6 +649,7 @@ package actor SimulatorHostController {
             changed = try await self.connectionTracker.synchronize(
                 observations: try await Self.readProcessConnections(),
                 runningDeviceIdentifiers: Set(catalog.filter { $0.state == "Booted" }.map(\.inventoryID)),
+                changingDeviceIdentifiers: observedCatalog.changingDevices,
                 testingDeviceSetPath: SimulatorDeviceSets.testingPath(),
                 isCancelled: { self.isCancelledScreenConnection($0) }
             ) { connection in
@@ -630,7 +684,8 @@ package actor SimulatorHostController {
         changed = changed || bootObservation.changed
         if firstFailure == nil { firstFailure = bootObservation.failure }
         let ownedIdentifiers = bootObservation.ownedIdentifiers
-        if !self.startupHandled {
+        // A read during a change does not show which devices stay running, so a later one decides.
+        if !self.startupHandled, observedCatalog.changingDevices.isEmpty {
             self.startupHandled = true
             func savedBoolean(_ key: String) -> Bool {
                 rendererDefaults?.object(forKey: key) as? Bool ?? managerDefaults?.object(forKey: key) as? Bool ?? true
@@ -666,7 +721,14 @@ package actor SimulatorHostController {
     ) async throws -> ScreenOpenCatalogObservation {
         // The observation starts before I/O: a later cancellation must also invalidate stale Shutdown results.
         let identities = screenOpenCancellations.snapshot()
-        return ScreenOpenCatalogObservation(catalogs: try await read(), cancellationIdentities: identities)
+        let id = UUID()
+        catalogReads[id] = operations.reduce(into: []) { changing, operation in
+            if operation.continuation == nil, case .devices(let devices) = operation.scope { changing.formUnion(devices) }
+        }
+        defer { catalogReads[id] = nil }
+        let catalogs = try await read()
+        return ScreenOpenCatalogObservation(catalogs: catalogs, cancellationIdentities: identities,
+                                            changingDevices: catalogReads[id] ?? [])
     }
 
     package func synchronizeBootedDevices(_ catalog: ScreenOpenCatalogObservation, attachInitially: Bool,
@@ -674,7 +736,7 @@ package actor SimulatorHostController {
         open: @escaping @Sendable (DeviceInventoryID) async throws -> Void
     ) async throws -> (changed: Bool, ownedIdentifiers: Set<DeviceInventoryID>, failure: (any Error)?) {
         retireCancelledScreenOpens()
-        let observation = bootTracker.observe(catalog.devices, attachInitially: attachInitially,
+        let observation = bootTracker.observe(catalog.devices, attachInitially: attachInitially, changing: catalog.changingDevices,
             isCurrentObservation: { self.screenOpenCancellations.isCurrent(catalog.cancellationIdentities, for: $0) })
         let requests = observation.devicesToAttach.map {
             screenOpenCancellations.request(for: $0, cancellationIdentity: catalog.cancellationIdentities[$0])
@@ -696,12 +758,12 @@ package actor SimulatorHostController {
 
     /// Invalidates testing-device attachments after a visibility change, including changes between catalog polls.
     package func testingDeviceVisibilityDidChange() async throws {
-        try await operation { self.bootTracker.forgetTestingDevices() }
+        try await operation(.independent) { self.bootTracker.forgetTestingDevices() }
     }
 
     package func quitRenderer(keepingDevicesRunning: Bool? = nil) async throws {
         await cancelConnectionSynchronization()
-        try await operation {
+        try await operation(.hostTransition) {
             let workspace = await WorkspaceClient.live
             _ = try await workspace.quitNeoHost(self.rendererApplicationURL, self.registeredRenderers(), keepingDevicesRunning)
         }
@@ -810,7 +872,7 @@ package actor SimulatorHostController {
 
     package func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL {
         _ = try deviceID.simulatorAddress
-        return try await operation { try await self.resolvedXcodeURL(for: deviceID) }
+        return try await operation(.independent) { try await self.resolvedXcodeURL(for: deviceID) }
     }
 
     private func resolvedXcodeURL(for deviceID: DeviceInventoryID) async throws -> URL {
@@ -953,21 +1015,18 @@ package actor SimulatorHostController {
     private static func readProcessConnections() async throws -> [XcodeSimulatorConnection] {
         try SimulatorProcessConnections.read()
     }
-    package func operation<T>(_ body: () async throws -> T) async throws -> T {
+    /// Runs `body` once nothing accepted before it conflicts with `scope`, so that a long change to one device holds only
+    /// what concerns that device, and a host transition stays ahead of everything accepted after it.
+    package func operation<T>(_ scope: HostOperationScope, _ body: () async throws -> T) async throws -> T {
+        try await runOperation(UUID(), scope, body)
+    }
+
+    private func runOperation<T>(_ id: UUID, _ scope: HostOperationScope, _ body: () async throws -> T) async throws -> T {
         try Task.checkCancellation()
-        if operationInProgress {
-            let id = UUID()
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                    operationWaiters.append((id, continuation))
-                }
-            } onCancel: {
-                Task { await self.cancelOperationWaiter(id) }
-            }
-        } else { operationInProgress = true }
+        try await waitForTurn(of: id) { operations.append(AcceptedOperation(id: id, scope: scope, continuation: $0)) }
         defer {
-            if operationWaiters.isEmpty { operationInProgress = false }
-            else { operationWaiters.removeFirst().continuation.resume() }
+            operations.removeAll { $0.id == id }
+            admitOperations()
         }
         do {
             try Task.checkCancellation()
@@ -977,9 +1036,51 @@ package actor SimulatorHostController {
         catch { throw SimulatorHostFailure(error) }
     }
 
+    /// Turns a running operation into a waiting host transition in its accepted place. Work accepted before it ends first,
+    /// and none of that concerns its devices, or it could not have started. Work accepted after it stays behind it, and
+    /// another operation in this state no longer runs, so neither holds the other beyond their order.
+    private func escalateToHostTransition(_ id: UUID) async throws {
+        try await waitForTurn(of: id) { continuation in
+            for index in operations.indices where operations[index].id == id {
+                operations[index].scope = .hostTransition
+                operations[index].continuation = continuation
+            }
+        }
+    }
+
+    private func waitForTurn(of id: UUID, joining join: (CheckedContinuation<Void, any Error>) -> Void) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                join(continuation)
+                admitOperations()
+            }
+        } onCancel: {
+            Task { await self.cancelOperationWaiter(id) }
+        }
+    }
+
+    /// Starts every waiter that conflicts with nothing running or waiting ahead of it.
+    private func admitOperations() {
+        var ahead = operations.filter { $0.continuation == nil }.map(\.scope)
+        for index in operations.indices {
+            guard let continuation = operations[index].continuation else { continue }
+            let scope = operations[index].scope
+            defer { ahead.append(scope) }
+            guard !ahead.contains(where: { $0.conflicts(with: scope) }) else { continue }
+            operations[index].continuation = nil
+            if case .devices(let devices) = scope {
+                for read in catalogReads.keys { catalogReads[read]?.formUnion(devices) }
+            }
+            continuation.resume()
+        }
+    }
+
     private func cancelOperationWaiter(_ id: UUID) {
-        guard let index = operationWaiters.firstIndex(where: { $0.id == id }) else { return }
-        operationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+        guard let index = operations.firstIndex(where: { $0.id == id }),
+              let continuation = operations[index].continuation else { return }
+        operations.remove(at: index)
+        continuation.resume(throwing: CancellationError())
+        admitOperations()
     }
     /// For a change. A catalog read goes through ``readSimctlList(xcode:deviceSetPath:)`` instead.
     @concurrent
@@ -1067,6 +1168,7 @@ package final class XcodeConnectionTracker {
     package nonisolated(nonsending) func synchronize(
         observations: [XcodeSimulatorConnection],
         runningDeviceIdentifiers: Set<DeviceInventoryID>,
+        changingDeviceIdentifiers: Set<DeviceInventoryID> = [],
         testingDeviceSetPath: String? = nil,
         isCancelled: (XcodeSimulatorConnection) -> Bool = { _ in false },
         transfer: (XcodeSimulatorConnection) async throws -> Void
@@ -1076,17 +1178,21 @@ package final class XcodeConnectionTracker {
             latestHandled.removeValue(forKey: identifier)
         }
         // A stopped device cancels a failed handoff, even if its originating app already exited.
-        for (identifier, connection) in latestObserved where !runningDeviceIdentifiers.contains(identifier) {
+        // A device under change is only passing through this state, so the next observation decides it.
+        for (identifier, connection) in latestObserved where !runningDeviceIdentifiers.contains(identifier)
+            && !changingDeviceIdentifiers.contains(identifier) {
             latestHandled[identifier] = connection.event
         }
-        for connection in observations where runningDeviceIdentifiers.contains(connection.deviceID)
+        // The originating app may exit before the change ends, so its event is kept now and transferred afterwards.
+        for connection in observations where (runningDeviceIdentifiers.contains(connection.deviceID)
+            || changingDeviceIdentifiers.contains(connection.deviceID))
             && (connection.deviceSetPath == nil || connection.deviceSetPath == testingDeviceSetPath) {
             if let previous = latestObserved[connection.deviceID], previous.event >= connection.event { continue }
             latestObserved[connection.deviceID] = connection
         }
         var changed = false
         var firstFailure: (any Error)?
-        for connection in latestObserved.values.sorted(by: { $0.event < $1.event }) {
+        for connection in latestObserved.values.sorted(by: { $0.event < $1.event }) where !changingDeviceIdentifiers.contains(connection.deviceID) {
             if let latest = latestHandled[connection.deviceID], latest >= connection.event { continue }
             if isCancelled(connection) {
                 latestHandled[connection.deviceID] = connection.event
@@ -1190,48 +1296,56 @@ package final class SimulatorBootTracker {
 
     private var catalog: [DeviceInventoryID: SimulatorHostDevice] = [:]
     private var pending: Set<DeviceInventoryID> = []
-    /// A cancelled open may have booted before the catalog observed it. Retire only that boot's automatic attach.
-    private var cancelledAttachments: Set<DeviceInventoryID> = []
+    /// A cancelled open may have booted before the catalog observed it, and a first read during a change cannot tell
+    /// whether the device ran before that change. Retire only that boot's automatic attach.
+    private var retiredAttachments: Set<DeviceInventoryID> = []
     private var initialized = false
 
-    package func reset() { pending = []; cancelledAttachments = []; initialized = false }
+    package func reset() { pending = []; retiredAttachments = []; initialized = false }
     package func didAttach(_ identifier: DeviceInventoryID) { pending.remove(identifier) }
     package func didCancelAttachment(_ identifier: DeviceInventoryID) {
         pending.remove(identifier)
-        cancelledAttachments.insert(identifier)
+        retiredAttachments.insert(identifier)
     }
     package func forgetTestingDevices() {
         let identifiers = Set(catalog.filter { $0.value.deviceSetPath != nil }.keys)
         catalog = catalog.filter { $0.value.deviceSetPath == nil }
         pending.subtract(identifiers)
-        cancelledAttachments = cancelledAttachments.filter {
+        retiredAttachments = retiredAttachments.filter {
             if case .simulator(_, let path) = $0.destination { return path == nil }
             return true
         }
     }
 
     package func observe(_ devices: [SimulatorHostDevice], attachInitially: Bool, allowsAttachments: Bool = true,
+                 changing: Set<DeviceInventoryID> = [],
                  isCurrentObservation: (DeviceInventoryID) -> Bool = { _ in true }) -> Observation {
-        let current = Dictionary(devices.map { ($0.inventoryID, $0) }, uniquingKeysWith: { first, _ in first })
+        var current = Dictionary(devices.map { ($0.inventoryID, $0) }, uniquingKeysWith: { first, _ in first })
+        // A restart's stop and boot are steps of that change, not a device that newly booted.
+        for identifier in changing {
+            if let previous = catalog[identifier] { current[identifier] = previous }
+        }
         let changed = current != catalog
         defer { catalog = current }
         guard allowsAttachments else {
             reset()
             return Observation(catalogChanged: changed, devicesToAttach: [])
         }
-        cancelledAttachments = cancelledAttachments.filter { identifier in
-            !isCurrentObservation(identifier) || current[identifier]?.state != "Shutdown"
+        if !initialized && !attachInitially { retiredAttachments.formUnion(changing.intersection(current.keys)) }
+        // Only a read outside a change can establish that a retired boot has ended.
+        retiredAttachments = retiredAttachments.filter { identifier in
+            changing.contains(identifier) || !isCurrentObservation(identifier) || current[identifier]?.state != "Shutdown"
         }
         let booted = Set(current.filter { $0.value.state == "Booted" }.keys)
         pending.formIntersection(booted)
-        pending.subtract(cancelledAttachments)
-        for identifier in booted where !cancelledAttachments.contains(identifier) {
+        pending.subtract(retiredAttachments)
+        for identifier in booted where !retiredAttachments.contains(identifier) {
             if initialized {
                 if catalog[identifier]?.state != "Booted" { pending.insert(identifier) }
             } else if attachInitially { pending.insert(identifier) }
         }
         initialized = true
-        return Observation(catalogChanged: changed, devicesToAttach: pending.sorted { $0.sortKey < $1.sortKey })
+        return Observation(catalogChanged: changed, devicesToAttach: pending.subtracting(changing).sorted { $0.sortKey < $1.sortKey })
     }
 }
 

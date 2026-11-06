@@ -71,7 +71,7 @@ final class DeviceInformationModel {
     }
     var canRemovePairing: Bool {
         guard let watch = watchToUnpair else { return false }
-        return !inspection.isManaging && !manager.isBusy && !manager.managingDeviceIDs.contains(watch.inventoryID)
+        return !inspection.isManaging && manager.canManage(.unpair, deviceIDs: [watch.inventoryID])
     }
     func pairingMenu() -> NSMenu { pairingDevice.map(makePairingMenu) ?? NSMenu() }
     func removePairing() { if let watch = watchToUnpair { unpair(watch) } }
