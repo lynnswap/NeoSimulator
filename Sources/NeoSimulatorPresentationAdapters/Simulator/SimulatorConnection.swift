@@ -35,6 +35,8 @@ package final class SimulatorConnection: SimulatorDisplay {
     private var keyboard: NativeDeviceKeyboard? { nativeKeyboard.keyboard }
     private let ownsKeyboard: Bool
     private var keyboardResponder: NativeKeyboardResponder?
+    private let simulatorKeyboard = SimulatorKeyboardInput()
+    var hasPressedSimulatorKeys: Bool { simulatorKeyboard.hasPressedKeys }
     /// What the window last asked for, which input that becomes ready later takes up.
     private var keyboardRequested = false
     private var trackpadRequested = false
@@ -128,10 +130,10 @@ package final class SimulatorConnection: SimulatorDisplay {
                 input.sendTouch(at: touch.point, secondPoint: touch.secondPoint, phase: touch.phase, edge: touch.edge)
             }
         }
-        while NSEvent.pressedMouseButtons != 0 || !simulatorKitButtonsDown.isEmpty {
+        while NSEvent.pressedMouseButtons != 0 || !simulatorKitButtonsDown.isEmpty || nativeKeyboard.hasPressedSimulatorKeys {
             try await Task.sleep(for: .milliseconds(50))
         }
-        // Nothing suspends from here on, so SimulatorKit cannot start a touch or button that the change would cut in two.
+        // Nothing suspends from here on, so SimulatorKit cannot start a key, touch or button across the handoff.
         try Task.checkCancellation()
         guard !disconnected else { throw CancellationError() }
         var input: NativeTrackpadInput?
@@ -152,6 +154,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     /// Takes up the device's native keyboard, on each display that shares it.
     func keyboardActivated(_ keyboard: NativeDeviceKeyboard) {
         guard nativeCanvas == nil, !disconnected else { return }
+        simulatorKeyboard.stop()
         setSimulatorKitKeyboardEnabled(false)
         keyboardResponder = NativeKeyboardResponder { [weak self] event in
             guard let self, !disconnected, keyboard.isEnabled(for: self) else { return false }
@@ -403,6 +406,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     package func setKeyboardEnabled(_ enabled: Bool) {
         keyboardRequested = enabled
         guard nativeCanvas == nil, !disconnected else { return }
+        if !enabled { simulatorKeyboard.stop() }
         // SimulatorKit's digitizer passes the keys it does not handle to the native keyboard. A device UI plugin's
         // overlay takes the input instead, so SimulatorKit's keyboard remains with that display.
         if enabled, let keyboard, let keyboardResponder, let digitizerView, inputView === digitizerView {
@@ -411,8 +415,12 @@ package final class SimulatorConnection: SimulatorDisplay {
         } else if !enabled, let keyboard, keyboard.isEnabled(for: self) {
             keyboard.setEnabled(false, for: self)
         } else {
+            if enabled { simulatorKeyboard.start(for: inputView) }
             setSimulatorKitKeyboardEnabled(enabled)
         }
+    }
+    package func sendKeyboardEvent(_ event: NSEvent) {
+        simulatorKeyboard.send(event, to: inputView)
     }
     private func setSimulatorKitKeyboardEnabled(_ enabled: Bool) {
         guard nativeCanvas == nil, !disconnected, let keyboard = object_getIvar(view, runtime.display.keyboardDelegate) else { return }
@@ -484,6 +492,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     package func endResize() { guard nativeCanvas == nil else { return }; perform("end resizing") { try unsafe runtime.display.endResize.unsafeInvoke(on: view) } }
     package func disconnect() {
         guard !disconnected else { return }
+        simulatorKeyboard.stop()
         disconnected = true
         inputActivation?.cancel()
         deviceRecord?.stop()

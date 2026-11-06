@@ -2,6 +2,63 @@ import AppKit
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 
+/// Keeps key releases with SimulatorKit until the display can hand its keyboard to the native transport.
+@MainActor
+package final class SimulatorKeyboardInput {
+    private weak var view: NSView?
+    private var monitor: Any?
+    private var pressed: [UInt16: NSEvent] = [:]
+
+    package var hasPressedKeys: Bool { !pressed.isEmpty }
+
+    package func start(for view: NSView) {
+        guard monitor == nil else { return }
+        self.view = view
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            guard let self, let view = self.view else { return event }
+            if event.type == .keyUp {
+                self.pressed[event.keyCode] = nil
+            } else if let window = view.window, event.window === window, window.firstResponder === view {
+                self.pressed[event.keyCode] = event
+            }
+            return event
+        }
+    }
+
+    /// Captured keyboard events bypass application monitors, so their submission belongs here too.
+    package func send(_ event: NSEvent, to view: NSView) {
+        if monitor != nil, event.type == .keyDown { pressed[event.keyCode] = event }
+        switch event.type {
+        case .keyDown: view.keyDown(with: event)
+        case .keyUp:
+            view.keyUp(with: event)
+            pressed[event.keyCode] = nil
+        default: break
+        }
+    }
+
+    package func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        let held = pressed.values
+        pressed = [:]
+        if let view {
+            for event in held {
+                if let release = NSEvent.keyEvent(with: .keyUp, location: event.locationInWindow,
+                    modifierFlags: event.modifierFlags, timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: event.windowNumber, context: nil, characters: event.characters ?? "",
+                    charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "", isARepeat: false,
+                    keyCode: event.keyCode) {
+                    view.keyUp(with: release)
+                }
+            }
+        }
+        view = nil
+    }
+
+    isolated deinit { stop() }
+}
+
 /// Follows a SimulatorKit display's digitizer in its responder chain. The digitizer passes key-downs and key-ups
 /// it does not handle to its next responder, including those `DisplayKeyboardInput` forwards and those AppKit
 /// delivers after menu key equivalents. `handle` takes them for the native keyboard; events it declines continue

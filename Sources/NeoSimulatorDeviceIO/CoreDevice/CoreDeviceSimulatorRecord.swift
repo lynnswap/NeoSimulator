@@ -32,7 +32,7 @@ package enum CoreDeviceFeatureAnswer<Record> {
 
 /// The one owner of a screen connection's view of its simulator's CoreDevice record. A missing record or one that is not
 /// connected is no answer, so what asks waits on CoreDevice's notifications for one, and a failed read is its asker's
-/// failure, not an answer. An asker that the first read answers follows nothing.
+/// failure, not an answer. Observation starts before reading, and ends when no asker remains.
 ///
 /// A simulator's record lists no features until the simulator boots, and none again once it shuts down.
 ///
@@ -46,6 +46,7 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     private var waiters: [Int: AsyncStream<Void>.Continuation] = [:]
     private var nextWaiter = 0
     private var inventoryFollower: Task<Void, Never>?
+    private var hasInventory = false
     private var recordFollower: Task<Void, Never>?
     /// Why the notifications ended, which everything waiting on them is told.
     private var failure: (any Error)?
@@ -98,7 +99,8 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     }
 
     private func wait<Value>(_ decide: @MainActor (Source.Record) async throws -> Value?) async throws -> Value {
-        if let value = try await read(decide) { return value }
+        try Task.checkCancellation()
+        guard !stopped else { throw CancellationError() }
         let (changes, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let waiter = nextWaiter
         nextWaiter += 1
@@ -112,6 +114,7 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
             }
         }
         try followChanges()
+        if hasInventory { continuation.yield() }
         if let failure { throw failure }
         for await _ in changes {
             if let failure { throw failure }
@@ -174,6 +177,7 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     /// Begins a generation. What was followed of the old record ends here, and its end counts for nothing. A failure this
     /// clears can only be that follower's, since one of the list's own would have ended these notifications.
     private func listChanged() {
+        hasInventory = true
         listGeneration += 1
         latest = nil
         recordFollower?.cancel()
@@ -195,6 +199,7 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
         inventoryFollower?.cancel()
         recordFollower?.cancel()
         inventoryFollower = nil
+        hasInventory = false
         recordFollower = nil
         failure = nil
         latest = nil

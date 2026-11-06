@@ -50,6 +50,27 @@ func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostNa
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func simulatorKeyboardKeepsCapturedReleasesWithTheirOriginalInput() throws {
+        _ = NSApplication.shared
+        let view = InputView()
+        let input = SimulatorKeyboardInput()
+        input.start(for: view)
+        defer { input.stop() }
+        func event(_ type: NSEvent.EventType, _ code: UInt16) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, characters: "a", charactersIgnoringModifiers: "a",
+                isARepeat: false, keyCode: code))
+        }
+
+        // Capture Keyboard submits directly to the input view, bypassing application event monitors.
+        input.send(try event(.keyDown, 0), to: view)
+        input.send(try event(.keyDown, 1), to: view)
+        input.send(try event(.keyUp, 0), to: view)
+        #expect(input.hasPressedKeys)
+        input.stop()
+        #expect(!input.hasPressedKeys && view.keyUps.map(\.keyCode) == [0, 1])
+    }
+
     @MainActor private final class RemoteTarget {
         weak var controller: DeviceWindowController?
     }
@@ -11070,14 +11091,13 @@ struct InputFocusTests {
             guard case .supported(let record) = try await discovery.answer(for: ["input"]) else { return nil }
             return ObjectIdentifier(record)
         }
-        // The list's first notification, which says what is current, may have replaced what the first read found.
-        try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+        try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
 
         source.current = RecordFixture()
         let reads = source.reads
         source.change(of: old)
         try await wait { source.reads > reads }
-        #expect(source.recordFollows == 2 && source.followers(of: old) == 1)
+        #expect(source.recordFollows == 1 && source.followers(of: old) == 1)
 
         let new = RecordFixture()
         source.current = new
@@ -11088,6 +11108,29 @@ struct InputFocusTests {
         new.features = ["input"]
         source.change(of: new)
         #expect(try await waiting.value == ObjectIdentifier(new))
+        try await wait { source.followers == 0 }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func replacementDuringTheInitialDecisionUsesTheCurrentRecord() async throws {
+        let source = RecordSourceFixture()
+        let connection = HeldCalls<Bool>()
+        let old = RecordFixture()
+        old.heldConnection = connection
+        source.current = old
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        defer { discovery.stop() }
+        let answer = Task.immediate { () -> ObjectIdentifier? in
+            guard case .supported(let record) = try await discovery.answer(for: ["input"]) else { return nil }
+            return ObjectIdentifier(record)
+        }
+        try await wait { connection.isHolding }
+        let current = RecordFixture()
+        current.connected = true
+        current.features = ["input"]
+        try await source.changeList(to: current)
+        connection.finish(.success(true))
+        #expect(try await answer.value == ObjectIdentifier(current))
         try await wait { source.followers == 0 }
     }
 
@@ -11108,7 +11151,7 @@ struct InputFocusTests {
             let old = RecordFixture()
             source.current = old
             let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
-            try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+            try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
 
             let connection = HeldCalls<Bool>()
             old.heldConnection = connection
@@ -11154,7 +11197,7 @@ struct InputFocusTests {
         let old = RecordFixture()
         source.current = old
         let transfer = Task.immediate { _ = try await route.transport() }
-        try await wait { source.recordFollows == 2 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+        try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
 
         let reads = HeldCalls<RecordFixture?>()
         source.heldReads = reads
