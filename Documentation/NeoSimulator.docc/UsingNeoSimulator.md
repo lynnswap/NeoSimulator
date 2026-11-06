@@ -15,7 +15,8 @@ Available and Unavailable groups. Search by name, model, or operating system.
 Use the filter button beside the gear button to choose a device kind, availability,
 or family, change the sort order, or turn grouping off. The gear button opens Settings.
 Choose **Devices** in Settings, then choose a device family, model, and OS version
-and enter a name to create a simulator. The device family is remembered for next time.
+and enter a name to create a simulator. NeoSimulator remembers the last device
+family, and the model and OS version you chose for each family, for next time.
 Open Simulator groups devices by runtime; a
 checkmark means a device has a window, and a dash means it is running without
 one. Hold Option to show its runtime and device type.
@@ -63,6 +64,23 @@ simulator fails, the error includes the new device's identifier. Install runtime
 
 Neo supports iPhone, iPad, Apple Watch, Apple TV, and Apple Vision Pro. Menus show
 the controls supported by the active device. Device association with Xcode is automatic.
+
+### iPhone Duo simulators
+
+The creation form's **Device** menu and the filter's **Device Family** section list
+**iPhone Duo** separately from **iPhone** because Duo uses its own simulator
+runtimes. A Duo simulator is still an iPhone for pairing and device controls.
+
+A Duo simulator needs iOS 27.1 or later and an installed runtime that supports Duo.
+Apple provides the SDKs to build, run, and test apps for Duo in
+[Xcode 27.1](https://developer.apple.com/iphone-duo/). The OS version alone doesn't
+show whether a runtime supports Duo. For example, two runtimes are named iOS 27.2:
+`com.apple.CoreSimulator.SimRuntime.iOS-27-2` doesn't support Duo, and
+`com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4` supports only Duo.
+
+**OS Version** lists only the runtimes that CoreSimulator reports as supporting the
+selected device family, and it shows each runtime's build. If it shows
+**No Runtimes Available**, install a runtime for Duo in Xcode.
 
 ## Main and compact windows
 
