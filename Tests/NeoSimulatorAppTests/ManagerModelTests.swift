@@ -1565,9 +1565,10 @@ struct ManagerModelTests {
         try click(0, collapsed: false)
         #expect(accessory.isHidden)
         let device = simulator()
-        controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
+        let deviceModel = DeviceModel(inventory: device, source: model.registry.source)
+        controller.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
         try click(2, collapsed: false, page: .info)
-        controller.deviceInspector.update(device: device, isManaging: false, isVisible: true)
+        controller.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
         window.layoutIfNeeded()
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
         #expect((0..<categories.segmentCount).map { categories.label(forSegment: $0) } == ["Info", "Apps", "Profiles"])
@@ -1614,11 +1615,25 @@ struct ManagerModelTests {
             response = #"{"result":{"configurationProfiles":[{"payloadIdentifier":"fixture.profile","name":"Fixture"}]}}"#
         }
         let source = ManagerModelSource(devices: [], inspectorResponse: response)
+        await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
-        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
+        let manager = SimulatorManagerModel(source: source)
+        let controller = ManagerDeviceInspectorController(model: manager)
+        func show(_ device: InventoryDevice) throws {
+            manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+            manager.inspect(device, selectionCount: 1)
+            controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+        }
+        func records() -> Int {
+            switch (selection.page, selection.content) {
+            case (.info, .applications): controller.inspection.device?.inspection.applications.count ?? 0
+            case (.reports, _): controller.inspection.device?.inspection.reports.count ?? 0
+            default: controller.inspection.profiles.count
+            }
+        }
         controller.setPage(selection.page)
         controller.inspection.select(selection.content)
-        controller.update(device: device(), isManaging: false, isVisible: true)
+        try show(device())
         #expect(await events.next() == .inspect(device().id))
         await finishInspectorRead(controller.inspection)
         let views = inspectorViews(controller.view)
@@ -1635,33 +1650,23 @@ struct ManagerModelTests {
             filter.selectItem(at: 1)
             NSApp.sendAction(try #require(filter.action), to: filter.target, from: filter)
         }
-        await source.holdInspectorReads()
-        let updated = device(name: "Renamed Phone")
-        controller.update(device: updated, isManaging: false, isVisible: true)
-        #expect(await events.next() == .inspect(updated.id))
-        #expect(table.numberOfRows == 1 && table.selectedRow == 0)
+        // A rename says nothing of these lists, so it reads nothing and leaves what shows.
+        try show(device(name: "Renamed Phone"))
+        await finishInspectorRead(controller.inspection)
+        #expect(await source.inspectorCommands.count == 1)
+        #expect(table.numberOfRows == 1 && table.selectedRow == 0 && records() == 1)
         #expect(selection.page != .reports || filter.indexOfSelectedItem == 1)
-        switch (selection.page, selection.content) {
-        case (.info, .applications): #expect(controller.inspection.applications.count == 1)
-        case (.reports, _): #expect(controller.inspection.reports.count == 1)
-        default: #expect(controller.inspection.profiles.count == 1)
-        }
-        await source.completeInspectorRead()
-        await finishInspectorRead(controller.inspection)
-        #expect(controller.inspection.inspector?.device == updated)
-        #expect(table.selectedRow == 0)
 
-        controller.update(device: device(name: "Renamed Phone", features: []), isManaging: false, isVisible: true)
-        await finishInspectorRead(controller.inspection)
-        #expect(controller.inspection.inspector?.device.capabilities.isEmpty == true)
+        try show(device(name: "Renamed Phone", features: []))
+        try await wait(timeout: .seconds(5)) { table.numberOfRows == 0 }
+        #expect(records() == 0)
         let toolTip = selection.content == .applications ? "Launch Application" : (selection.page == .reports ? "Download Report…" : "Remove…")
         let action = try #require(views.compactMap { $0 as? NSButton }.first { $0.toolTip == toolTip })
         #expect(!action.isEnabled)
 
         await source.holdInspectorReads()
-        controller.update(device: device("other-device"), isManaging: false, isVisible: true)
-        #expect(table.numberOfRows == 0 && table.selectedRow == -1)
-        #expect(controller.inspection.applications.isEmpty && controller.inspection.profiles.isEmpty && controller.inspection.reports.isEmpty)
+        try show(device("other-device"))
+        #expect(table.numberOfRows == 0 && table.selectedRow == -1 && records() == 0)
         #expect(await events.next() == .inspect(device("other-device").id))
         await source.completeInspectorRead()
         await finishInspectorRead(controller.inspection)
@@ -1670,19 +1675,21 @@ struct ManagerModelTests {
 
     @Test func changingProfileCapabilityClearsTheOldKindEvenWhenTheRefreshFails() async throws {
         _ = NSApplication.shared
-        func device(features: Set<String>) -> InventoryDevice {
-            .remote(CoreDeviceDevice(identifier: "inspected-device", udid: nil, kind: .physical, name: "Phone", reportedName: "Phone",
-                modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil, osBuildUpdate: nil,
-                connectionState: "connected", pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
-                capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
-        }
+        func device(features: Set<String>) -> InventoryDevice { inspectedRemote(features: features) }
         let original = device(features: ["provisioningprofiles", "configurationprofiles"])
         let source = ManagerModelSource(devices: [], inspectorResponse:
             #"{"result":{"provisioningProfiles":[{"uuid":"fixture.profile","name":"Fixture"}]}}"#)
+        await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
-        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
+        let manager = SimulatorManagerModel(source: source)
+        let controller = ManagerDeviceInspectorController(model: manager)
+        func show(_ device: InventoryDevice) throws {
+            manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+            manager.inspect(device, selectionCount: 1)
+            controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+        }
         controller.inspection.select(.provisioning)
-        controller.update(device: original, isManaging: false, isVisible: true)
+        try show(original)
         #expect(await events.next() == .inspect(original.id))
         await finishInspectorRead(controller.inspection)
         let views = inspectorViews(controller.view)
@@ -1697,10 +1704,11 @@ struct ManagerModelTests {
         try #require(remove.isEnabled)
 
         await source.holdInspectorReads()
-        controller.update(device: device(features: ["configurationprofiles"]), isManaging: false, isVisible: true)
+        try show(device(features: ["configurationprofiles"]))
         #expect(controller.inspection.content == .configuration)
         #expect(table.numberOfRows == 0 && table.selectedRow == -1)
         #expect(controller.inspection.profiles.isEmpty)
+        #expect(controller.inspection.device?.inspection.status(of: .provisioningProfiles) == .unsupported)
         #expect(await events.next() == .inspect(original.id))
         await source.failInspectorRead()
         await finishInspectorRead(controller.inspection)
@@ -1713,70 +1721,527 @@ struct ManagerModelTests {
         controller.stopReading()
     }
 
-    @Test func sameDeviceInventoryRenameKeepsInfoUntilTheFreshDetailsArrive() async throws {
+    @Test func failedInfoOffersARetryAndOnlyWhatShowsIsRead() async throws {
         _ = NSApplication.shared
+        let device = inspectedRemote()
+        let source = ManagerModelSource(devices: [], inspectorResponse: Self.inspectionResponse)
+        await source.skipSettingsReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        manager.inspect(device, selectionCount: 1)
+        let model = try #require(manager.registry.device(for: device.id))
+        let controller = ManagerDeviceInspectorController(model: manager)
+        controller.update(device: model, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(device.id))
+        await manager.registry.finishReading()
+        let retry = try #require(inspectorViews(controller.view).compactMap { $0 as? NSButton }.first { $0.title == "Retry" })
+        #expect(retry.isHidden)
+
+        await source.holdInspectorReads()
+        model.revalidate(.info)
+        #expect(await events.next() == .inspect(device.id))
+        await source.failInspectorRead()
+        await manager.registry.finishReading()
+        try await wait(timeout: .seconds(5)) { !retry.isHidden }
+        #expect(model.inspection.info["name"] == .string("Details"))
+        #expect(NSApp.sendAction(try #require(retry.action), to: retry.target, from: retry))
+        #expect(await events.next() == .inspect(device.id))
+        await manager.registry.finishReading()
+        try await wait(timeout: .seconds(5)) { retry.isHidden }
+        #expect(model.inspection.status(of: .info) == .current)
+
+        // Hidden, it reads nothing, and showing it again reads what has gone out of date.
+        controller.update(device: model, isManaging: false, isVisible: false)
+        model.revalidate(.info)
+        await manager.registry.finishReading()
+        #expect(await source.inspectorCommands.count == 3)
+        controller.update(device: model, isManaging: false, isVisible: true)
+        #expect(await events.next() == .inspect(device.id))
+        await manager.registry.finishReading()
+        #expect(await source.inspectorCommands.count == 4)
+        controller.update(device: nil, isManaging: false, isVisible: true)
+    }
+
+    // MARK: Changes confirmed in a sheet
+
+    /// Puts up `action`'s sheet about the first of two listed devices, then selects the second while it waits.
+    private func inspectorAskingAboutFirstDevice(action: String, page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content) async throws
+        -> (source: ManagerModelSource, manager: SimulatorManagerModel, controller: ManagerDeviceInspectorController, window: NSWindow, sheet: NSWindow,
+            first: InventoryDevice, second: InventoryDevice) {
+        _ = NSApplication.shared
+        let features: Set<String> = ["streamapplist", "uninstallapp", "configurationprofiles", "listFiles", "transferFiles", "processcontrol", "streamprocesslist"]
+        let first = inspectedRemote("first-device", features: features)
+        let second = inspectedRemote("second-device", features: features)
+        let source = ManagerModelSource(devices: [], inspectorResponse:
+            #"{"result":{"apps":[{"bundleIdentifier":"fixture.app","name":"Fixture","containerAccessible":true}],"configurationProfiles":[{"payloadIdentifier":"fixture.configuration","name":"Configuration"}],"files":[{"relativePath":"Fixture.ips","metadata":{},"resources":{"isDirectory":false}}]}}"#)
+        await source.skipSettingsReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        let controller = ManagerDeviceInspectorController(model: manager)
+        // A sheet only needs a window to attach to; this one is never ordered on screen.
+        let window = NSWindow(contentViewController: controller)
+        manager.registry.apply(DeviceInventorySnapshot(devices: [first, second], issues: []))
+        controller.setPage(page)
+        controller.inspection.select(content)
+        for device in [first, second] {
+            manager.inspect(device, selectionCount: 1)
+            controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+            #expect(await events.next() == .inspect(device.id))
+            await finishInspectorRead(controller.inspection)
+            guard device.id == first.id else { break }
+            let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }.first {
+                $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
+            })
+            try await wait(timeout: .seconds(5)) { table.numberOfRows == 1 }
+            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            #expect(NSApp.sendAction(NSSelectorFromString(action), to: controller, from: nil))
+            try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+        }
+        return (source, manager, controller, window, try #require(window.attachedSheet), first, second)
+    }
+
+    // `install:` reaches the same call the same way, but its open panel has no URL until a person picks a file.
+    @Test(arguments: [
+        ("remove:", DeviceInspectorModel.Page.info, DeviceInspectorModel.Content.applications, ["device", "uninstall", "app", "fixture.app"]),
+        ("remove:", .info, .configuration, ["device", "profile", "remove", "fixture.configuration"]),
+        ("downloadReport:", .reports, .info, ["device", "copy", "from", "--domain-type", "systemCrashLogs", "--source", "Fixture.ips"]),
+        ("exportData:", .info, .applications, ["device", "copy", "from", "--source", "."]),
+        ("importData:", .info, .applications, ["device"]),
+    ])
+    func aChangeConfirmedAfterTheSelectionMovesActsOnTheDeviceItAskedAbout(
+        change: (action: String, page: DeviceInspectorModel.Page, content: DeviceInspectorModel.Content, command: [String])) async throws {
+        let (source, manager, controller, window, sheet, first, _) = try await inspectorAskingAboutFirstDevice(
+            action: change.action, page: change.page, content: change.content)
+        var events = source.events.makeAsyncIterator()
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory.appending(path: "Chosen"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        await source.holdInspectorReads()
+        if let panel = sheet as? NSSavePanel {
+            panel.directoryURL = directory
+            panel.nameFieldStringValue = "Chosen"
+            window.endSheet(panel, returnCode: .OK)
+        } else { window.endSheet(sheet, returnCode: .alertFirstButtonReturn) }
+        if change.action == "importData:" {
+            try await wait(timeout: .seconds(5)) { window.attachedSheet != nil && window.attachedSheet !== sheet }
+            window.endSheet(try #require(window.attachedSheet), returnCode: .alertFirstButtonReturn)
+        }
+        try await wait(timeout: .seconds(5)) { !manager.managingDeviceIDs.isEmpty }
+        try #require(manager.managingDeviceIDs == [first.id])
+        #expect(await events.next() == .inspect(first.id))
+        let command = try #require(await source.inspectorCommands.last).arguments
+        #expect(command.starts(with: change.command))
+        #expect(command.contains("first-device") && !command.contains("second-device"))
+        await source.failInspectorRead()
+        try await wait(timeout: .seconds(5)) { manager.managingDeviceIDs.isEmpty }
+        controller.update(device: nil, isManaging: false, isVisible: true)
+    }
+
+    @Test func aDeviceRetiredWhileItsSheetWasUpRejectsTheConfirmedChange() async throws {
+        let (source, manager, controller, window, sheet, _, second) = try await inspectorAskingAboutFirstDevice(
+            action: "remove:", page: .info, content: .applications)
+        var failures: [String] = []
+        manager.onError = { failures.append($0.localizedDescription) }
+        manager.registry.apply(DeviceInventorySnapshot(devices: [second], issues: []))
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        try await wait(timeout: .seconds(5)) { !failures.isEmpty }
+        #expect(failures == ["first-device: This device is no longer available."])
+        #expect(await source.inspectorCommands.allSatisfy { !$0.arguments.contains("uninstall") })
+        try await wait(timeout: .seconds(5)) { manager.managingDeviceIDs.isEmpty }
+        controller.update(device: nil, isManaging: false, isVisible: true)
+    }
+
+    @Test func cancellingAQuitRestoresTheInstallerOfAnApplicationListThatCannotBeRead() async throws {
+        _ = NSApplication.shared
+        let device = inspectedRemote(features: ["installapp"])
+        let source = ManagerModelSource(devices: [], inspectorResponse: Self.inspectionResponse)
+        await source.skipSettingsReads()
+        let manager = SimulatorManagerModel(source: source)
+        let controller = ManagerDeviceInspectorController(model: manager)
+        // A quit can be cancelled before the inspector was ever shown.
+        controller.resumeAfterCancelledQuit()
+        #expect(!controller.isViewLoaded)
+
+        manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        manager.inspect(device, selectionCount: 1)
+        controller.setPage(.info)
+        controller.inspection.select(.applications)
+        controller.update(device: try #require(manager.registry.device(for: device.id)), isManaging: false, isVisible: true)
+        let install = try #require(inspectorViews(controller.view).compactMap { $0 as? NSButton }.first { $0.toolTip == "Install…" })
+        #expect(install.isEnabled && !install.isHidden)
+
+        try await controller.finishPreviews()
+        #expect(!install.isEnabled)
+        controller.resumeAfterCancelledQuit()
+        #expect(install.isEnabled)
+        #expect(await source.inspectorCommands.isEmpty)
+        controller.update(device: nil, isManaging: false, isVisible: true)
+    }
+
+    // MARK: Inspection state
+
+    private static let inspectionResponse = #"{"result":{"properties":{"name":"Details"},"apps":[{"bundleIdentifier":"fixture.app","name":"Fixture"}],"configurationProfiles":[{"payloadIdentifier":"fixture.configuration","name":"Configuration"}],"provisioningProfiles":[{"uuid":"fixture.provisioning","name":"Provisioning"}],"files":[{"relativePath":"Fixture.ips","metadata":{},"resources":{"isDirectory":false}}]}}"#
+
+    private func inspectedRemote(_ identifier: String = "inspected-device", connection: String = "connected",
+                                 features: Set<String> = ["streamapplist", "configurationprofiles", "provisioningprofiles", "listFiles"]) -> InventoryDevice {
+        .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: identifier, reportedName: identifier,
+            modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil, osBuildUpdate: nil,
+            connectionState: connection, pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
+            capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
+    }
+
+    private func applications(_ names: String...) -> String {
+        #"{"result":{"apps":["# + names.map { #"{"bundleIdentifier":"fixture.\#($0)","name":"\#($0)"}"# }.joined(separator: ",") + "]}}"
+    }
+
+    private func listing(_ device: InventoryDevice..., response: String = ManagerModelTests.inspectionResponse) -> (ManagerModelSource, DeviceRegistry) {
+        let source = ManagerModelSource(devices: [], inspectorResponse: response)
+        let registry = DeviceRegistry(source: source)
+        registry.apply(DeviceInventorySnapshot(devices: device, issues: []))
+        return (source, registry)
+    }
+
+    @Test func returningToADeviceOrGroupReadsNothingAgainAndSharesARunningRead() async throws {
+        let first = inspectedRemote("first"), second = inspectedRemote("second")
+        let (source, registry) = listing(first, second)
+        await source.skipSettingsReads()
+        var events = source.events.makeAsyncIterator()
+        let a = try #require(registry.device(for: first.id)), b = try #require(registry.device(for: second.id))
+        let selection = ManagerSelection()
+        selection.setInspection(.applications)
+        selection.select(a, count: 1)
+        #expect(await events.next() == .inspect(first.id))
+        await registry.finishReading()
+        selection.select(b, count: 1)
+        #expect(await events.next() == .inspect(second.id))
+        await registry.finishReading()
+        selection.setInspection(.reports)
+        #expect(await events.next() == .inspect(second.id))
+        await registry.finishReading()
+        #expect(b.inspection.reports.map(\.name) == ["Fixture.ips"])
+
+        selection.setInspection(.applications)
+        selection.select(a, count: 1)
+        await registry.finishReading()
+        #expect(a.inspection.applications.map(\.name) == ["Fixture"] && a.inspection.status(of: .applications) == .current)
+        #expect(b.inspection.applications.map(\.name) == ["Fixture"] && b.inspection.reports.map(\.name) == ["Fixture.ips"])
+        #expect(await source.inspectorCommands.count == 3)
+
+        await source.holdInspectorReads()
+        a.revalidate(.applications)
+        #expect(await events.next() == .inspect(first.id))
+        selection.select(b, count: 1)
+        selection.select(a, count: 1)
+        #expect(a.inspection.isReading(.applications))
+        await source.completeInspectorRead(applications("Fresh"))
+        await registry.finishReading()
+        #expect(a.inspection.applications.map(\.name) == ["Fresh"])
+        #expect(await source.inspectorCommands.count == 4)
+        selection.select(nil, count: 0)
+    }
+
+    @Test func revalidatingDuringAReadLeadsToOneMoreRead() async throws {
+        let device = inspectedRemote()
+        let (source, registry) = listing(device)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id))
+        await source.holdInspectorReads()
+        let interest = model.keepCurrent(.applications)
+        defer { interest.release() }
+        #expect(await events.next() == .inspect(device.id))
+        for _ in 0..<3 { model.revalidate(.applications) }
+        model.revalidate(.reports)
+        await source.completeInspectorRead(of: device.id)
+        #expect(await events.next() == .inspect(device.id))
+        await source.completeInspectorRead()
+        await registry.finishReading()
+        #expect(await source.inspectorCommands.count == 2)
+    }
+
+    @Test func aFailedOrPartialReadKeepsWhatItCouldNotAnswerAndLeavesOtherGroupsAlone() async throws {
+        let device = inspectedRemote()
+        let (source, registry) = listing(device)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id))
+        let state = model.inspection
+        let interest = model.keepCurrent([.info, .applications, .configurationProfiles, .reports])
+        defer { interest.release() }
+        for _ in 0..<4 { #expect(await events.next() == .inspect(device.id)) }
+        await registry.finishReading()
+        try #require(state.status(of: .applications) == .current && state.status(of: .info) == .current)
+
+        await source.holdInspectorReads()
+        model.revalidate([.applications, .info])
+        for _ in 0..<2 { #expect(await events.next() == .inspect(device.id)) }
+        await source.failInspectorRead()
+        await registry.finishReading()
+        #expect(state.applications.map(\.name) == ["Fixture"] && state.status(of: .applications) == .stale("Read Applications: Unavailable"))
+        #expect(state.info["name"] == .string("Details") && state.status(of: .info) == .stale("Read Device Info: Unavailable"))
+        #expect(state.status(of: .reports) == .current && state.status(of: .configurationProfiles) == .current)
+        // A failure is not read again until something asks.
+        #expect(await source.inspectorCommands.count == 6)
+        model.revalidate(.info)
+        #expect(await events.next() == .inspect(device.id))
+        await registry.finishReading()
+        #expect(state.status(of: .info) == .current)
+
+        await source.setInspectorResponse(#"""
+            {"result":{"files":[{"relativePath":"New.ips","metadata":{},"resources":{"isDirectory":false}},{"relativePath":"../outside.ips","metadata":{},"resources":{"isDirectory":false}}],
+            "configurationProfiles":[{"payloadIdentifier":"new","name":"New"}],"partialConfigurationProfiles":[{"name":"Broken"},{"name":"Broken"}]}}
+            """#)
+        model.revalidate([.reports, .configurationProfiles])
+        for _ in 0..<2 { #expect(await events.next() == .inspect(device.id)) }
+        await registry.finishReading()
+        #expect(state.reports.map(\.name) == ["New.ips"])
+        #expect(state.status(of: .reports) == .stale("1 reports returned incomplete metadata. Available reports are shown."))
+        #expect(state.configurationProfiles.map(\.name) == ["New"])
+        #expect(state.status(of: .configurationProfiles) == .stale("2 profiles returned incomplete records. Available profiles are shown."))
+    }
+
+    @Test func aSimulatorsFailedInfoReadAddsWhatItsInventoryKnowsToWhatItKnew() async throws {
+        let record = try #require(try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"SIM","properties":{"hardware":{"fidelity":"simulated","udid":"same-udid"},"state":{"name":"Test Phone"},"connection":{"state":"connected"}},"capabilities":[]}]}}"#.utf8)).first)
+        guard case .simulator(let phone) = simulator() else { throw ManagerModelSource.Failure.unavailable }
+        let device = InventoryDevice.simulator(phone.inventoryCopy(ownerXcodeURL: nil, coreDevice: record))
+        let (source, registry) = listing(device, response: #"{"devices":{"test-runtime":[{"udid":"same-udid","name":"Details"}]}}"#)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id))
+        await source.holdInspectorReads()
+        let interest = model.keepCurrent(.info)
+        defer { interest.release() }
+        #expect(await events.next() == .inspect(device.id))
+        await source.failInspectorRead()
+        await registry.finishReading()
+        #expect(model.inspection.info["coreDeviceIdentifier"] == .string("SIM") && model.inspection.info["name"] == nil)
+        #expect(model.inspection.status(of: .info) == .stale("Read Device Info: Unavailable"))
+
+        model.revalidate(.info)
+        #expect(await events.next() == .inspect(device.id))
+        await registry.finishReading()
+        #expect(model.inspection.info["name"] == .string("Details") && model.inspection.status(of: .info) == .current)
+    }
+
+    @Test func unsupportedIsDistinctFromFailedAndFromNotYetAvailable() async throws {
+        let plist = #"{ "dev.example.kept" = { CFBundleIdentifier = "dev.example.kept"; CFBundleDisplayName = Kept; }; }"#
+        let custom = simulator(deviceSet: "/custom")
+        let (source, registry) = listing(simulator(state: "Shutdown"), custom, response: plist)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: simulator().id)), customModel = try #require(registry.device(for: custom.id))
+        let groups: DeviceStateGroups = [.applications, .configurationProfiles, .provisioningProfiles, .reports]
+        let interests = [model.keepCurrent(groups), customModel.keepCurrent([.configurationProfiles, .provisioningProfiles, .reports])]
+        defer { interests.forEach { $0.release() } }
+        registry.revalidate()
+        await registry.finishReading()
+        #expect(await source.inspectorCommands.isEmpty)
+        #expect(model.inspection.status(of: .reports) == .unsupported)
+        #expect(model.inspection.status(of: .applications) == .unread && !model.inspection.canRead(.applications))
+        #expect(customModel.inspection.status(of: .configurationProfiles) == .unsupported && customModel.inspection.status(of: .reports) == .unsupported)
+
+        registry.apply(DeviceInventorySnapshot(devices: [simulator(), custom], issues: []))
+        #expect(await events.next() == .inspect(simulator().id))
+        await registry.finishReading()
+        #expect(model.inspection.applications.map(\.name) == ["Kept"] && model.inspection.status(of: .applications) == .current)
+
+        registry.apply(DeviceInventorySnapshot(devices: [simulator(state: "Shutdown"), custom], issues: []))
+        registry.revalidate()
+        await registry.finishReading()
+        #expect(model.inspection.applications.map(\.name) == ["Kept"] && !model.inspection.canRead(.applications))
+        #expect(await source.inspectorCommands.count == 1)
+    }
+
+    @Test func aDeviceThatDisconnectsKeepsItsListsAndOneThatLosesACapabilityDoesNot() async throws {
+        let device = inspectedRemote()
+        let (source, registry) = listing(device)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id))
+        let interest = model.keepCurrent(.applications)
+        defer { interest.release() }
+        #expect(await events.next() == .inspect(device.id))
+        await registry.finishReading()
+
+        registry.apply(DeviceInventorySnapshot(devices: [inspectedRemote(connection: "disconnected", features: [])], issues: []))
+        await registry.finishReading()
+        #expect(model.inspection.applications.map(\.name) == ["Fixture"] && !model.inspection.canRead(.applications))
+        #expect(await source.inspectorCommands.count == 1)
+
+        registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        #expect(await events.next() == .inspect(device.id))
+        await source.holdInspectorReads()
+        await registry.finishReading()
+        model.revalidate(.applications)
+        #expect(await events.next() == .inspect(device.id))
+        // A read that was running when the device stopped having this does not bring it back.
+        registry.apply(DeviceInventorySnapshot(devices: [inspectedRemote(features: [])], issues: []))
+        await source.completeInspectorRead()
+        await registry.finishReading()
+        #expect(model.inspection.applications.isEmpty && model.inspection.status(of: .applications) == .unsupported)
+    }
+
+    @Test func aLateReadReachesNeitherARestartedOrRemovedDeviceNorItsReplacement() async throws {
+        let device = inspectedRemote()
+        let (source, registry) = listing(device)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id))
+        await source.holdInspectorReads()
+        let interest = model.keepCurrent(.applications)
+        defer { interest.release() }
+        #expect(await events.next() == .inspect(device.id))
+        model.deviceRestarted()
+        #expect(await events.next() == .inspect(device.id))
+        await source.completeInspectorRead(applications("BeforeRestart"), of: device.id)
+        await source.completeInspectorRead(applications("AfterRestart"), of: device.id)
+        await registry.finishReading()
+        #expect(model.inspection.applications.map(\.name) == ["AfterRestart"])
+
+        model.revalidate(.applications)
+        #expect(await events.next() == .inspect(device.id))
+        registry.apply(DeviceInventorySnapshot(devices: [], issues: []))
+        await source.completeInspectorRead(applications("Late"), of: device.id)
+        #expect(!model.inspection.canRead(.applications))
+        await #expect(throws: SimulatorError.self) { try await model.inspection.uninstallApplication(bundleIdentifier: "fixture.app") }
+
+        registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        let replacement = try #require(registry.device(for: device.id))
+        #expect(replacement !== model)
+        let newInterest = replacement.keepCurrent(.applications)
+        defer { newInterest.release() }
+        #expect(await events.next() == .inspect(device.id))
+        await source.completeInspectorRead(applications("Replacement"))
+        await registry.finishReading()
+        #expect(replacement.inspection.applications.map(\.name) == ["Replacement"])
+        #expect(model.inspection.applications.map(\.name) == ["AfterRestart"])
+    }
+
+    @Test func aChangeInvalidatesOnlyWhatItCanHaveChangedEvenWhenItFails() async throws {
+        let device = inspectedRemote()
+        let (source, registry) = listing(device)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id))
+        let state = model.inspection
+        var interest: DeviceReadInterest? = model.keepCurrent(.inspection)
+        defer { interest?.release() }
+        for _ in 0..<5 { #expect(await events.next() == .inspect(device.id)) }
+        await registry.finishReading()
+        func commands(after count: Int) async -> [[String]] {
+            await source.inspectorCommands.dropFirst(count).map { Array($0.arguments.prefix(3)) }
+        }
+
+        try await state.uninstallApplication(bundleIdentifier: "fixture.app")
+        for _ in 0..<2 { #expect(await events.next() == .inspect(device.id)) }
+        await registry.finishReading()
+        #expect(await commands(after: 5) == [["device", "uninstall", "app"], ["device", "info", "apps"]])
+
+        // A failure can have changed the device, and changes only the kind of profile it was for.
+        await source.holdInspectorReads()
+        let removal = Task { try await state.removeProfile(identifier: "fixture.provisioning", kind: .provisioning) }
+        #expect(await events.next() == .inspect(device.id))
+        await source.failInspectorRead()
+        await #expect(throws: (any Error).self) { try await removal.value }
+        #expect(await events.next() == .inspect(device.id))
+        await registry.finishReading()
+        let afterRemoval = await source.inspectorCommands.suffix(2).map(\.arguments)
+        #expect(afterRemoval[0].starts(with: ["device", "profile", "remove"]) && afterRemoval[1].starts(with: ["device", "profile", "list", "--type", "provisioning"]))
+        #expect(await source.inspectorCommands.count == 9)
+        #expect(state.status(of: .provisioningProfiles) == .current)
+
+        // A read from before a change does not answer for it.
+        await source.holdInspectorReads()
+        model.revalidate(.applications)
+        #expect(await events.next() == .inspect(device.id))
+        let install = Task { try await state.installApplication(at: URL(fileURLWithPath: "/fixture/New.app")) }
+        #expect(await events.next() == .inspect(device.id))
+        await source.completeInspectorRead(applications("BeforeInstall"), of: device.id)
+        await source.completeInspectorRead(of: device.id)
+        try await install.value
+        #expect(await events.next() == .inspect(device.id))
+        #expect(state.applications.map(\.name) == ["Fixture"])
+        await source.completeInspectorRead(applications("Installed"))
+        await registry.finishReading()
+        #expect(state.applications.map(\.name) == ["Installed"])
+
+        // With nothing holding the list a change only marks it, and it is read when something next does.
+        interest?.release()
+        interest = nil
+        let count = await source.inspectorCommands.count
+        try await state.uninstallApplication(bundleIdentifier: "fixture.Installed")
+        await registry.finishReading()
+        #expect(await commands(after: count) == [["device", "uninstall", "app"]])
+        #expect(await events.next() == .inspect(device.id))
+        let held = model.keepCurrent(.inspection)
+        defer { held.release() }
+        #expect(await events.next() == .inspect(device.id))
+        await registry.finishReading()
+        #expect(await commands(after: count + 1) == [["device", "info", "apps"]])
+
+        // A change that never started changed nothing.
+        await source.holdInspectorReads()
+        let running = Task { try await state.uninstallApplication(bundleIdentifier: "running") }
+        #expect(await events.next() == .inspect(device.id))
+        let queued = Task { try await state.uninstallApplication(bundleIdentifier: "queued") }
+        try await wait { model.writeTasks.count == 2 }
+        registry.apply(DeviceInventorySnapshot(devices: [], issues: []))
+        await #expect(throws: CancellationError.self) { try await queued.value }
+        await source.completeInspectorRead()
+        try await running.value
+        #expect(await source.inspectorCommands.last?.arguments.contains("queued") == false)
+    }
+
+    @Test func aReadStoppedForAQuitStaysOutOfDateRatherThanFailing() async throws {
+        let device = inspectedRemote()
+        let (source, registry) = listing(device)
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id))
+        await source.holdInspectorReads()
+        let interest = model.keepCurrent([.info, .applications])
+        defer { interest.release() }
+        for _ in 0..<2 { #expect(await events.next() == .inspect(device.id)) }
+        model.stopReading()
+        model.resumeReading()
+        for _ in 0..<2 { await source.failInspectorRead(with: CancellationError(), of: device.id) }
+        for _ in 0..<2 { #expect(await events.next() == .inspect(device.id)) }
+        #expect(model.inspection.status(of: .info) == .unread && model.inspection.status(of: .applications) == .unread)
+        await source.completeInspectorRead()
+        await registry.finishReading()
+        #expect(model.inspection.status(of: .info) == .current && model.inspection.status(of: .applications) == .current)
+    }
+
+    @Test func applicationChangesReachOnlyTheDeviceTheyChanged() async throws {
+        // The same UDID in the default set is a different device.
+        let device = simulator(deviceSet: "/custom")
+        let (source, registry) = listing(device, simulator(), response: "{}")
+        var events = source.events.makeAsyncIterator()
+        let model = try #require(registry.device(for: device.id)), other = try #require(registry.device(for: simulator().id))
+        let interests = [model.keepCurrent(.applications), other.keepCurrent(.applications)]
+        defer { interests.forEach { $0.release() } }
+        for _ in 0..<2 { _ = await events.next() }
+        await registry.finishReading()
+        model.revalidate(.applications)
+        #expect(await events.next() == .inspect(device.id))
+        await registry.finishReading()
+        #expect(await source.inspectorCommands.count == 3)
+    }
+
+    @Test func aSameDeviceRenameKeepsInfoUntilTheFreshDetailsArrive() async throws {
         let original = simulator()
-        guard case .simulator(let previous) = original else { return }
-        let updated = InventoryDevice.simulator(SimulatorHostDevice(identifier: previous.identifier, name: "Inventory Rename",
-            descriptiveName: "Inventory Rename", runtimeIdentifier: previous.runtimeIdentifier, runtimeName: previous.runtimeName,
-            productFamily: previous.productFamily, state: previous.state))
+        let updated = simulator(name: "Inventory Rename")
         func response(_ name: String) -> String {
             "{\"devices\":{\"test-runtime\":[{\"udid\":\"same-udid\",\"name\":\"\(name)\"}]}}"
         }
-        let source = ManagerModelSource(devices: [], inspectorResponse: response("Initial Details"))
+        let (source, registry) = listing(original, response: response("Initial Details"))
         var events = source.events.makeAsyncIterator()
-        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
-        controller.setPage(.info)
-        controller.update(device: original, isManaging: false, isVisible: true)
+        let model = try #require(registry.device(for: original.id))
+        let interest = model.keepCurrent(.info)
+        defer { interest.release() }
         #expect(await events.next() == .inspect(original.id))
-        await finishInspectorRead(controller.inspection)
-        try #require(controller.inspection.infoProperties["name"] == .string("Initial Details"))
+        await registry.finishReading()
+        try #require(model.inspection.info["name"] == .string("Initial Details"))
         await source.holdInspectorReads()
-        controller.update(device: updated, isManaging: false, isVisible: true)
+        registry.apply(DeviceInventorySnapshot(devices: [updated], issues: []))
         #expect(await events.next() == .inspect(updated.id))
-        #expect(controller.inspection.infoProperties["name"] == .string("Initial Details"))
+        #expect(model.inspection.info["name"] == .string("Initial Details"))
         await source.completeInspectorRead(response("Fresh Details"))
-        await finishInspectorRead(controller.inspection)
-        #expect(controller.inspection.infoProperties["name"] == .string("Fresh Details"))
-        #expect(controller.inspection.inspector?.device == updated)
-        controller.stopReading()
-    }
-
-    @Test func applicationChangesFromAnotherOwnerReloadOnlyTheMatchingAppsInspector() async throws {
-        _ = NSApplication.shared
-        func response(_ names: [String]) -> String {
-            "{" + names.map { "\"dev.example.\($0.lowercased())\" = { CFBundleIdentifier = \"dev.example.\($0.lowercased())\"; CFBundleDisplayName = \($0); };" }.joined() + "}"
-        }
-        let device = simulator(deviceSet: "/custom")
-        let source = ManagerModelSource(devices: [], inspectorResponse: response(["Kept"]))
-        var events = source.events.makeAsyncIterator()
-        let controller = ManagerDeviceInspectorController(model: SimulatorManagerModel(source: source))
-        controller.setPage(.info)
-        controller.inspection.select(.applications)
-        controller.update(device: device, isManaging: false, isVisible: true)
-        #expect(await events.next() == .inspect(device.id))
-        await finishInspectorRead(controller.inspection)
-        let views = inspectorViews(controller.view)
-        let table = try #require(views.compactMap { $0 as? NSTableView }.first {
-            $0.accessibilityLabel() == "Installed Applications, Profiles, and Reports"
-        })
-        try await wait(timeout: .seconds(5)) { table.numberOfRows == 1 }
-        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        let search = try #require(views.compactMap { $0 as? NSSearchField }.first)
-        search.stringValue = "dev.example"
-        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
-
-        // The same UDID in the default set is a different device.
-        controller.applicationsChanged(on: simulator().id)
-        #expect(!controller.inspection.reading)
-        await source.completeInspectorRead(response(["Kept", "Installed"]))
-        controller.applicationsChanged(on: device.id)
-        #expect(await events.next() == .inspect(device.id))
-        await finishInspectorRead(controller.inspection)
-        try await wait(timeout: .seconds(5)) { table.numberOfRows == 2 }
-        #expect(controller.inspection.applications.map(\.name) == ["Installed", "Kept"])
-        #expect(table.selectedRow == 1 && search.stringValue == "dev.example")
-        controller.stopReading()
+        await registry.finishReading()
+        #expect(model.inspection.info["name"] == .string("Fresh Details"))
     }
 
     @Test func screenDropsInstallWithTheInspectorInstallerOfTheirDevice() async throws {
@@ -1794,15 +2259,14 @@ struct ManagerModelTests {
         await model.refresh()
         var failures: [String] = []
         model.onError = { failures.append($0.localizedDescription) }
-        let completions = AsyncStream<Void>.makeStream()
         let application = URL(fileURLWithPath: "/fixture/Dropped.app")
         #expect(!model.canInstallApplications(on: listing.id))
-        model.installApplications(at: [application], on: listing.id) { completions.continuation.yield(()) }
+        model.installApplications(at: [application], on: listing.id)
         #expect(model.managingDeviceIDs.isEmpty)
 
         try #require(model.canInstallApplications(on: phone.id))
         await source.holdInspectorReads()
-        model.installApplications(at: [application], on: phone.id) { completions.continuation.yield(()) }
+        model.installApplications(at: [application], on: phone.id)
         #expect(await events.next() == .inspect(phone.id))
         let command = try #require(await source.inspectorCommands.last)
         #expect(command.source == .coreDevice)
@@ -1810,8 +2274,7 @@ struct ManagerModelTests {
         // The inspector shows the same operation as in progress, and a second drop waits for it.
         #expect(model.managingDeviceIDs == [phone.id] && !model.canInstallApplications(on: phone.id))
         await source.failInspectorRead()
-        var completed = completions.stream.makeAsyncIterator()
-        #expect(await completed.next() != nil)
+        try await wait(timeout: .seconds(5)) { model.managingDeviceIDs.isEmpty }
         #expect(failures == ["Phone: No files were imported.\n\nDropped.app: Install Application: Unavailable"])
         #expect(model.canInstallApplications(on: phone.id))
     }
@@ -4498,7 +4961,7 @@ struct ManagerModelTests {
             return CommandOutput(terminationStatus: 0, stdout: payload, stderr: Data())
         })).info()
         #expect(snapshot.issues.isEmpty)
-        let information = DeviceInformation(device: snapshot.device, properties: snapshot.fields)
+        let information = DeviceInformation(device: snapshot.device, properties: snapshot.fields.mapValues(DeviceInfoValue.init))
         #expect(information.fields.first { $0.id == ["name"] }?.value == "Current Phone")
         #expect(information.fields.first { $0.id == ["operatingSystem"] }?.value == "iOS 27.2")
         #expect(information.fields.first { $0.id == ["modelName"] }?.value == "iPhone 18 Pro")
@@ -4507,7 +4970,7 @@ struct ManagerModelTests {
         #expect(information.fields.first { $0.id == ["connection", "state"] }?.value == "futureRawState")
         #expect(information.fields.filter { $0.id.starts(with: ["hardware", "cpuType"]) }.map(\.value) == ["arm64e"])
         let unknown = try JSONDecoder().decode(DeviceInspectorValue.self, from: Data(#"{"hardware":{"cpuType":{"type":2147483647,"subtype":18446744071562067970}}}"#.utf8))
-        let unknownInfo = DeviceInformation(device: .remote(remote), properties: try #require(unknown.object))
+        let unknownInfo = DeviceInformation(device: .remote(remote), properties: try #require(unknown.object).mapValues(DeviceInfoValue.init))
         #expect(unknownInfo.fields.first { $0.id == ["hardware", "cpuType"] }?.value == "type 2147483647, subtype 18446744071562067970")
         #expect(information.fields.first { $0.id == ["hardware", "reality"] }?.value == "futureReality")
         #expect(information.fields.first { $0.id == ["state", "bootState"] }?.value == "futureBoot")
@@ -4573,10 +5036,12 @@ struct ManagerModelTests {
         #expect(DeviceInformation.watchToUnpair(device: phone, partner: watch) == watch)
         #expect(DeviceInformation.watchToUnpair(device: watch, partner: phone) == watch)
 
-        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: inventory))
+        let source = ManagerModelSource(devices: inventory)
+        let manager = SimulatorManagerModel(source: source)
         await manager.refresh()
+        func model(_ device: SimulatorHostDevice) -> DeviceModel { DeviceModel(inventory: .simulator(device), source: source) }
         let inspection = DeviceInspectorModel()
-        inspection.device = .simulator(watch)
+        inspection.device = model(watch)
         let target = NSObject()
         let suite = "NeoSimulatorTests.PairedInfo.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -4636,7 +5101,7 @@ struct ManagerModelTests {
         let canAddAnotherPhone = add.isEnabled
         #expect(!canAddAnotherPhone)
         let pairedPosition = pairedScroll.convert(pairedScroll.bounds, to: view).origin
-        inspection.device = .simulator(SimulatorHostDevice(identifier: watch.identifier,
+        inspection.device = model(SimulatorHostDevice(identifier: watch.identifier,
             name: String(repeating: "A long device name ", count: 20), descriptiveName: watch.descriptiveName,
             runtimeIdentifier: watch.runtimeIdentifier, runtimeName: String(repeating: "A long OS name ", count: 20),
             productFamily: watch.productFamily, state: watch.state,
@@ -4647,11 +5112,11 @@ struct ManagerModelTests {
         let afterLongValues = try #require(tables(in: view).first { $0.numberOfRows == 1 }?.enclosingScrollView)
         let longValuePosition = afterLongValues.convert(afterLongValues.bounds, to: view).origin
         #expect(abs(longValuePosition.y - pairedPosition.y) < 1)
-        inspection.device = .simulator(phone)
+        inspection.device = model(phone)
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         #expect(try #require(addButton(in: view)).isEnabled)
-        inspection.device = .simulator(device("unpaired-phone", family: "iPhone", pairs: []))
+        inspection.device = model(device("unpaired-phone", family: "iPhone", pairs: []))
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         let emptyPairedTable = try #require(tables(in: view).first)
@@ -4685,9 +5150,9 @@ struct ManagerModelTests {
 
     @Test func profilesFollowTheAvailableKindWhenChangingDevices() throws {
         guard case .simulator(let simulator) = simulator() else { return }
-        func device(_ features: [String]) -> InventoryDevice {
-            .simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities:
-                Set(features.map { "com.apple.coredevice.feature." + $0 })))
+        func device(_ features: [String]) -> DeviceModel {
+            DeviceModel(inventory: .simulator(simulator.inventoryCopy(ownerXcodeURL: nil, capabilities:
+                Set(features.map { "com.apple.coredevice.feature." + $0 }))), source: ManagerModelSource(devices: []))
         }
         let inspection = DeviceInspectorModel()
         inspection.device = device(["configurationprofiles", "provisioningprofiles"])
@@ -4703,9 +5168,9 @@ struct ManagerModelTests {
     @Test func stoppedSimulatorDoesNotExposeAppAndProfileOperationsFromCachedCapabilities() {
         let features = ["streamapplist", "installapp", "configurationprofiles"]
         let inspection = DeviceInspectorModel()
-        inspection.device = .simulator(SimulatorHostDevice(identifier: "phone", name: "Phone", descriptiveName: "Phone",
+        inspection.device = DeviceModel(inventory: .simulator(SimulatorHostDevice(identifier: "phone", name: "Phone", descriptiveName: "Phone",
             runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown",
-            capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 })))
+            capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }))), source: ManagerModelSource(devices: []))
         inspection.select(.configuration)
         #expect(!inspection.canReadApplications && !inspection.canInstallApplications && !inspection.canReadProfiles)
     }
@@ -4824,6 +5289,7 @@ private struct ServiceChangeSource: DeviceStateSource {
                                for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
         try await backend.update(targets, enabled: enabled)
     }
+    func inspector(for device: InventoryDevice) -> DeviceInspector { DeviceInspector(device: device, simulatorXcodeURL: nil) }
     func stopReads() {}
     func resumeReads() {}
 }
@@ -4853,7 +5319,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var devices: [InventoryDevice]
     private var inspectorResponse: String?
     private var holdsInspectorReads = false
-    private var inspectorRead: CheckedContinuation<CommandOutput, any Error>?
+    private var inspectorReads: [(device: DeviceInventoryID, finished: CheckedContinuation<CommandOutput, any Error>)] = []
     private(set) var inspectorCommands: [DeviceInspectorCommand] = []
     private var holdsInventoryReads = false
     private var inventoryRead: CheckedContinuation<Void, Never>?
@@ -5122,7 +5588,7 @@ actor ManagerModelSource: SimulatorManagerSource {
         inspectorCommands.append(command)
         if holdsInspectorReads {
             return try await withCheckedThrowingContinuation { waiting in
-                inspectorRead = waiting
+                inspectorReads.append((identifier, waiting))
                 continuation.yield(.inspect(identifier))
             }
         }
@@ -5130,18 +5596,24 @@ actor ManagerModelSource: SimulatorManagerSource {
         return CommandOutput(terminationStatus: 0, stdout: Data((inspectorResponse ?? "").utf8), stderr: Data())
     }
     func holdInspectorReads() { holdsInspectorReads = true }
-    func completeInspectorRead(_ response: String? = nil) {
+    func setInspectorResponse(_ response: String) { inspectorResponse = response }
+    /// Answers `device`'s oldest held read, or every held read and those that follow when no device is named.
+    func completeInspectorRead(_ response: String? = nil, of device: DeviceInventoryID? = nil) {
         if let response { inspectorResponse = response }
-        holdsInspectorReads = false
-        let waiting = inspectorRead
-        inspectorRead = nil
-        waiting?.resume(returning: CommandOutput(terminationStatus: 0, stdout: Data((inspectorResponse ?? "").utf8), stderr: Data()))
+        let output = CommandOutput(terminationStatus: 0, stdout: Data((inspectorResponse ?? "").utf8), stderr: Data())
+        for waiting in takeInspectorReads(of: device) { waiting.resume(returning: output) }
     }
-    func failInspectorRead() {
-        holdsInspectorReads = false
-        let waiting = inspectorRead
-        inspectorRead = nil
-        waiting?.resume(throwing: Failure.unavailable)
+    func failInspectorRead(with error: any Error = Failure.unavailable, of device: DeviceInventoryID? = nil) {
+        for waiting in takeInspectorReads(of: device) { waiting.resume(throwing: error) }
+    }
+    private func takeInspectorReads(of device: DeviceInventoryID?) -> [CheckedContinuation<CommandOutput, any Error>] {
+        guard let device else {
+            holdsInspectorReads = false
+            defer { inspectorReads = [] }
+            return inspectorReads.map(\.finished)
+        }
+        guard let index = inspectorReads.firstIndex(where: { $0.device == device }) else { return [] }
+        return [inspectorReads.remove(at: index).finished]
     }
     func restore(force: Bool) throws { throw Failure.unavailable }
     func synchronizeXcodeConnections() -> Bool { false }

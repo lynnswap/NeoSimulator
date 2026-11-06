@@ -108,7 +108,6 @@ protocol SimulatorManagerSource: DeviceStateSource {
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
                 preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport
-    func inspector(for device: InventoryDevice) async throws -> DeviceInspector
     func restore(force: Bool) async throws
     func synchronizeXcodeConnections() async throws -> Bool
     func testingDeviceVisibilityDidChange() async throws
@@ -578,14 +577,11 @@ final class SimulatorManagerModel {
         }
     }
 
-    func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
-        guard !stopping else { throw CancellationError() }
-        return try await controller.inspector(for: device)
-    }
-
-    func performInspectorOperation(for device: InventoryDevice,
-                                   operation: @escaping @MainActor () async throws -> Void,
-                                   completion: @escaping @MainActor () -> Void) {
+    /// Runs a change of what `device` reports of itself in its turn among the device's changes, while the device shows as
+    /// busy. Afterwards `groups` of the device are out of date, which reads again what shows. A quit that reaches the change
+    /// before it has started reports it as not run.
+    func performInspectorChange(on device: DeviceModel, affecting groups: DeviceStateGroups,
+                                operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
         guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
         let request = UUID()
         managementRequests[request] = ManagementRequest(action: nil, identifiers: [device.id])
@@ -594,12 +590,12 @@ final class SimulatorManagerModel {
                 self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
             }
-            do { try await operation() }
-            catch { self.onError?(InspectorOperationFailure(deviceName: device.name, error: error)) }
-            if !self.stopping {
-                await self.refreshCatalog()
-                completion()
-            }
+            do {
+                try await device.inspection.change(affecting: groups, prepare: {
+                    if self.stopping { throw QuitOutcome.notRun("The change to \(device.name)") }
+                }, perform: operation)
+            } catch { self.onError?(InspectorOperationFailure(deviceName: device.name, error: error)) }
+            if !self.stopping { await self.refreshCatalog() }
         }
         managementRequests[request]?.task = task
 
@@ -611,16 +607,12 @@ final class SimulatorManagerModel {
         return inventory.first { $0.id == identifier }?.canInstallApplications == true
     }
 
-    /// Installs applications requested outside the inspector, such as by a screen drop. The
-    /// completion also follows a failed batch, because it can have installed some of them.
-    func installApplications(at urls: [URL], on identifier: DeviceInventoryID,
-                             completion: @escaping @MainActor () -> Void) {
-        guard canInstallApplications(on: identifier),
-              let device = inventory.first(where: { $0.id == identifier }) else { return }
-        performInspectorOperation(for: device, operation: {
-            let inspector = try await self.inspector(for: device)
+    /// Installs applications requested outside the inspector, such as by a screen drop.
+    func installApplications(at urls: [URL], on identifier: DeviceInventoryID) {
+        guard canInstallApplications(on: identifier), let device = registry.device(for: identifier) else { return }
+        performInspectorChange(on: device, affecting: .applications) { inspector in
             try await SimulatorFileImport.perform(urls) { url, _ in try await inspector.installApplication(at: url) }
-        }, completion: completion)
+        }
     }
 
     func restoreDefaults(force: Bool = false) {

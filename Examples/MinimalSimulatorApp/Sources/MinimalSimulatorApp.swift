@@ -17,6 +17,8 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     private let registry = DeviceRegistry()
     private var context: SimulatorContext?
     private var screen: SimulatorScreen?
+    /// Keeps `deviceModel.inspection.applications` current for as long as the screen is open.
+    private var applicationsInterest: DeviceReadInterest?
     private var window: NSWindow?
     private var guestToShutDown: SimulatorDeviceIdentifier?
     private var termination: Task<Void, Never>?
@@ -71,7 +73,12 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         guard registry.device(for: .simulator(id)) === screen.session.deviceModel else {
             throw SimulatorError.operation("The screen did not share the registry's device state.")
         }
-        screen.onEnd = { print("Screen ended: \($0)") }
+        let deviceModel = screen.session.deviceModel
+        applicationsInterest = deviceModel.keepCurrent(.applications)
+        screen.onEnd = {
+            print("Screen ended: \($0)")
+            print("Installed applications: \(deviceModel.inspection.applications.map(\.name))")
+        }
         NSApp.setActivationPolicy(.regular)
         let menu = NSMenu()
         let applicationItem = NSMenuItem()

@@ -557,7 +557,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func stopInspectorReads() { deviceInspector.stopReading() }
     func finishInspectorPreviews() async throws { try await deviceInspector.finishPreviews() }
     func resumeInspectorAfterCancelledQuit() { deviceInspector.resumeAfterCancelledQuit() }
-    func applicationsChanged(on deviceID: DeviceInventoryID) { deviceInspector.applicationsChanged(on: deviceID) }
 
     private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
         ManagerDeviceSettingsView(model: DeviceSettingsPanelModel(manager: model, screens: screens, preferences: SimulatorPreferences(), customLocation: { [weak self] in
@@ -965,7 +964,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     func updateDeviceSettings() {
         let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
         let showsInspector = !splitController.splitViewItems[2].isCollapsed
-        deviceInspector.update(device: selection, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
+        deviceInspector.update(device: selection.flatMap { model.registry.device(for: $0.id) }, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
                                isVisible: showsInspector && (inspectorMode == 1 || inspectorMode == 2))
         model.selection.setServicesVisible(showsInspector && inspectorMode == 3)
         backgroundServicesAccessory?.isActive = showsInspector && inspectorMode == 3

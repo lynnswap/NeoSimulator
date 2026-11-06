@@ -22,7 +22,6 @@ package final class SimulatorScreenHost {
     package var onChange: (() -> Void)?
     package var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
     package var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
-    package var onApplicationsChange: ((SimulatorDeviceIdentifier) -> Void)?
     package var onOwnershipChange: ((Bool) throws -> Void)?
     package var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
     package var onNoScreens: (() -> Void)?
@@ -709,7 +708,6 @@ package final class SimulatorScreenHost {
             externalDisplayChanges: externalDisplayChanges(of: device),
             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
         try Task.checkCancellation()
-        session.onApplicationsChange = { [weak self] in self?.onApplicationsChange?(identifier) }
         if let presentation = awaitingReconnect.removeValue(forKey: identifier) {
             try conflicts.check()
             presentation.reconnect(session, present: !isInProcess)

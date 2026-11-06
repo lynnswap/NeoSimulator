@@ -30,13 +30,14 @@ import SwiftUI
 
 private struct InspectorCategoryPreview: NSViewControllerRepresentable {
     func makeNSViewController(context: Context) -> NSSplitViewController {
+        let manager = SettingsPreview.manager()
         let inspection = DeviceInspectorModel()
-        inspection.device = .simulator(SimulatorHostDevice(
+        inspection.device = DeviceModel(inventory: .simulator(SimulatorHostDevice(
             identifier: "A1840638-6397-40C7-8BB8-B8223DE937CC", name: "iPad Pro 11-inch (M5)",
             descriptiveName: "iPad Pro 11-inch (M5)", runtimeIdentifier: "preview",
-            runtimeName: "iPadOS 27.2", productFamily: "iPad", state: "Booted"))
+            runtimeName: "iPadOS 27.2", productFamily: "iPad", state: "Booted")), source: manager.registry.source)
         let info = NSHostingController(rootView: DeviceInformationView(model: DeviceInformationModel(
-            manager: SettingsPreview.manager(), inspection: inspection,
+            manager: manager, inspection: inspection,
             visibility: DeviceInfoVisibility(defaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.InspectorPreview")!),
             pairingMenu: { _ in NSMenu() }, deviceMenu: { _ in NSMenu() }, unpair: { _ in })))
         info.sizingOptions = []

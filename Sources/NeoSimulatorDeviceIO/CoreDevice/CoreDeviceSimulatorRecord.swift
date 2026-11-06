@@ -32,25 +32,27 @@ package enum CoreDeviceFeatureAnswer<Record> {
 
 /// The one owner of a screen connection's view of its simulator's CoreDevice record. A missing record or one that is not
 /// connected is no answer, so what asks waits on CoreDevice's notifications for one, and a failed read is its asker's
-/// failure, not an answer. An asker that the first read answers follows nothing.
+/// failure, not an answer. Observation starts before reading, and ends when no asker remains.
 ///
 /// A simulator's record lists no features until the simulator boots, and none again once it shuts down.
+///
+/// Each change of CoreDevice's list begins a generation, since it can replace the record. A read and its decision belong to
+/// the generation they began in. Only while that is current and this has not stopped may they change `latest` or give an
+/// answer or a failure, and otherwise the read goes out again on the list as it is now, or ends as cancelled after a stop.
+/// `recordFollower` only ever follows a record read in the current generation.
 @MainActor
 package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     private let source: Source
     private var waiters: [Int: AsyncStream<Void>.Continuation] = [:]
     private var nextWaiter = 0
     private var inventoryFollower: Task<Void, Never>?
+    private var hasInventory = false
     private var recordFollower: Task<Void, Never>?
     /// Why the notifications ended, which everything waiting on them is told.
     private var failure: (any Error)?
+    /// What the current generation's latest read found.
     private var latest: Source.Record?
-    /// How many times CoreDevice's list has changed, which can replace the simulator's record.
-    private var listChanges = 0
-    /// What `listChanges` was when the read of `latest` began.
-    private var latestListChanges = 0
-    /// What `listChanges` was when the read of the record that `recordFollower` follows began.
-    private var followedListChanges = 0
+    private var listGeneration = 0
     private var stopped = false
     /// Reports whether anything is waiting because CoreDevice has not answered yet.
     package var onAwaitingChange: (@MainActor (Bool) -> Void)?
@@ -88,7 +90,8 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
         }
     }
 
-    /// Ends every wait as cancelled, and any later one, with the connection this belongs to.
+    /// Ends every wait as cancelled, and any later one, with the connection this belongs to. A read in flight then ends
+    /// its wait as cancelled too, whatever it found.
     package func stop() {
         stopped = true
         for waiter in waiters.values { waiter.finish() }
@@ -96,7 +99,8 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
     }
 
     private func wait<Value>(_ decide: @MainActor (Source.Record) async throws -> Value?) async throws -> Value {
-        if let value = try await read(decide) { return value }
+        try Task.checkCancellation()
+        guard !stopped else { throw CancellationError() }
         let (changes, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let waiter = nextWaiter
         nextWaiter += 1
@@ -109,48 +113,50 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
                 onAwaitingChange?(false)
             }
         }
-        followChanges()
+        try followChanges()
+        if hasInventory { continuation.yield() }
         if let failure { throw failure }
         for await _ in changes {
             if let failure { throw failure }
             if let value = try await read(decide) { return value }
-            followChanges()
+            try followChanges()
         }
         throw CancellationError()
     }
 
     private func read<Value>(_ decide: @MainActor (Source.Record) async throws -> Value?) async throws -> Value? {
-        try Task.checkCancellation()
-        guard !stopped else { throw CancellationError() }
-        let listChangesSeen = listChanges
-        let record = try await source.record()
-        // What another read found after a later change of the list stays the latest.
-        if listChangesSeen >= latestListChanges {
-            latest = record
-            latestListChanges = listChangesSeen
-        }
-        guard let record else { return nil }
-        return try await decide(record)
-    }
-
-    private func followChanges() {
-        guard !stopped else { return }
-        if inventoryFollower == nil {
-            inventoryFollower = follow { [weak self, source] changed in
-                try await source.followInventory { [weak self] in
-                    self?.listChanges += 1
-                    changed()
-                }
+        while true {
+            try Task.checkCancellation()
+            guard !stopped else { throw CancellationError() }
+            let generation = listGeneration
+            do {
+                let record = try await source.record()
+                guard isCurrent(generation) else { continue }
+                latest = record
+                guard let record else { return nil }
+                let value = try await decide(record)
+                guard isCurrent(generation) else { continue }
+                return value
+            } catch {
+                guard isCurrent(generation) else { continue }
+                throw error
             }
         }
-        // A record replaced by a change of the list says nothing of its successor. What was followed then ends, and its end
-        // counts for nothing. The next follower starts with what is current, so nothing since the read is missed.
-        if followedListChanges != latestListChanges {
-            recordFollower?.cancel()
-            recordFollower = nil
+    }
+
+    private func isCurrent(_ generation: Int) -> Bool { !stopped && generation == listGeneration }
+
+    /// Nothing but this wakes a wait, so a stop that refuses it ends the wait.
+    private func followChanges() throws {
+        guard !stopped else { throw CancellationError() }
+        if inventoryFollower == nil {
+            inventoryFollower = follow { [weak self, source] _ in
+                try await source.followInventory { [weak self] in self?.listChanged() }
+            }
         }
+        // Each read returns a new value of an unchanged record, so only a new generation follows again. The follower starts
+        // with what is current, so nothing since the read is missed.
         if recordFollower == nil, let latest {
-            followedListChanges = latestListChanges
             recordFollower = follow { [source] changed in try await source.follow(latest, changed) }
         }
     }
@@ -168,6 +174,18 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
         }
     }
 
+    /// Begins a generation. What was followed of the old record ends here, and its end counts for nothing. A failure this
+    /// clears can only be that follower's, since one of the list's own would have ended these notifications.
+    private func listChanged() {
+        hasInventory = true
+        listGeneration += 1
+        latest = nil
+        recordFollower?.cancel()
+        recordFollower = nil
+        failure = nil
+        changed()
+    }
+
     private func changed() {
         for waiter in waiters.values { waiter.yield() }
     }
@@ -181,6 +199,7 @@ package final class CoreDeviceRecordDiscovery<Source: CoreDeviceRecordSource> {
         inventoryFollower?.cancel()
         recordFollower?.cancel()
         inventoryFollower = nil
+        hasInventory = false
         recordFollower = nil
         failure = nil
         latest = nil

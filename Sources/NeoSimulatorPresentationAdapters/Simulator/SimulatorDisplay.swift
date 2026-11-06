@@ -57,6 +57,7 @@ package protocol SimulatorDisplay: DeviceSessionDisplay {
     func setShowsResizeCursors(_ shows: Bool)
     func setChromeVisible(_ visible: Bool)
     func setKeyboardEnabled(_ enabled: Bool)
+    func sendKeyboardEvent(_ event: NSEvent)
     /// Gives the screen the Mac trackpads' scrolling and pinches through the device's native trackpad, when it has one,
     /// whatever the hardware keyboard's state. Taking them away ends the gestures in progress.
     func setTrackpadEnabled(_ enabled: Bool)
@@ -81,6 +82,13 @@ package protocol SimulatorDisplay: DeviceSessionDisplay {
 }
 
 extension SimulatorDisplay {
+    package func sendKeyboardEvent(_ event: NSEvent) {
+        switch event.type {
+        case .keyDown: inputView.keyDown(with: event)
+        case .keyUp: inputView.keyUp(with: event)
+        default: break
+        }
+    }
     package var deviceFrame: NSRect { view.bounds }
     package var framebufferFrame: NSRect { view.bounds }
     package var usesNativeCanvas: Bool { false }

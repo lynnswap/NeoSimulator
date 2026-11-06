@@ -30,6 +30,18 @@ extension SimulatorHostController: DeviceStateSource {
         LiveDeviceStateSource(reads: reads, xcodeURL: { device in try await self.inspector(for: device).simulatorXcodeURL })
     }
 
+    /// Resolves a destination without acquiring the renderer-operation FIFO.
+    /// A simulator uses its running renderer's Xcode, then the inventory's owner or catalog Xcode;
+    /// installed Xcodes are searched only when the inventory records neither.
+    package func inspector(for device: InventoryDevice) async throws -> DeviceInspector {
+        let preferred: URL?
+        if case .simulator(let simulator) = device {
+            let owner = try await registeredRenderers().first { $0.deviceIdentifiers.contains(simulator.inventoryID) }
+            preferred = owner.map { URL(fileURLWithPath: $0.xcodePath) } ?? simulator.ownerXcodeURL ?? simulator.catalogXcodeURL
+        } else { preferred = nil }
+        return try await makeDeviceInspector(device: device, preferredXcodeURL: preferred, reads: reads)
+    }
+
     package func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
                               publish: @escaping @Sendable (DeviceSettingsGroupRead) async -> Void) async {
         await liveState.readSettings(groups, of: device, publish: publish)
@@ -54,4 +66,9 @@ extension SimulatorHostDevice {
         let owner = owners.first { $0.deviceIdentifiers.contains(inventoryID) }
         return inventoryCopy(ownerXcodeURL: owner.map { URL(fileURLWithPath: $0.xcodePath) })
     }
+}
+
+@concurrent private func makeDeviceInspector(device: InventoryDevice, preferredXcodeURL: URL?, reads: CommandReads) async throws -> DeviceInspector {
+    guard case .simulator(let simulator) = device else { return DeviceInspector(device: device, simulatorXcodeURL: nil) }
+    return DeviceInspector(device: device, simulatorXcodeURL: try await LiveDeviceInventory.xcodeURL(for: simulator, preferring: preferredXcodeURL, using: reads))
 }

@@ -641,4 +641,47 @@ extension InventoryDevice {
         guard case .simulator(let device) = self else { return false }
         return device.isAvailable && device.state == "Booted"
     }
+
+    package func supports(coreDeviceFeature feature: String) -> Bool {
+        capabilities.contains("com.apple.coredevice.feature." + feature)
+    }
+
+    /// Whether an application installer can target the device in this snapshot.
+    package var canInstallApplications: Bool {
+        switch self {
+        case .simulator: canInspectSettings
+        case .remote: supports(coreDeviceFeature: "installapp")
+        }
+    }
+
+    /// Advertised support in this inventory snapshot; a subsequent request can reconnect
+    /// a device and discover capabilities that were absent from the snapshot.
+    package var canDownloadReports: Bool {
+        if case .remote = self { supports(coreDeviceFeature: "transferFiles") } else { false }
+    }
+
+    /// Whether the device can answer for `group`, one group of ``DeviceStateGroups/inspection``. What a device can never
+    /// answer is unsupported; a device that has yet to start or connect might answer later.
+    package func inspectionSupport(of group: DeviceStateGroups) -> DeviceInspectionSupport {
+        let feature: String
+        switch group {
+        case .applications: feature = "streamapplist"
+        case .configurationProfiles: feature = "configurationprofiles"
+        case .provisioningProfiles: feature = "provisioningprofiles"
+        case .reports: feature = "listFiles"
+        default: return .available
+        }
+        if case .simulator(let simulator) = self {
+            switch group {
+            case .reports: return .unsupported
+            case .applications: return canInspectSettings ? .available : .notNow
+            default: if simulator.deviceSetPath != nil { return .unsupported }
+            }
+        }
+        guard canInspectSettings else { return .notNow }
+        if supports(coreDeviceFeature: feature) { return .available }
+        // A device lists only some of what it can do until it connects.
+        if case .remote(let device) = self, device.connectionState != "connected" { return .notNow }
+        return .unsupported
+    }
 }

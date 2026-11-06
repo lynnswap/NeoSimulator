@@ -49,7 +49,7 @@ final class DeviceInformationModel {
     }
 
     var pairingDevice: SimulatorHostDevice? {
-        guard case .simulator(let device) = inspection.device,
+        guard case .simulator(let device) = inspection.device?.inventory,
               device.productFamily == "iPhone" || device.productFamily == "Apple Watch" else { return nil }
         return device
     }

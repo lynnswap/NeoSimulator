@@ -22,14 +22,14 @@ import Testing
         let issue = try #require(snapshot.issues.first)
         #expect(issue.relativePath == "../outside.ips" && issue.error.deviceID == inspector.device.id)
         #expect(try await inspector.report(relativePath: report.relativePath) == report)
-        #expect(inspector.supportsReportListing && inspector.supportsReportDownload)
+        #expect(inspector.device.supports(coreDeviceFeature: "listFiles") && inspector.device.canDownloadReports)
     }
 
     @Test func simulatorReportsAreUnsupportedWithoutRunningACommand() async throws {
         let calls = ReportCalls { _ in Self.output(Self.files) }
         let simulator = SimulatorHostDevice(identifier: "simulator", name: "Simulator", descriptiveName: "Simulator", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
         let inspector = DeviceInspector(device: .simulator(simulator), simulatorXcodeURL: URL(fileURLWithPath: "/fixture/Xcode.app"), transport: .init(run: { try await calls.run($0) }))
-        #expect(!inspector.supportsReportListing && !inspector.supportsReportDownload)
+        #expect(inspector.device.inspectionSupport(of: .reports) == .unsupported && !inspector.device.canDownloadReports)
         do { _ = try await inspector.reports(); Issue.record("Simulator reports returned an empty success") }
         catch let error as DeviceInspectorFailure {
             guard case .unsupported = error.error as? DeviceInspectorError else { Issue.record("Unsupported reason was lost"); return }
