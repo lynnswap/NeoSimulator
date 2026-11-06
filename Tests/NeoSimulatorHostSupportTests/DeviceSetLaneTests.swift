@@ -1,6 +1,6 @@
 import Dispatch
 import Foundation
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import Synchronization
 import Testing

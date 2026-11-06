@@ -1,6 +1,8 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
+import NeoSimulatorUI
 import Observation
 import ObservationBridge
 
@@ -100,12 +102,12 @@ final class DeviceScreen {
     /// Whether the screen shows DeviceKit's native device canvas, whose views supply DeviceKit's Active value.
     var usesNativeCanvas: Bool {
         guard case .simulator(let controller) = observedController else { return false }
-        return controller.session.display.usesNativeCanvas
+        return controller.display.usesNativeCanvas
     }
 
     var nativePoseControls: NativeDevicePoseControls? {
         guard case .simulator(let controller) = observedController else { return nil }
-        return controller.session.display.nativePoseControls
+        return controller.display.nativePoseControls
     }
 
     /// The simulator's capabilities, which assign the shared shortcuts of device commands.

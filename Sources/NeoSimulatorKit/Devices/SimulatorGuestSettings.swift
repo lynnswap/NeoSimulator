@@ -1,7 +1,5 @@
-import ABIBridge
 import Foundation
 import NeoSimulatorDeviceIO
-import XPC
 
 /// Settings of the simulator that owns the selected screen, independent of CoreDevice discovery.
 @MainActor
@@ -20,14 +18,11 @@ package final class SimulatorGuestSettings {
     private func selectedDevice() async throws -> SimulatorDevice {
         let set: SimulatorDeviceSet
         if let deviceSet { set = deviceSet } else {
-            try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator")
-            let interface = try await CoreSimulatorInterface(runtime: .shared)
-            set = SimulatorDeviceSet.shared(interface: interface,
-                developerDirectory: xcodeURL.appendingPathComponent("Contents/Developer").path, path: source.deviceSetPath)
+            set = try await SimulatorDeviceSet.load(xcodeURL: xcodeURL, path: source.deviceSetPath)
             deviceSet = set
         }
         guard let device = try await set.client(withIdentifier: source.identifier) else {
-            throw CLIError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
+            throw DeviceDomainError.unavailable("simulator-settings-device", "The selected simulator is no longer available.")
         }
         return device
     }
@@ -69,7 +64,7 @@ package final class SimulatorGuestSettings {
                 let category = try await device.contentSizeCategory()
                 let sizes = DeviceContentSize.allCases
                 guard (1...sizes.count).contains(category) else {
-                    throw CLIError.unavailable("content-size", "The simulator returned an unknown text size: \(category).")
+                    throw DeviceDomainError.unavailable("content-size", "The simulator returned an unknown text size: \(category).")
                 }
                 return sizes[category - 1]
             }, set: { $0.contentSize = $1 })
@@ -111,18 +106,18 @@ package final class SimulatorGuestSettings {
             await capture("volume", {
                 let volume = try await device.notificationState("com.apple.springboard.volumestate")
                 guard volume <= 100 else {
-                    throw CLIError.io("audio-volume", "The simulator returned a volume outside 0...100.")
+                    throw DeviceDomainError.io("audio-volume", "The simulator returned a volume outside 0...100.")
                 }
                 return Int(volume)
             }, set: { $0.volume = $1 })
             await capture("audio routes", {
-                let audio = try await SimulatorAudioInterface(runtime: .shared)
+                let audio = try await SimulatorAudioInterface.load()
                 let connection = try await audio.connect(to: device, changed: { _ in })
                 defer { connection.disconnect() }
                 return try await connection.state()
             }, set: { $0.updateAudioRoutes($1) })
         case .appearance, .contrast, .displayZoom, .boldText, .location:
-            throw CLIError.configuration("guest-settings-operation", "This group uses the simulator command-line tools.")
+            throw DeviceDomainError.configuration("guest-settings-operation", "This group uses the simulator command-line tools.")
         }
         return .values(group, failures: failures) { [changes] settings in changes.forEach { $0(&settings) } }
     }
@@ -135,7 +130,7 @@ package final class SimulatorGuestSettings {
         switch setting {
         case .contentSize(let value):
             guard let index = DeviceContentSize.allCases.firstIndex(of: value) else {
-                throw CLIError.configuration("guest-settings-operation", "Unknown text size: \(value).")
+                throw DeviceDomainError.configuration("guest-settings-operation", "Unknown text size: \(value).")
             }
             try await device.setContentSizeCategory(index + 1)
         case .lookAndFeel(let value):
@@ -145,7 +140,9 @@ package final class SimulatorGuestSettings {
         case .liquidGlassOpacity(let value):
             try await change("SetLiquidGlassConfigurationActionDeclaration", ["configuration": ["opacity": value]])
         case .colorFilter(let value, let intensity):
-            try await service(device: device).setColorFilter(value, intensity: intensity)
+            // The provider rejects intensity for grayscale and disabled filters.
+            try await service(device: device).setColorFilter(named: value == .none ? nil : value.rawValue,
+                                                             takesIntensity: value != .none && value != .grayscale, intensity: intensity)
         case .reduceMotion(let value):
             try await change("SetReduceMotionActionDeclaration", ["reduceMotion": ["enabled": value]])
         case .showBorders(let value):
@@ -155,15 +152,15 @@ package final class SimulatorGuestSettings {
         case .voiceOver(let value):
             try await change("SetVoiceOverActionDeclaration", ["voiceOverConfiguration": ["enabled": value]])
         case .volume(let value):
-            guard (0...100).contains(value) else { throw CLIError.configuration("guest-settings-operation", "Volume must be between 0 and 100.") }
+            guard (0...100).contains(value) else { throw DeviceDomainError.configuration("guest-settings-operation", "Volume must be between 0 and 100.") }
             try await device.sendNotificationState("com.apple.springboard.volumestate", to: UInt64(value))
         case .audioInputDevice(let value), .audioOutputDevice(let value):
-            let audio = try await SimulatorAudioInterface(runtime: .shared)
+            let audio = try await SimulatorAudioInterface.load()
             let connection = try await audio.connect(to: device, changed: { _ in })
             defer { connection.disconnect() }
             let scope: AudioScope = if case .audioInputDevice = setting { .input } else { .output }
             try await route(through: connection, scope, to: value == "systemDefault" ? AudioRouting.systemDefault : value)
-        default: throw CLIError.configuration("guest-settings-operation", "This setting uses the simulator command-line tools.")
+        default: throw DeviceDomainError.configuration("guest-settings-operation", "This setting uses the simulator command-line tools.")
         }
     }
 
@@ -187,184 +184,5 @@ package final class SimulatorGuestSettings {
 private extension SimulatorLookAndFeel {
     var nativeMember: String {
         switch self { case .clear: "clearLiquidGlass"; case .tinted: "tintedLiquidGlass" }
-    }
-}
-
-/// Uses the installed action declarations and codecs to reach each guest provider.
-@MainActor
-package final class GuestSettingsActions {
-    private let guest: SimulatorGuestHID
-    private let identifier: String
-    private var bindings: [String: Binding] = [:]
-    private var connections: [String: GuestHIDConnection] = [:]
-
-    package init(guest: SimulatorGuestHID, identifier: String) {
-        self.guest = guest
-        self.identifier = identifier
-    }
-
-    package func get(_ declaration: String) async throws -> DeviceInspectorValue {
-        try await perform(declaration, input: [:], readsOutput: true)
-    }
-
-    package func set(_ declaration: String, input: [String: Any]) async throws {
-        _ = try await perform(declaration, input: input, readsOutput: false)
-    }
-
-    package func setColorFilter(_ value: SimulatorColorFilter, intensity: Double?) async throws {
-        var filter: [String: Any] = ["enabled": value != .none]
-        if value != .none {
-            filter["filterType"] = try await namedValue("DeviceColorFilter.FilterType", member: value.rawValue)
-            // The provider rejects intensity for grayscale and disabled filters.
-            if value != .grayscale {
-                let level = if let intensity { intensity }
-                    else { try await get("GetColorFilterActionDeclaration")["colorFilter"]?["intensity"]?.numeric }
-                if let level { filter["intensity"] = level }
-            }
-        }
-        try await set("SetColorFilterActionDeclaration", input: ["colorFilter": filter])
-    }
-
-    private func encoded(_ value: NativeSwiftValue) throws -> Data {
-        try value.withCopy {
-            guard let encodable = $0 as? any Encodable else {
-                throw CLIError.unavailable("guest-settings-value", "The native setting cannot be encoded.")
-            }
-            return try JSONEncoder().encode(encodable)
-        }
-    }
-
-    package func namedValue(_ typeName: String, member: String) async throws -> Any {
-        let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDeviceUtilities." + typeName)))
-        // These CoreDevice value getters return through Swift's indirect result buffer.
-        let getter = try await type.resolve(.swift(.staticGetter(member, as: (() -> NativeSwiftValue).self,
-            valueABIs: [type: try .opaque(named: type.name)])))
-        return try unsafe JSONSerialization.jsonObject(with: encoded(getter.unsafeInvoke()))
-    }
-
-    private func perform(_ declaration: String, input: [String: Any], readsOutput: Bool) async throws -> DeviceInspectorValue {
-        let binding: Binding
-        if let existing = bindings[declaration] { binding = existing }
-        else {
-            binding = try await Binding(declaration: declaration, readsOutput: readsOutput)
-            bindings[declaration] = binding
-        }
-        let connection: GuestHIDConnection
-        if let existing = connections[binding.feature] { connection = existing }
-        else {
-            connection = try await guest.connection(to: binding.feature)
-            connections[binding.feature] = connection
-        }
-        let message = try binding.message(identifier: identifier, input: JSONSerialization.data(withJSONObject: input))
-        let reply = try await connection.request(message, timeout: .seconds(10), cancelsWithTask: true)
-        return try binding.output(reply)
-    }
-
-    private struct Binding {
-        let feature: String
-        let action: String
-        let encodeInput: (Data) throws -> xpc_object_t
-        let decodeOutput: ((xpc_object_t) throws -> DeviceInspectorValue)?
-
-        init(declaration: String, readsOutput: Bool) async throws {
-            let runtime = ABIRuntime.shared
-            let name = "CoreDeviceUtilities." + declaration
-            let type = try await runtime.resolve(.swift(.type(name)))
-            action = try await unsafe type.resolve(.swift(.staticGetter("identifier", as: (() -> String).self))).unsafeInvoke()
-            let location = try await unsafe type.resolve(.swift(.staticGetter("executionLocation", as: (() -> NativeSwiftValue).self))).unsafeInvoke()
-            guard let payload = try await location.copyEnumPayload(forCase: "remoteDevice"),
-                  let feature = try payload.withCopy({ $0 as? String }) else {
-                throw CLIError.unavailable("guest-settings-action", "The setting is not provided by a guest service.")
-            }
-            self.feature = feature
-            let inputType = try await runtime.resolve(.swift(.type(name + ".Input")))
-            let jsonDecoder = try await runtime.resolve(.swift(.type(String(reflecting: JSONDecoder.self))))
-            let data = try await runtime.resolve(.swift(.type("Foundation.Data")))
-            let decodeJSON = try await jsonDecoder.resolve(.swift(.method("decode(_:from:)",
-                as: ((NativeSwiftValue, Data) throws -> NativeSwiftValue).self, genericArguments: [.type(inputType)],
-                valueABIs: [data: try .structure(named: data.name, fields: [.uint64, .uint64])])))
-            let inputMetatype = try inputType.makeMetatypeValue()
-            let xpcEncoder = try await runtime.resolve(.swift(.type("Mercury.XPCObjectEncoder")))
-            let makeEncoder = try await xpcEncoder.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self)))
-            let encode = try await xpcEncoder.resolve(.swift(.method(
-                "Mercury.XPCObjectEncoder.encode<A where A: Swift.Encodable>(A) throws -> __C.OS_xpc_object",
-                as: ((NativeSwiftValue) throws -> xpc_object_t).self, genericArguments: [.type(inputType)])))
-            encodeInput = { data in
-                let value = try unsafe decodeJSON.unsafeInvoke(on: JSONDecoder(), inputMetatype, data)
-                return try unsafe encode.unsafeInvoke(on: makeEncoder.unsafeInvoke(), value)
-            }
-            if readsOutput {
-                let outputType = try await runtime.resolve(.swift(.type(name + ".Output")))
-                let xpcDecoder = try await runtime.resolve(.swift(.type("Mercury.XPCObjectDecoder")))
-                let makeDecoder = try await xpcDecoder.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self)))
-                let decode = try await xpcDecoder.resolve(.swift(.method(
-                    "Mercury.XPCObjectDecoder.decode<A where A: Swift.Decodable>(_: A.Type, from: __C.OS_xpc_object) throws -> A",
-                    as: ((NativeSwiftValue, xpc_object_t) throws -> NativeSwiftValue).self, genericArguments: [.type(outputType)])))
-                let metatype = try outputType.makeMetatypeValue()
-                decodeOutput = { object in
-                    let value = try unsafe decode.unsafeInvoke(on: makeDecoder.unsafeInvoke(), metatype, object)
-                    let data = try value.withCopy { value in
-                        guard let encodable = value as? any Encodable else {
-                            throw CLIError.unavailable("guest-settings-output", "The setting's reply cannot be encoded.")
-                        }
-                        return try JSONEncoder().encode(encodable)
-                    }
-                    return try JSONDecoder().decode(DeviceInspectorValue.self, from: data)
-                }
-            } else { decodeOutput = nil }
-        }
-
-        func message(identifier: String, input: Data) throws -> xpc_object_t {
-            let message = xpc_dictionary_create(nil, nil, 0)
-            xpc_dictionary_set_string(message, "CoreDevice.actionIdentifier", action)
-            xpc_dictionary_set_string(message, "CoreDevice.deviceIdentifier", identifier)
-            xpc_dictionary_set_string(message, "CoreDevice.invocationIdentifier", UUID().uuidString)
-            xpc_dictionary_set_int64(message, "CoreDevice.CoreDeviceDDIProtocolVersion", 1)
-            guard let version = Bundle(path: "/Library/Developer/PrivateFrameworks/CoreDevice.framework")?
-                .object(forInfoDictionaryKey: "CFBundleVersion") as? String else {
-                throw CLIError.unavailable("coredevice-version", "CoreDevice's version is unavailable.")
-            }
-            let parts = version.split(separator: ".").compactMap { UInt64($0) }
-            let versionValue = xpc_dictionary_create(nil, nil, 0)
-            let components = xpc_array_create(nil, 0)
-            for part in parts { xpc_array_append_value(components, xpc_uint64_create(part)) }
-            xpc_dictionary_set_value(versionValue, "components", components)
-            xpc_dictionary_set_int64(versionValue, "originalComponentsCount", Int64(parts.count))
-            xpc_dictionary_set_string(versionValue, "stringValue", version)
-            xpc_dictionary_set_value(message, "CoreDevice.coreDeviceVersion", versionValue)
-            xpc_dictionary_set_value(message, "CoreDevice.input", try encodeInput(input))
-            return message
-        }
-
-        func output(_ reply: xpc_object_t) throws -> DeviceInspectorValue {
-            if let error = xpc_dictionary_get_value(reply, "CoreDevice.error") {
-                let domain = xpc_dictionary_get_string(error, "domain").map { String(cString: $0) } ?? "CoreDevice"
-                let code = xpc_dictionary_get_int64(error, "code")
-                var info: [String: Any] = [:]
-                if let properties = xpc_dictionary_get_value(error, "userInfo"),
-                   let description = xpc_dictionary_get_string(properties, NSLocalizedDescriptionKey) {
-                    info[NSLocalizedDescriptionKey] = String(cString: description)
-                }
-                let description = xpc_copy_description(error)
-                info[NSDebugDescriptionErrorKey] = String(cString: description)
-                free(description)
-                throw NSError(domain: domain, code: Int(code), userInfo: info)
-            }
-            guard let output = xpc_dictionary_get_value(reply, "CoreDevice.output") else {
-                throw CLIError.io("guest-settings-reply", "The guest omitted the setting's reply.")
-            }
-            return try decodeOutput?(output) ?? .object([:])
-        }
-    }
-}
-
-private extension DeviceInspectorValue {
-    var numeric: Double? {
-        switch self {
-        case .number(let value): value
-        case .integer(let value): Double(value)
-        case .unsignedInteger(let value): Double(value)
-        default: nil
-        }
     }
 }

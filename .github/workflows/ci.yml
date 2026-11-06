@@ -47,6 +47,9 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Check module graph
+        run: scripts/check-module-graph.py
+
       - name: Build CoreDevice inventory probe
         run: |
           xcodebuild build -workspace NeoSimulator.xcworkspace \

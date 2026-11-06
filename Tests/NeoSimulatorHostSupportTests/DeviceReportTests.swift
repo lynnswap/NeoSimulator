@@ -1,4 +1,4 @@
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Darwin
@@ -91,14 +91,14 @@ import Testing
         let calls = ReportCalls { command in
             guard command.arguments.starts(with: ["device", "copy", "from"]) else { return Self.output(Self.files) }
             try Data("partial transfer".utf8).write(to: Self.destination(command))
-            throw CLIError.io("report-transfer-fixture", "Disconnected")
+            throw DeviceIOError.io("report-transfer-fixture", "Disconnected")
         }
         let inspector = try Self.remote(transport: .init(run: { try await calls.run($0) }))
         let report = try await inspector.report(relativePath: "Nested/Report.ips")
         do { _ = try await inspector.downloadReport(report, to: destination, replacingExistingFile: true); Issue.record("Transfer failure was ignored") }
         catch let error as DeviceInspectorFailure {
             #expect(error.deviceID == inspector.device.id && error.source == .coreDevice)
-            #expect((error.error as? CLIError)?.identifier == "report-transfer-fixture")
+            #expect((error.error as? DeviceIOError)?.identifier == "report-transfer-fixture")
             guard case .reportDownload(let target, let remaining, let updated) = error.partialCompletion else { Issue.record("Partial path was lost"); return }
             #expect(target == destination && !updated)
             #expect(try String(contentsOf: remaining, encoding: .utf8) == "partial transfer")
@@ -163,13 +163,13 @@ import Testing
         let calls = ReportCalls { command in
             guard command.arguments.starts(with: ["device", "copy", "from"]) else { return Self.output(Self.files) }
             try Data("partial".utf8).write(to: Self.destination(command))
-            throw CLIError.io("preview-transfer-fixture", "Disconnected")
+            throw DeviceIOError.io("preview-transfer-fixture", "Disconnected")
         }
         let inspector = try Self.remote(transport: .init(run: { try await calls.run($0) }))
         let report = try await inspector.report(relativePath: "Nested/Report.ips")
         do { _ = try await inspector.previewReport(report, in: directory.url); Issue.record("Preview failure was ignored") }
         catch let error as DeviceInspectorFailure {
-            #expect((error.error as? CLIError)?.identifier == "preview-transfer-fixture")
+            #expect((error.error as? DeviceIOError)?.identifier == "preview-transfer-fixture")
             #expect(error.partialCompletion == nil)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.url.path).isEmpty)

@@ -60,7 +60,7 @@ public enum NeoSimulatorServiceMain {
         } catch { fail(error) }
         do {
             try options.validateInstallation()
-            try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: options.xcodeURL)
+            try RendererBootstrap.selectToolkit(xcodeURL: options.xcodeURL)
         }
         catch { fail(error, resultURL: options.startupResultURL) }
         if options.readsCreationCatalog || options.validatesRuntime {
@@ -81,15 +81,10 @@ public enum NeoSimulatorServiceMain {
     private static func runHelper(options: HostLaunchOptions) async -> Never {
         do {
             if options.readsCreationCatalog {
-                let catalog = try await SimulatorRuntime.creationCatalog(xcodeURL: options.xcodeURL)
-                let data = try JSONEncoder().encode(catalog)
-                try FileHandle.standardOutput.write(contentsOf: data)
-            } else {
-                _ = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
-                if options.includesNativeBindings {
-                    let report = await NativeRuntimeValidationReport.prepareOptionalBindings()
-                    try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(report))
-                }
+                try FileHandle.standardOutput.write(contentsOf: await RendererBootstrap.creationCatalog(xcodeURL: options.xcodeURL))
+            } else if let report = try await RendererBootstrap.validateRuntime(xcodeURL: options.xcodeURL,
+                                                                               includingNativeBindings: options.includesNativeBindings) {
+                try FileHandle.standardOutput.write(contentsOf: report)
             }
             exit(EX_OK)
         } catch { fail(error) }
@@ -107,18 +102,14 @@ public enum NeoSimulatorServiceMain {
                                                      cleanup: HostApplication.requestTerminationAfterOwnerExit)
                 guard owner.isRunning(applicationURL: managerURL) else { ownerMonitor?.stop(); exit(EX_OK) }
             } else { ownerMonitor = nil }
-            let conflicts = HostConflictMonitor()
-            try conflicts.check()
-            let runtime = try await SimulatorRuntime.load(xcodeURL: options.xcodeURL)
-            SimulatorPreferences.migrateStandalonePreferences()
-            HostPreferences.configure(defaults: .standard,
-                deviceSettingsDefaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator"))
-            let controller = try HostApplication(runtime: runtime, conflicts: conflicts, isManaged: options.isManaged,
-                                                 owner: options.owner, headless: options.isHeadless)
+            let bootstrap = RendererBootstrap()
+            try bootstrap.checkForConflict()
+            let controller = try await bootstrap.makeApplication(xcodeURL: options.xcodeURL, isManaged: options.isManaged,
+                                                                 owner: options.owner, headless: options.isHeadless)
             Self.controller = controller
             application.delegate = controller
             try await controller.start(initialDeviceIdentifier: options.deviceIdentifier, initialDeviceSetPath: options.deviceSetPath)
-            do { try conflicts.check() }
+            do { try bootstrap.checkForConflict() }
             catch {
                 controller.shutdown()
                 throw error

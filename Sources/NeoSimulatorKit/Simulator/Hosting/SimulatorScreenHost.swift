@@ -1,14 +1,15 @@
-import AppKit
+import Foundation
 import NeoSimulatorDeviceIO
 
 /// Owns simulator connections and their resources independently of an application's menus or routing.
 @MainActor
-package final class SimulatorScreenHost: NSObject {
-    package let runtime: SimulatorRuntime
-    private let conflicts: HostConflictMonitor
+package final class SimulatorScreenHost {
+    package let runtime: SimulatorIORuntime
+    private var conflicts: any HostConflictChecking
+    /// What draws this host's devices. Without one, it reads and manages them but attaches no display.
+    package private(set) var presenter: (any DevicePresenter)?
     private let deviceSet: SimulatorDeviceSet
     private let recordings: RecordingStore
-    package let captureOwner = UUID()
     /// How long stopping waits for capture file work, which defaults to TerminationTimeout.
     package var captureFinishLimit: Duration?
     private let isManaged: Bool
@@ -33,7 +34,7 @@ package final class SimulatorScreenHost: NSObject {
     package var registrationDeviceIdentifiers: [SimulatorDeviceIdentifier] {
         ownedDeviceIdentifiers.union(closingShutdowns.keys).union(releasingDevices).sorted()
     }
-    package var windowControllers: [DeviceWindowController] { Array(sessions.values) }
+    package var presentations: [any DevicePresentation] { Array(sessions.values) }
     package var hasPresentations: Bool { !sessions.isEmpty || !connections.isEmpty }
     private var releasingDevices: Set<SimulatorDeviceIdentifier> = []
     private var registrationErrorReported = false
@@ -51,11 +52,11 @@ package final class SimulatorScreenHost: NSObject {
     private var testingSetWatcher: DispatchSourceFileSystemObject?
     private var isOpeningTestingSet = false
     private var testingSetNeedsOpening = false
-    private var sessions: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
+    private var sessions: [SimulatorDeviceIdentifier: any DevicePresentation] = [:]
     private var connections: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
     private var bootOperations: [SimulatorDeviceIdentifier: DeviceTools] = [:]
     private var restarting: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
-    private var awaitingReconnect: [SimulatorDeviceIdentifier: DeviceWindowController] = [:]
+    private var awaitingReconnect: [SimulatorDeviceIdentifier: any DevicePresentation] = [:]
     private var presentationRestarts: Set<SimulatorDeviceIdentifier> = []
     private var suppressed: Set<SimulatorDeviceIdentifier> = []
     private var closingShutdowns: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
@@ -69,9 +70,6 @@ package final class SimulatorScreenHost: NSObject {
     private var stoppingTask: Task<Void, Error>?
     /// Where this host's sessions find their devices' state.
     package let deviceRegistry: DeviceRegistry
-    private var nextWindowPosition = NSPoint.zero
-    private let touchPressure = TouchPressure()
-    private let tvRemote = TVRemoteController()
     private lazy var pasteboardSync: PasteboardSync = suppliedPasteboardSync ?? PasteboardSync { [weak self] in
         self?.sessions.values.map(\.session) ?? []
     }
@@ -79,7 +77,8 @@ package final class SimulatorScreenHost: NSObject {
     private var touchIndicatorObservation: DefaultsObservation?
     private var testingDevicesObservation: DefaultsObservation?
 
-    package init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
+    package init(runtime: SimulatorIORuntime, conflicts: any HostConflictChecking = NoHostConflicts(),
+         presenter: (any DevicePresenter)? = nil, isManaged: Bool = false,
          headless: Bool = false, inProcess: Bool = false, pasteboardSync: PasteboardSync? = nil,
          offersLifetimeChoice: Bool = true, deviceRegistry: DeviceRegistry = DeviceRegistry(),
          recordings: RecordingStore = RecordingStore()) throws {
@@ -88,6 +87,7 @@ package final class SimulatorScreenHost: NSObject {
         self.recordings = recordings
         self.runtime = runtime
         self.conflicts = conflicts
+        self.presenter = presenter
         self.isManaged = isManaged
         isHeadless = headless
         isInProcess = inProcess
@@ -95,7 +95,6 @@ package final class SimulatorScreenHost: NSObject {
         self.offersLifetimeChoice = offersLifetimeChoice
         deviceSet = runtime.openDeviceSet()
         HostPreferences.registerDefaults()
-        super.init()
         recordings.onError = { [weak self] error in
             guard let self else { hostLog(error.localizedDescription); return }
             self.noteCaptureFailure(error)
@@ -103,7 +102,16 @@ package final class SimulatorScreenHost: NSObject {
         conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
     }
 
-    package func controller(for identifier: SimulatorDeviceIdentifier) -> DeviceWindowController? { sessions[identifier] }
+    /// Gives this host what draws its devices and checks for other displays. A conflict leaves it without either.
+    package func install(presenter: any DevicePresenter, conflicts: any HostConflictChecking) throws {
+        try conflicts.check()
+        self.presenter = presenter
+        self.conflicts.onConflict = nil
+        self.conflicts = conflicts
+        conflicts.onConflict = { [weak self] in self?.handleHostConflict() }
+    }
+
+    package func presentation(for identifier: SimulatorDeviceIdentifier) -> (any DevicePresentation)? { sessions[identifier] }
     package func hasUnfinishedCleanup(for identifier: SimulatorDeviceIdentifier) -> Bool {
         disconnectedSessions.contains { $0.device.identity == identifier }
             || (sessions[identifier] == nil && externalDisplayQueues[identifier] != nil)
@@ -228,7 +236,7 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     package func hasVisibleWindow(forDevice identifier: SimulatorDeviceIdentifier) -> Bool {
-        sessions[identifier]?.window?.isVisible == true
+        sessions[identifier]?.isVisible == true
     }
 
     private static func isSupported(_ device: SimulatorDeviceRecord) -> Bool {
@@ -411,18 +419,6 @@ package final class SimulatorScreenHost: NSObject {
                         state: device.state, deviceSetPath: device.deviceSetPath)
     }
 
-    private static func capabilities(of device: SimulatorDevice, features: Set<String>) -> DeviceCapabilities {
-        DeviceCapabilities(family: DeviceCapabilities.Family(rawValue: device.productFamily),
-                           runtimeVersion: device.runtimeVersion,
-                           supportsFeature: { features.contains($0) },
-                           controlsOrientation: device.deviceSetPath == nil,
-                           hasFramebufferMask: device.hasFramebufferMask,
-                           screenCornerRadius: device.screenCornerRadius,
-                           screenPointsPerInch: device.screenPointsPerInch,
-                           hasUserInterfacePlugin: device.hasUserInterfacePlugin,
-                           supportsEnhancedMultitasking: device.supportsEnhancedMultitasking)
-    }
-
     package func didSelectDevice(_ identifier: SimulatorDeviceIdentifier) {
         onOpen?(identifier)
         sessions[identifier]?.session.updatePasteboardSync()
@@ -432,7 +428,7 @@ package final class SimulatorScreenHost: NSObject {
         try await openSimulatorLocally(withIdentifier: identifier)
     }
 
-    package func openPresentation(for identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = false) async throws -> DeviceWindowController {
+    package func openPresentation(for identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = false) async throws -> any DevicePresentation {
         let preservesPresentation = sessions[identifier] != nil || openingDevices.contains(identifier)
         return try await withScreenOpenCleanup(preservingExisting: preservesPresentation, operation: {
             try await self.openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: bootIfNeeded, presents: false)
@@ -505,6 +501,9 @@ package final class SimulatorScreenHost: NSObject {
     package func openSimulatorLocally(withIdentifier identifier: SimulatorDeviceIdentifier, bootIfNeeded: Bool = true,
                                      presents: Bool = true) async throws {
         guard !releasingDevices.contains(identifier) else { throw CancellationError() }
+        guard isHeadless || presenter != nil else {
+            throw SimulatorError.unavailable("A device's screen opens through NeoSimulatorUI's SimulatorScreens.")
+        }
         let preservesConnection = sessions[identifier] != nil || openingDevices.contains(identifier)
         openingDevices.insert(identifier)
         defer { openingDevices.remove(identifier) }
@@ -676,131 +675,7 @@ package final class SimulatorScreenHost: NSObject {
                 guard let device = try await set?.client(withIdentifier: identifier.identifier) else {
                     throw SimulatorError.operation("The selected simulator is no longer available")
                 }
-                try await runtime.display.screenAdapter.prepare(for: device.object)
-                // CoreSimulator reports Booted before its integrated screen is ready.
-                var screenFailure: (any Error)?
-                for _ in 0..<40 {
-                    try Task.checkCancellation()
-                    guard !stopped, !isTerminating, !suppressed.contains(identifier) else { return }
-                    try conflicts.check()
-                    let defaultScreen: (identifier: UInt32, object: AnyObject)?
-                    do {
-                        defaultScreen = try runtime.display.defaultScreen(of: device)
-                        screenFailure = nil
-                    } catch {
-                        defaultScreen = nil
-                        screenFailure = error
-                    }
-                    if let screen = defaultScreen {
-                        let features = try await device.supportedFeatures(DeviceCapabilities.allFeatures)
-                        var capabilities = Self.capabilities(of: device, features: features)
-                        let nativeCanvas: NativeDeviceCanvas?
-                        var keyboard: NativeDeviceKeyboard?
-                        var trackpad: NativeDeviceTrackpad?
-                        var touchRoute: NativeTouchRoute?
-                        let isDuo = device.deviceTypeIdentifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"
-                        // A crown or dial takes the pointer's scrolling, and a device UI plugin's overlay takes the
-                        // screen's input, through SimulatorKit.
-                        let takesNativeTrackpad = !capabilities.hasCrownOrDial && !capabilities.hasUserInterfacePlugin
-                        // Once native keyboard or trackpad input starts, the guest drops SimulatorKit's touches and
-                        // buttons, so they go to the native touchscreen and buttons too. The native touchscreen has
-                        // no pressure, so a screen with touch pressure keeps SimulatorKit's touches.
-                        let takesNativeTouches = capabilities.isPhoneOrPad
-                            && !capabilities.supportsFeature(DeviceCapabilities.touchPressure)
-                        if isDuo, device.deviceSetPath == nil {
-                            nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier, lookUp: device.lookUp)
-                        } else if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
-                                  takesNativeTouches {
-                            nativeCanvas = nil
-                            // CoreDevice may omit a default-set simulator too. Reach the guest that owns the screen.
-                            if let input = try await guestInput(of: device) {
-                                keyboard = input.keyboard
-                                trackpad = input.trackpad
-                                touchRoute = input.touchRoute
-                            }
-                        } else if device.deviceSetPath != nil {
-                            nativeCanvas = nil
-                        } else if capabilities.isPhoneOrPad, capabilities.supportsFeature(DeviceCapabilities.touchPressure) {
-                            nativeCanvas = nil
-                            // Native keyboard or trackpad input would make the guest drop SimulatorKit's touches, which
-                            // keep their pressure, and its buttons. The screen therefore keeps SimulatorKit's keyboard,
-                            // which the guest reads with a US layout, and its digitizer, which drops trackpad scrolling
-                            // and pinches.
-                        } else {
-                            nativeCanvas = nil
-                            if capabilities.supportsFeature(DeviceCapabilities.keyboard) {
-                                keyboard = try await nativeKeyboard(of: device)
-                            }
-                            if takesNativeTrackpad {
-                                trackpad = try await nativeTrackpad(of: device)
-                            }
-                            if keyboard != nil || trackpad != nil, takesNativeTouches {
-                                touchRoute = try await nativeTouchRoute(of: device)
-                                if touchRoute == nil { keyboard = nil; trackpad = nil }
-                            }
-                        }
-                        let pasteboardTransport = try await device.deviceSetPath == nil ? nativePasteboard(of: device) : nil
-                        try Task.checkCancellation()
-                        let connection = try await SimulatorConnection(device: device, screen: screen, runtime: runtime,
-                                                                 nativeCanvas: nativeCanvas, keyboard: keyboard, trackpad: trackpad,
-                                                                 touchRoute: touchRoute)
-                        if nativeCanvas != nil { capabilities.controlsOrientation = false }
-                        let available = Self.describe(device.record)
-                        let session = DeviceSession(
-                            device: available, capabilities: capabilities,
-                            display: connection,
-                            tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
-                                                   deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
-                            model: deviceRegistry.presentedModel(of: available, lastBootDate: device.lastBootDate,
-                                                                 ownerXcodeURL: runtime.xcodeURL, channel: device.channel),
-                            recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
-                            externalDisplayChanges: externalDisplayChanges(of: device),
-                            appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
-                        try Task.checkCancellation()
-                        session.onApplicationsChange = { [weak self] in self?.onApplicationsChange?(identifier) }
-                        if let controller = awaitingReconnect.removeValue(forKey: identifier) {
-                            try conflicts.check()
-                            controller.reconnect(session, present: !isInProcess)
-                            applyDebugSettings(of: session)
-                            session.refreshGuestState()
-                            applyKeyboardSettings(of: session)
-                            restoreLocation(of: session)
-                            connectAudioRoutes(of: session)
-                            session.startPasteboardSync()
-                            connectExternalDisplay(of: session)
-                            return
-                        }
-                        let shutDown: ((DeviceWindowController) -> Void)? = isInProcess ? { [weak self] controller in
-                            self?.onShutDown?(controller.session.device.identity)
-                        } : nil
-                        let controller = try DeviceWindowController(
-                            session: session, touchPressure: touchPressure, tvRemote: tvRemote,
-                            offersLifetimeChoice: offersLifetimeChoice, captureOwner: captureOwner,
-                            reportDetachedCapture: { [weak self] error in
-                                guard let self else { hostLog(error.localizedDescription); return }
-                                self.noteCaptureFailure(error)
-                            }, onClose: { [weak self] in
-                                self?.deviceWindowClosed($0, choice: $1)
-                            }, onRestart: { [weak self] controller, erasing in
-                                guard let self else { return }
-                                if isInProcess { onRestart?(controller.session.device.identity, erasing) }
-                                else { restartDevice(controller, erasing: erasing) }
-                            }, onShutDown: shutDown)
-                        try conflicts.check()
-                        sessions[identifier] = controller
-                        if !isInProcess { controller.showNewWindow(cascadingFrom: &nextWindowPosition) }
-                        applyDebugSettings(of: session)
-                        session.refreshGuestState()
-                        applyKeyboardSettings(of: session)
-                        restoreLocation(of: session)
-                        connectAudioRoutes(of: session)
-                        session.startPasteboardSync()
-                        connectExternalDisplay(of: session)
-                        return
-                    }
-                    try await Task.sleep(for: .milliseconds(250))
-                }
-                throw await IntegratedScreenUnavailable(deviceName: device.name, lastFailure: screenFailure)
+                try await attach(device, as: identifier)
             } catch is CancellationError {
             } catch SimulatorError.conflict(_) {
                 handleHostConflict()
@@ -811,102 +686,73 @@ package final class SimulatorScreenHost: NSObject {
         }
     }
 
-    /// The device's native keyboard, whose guest services carry each Mac keyboard's layout. CoreDevice lists only
-    /// the default device set. Without it, SimulatorKit's keyboard remains, which the guest reads with a US layout.
-    private func nativeKeyboard(of device: SimulatorDevice) async throws -> NativeDeviceKeyboard? {
-        do {
-            let keyboard = try await NativeDeviceKeyboard.connect(simulatorUDID: device.identifier)
-            keyboard.onFailure = { [name = device.name] error in
-                hostLog("Could not send keyboard input to \(name): \(error.localizedDescription)")
-            }
-            return keyboard
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            hostLog("\(device.name) keeps SimulatorKit's keyboard, which the guest reads with a US layout: \(error.localizedDescription)")
-            return nil
+    /// Connects `device`'s display, makes its session and presents it, opening before its optional services are ready.
+    private func attach(_ device: SimulatorDevice, as identifier: SimulatorDeviceIdentifier) async throws {
+        guard let presenter else { return }
+        let connected = try await presenter.connectDisplay(DeviceConnectionRequest(device: device, runtime: runtime) { [weak self] in
+            try Task.checkCancellation()
+            guard let self, !stopped, !isTerminating, !suppressed.contains(identifier) else { throw CancellationError() }
+            try conflicts.check()
+        })
+        try Task.checkCancellation()
+        let available = Self.describe(device.record)
+        let session = DeviceSession(
+            device: available, capabilities: connected.capabilities,
+            display: connected.display,
+            tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
+                                   deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
+            model: deviceRegistry.presentedModel(of: available, lastBootDate: device.lastBootDate,
+                                                 ownerXcodeURL: runtime.xcodeURL, channel: device.channel),
+            recordings: recordings, openLog: { [presenter] in try await presenter.openLog($0) },
+            hostKeyboardLanguage: { [presenter] in presenter.hostKeyboardLanguage() },
+            pasteboardSync: pasteboardSync, optionalServices: connected.optionalServices,
+            externalDisplayChanges: externalDisplayChanges(of: device),
+            appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })
+        try Task.checkCancellation()
+        session.onApplicationsChange = { [weak self] in self?.onApplicationsChange?(identifier) }
+        if let presentation = awaitingReconnect.removeValue(forKey: identifier) {
+            try conflicts.check()
+            presentation.reconnect(session, present: !isInProcess)
+            finishConnecting(session)
+            connected.startOptionalServices()
+            return
         }
+        let presentation = try presenter.makePresentation(of: session, offersLifetimeChoice: offersLifetimeChoice,
+                                                          events: presentationEvents())
+        try conflicts.check()
+        sessions[identifier] = presentation
+        if !isInProcess { presentation.showNew() }
+        finishConnecting(session)
+        connected.startOptionalServices()
     }
 
-    /// The device's CoreDevice pasteboard, which carries Get Pasteboard, Send Pasteboard, and automatic
-    /// synchronization. CoreDevice lists only the default device set. Without it, SimPasteboardPlus remains, whose sends
-    /// no longer replace an iOS 27.2 guest's pasteboard.
-    private func nativePasteboard(of device: SimulatorDevice) async throws -> (any PasteboardTransport)? {
-        do {
-            return try await CoreDevicePasteboardTransport.make(simulatorUDID: device.identifier)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            hostLog("\(device.name) keeps SimPasteboardPlus's pasteboard: \(error.localizedDescription)")
-            return nil
+    private func presentationEvents() -> DevicePresentationEvents {
+        var onShutDown: (@MainActor (any DevicePresentation) -> Void)?
+        if isInProcess {
+            onShutDown = { [weak self] presentation in self?.onShutDown?(presentation.session.device.identity) }
         }
+        return DevicePresentationEvents(
+            reportDetachedCapture: { [weak self] error in
+                guard let self else { hostLog(error.localizedDescription); return }
+                self.noteCaptureFailure(error)
+            }, onClose: { [weak self] presentation, choice in
+                self?.presentationClosed(presentation, choice: choice)
+            }, onRestart: { [weak self] presentation, erasing in
+                guard let self else { return }
+                if self.isInProcess { self.onRestart?(presentation.session.device.identity, erasing) }
+                else { self.restartDevice(presentation, erasing: erasing) }
+            }, onShutDown: onShutDown)
     }
 
-    /// The device's native trackpad, which gives the guest the Mac trackpads' scrolling and pinches over the integrated
-    /// screen. CoreDevice lists only the default device set. Without it, SimulatorKit's digitizer drops them.
-    private func nativeTrackpad(of device: SimulatorDevice) async throws -> NativeDeviceTrackpad? {
-        do {
-            let trackpad = try await NativeDeviceTrackpad.connect(simulatorUDID: device.identifier)
-            trackpad.onFailure = { [name = device.name] error in
-                hostLog("Could not send trackpad input to \(name): \(error.localizedDescription)")
-            }
-            return trackpad
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            hostLog("\(device.name) keeps SimulatorKit's digitizer, which drops trackpad scrolling and pinches: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// The native route of the integrated screen's touches and buttons. Without it, the screen keeps SimulatorKit's
-    /// keyboard and touches and no native trackpad, since the guest drops SimulatorKit's touches and buttons once native
-    /// input starts.
-    private func nativeTouchRoute(of device: SimulatorDevice) async throws -> NativeTouchRoute? {
-        do {
-            let interface = try await runtime.touchInterface()
-            let input = try await NativeDeviceScreenInput.connect(simulatorUDID: device.identifier)
-            input.onFailure = { [name = device.name] error in
-                hostLog("Could not send touches to \(name): \(error.localizedDescription)")
-            }
-            return NativeTouchRoute(input: input, interface: interface)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// The native keyboard, trackpad, touches, and buttons of a simulator, whether CoreDevice lists it or not.
-    /// They reach the guest's HID services through the Mach services that the device itself looks up, so
-    /// they stay with the device's own set. Connecting them sends the guest nothing, so when one cannot connect, the device
-    /// keeps SimulatorKit's input for all of them: its keyboard, which the guest reads with a US layout, and its digitizer,
-    /// which drops trackpad scrolling and pinches.
-    private func guestInput(of device: SimulatorDevice) async throws
-        -> (keyboard: NativeDeviceKeyboard, trackpad: NativeDeviceTrackpad, touchRoute: NativeTouchRoute)? {
-        do {
-            let interface = try await runtime.touchInterface()
-            let guest = try await SimulatorGuestHID(lookUp: device.lookUp)
-            let keyboard = try await NativeDeviceKeyboard.connect(guest: guest)
-            let trackpad = try await NativeDeviceTrackpad.connect(guest: guest)
-            let input = try await NativeDeviceScreenInput.connect(guest: guest)
-            let name = device.name
-            keyboard.onFailure = { hostLog("Could not send keyboard input to \(name): \($0.localizedDescription)") }
-            trackpad.onFailure = { hostLog("Could not send trackpad input to \(name): \($0.localizedDescription)") }
-            input.onFailure = { hostLog("Could not send touches to \(name): \($0.localizedDescription)") }
-            return (keyboard, trackpad, NativeTouchRoute(input: input, interface: interface))
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let failure as DeviceOperationFailure {
-            // An unanswered request says nothing about what the guest supports. The screen stays usable, and until #458
-            // gives input its own readiness, SimulatorKit's is the only input that this connection can have meanwhile.
-            report(failure)
-            return nil
-        } catch {
-            hostLog("\(device.name) keeps SimulatorKit's keyboard and touches, without native trackpad input: \(error.localizedDescription)")
-            return nil
-        }
+    /// Starts what a connected session does without holding its screen.
+    private func finishConnecting(_ session: DeviceSession) {
+        applyDebugSettings(of: session)
+        session.refreshGuestState()
+        applyKeyboardSettings(of: session)
+        restoreLocation(of: session)
+        connectAudioRoutes(of: session)
+        session.startPasteboardSync()
+        connectExternalDisplay(of: session)
     }
 
     /// Applies debug settings on each connection, which no screen waits for; logs failures.
@@ -960,8 +806,8 @@ package final class SimulatorScreenHost: NSObject {
     // MARK: Closing and quitting
 
     /// Closes the device unless this close or DetachOnWindowClose requests keeping it booted.
-    private func deviceWindowClosed(_ controller: DeviceWindowController, choice: DeviceLifetimeChoice?) {
-        let session = controller.session
+    private func presentationClosed(_ presentation: any DevicePresentation, choice: DeviceLifetimeChoice?) {
+        let session = presentation.session
         let identifier = session.device.identity
         sessions.removeValue(forKey: identifier)
         awaitingReconnect.removeValue(forKey: identifier)
@@ -1156,7 +1002,7 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     /// Disconnects, shuts down, optionally erases, boots, and reconnects the existing window.
-    package func restartDevice(_ controller: DeviceWindowController, erasing: Bool,
+    package func restartDevice(_ controller: any DevicePresentation, erasing: Bool,
                                completion: ((Error?) -> Void)? = nil) {
         let identifier = controller.session.device.identity
         guard !stopped, sessions[identifier] === controller, restarting[identifier] == nil,
@@ -1224,7 +1070,7 @@ package final class SimulatorScreenHost: NSObject {
     }
 
     /// For a caller that has told the user what a stop threw: the next stop does not repeat those unsaved captures.
-    package func acknowledgeCaptureFailures() { CaptureThumbnail.acknowledgeFailures(owner: captureOwner) }
+    package func acknowledgeCaptureFailures() { presenter?.acknowledgeCaptureFailures() }
 
     package func handleHostConflict() {
         guard !stopped, let name = conflicts.conflictingHostName else { return }
@@ -1257,7 +1103,7 @@ package final class SimulatorScreenHost: NSObject {
         if let stoppingTask { return stoppingTask }
         isTerminating = true
         // Thumbnails end before this returns; what they hold is saved while the rest of stopping goes on.
-        CaptureThumbnail.beginFinishing(owner: captureOwner)
+        presenter?.beginFinishingCaptures()
         let retryingCleanup = stopped
         let keepsRunning = isInProcess || (keepingDevicesRunning
             ?? HostPreferences.defaults.bool(forKey: HostPreferences.detachOnAppQuit))
@@ -1283,7 +1129,7 @@ package final class SimulatorScreenHost: NSObject {
 
     /// Ends the stop of captures that `beginStopping` began, along with any handed over since.
     private func finishCaptures() async -> [any Error] {
-        await CaptureThumbnail.finishAll(owner: captureOwner, before: .now + (captureFinishLimit ?? HostPreferences.terminationLimit))
+        await presenter?.finishCaptures(before: .now + (captureFinishLimit ?? HostPreferences.terminationLimit)) ?? []
     }
 
     private func finishStopping(devices: [(identifier: String, deviceSetPath: String?)]) async throws {
@@ -1396,27 +1242,5 @@ package func withScreenOpenCleanup<Value>(preservingExisting: Bool,
             }
         }
         throw error
-    }
-}
-
-
-/// What a quit tells the user about what it leaves unfinished.
-@MainActor
-package enum QuitReport {
-    /// Logs the notes and shows them, for a limited time because nobody may be there to answer, and a quit must end.
-    package static func present(_ notes: [String], for limit: Duration = .seconds(30)) {
-        guard !notes.isEmpty else { return }
-        for note in notes { hostLog(note) }
-        let alert = NSAlert()
-        alert.messageText = "Some operations did not finish before NeoSimulator quit."
-        alert.informativeText = notes.joined(separator: "\n\n")
-        // Not a task: a job that presents this runs inside a drain of the main queue, and until it returns the modal's run
-        // loop does not serve that queue, so nothing on the main actor would run to end it.
-        let timer = Timer(timeInterval: limit / .seconds(1), repeats: false) { _ in
-            MainActor.assumeIsolated { NSApp.abortModal() }
-        }
-        RunLoop.main.add(timer, forMode: .modalPanel)
-        alert.runModal()
-        timer.invalidate()
     }
 }

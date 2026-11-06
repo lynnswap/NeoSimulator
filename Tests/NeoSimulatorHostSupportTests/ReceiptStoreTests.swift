@@ -1,6 +1,7 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
 import Foundation
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
 import Testing
 
 
@@ -47,7 +48,7 @@ struct ReceiptStoreTests {
         do {
             _ = try store.load()
             Issue.record("expected corrupt receipt to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "receipt-decode")
             #expect(error.category == .configuration)
         } catch {
@@ -70,7 +71,7 @@ struct ReceiptStoreTests {
             before: .coreSimulator,
             target: .deviceHub
         )
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try wrongBefore.validate()
         }
 
@@ -80,7 +81,7 @@ struct ReceiptStoreTests {
             original: .deviceHub
         )
         noOp.pending = PendingMutation(before: .deviceHub, target: .deviceHub)
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try noOp.validate()
         }
     }
@@ -93,7 +94,7 @@ struct ReceiptStoreTests {
             do {
                 try store.withExclusiveLock {}
                 Issue.record("expected nested lock acquisition to fail")
-            } catch let error as CLIError {
+            } catch let error as HostOperationError {
                 #expect(error.identifier == "operation-lock")
                 #expect(error.category == .temporary)
             }
@@ -114,7 +115,7 @@ struct ReceiptStoreTests {
             withDestinationURL: target
         )
 
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try store.withExclusiveLock {}
         }
     }
@@ -134,7 +135,7 @@ struct ReceiptStoreTests {
         )
         let store = try ReceiptStore(directoryURL: linkedState)
 
-        #expect(throws: CLIError.self) {
+        #expect(throws: HostOperationError.self) {
             try store.withExclusiveLock {}
         }
         let attributes = try FileManager.default.attributesOfItem(atPath: target.path)

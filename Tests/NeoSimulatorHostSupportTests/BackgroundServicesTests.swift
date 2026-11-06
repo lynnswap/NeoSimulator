@@ -1,4 +1,4 @@
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Darwin

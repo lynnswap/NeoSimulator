@@ -1,4 +1,4 @@
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -69,7 +69,7 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
                   arguments[0] == "--validate-runtime",
                   arguments[1] == "--xcode"
             else {
-                throw CLIError.software(
+                throw HostOperationError.software(
                     "unexpected-test-command",
                     "unexpected command: \(executable.path) \(arguments)"
                 )
@@ -84,15 +84,15 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
 
     nonisolated(nonsending) func readDomain(_ domain: String, keys: [String]) async throws -> [String: Any] {
         recordPreferenceAccess(["read", domain])
-        if failPreferenceReads { throw CLIError.io("preference-read", "injected domain read failure") }
+        if failPreferenceReads { throw HostOperationError.io("preference-read", "injected domain read failure") }
         guard let values = domains[domain] else { return [:] }
         preferenceReadCount += 1
         if failPreferenceReadNumber == preferenceReadCount {
-            throw CLIError.io("preference-read", "injected read failure")
+            throw HostOperationError.io("preference-read", "injected read failure")
         }
         if failFirstPreferenceReadAfterMutationCount == mutationCount {
             failFirstPreferenceReadAfterMutationCount = nil
-            throw CLIError.io("preference-read", "injected post-mutation read failure")
+            throw HostOperationError.io("preference-read", "injected post-mutation read failure")
         }
         return values.filter { keys.contains($0.key) }
     }
@@ -101,11 +101,11 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
         recordPreferenceAccess(["write", preference.domain, preference.key])
         mutationCount += 1
         if failMutationNumbers.contains(mutationCount), failureTiming == .beforeMutation {
-            throw CLIError.io("preference-write", "injected write failure")
+            throw HostOperationError.io("preference-write", "injected write failure")
         }
         setStoredValue(value.booleanValue, for: preference)
         if failMutationNumbers.contains(mutationCount), failureTiming == .afterMutation {
-            throw CLIError.io("preference-write", "injected post-write failure")
+            throw HostOperationError.io("preference-write", "injected post-write failure")
         }
     }
 

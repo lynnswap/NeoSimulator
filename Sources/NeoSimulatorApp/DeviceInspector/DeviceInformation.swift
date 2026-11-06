@@ -1,7 +1,8 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import Foundation
 import MachO.dyld.utils
+import NeoSimulatorDeviceIO
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
 
 /// Presents known device information without replacing the inventory or inspector state.
 struct DeviceInformation: Equatable {

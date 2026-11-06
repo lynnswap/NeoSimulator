@@ -90,11 +90,11 @@ package struct LiveDeviceStateSource: DeviceStateSource {
 
     private func serviceBackend(for device: InventoryDevice) async throws -> SimulatorBackgroundServiceBackend {
         guard case .simulator(let simulator) = device, simulator.state == "Booted" else {
-            throw CLIError.unavailable("background-services-unavailable",
+            throw DeviceDomainError.unavailable("background-services-unavailable",
                                        "Background services are available only on a booted simulator.")
         }
         guard let url = try await xcodeURL(device) else {
-            throw CLIError.configuration("background-services-source", "simctl requires the simulator's developer tools.")
+            throw DeviceDomainError.configuration("background-services-source", "simctl requires the simulator's developer tools.")
         }
         return .live(device: simulator, xcodeURL: url)
     }
@@ -103,7 +103,7 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         guard tool == .guestSettings else { return arguments }
         guard let helper = Bundle.main.url(forResource: "NeoSimulatorGuestSettings", withExtension: nil),
               FileManager.default.isExecutableFile(atPath: helper.path) else {
-            throw CLIError.unavailable("guest-settings-helper", "The app's guest settings helper is unavailable.")
+            throw DeviceDomainError.unavailable("guest-settings-helper", "The app's guest settings helper is unavailable.")
         }
         return ["spawn", arguments[0], helper.path] + arguments.dropFirst()
     }
@@ -117,7 +117,7 @@ package struct LiveDeviceStateSource: DeviceStateSource {
             let result: CommandOutput
             if tool != .devicectl {
                 guard case .simulator(let simulator) = device, let xcodeURL else {
-                    throw CLIError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
+                    throw DeviceDomainError.configuration("device-setting-source", "simctl requires a simulator destination and its developer tools.")
                 }
                 result = try await SystemCommandRunner().run(.simctl(
                     xcodeURL: xcodeURL, arguments: try settingsArguments(tool, arguments), deviceSetPath: simulator.deviceSetPath, policy: .cancellable))
@@ -125,7 +125,7 @@ package struct LiveDeviceStateSource: DeviceStateSource {
                 result = try await SystemCommandRunner().run(.devicectl(xcodeURL: xcodeURL, arguments: arguments, policy: .cancellable))
             }
             guard result.terminationStatus == 0 || (tool == .guestSettings && !result.stdout.isEmpty) else {
-                throw CLIError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
+                throw DeviceDomainError.io("device-setting", result.stderrText.isEmpty ? result.stdoutText : result.stderrText)
             }
             return result.stdout
         }, readGuest: { group in
@@ -147,11 +147,11 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         }
         if case .simulator = device, let audioRoute {
             guard let defaults = HostPreferences.deviceSettingsDefaults else {
-                throw CLIError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
+                throw DeviceDomainError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
             }
             defaults.set(audioRoute.route, forKey: "DeviceAudioRoute.\(identifier).\(audioRoute.scope)")
             guard defaults.synchronize() else {
-                throw CLIError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
+                throw DeviceDomainError.io("device-audio-save", "The audio route was applied, but could not be saved for the next connection.")
             }
         }
         let preset: [String: Any]?
@@ -163,11 +163,11 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         }
         if let preset {
             guard let defaults = HostPreferences.deviceSettingsDefaults else {
-                throw CLIError.io("device-location-save", "The location was applied, but its saved selection could not be updated.")
+                throw DeviceDomainError.io("device-location-save", "The location was applied, but its saved selection could not be updated.")
             }
             defaults.set(preset, forKey: "DeviceLocationPreset.\(identifier)")
             guard defaults.synchronize() else {
-                throw CLIError.io("device-location-save", "The location was applied, but its saved selection could not be updated.")
+                throw DeviceDomainError.io("device-location-save", "The location was applied, but its saved selection could not be updated.")
             }
             if case .simulator(let simulator) = device {
                 DistributedNotificationCenter.default().postNotificationName(

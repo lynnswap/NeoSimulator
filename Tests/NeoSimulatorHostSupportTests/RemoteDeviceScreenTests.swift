@@ -1,16 +1,18 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
+import ABIBridge
 import AppKit
 import Carbon
 import CoreVideo
 import ImageIO
-import Metal
-import Synchronization
-import UniformTypeIdentifiers
-import Testing
 import IOKit
+import Metal
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorPresentationAdapters
+import Synchronization
+import Testing
+import UniformTypeIdentifiers
 import XPC
-import ABIBridge
 
 @MainActor
 @Suite
@@ -202,7 +204,7 @@ struct RemoteDeviceScreenTests {
             source.malformedSnapshot = true
             source.events.yield([.keyboard])
         }
-        #expect((error as? CLIError)?.identifier == "remote-input-snapshot" && session.state == .failed)
+        #expect((error as? DeviceIOError)?.identifier == "remote-input-snapshot" && session.state == .failed)
         session.onStateChange = nil
         try await session.stop()
         #expect(source.finished)
@@ -274,7 +276,7 @@ struct RemoteDeviceScreenTests {
         do {
             _ = try await capture.capture { capture.receive(Data([0, 1])) }
             Issue.record("Invalid image data was accepted")
-        } catch { #expect((error as? CLIError)?.identifier == "remote-screen-image") }
+        } catch { #expect((error as? RemoteScreenError)?.identifier == "remote-screen-image") }
 
         let interrupted = RemoteScreenFrameCapture(scheduleTimeout: noDeadline)
         let waiting = Task { try await interrupted.capture { interrupted.fail(ScreenFixtureError.stream) } }
@@ -387,12 +389,12 @@ struct RemoteDeviceScreenTests {
         let expire = try #require(deadline)
         expire()
         do { _ = try await pending.value; Issue.record("A missing frame never timed out") }
-        catch { #expect((error as? CLIError)?.identifier == "remote-screen-capture-timeout") }
+        catch { #expect((error as? RemoteScreenError)?.identifier == "remote-screen-capture-timeout") }
         capture.receive(Data())
         do {
             _ = try await capture.capture { sends += 1 }
             Issue.record("A late untagged reply could be reused after a timeout")
-        } catch { #expect((error as? CLIError)?.identifier == "remote-screen-capture-reconnect") }
+        } catch { #expect((error as? RemoteScreenError)?.identifier == "remote-screen-capture-reconnect") }
         #expect(sends == 1)
     }
 
@@ -516,7 +518,7 @@ struct RemoteDeviceScreenTests {
         layer.framebufferOnly = false
         let stream = try RemoteScreenCaptureStream(target: .init(layer: layer), device: gpu)
         var events = stream.events.makeAsyncIterator()
-        await #expect(throws: CLIError.self) { try await stream.snapshot() }
+        await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
         await stream.receive(try capturedFrame(width: 4, height: 2, bgra: [0x10, 0x20, 0x30, 0xFF]))
         guard case .frameSize(let size)? = await events.next() else { Issue.record("The first frame was not reported"); return }
         #expect(size == CGSize(width: 4, height: 2))
@@ -528,7 +530,7 @@ struct RemoteDeviceScreenTests {
         #expect(image.width == 4 && image.height == 2 && Array(pixels.prefix(3)) == [0x40, 0x50, 0x60])
         try await stream.stop()
         await stream.receive(try capturedFrame(width: 8, height: 2, bgra: [0, 0, 0, 0xFF]))
-        await #expect(throws: CLIError.self) { try await stream.snapshot() }
+        await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
         // A failure, or the late frame's new size, would be an event before the stream ended.
         #expect(await events.next() == nil)
 
@@ -536,8 +538,8 @@ struct RemoteDeviceScreenTests {
         var failures = copying.events.makeAsyncIterator()
         await copying.receive(try capturedFrame(width: 4, height: 2, bgra: [0, 0, 0, 0xFF], ioSurface: false))
         guard case .failure(let error)? = await failures.next() else { Issue.record("A CPU-only frame was accepted"); return }
-        #expect((error as? CLIError)?.identifier == "remote-screen-frame-surface")
-        await #expect(throws: CLIError.self) { try await copying.snapshot() }
+        #expect((error as? RemoteScreenError)?.identifier == "remote-screen-frame-surface")
+        await #expect(throws: RemoteScreenError.self) { try await copying.snapshot() }
         try await copying.stop()
     }
 
@@ -560,7 +562,7 @@ struct RemoteDeviceScreenTests {
         do { try await start.value; Issue.record("The stop did not end the start") }
         catch { #expect(error is CancellationError) }
         #expect(await events.next() == nil)
-        await #expect(throws: CLIError.self) { try await stream.snapshot() }
+        await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
         #expect(session.entered == ["open"])
         session.release("open")
         await session.untilEntered("close")
@@ -604,10 +606,10 @@ struct RemoteDeviceScreenTests {
                                                    stopLimit: .milliseconds(50))
         try await stream.start(sourceID: "fixture")
         do { try await stream.stop(); Issue.record("The held session was not reported") }
-        catch { #expect((error as? CLIError)?.identifier == "remote-screen-capture-stop") }
+        catch { #expect((error as? RemoteScreenError)?.identifier == "remote-screen-capture-stop") }
         #expect(session.entered == ["open", "close"])
         // Asking again waits for the same stop, and it does not close twice.
-        await #expect(throws: CLIError.self) { try await stream.stop() }
+        await #expect(throws: RemoteScreenError.self) { try await stream.stop() }
         session.release("close")
         await session.untilLeft("close")
         try await stream.stop()
@@ -645,10 +647,10 @@ struct RemoteDeviceScreenTests {
         #expect(CFGetRetainCount(first) > retainedByTest)
 
         do { try await stream.stop(); Issue.record("The held GPU work was not reported") }
-        catch { #expect((error as? CLIError)?.identifier == "remote-screen-capture-stop") }
+        catch { #expect((error as? RemoteScreenError)?.identifier == "remote-screen-capture-stop") }
         // The stop gave up waiting but not the frame, and its queue still answers.
         await stream.acceptDrawableSize(size)
-        await #expect(throws: CLIError.self) { try await stream.snapshot() }
+        await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
         #expect(CFGetRetainCount(first) > retainedByTest)
         #expect(submissions.withLock { $0 } == RemoteScreenCaptureStream.maximumFramesInFlight)
 
@@ -778,15 +780,15 @@ struct RemoteDeviceScreenTests {
         try await session.start()
         await wait(session) { session.canResizeApp }
         try await session.startRecording()
-        await #expect(throws: CLIError.self) { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
+        await #expect(throws: RemoteScreenError.self) { try await session.startAppResize(size: CGSize(width: 400, height: 600)) }
         #expect(!primary.closed && handle.stops == 0)
         try await session.stopRecording()
         session.discardCompletedRecording()
         try await session.startAppResize(size: CGSize(width: 400, height: 600))
-        await #expect(throws: CLIError.self) { try await session.startRecording(displayUniqueID: "another-display") }
+        await #expect(throws: RemoteScreenError.self) { try await session.startRecording(displayUniqueID: "another-display") }
         try await session.startRecording()
         #expect(dedicated.recordedDisplay == resize.assertion.displayUniqueID && !session.canResizeApp)
-        await #expect(throws: CLIError.self) { try await session.stopAppResize() }
+        await #expect(throws: RemoteScreenError.self) { try await session.stopAppResize() }
         #expect(!dedicated.closed && handle.stops == 1)
         handle.failStop = true
         let drain = ScreenFixtureGate()
@@ -1142,14 +1144,14 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test func resizeGeometryBindingsPrepareWithoutADeviceOrAssertion() async throws {
-        try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
+        try await CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let bindings = try await CoreDeviceAppResizeTransport.Bindings(runtime: .shared)
         _ = try await CoreDeviceAppResizeTransport.GeometryBindings(type: bindings.sceneType, abis: bindings.abis)
     }
 
     @Test(.timeLimit(.minutes(1)))
     func pasteboardBindingsCaptureWriteAndObserveMacPasteboardsWithoutADevice() async throws {
-        try CoreDeviceRemoteScreenDevice.load(MacHIDServiceLookup.coreDeviceUtilitiesPath)
+        try await CoreDeviceRemoteScreenDevice.load(MacHIDServiceLookup.coreDeviceUtilitiesPath)
         let bindings = try await CoreDevicePasteboardTransport.Bindings(runtime: .shared)
         let source = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
         let destination = NSPasteboard(name: NSPasteboard.Name("dev.lynnswap.NeoSimulatorTests.\(UUID().uuidString)"))
@@ -1220,7 +1222,7 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test func nativeTouchscreenDescriptorsPreserveANonLegacyDisplayIdentity() async throws {
-        try CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
+        try await CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let runtime = ABIRuntime.shared
         let descriptor = try await CoreDeviceHIDService.touchscreenDescriptor(displayID: 0x35, uniqueID: "resized-app-display", runtime: runtime)
         let descriptorType = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDServiceDescriptor")))
@@ -1242,8 +1244,8 @@ struct RemoteDeviceScreenTests {
         let runtime = ABIRuntime.shared
         let systemURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHID.framework/Versions/A/UniversalHID")
         let coreDeviceURL = URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Frameworks/UniversalHID.framework/Versions/A/UniversalHID")
-        try CoreDeviceRemoteScreenDevice.load(systemURL.path)
-        try CoreDeviceRemoteScreenDevice.load(coreDeviceURL.path)
+        try await CoreDeviceRemoteScreenDevice.load(systemURL.path)
+        try await CoreDeviceRemoteScreenDevice.load(coreDeviceURL.path)
         let systemImage = try #require(runtime.resolveImagesAndWait(matching: .path(systemURL)).first)
         let image = try #require(runtime.resolveImagesAndWait(matching: .path(coreDeviceURL)).first)
         try #require(image != systemImage)
@@ -1415,7 +1417,7 @@ struct RemoteDeviceScreenTests {
         await preparing.wait()
         gestures.discardServices()
         preparing.resume()
-        try await #require(throws: CLIError.self) { try await stale.value }
+        try await #require(throws: RemoteScreenError.self) { try await stale.value }
         // A service that the device invalidates while it is created is not used; the trackpad's next pinch creates another.
         let invalidating = ScreenFixtureGate()
         transport.connecting = invalidating
@@ -1423,7 +1425,7 @@ struct RemoteDeviceScreenTests {
         await invalidating.wait()
         gestures.discardServices()
         invalidating.resume()
-        await #expect(throws: CLIError.self) { try await invalidated.value }
+        await #expect(throws: RemoteScreenError.self) { try await invalidated.value }
         transport.connecting = nil
         try await gestures.send(trackpadPinch(.began, sender: 0xA))
         #expect(transport.services.map(\.reports) == [0, 1])
@@ -1435,11 +1437,11 @@ struct RemoteDeviceScreenTests {
         transport.services[1].removeFailures = 1
         let created = Task { try await gestures.send(trackpadPinch(.began, sender: 0xB)) }
         await stopping.wait()
-        await #expect(throws: CLIError.self) { try await gestures.stop() }
+        await #expect(throws: RemoteScreenError.self) { try await gestures.stop() }
         stopping.resume()
-        await #expect(throws: CLIError.self) { try await created.value }
+        await #expect(throws: RemoteScreenError.self) { try await created.value }
         try await gestures.stop()
-        await #expect(throws: CLIError.self) { try await gestures.send(trackpadPinch(.began, sender: 0xA)) }
+        await #expect(throws: RemoteScreenError.self) { try await gestures.send(trackpadPinch(.began, sender: 0xA)) }
         #expect(transport.services.map(\.sender) == [0xA, 0xA, 0xB] && transport.services.map(\.reports) == [0, 1, 0])
         #expect(transport.services.dropFirst().map(\.removes) == [2, 1])
     }
@@ -1535,7 +1537,7 @@ struct RemoteDeviceScreenTests {
         // Stopping waits for the accepted input before it releases what the device holds. Input after it is not sent.
         let stopping = Task.immediate { try await input.stop() }
         input.sendTouch(at: CGPoint(x: 0.5, y: 0.5), secondPoint: nil, phase: .began, edge: .none)
-        #expect(throws: CLIError.self) { try input.sendButton(usagePage: 0x0c, usage: 0x40, state: .down) { _ in } }
+        #expect(throws: RemoteScreenError.self) { try input.sendButton(usagePage: 0x0c, usage: 0x40, state: .down) { _ in } }
         #expect(transport.releases == 0)
         sending.resume()
         try await stopping.value
@@ -1589,7 +1591,7 @@ struct RemoteDeviceScreenTests {
             SimulatorGuestHID(codec: codec) { name in
                 if lookUpFailures > 0 {
                     lookUpFailures -= 1
-                    throw CLIError.unavailable("fixture-lookup", "The guest is not booted.")
+                    throw RemoteScreenError.unavailable("fixture-lookup", "The guest is not booted.")
                 }
                 return try peers.connect(name)
             }
@@ -1597,7 +1599,7 @@ struct RemoteDeviceScreenTests {
         let home = (page: 0x0c, usage: 0x40), lock = (page: 0x0c, usage: 0x30)
 
         // The press that could not connect receives the guest's error. The press after it tries again.
-        await #expect(throws: CLIError.unavailable("fixture-lookup", "The guest is not booted.")) {
+        await #expect(throws: RemoteScreenError.unavailable("fixture-lookup", "The guest is not booted.")) {
             try await input.send(.button(home.page, home.usage, .down))
         }
         #expect(peers.lookUps.isEmpty)
@@ -1665,6 +1667,96 @@ struct RemoteDeviceScreenTests {
         #expect(messages.count == expected.count && zip(messages, expected).allSatisfy { xpc_equal($0, $1) })
     }
 
+    /// The guest's route through its own ports, on a device's real channel. A lookup that the channel holds fails the
+    /// attempt, a retry meanwhile is refused unsent, and the channel saying the call returned starts the one attempt that connects.
+    @Test(.timeLimit(.minutes(1)))
+    func aHeldLookUpFailsTheRouteWithoutBeingSentAgainAndTheChannelsRecoveryConnectsIt() async throws {
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: .shared)
+        let channel = SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil)))
+        let held = DispatchSemaphore(value: 0)
+        defer { held.signal() }
+        let calls = Mutex(0)
+        let guest = SimulatorGuestHID(codec: codec) { name in
+            // The first call blocks, as a guest that stopped answering blocks the device's lookup.
+            try await channel.read("look up \(name)", limit: .milliseconds(50)) {
+                if calls.withLock({ $0 += 1; return $0 }) == 1 { held.wait() }
+            }
+            return try peers.connect(name)
+        }
+        let services = DeviceOptionalServices()
+        var activated = 0
+        let activation = NativeInputActivation(services: services, connect: {
+            NativeInputServices(keyboard: try await NativeDeviceKeyboard.connect(guest: guest),
+                                trackpad: try await NativeDeviceTrackpad.connect(guest: guest))
+        }, activate: { _ in activated += 1 }, healthChanges: { channel.healthChanges() })
+        defer { activation.cancel() }
+        func failure() -> DeviceOperationFailure? { services.input.failure as? DeviceOperationFailure }
+
+        activation.start()
+        try await waitUntil { failure() != nil }
+        let universalHID = CoreDeviceScreenInput.universalHIDFeature
+        #expect(failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50)))
+        #expect(peers.lookUps.isEmpty)
+
+        services.retryInput()
+        try await waitUntil { !(failure() == nil || failure() == .noAnswer(operation: "look up \(universalHID)", limit: .milliseconds(50))) }
+        #expect(failure() == .notSent(operation: "look up \(universalHID)", heldBy: "look up \(universalHID)"))
+        #expect(calls.withLock { $0 } == 1 && peers.lookUps.isEmpty && activated == 0)
+
+        held.signal()
+        try await waitUntil { activated != 0 }
+        #expect(calls.withLock { $0 } == 3)
+        #expect(peers.lookUps == [universalHID, universalHID])
+    }
+
+    /// What connected but no display took up belongs to nobody else, so it stops through its own ports however late it
+    /// answered. What could not stop is retried by the connection's stop, and the attempt never starts again.
+    @Test(.timeLimit(.minutes(1)))
+    func inputThatNoDisplayTookUpStopsThroughItsOwnPorts() async throws {
+        let transport = KeyboardFixtureTransport()
+        let keyboard = NativeDeviceKeyboard(transport: transport)
+        keyboard.handle(try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 1, windowNumber: 0,
+            context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)))
+        let service = try #require(transport.keyboards.first)
+        service.stopFailures = 1
+        var answer: CheckedContinuation<NativeInputServices?, any Error>?
+        var connects = 0
+        var activated = 0
+        let services = DeviceOptionalServices()
+        let activation = NativeInputActivation(services: services, connect: {
+            connects += 1
+            return try await withCheckedThrowingContinuation { answer = $0 }
+        }, activate: { _ in activated += 1 })
+        activation.start()
+        try await waitUntil { answer != nil }
+
+        activation.cancel()
+        #expect(await !activation.ends(before: ContinuousClock.now))
+        nonisolated(unsafe) let late: NativeInputServices? = NativeInputServices(keyboard: keyboard)
+        answer?.resume(returning: late)
+        #expect(await activation.ends(before: ContinuousClock.now + .seconds(30)))
+        #expect(activated == 0 && service.stops == 1)
+        activation.start()
+        #expect(connects == 1)
+
+        try await activation.stopUnactivated()
+        #expect(service.stops == 2)
+        try await activation.stopUnactivated()
+        #expect(service.stops == 2)
+
+        // A display that could not take them up leaves them here too, and that is the route's failure.
+        let refused = NativeDeviceKeyboard(transport: KeyboardFixtureTransport())
+        let display = NSObject()
+        let refusing = DeviceOptionalServices()
+        let failing = NativeInputActivation(services: refusing, connect: { NativeInputServices(keyboard: refused) },
+                                            activate: { _ in throw ScreenFixtureError.stream })
+        failing.start()
+        try await waitUntil { refusing.input.failure != nil }
+        refused.setEnabled(true, for: display)
+        #expect(!refused.isEnabled(for: display))
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func guestOrientationReadsAndRotatesWithoutCoreDeviceDiscoveryAndPreservesGuestErrors() async throws {
         let peers = GuestHIDPeerFixture()
@@ -1689,14 +1781,14 @@ struct RemoteDeviceScreenTests {
             xpc_dictionary_set_bool(reply, "currentDeviceOrientationLocked", false)
         }
         let orientation = try await GuestDeviceOrientation(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
-        let initial = try await orientation.read()
+        let initial = try OrientationReading(await orientation.read())
         #expect(initial.physical == .portrait && initial.displayAngle == 0)
-        let rotated = try await orientation.rotate(left: false)
+        let rotated = try OrientationReading(await orientation.rotate(left: false))
         #expect(rotated.physical == .landscapeRight && rotated.displayAngle == -90)
-        let flat = try await orientation.set(.faceUp)
+        let flat = try OrientationReading(await orientation.set(named: "faceUp"))
         #expect(flat.physical == .faceUp && flat.displayAngle == -90)
         peers.reply = { _, reply in try errors.refuse(reply, with: refusal) }
-        await #expect { try await orientation.set(.portrait) } throws: { ($0 as NSError) == refusal }
+        await #expect { try await orientation.set(named: "portrait") } throws: { ($0 as NSError) == refusal }
         #expect(peers.lookUps == [GuestDeviceOrientation.feature])
     }
 
@@ -1713,7 +1805,7 @@ struct RemoteDeviceScreenTests {
             xpc_dictionary_set_string(reply, "currentDeviceNonFlatOrientation", "portrait")
             xpc_dictionary_set_bool(reply, "currentDeviceOrientationLocked", false)
         }
-        #expect(try await orientation.read().physical == .portrait)
+        #expect(try await orientation.read().physical == "portrait")
         #expect(peers.lookUps == [GuestDeviceOrientation.feature, GuestDeviceOrientation.feature])
     }
 
@@ -1747,7 +1839,8 @@ struct RemoteDeviceScreenTests {
                 let native = try await settings.namedValue("DeviceColorFilter.FilterType", member: filter.rawValue)
                 name = try #require((native as? [String: Any])?["name"] as? String)
             }
-            try await settings.setColorFilter(filter, intensity: intensity)
+            try await settings.setColorFilter(named: filter == .none ? nil : filter.rawValue,
+                                              takesIntensity: filter != .none && filter != .grayscale, intensity: intensity)
             let read = try await settings.get("GetColorFilterActionDeclaration")["colorFilter"]
             #expect(read?["enabled"]?.boolean == (filter != .none))
             #expect(read?["filterType"]?["name"]?.string == name)
@@ -1963,7 +2056,7 @@ struct RemoteDeviceScreenTests {
         await #expect(throws: ScreenFixtureError.stream) { try await service.stop() }
         #expect(service.isRemoved && removes == 2 && resets == 2)
         let report = try await CoreDeviceDigitizerReports(runtime: .shared).make(point: .zero, second: nil, phase: .began, edge: .none)
-        #expect(throws: CLIError.self) { try service.send(report) }
+        #expect(throws: DeviceIOError.self) { try service.send(report) }
         try await service.stop()
         #expect(removes == 2 && resets == 2)
     }
@@ -2065,7 +2158,7 @@ struct RemoteDeviceScreenTests {
         recreated.stopFailures = 1
         let released = try key(.keyUp, sender: 0xB)
         keyboard.handle(released)
-        await #expect(throws: CLIError.self) { try await keyboard.removeServices() }
+        await #expect(throws: RemoteScreenError.self) { try await keyboard.removeServices() }
         try await keyboard.stop()
         #expect(transport.keyboards.map(\.sender) == [nil, 0xA, 0xB, 0xB])
         #expect(recreated.events.map(ObjectIdentifier.init) == [ObjectIdentifier(released)] && recreated.stops == 2)

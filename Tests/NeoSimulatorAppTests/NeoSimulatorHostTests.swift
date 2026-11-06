@@ -1,13 +1,16 @@
-import NeoSimulatorDeviceIO
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
-@testable import NeoSimulatorApp
-@testable import NeoSimulatorService
 import ABIBridge
 import AppKit
 import Darwin
+import IOKit.hidsystem
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorPresentationAdapters
+@testable import NeoSimulatorService
+@testable import NeoSimulatorUI
 import Observation
-import XCTest
+import Synchronization
 import Testing
 import XCTest
 import Synchronization
@@ -27,7 +30,7 @@ func wait(timeout: Duration = .seconds(2), sourceLocation: SourceLocation = #_so
 }
 
 @MainActor
-func loadTestRuntime() async throws -> SimulatorRuntime {
+func loadTestRuntime() async throws -> SimulatorPresentationRuntime {
     let selection = Process()
     let output = Pipe()
     selection.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
@@ -39,7 +42,7 @@ func loadTestRuntime() async throws -> SimulatorRuntime {
     let developerPath = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
         ?? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     let xcode = URL(fileURLWithPath: developerPath).deletingLastPathComponent().deletingLastPathComponent()
-    return try await SimulatorRuntime.load(xcodeURL: xcode)
+    return try await SimulatorPresentationRuntime.load(xcodeURL: xcode)
 }
 
 @MainActor
@@ -47,6 +50,27 @@ func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostNa
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
+    @Test func simulatorKeyboardKeepsCapturedReleasesWithTheirOriginalInput() throws {
+        _ = NSApplication.shared
+        let view = InputView()
+        let input = SimulatorKeyboardInput()
+        input.start(for: view)
+        defer { input.stop() }
+        func event(_ type: NSEvent.EventType, _ code: UInt16) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, characters: "a", charactersIgnoringModifiers: "a",
+                isARepeat: false, keyCode: code))
+        }
+
+        // Capture Keyboard submits directly to the input view, bypassing application event monitors.
+        input.send(try event(.keyDown, 0), to: view)
+        input.send(try event(.keyDown, 1), to: view)
+        input.send(try event(.keyUp, 0), to: view)
+        #expect(input.hasPressedKeys)
+        input.stop()
+        #expect(!input.hasPressedKeys && view.keyUps.map(\.keyCode) == [0, 1])
+    }
+
     @MainActor private final class RemoteTarget {
         weak var controller: DeviceWindowController?
     }
@@ -2885,7 +2909,7 @@ struct InputFocusTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let lane = HeldCaptureLane(passing: 1)
         let store = RecordingStore(lane: lane, finishLimit: .milliseconds(50))
-        let host = try SimulatorScreenHost(runtime: try await makeRuntime(), conflicts: HostConflictMonitor(), inProcess: true,
+        let host = try SimulatorScreenHost(runtime: try await makeRuntime().io, conflicts: HostConflictMonitor(), inProcess: true,
                                            recordings: store)
         var reported: [String] = []
         host.onError = { reported.append($0.localizedDescription) }
@@ -3089,7 +3113,7 @@ struct InputFocusTests {
             window.setContentSize(size)
             controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
             let content = try #require(window.contentView)
-            let display = controller.session.display
+            let display = controller.display
             let frame = display.view.convert(display.view.bounds, to: content)
             #expect(frame.minX >= 0)
             #expect(frame.minY >= 0)
@@ -3397,18 +3421,18 @@ struct InputFocusTests {
         #expect(runtime === joined)
 
         let otherToolkit = runtime.uiXcodeURL.appendingPathComponent("DifferentXcode.app")
-        await #expect(throws: SimulatorError.self) {
-            try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: otherToolkit)
+        await #expect(throws: DeviceIOError.self) {
+            try await SimulatorPresentationRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: otherToolkit)
         }
-        let retried = try await SimulatorRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: runtime.uiXcodeURL)
+        let retried = try await SimulatorPresentationRuntime.load(xcodeURL: runtime.xcodeURL, uiXcodeURL: runtime.uiXcodeURL)
         #expect(retried.pasteboard.serviceName == "com.apple.CoreSimulator.SimPasteboardInterface")
     }
 
     @Test(.timeLimit(.minutes(1)))
     func nativeDeviceSetDoesNotRefreshTheCatalogForBootProgressOrDeviceIO() async throws {
         let runtime = try await makeRuntime()
-        let interface = runtime.coreSimulator
-        let set = runtime.openDeviceSet()
+        let interface = runtime.io.coreSimulator
+        let set = runtime.io.openDeviceSet()
         let context = try unsafe interface.sharedContext.unsafeInvoke(on: interface.serviceClass as AnyObject,
             runtime.xcodeURL.appendingPathComponent("Contents/Developer").path)
         let nativeSet = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
@@ -3435,8 +3459,8 @@ struct InputFocusTests {
     @Test(.timeLimit(.minutes(1)))
     func nativeDeviceSetCapturesItsDevicesAndCatalogOnItsWorker() async throws {
         let runtime = try await makeRuntime()
-        let set = runtime.openDeviceSet()
-        #expect(runtime.openDeviceSet() === set)
+        let set = runtime.io.openDeviceSet()
+        #expect(runtime.io.openDeviceSet() === set)
         #expect(try await !set.resolvedPath().isEmpty)
         let devices = try await set.refresh()
         #expect(set.devices.map(\.identifier) == devices.map(\.identifier))
@@ -3452,7 +3476,7 @@ struct InputFocusTests {
     @Test(.timeLimit(.minutes(1)))
     func aDeviceClientIsSharedUntilItsOwnConnectionEnds() async throws {
         let runtime = try await makeRuntime()
-        let set = runtime.openDeviceSet()
+        let set = runtime.io.openDeviceSet()
         #expect(try await set.client(withIdentifier: UUID().uuidString) == nil)
         #expect(try await set.client(withIdentifier: "not a UDID") == nil)
         guard let listed = try await set.refresh().first else { return }
@@ -3487,7 +3511,7 @@ struct InputFocusTests {
         do {
             _ = try await device?.currentState()
             Issue.record("A request went to a client that had ended.")
-        } catch SimulatorError.unavailable(_) {}
+        } catch let failure as DeviceIOError where failure.category == .unavailable {}
         // What still holds the ended device keeps its context and set, which SimulatorKit needs while it has the device.
         let release = Task { for await _ in released {} }
         let releasedWhileHeld = await release.ends(before: .now + .milliseconds(300))
@@ -3538,14 +3562,14 @@ struct InputFocusTests {
         defer { HostPreferences.defaults.removeObject(forKey: HostPreferences.testingDeviceSetPath) }
 
         // A raw call that outlives its deadline holds the set's worker, as a native call does.
-        let channel = runtime.openDeviceSet(at: directory.path).channel
+        let channel = runtime.io.openDeviceSet(at: directory.path).channel
         let release = DispatchSemaphore(value: 0)
         defer { release.signal() }
         await #expect(throws: DeviceOperationFailure.noAnswer(operation: "hold the set", limit: .milliseconds(20))) {
             try await channel.read("hold the set", limit: .milliseconds(20)) { release.wait() }
         }
 
-        let host = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), headless: true, inProcess: true)
+        let host = try SimulatorScreenHost(runtime: runtime.io, conflicts: HostConflictMonitor(), headless: true, inProcess: true)
         let scans = AsyncStream<Void>.makeStream()
         host.onOwnershipChange = { _ in scans.continuation.yield() }
         try await host.start(attachingBootedDevices: false)
@@ -3576,8 +3600,8 @@ struct InputFocusTests {
         }
         do {
             let identifier = UUID().uuidString
-            let set = runtime.openDeviceSet(at: directory.path, listing: [identifier])
-            let host = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), headless: true, inProcess: true)
+            let set = runtime.io.openDeviceSet(at: directory.path, listing: [identifier])
+            let host = try SimulatorScreenHost(runtime: runtime.io, conflicts: HostConflictMonitor(), headless: true, inProcess: true)
             try await host.start(attachingBootedDevices: false)
             #expect(host.isObservingTestingSet)
             return (host, SimulatorDeviceIdentifier(identifier, deviceSetPath: directory.path), set.channel, cleanUp)
@@ -4371,6 +4395,9 @@ struct InputFocusTests {
         // digitizer's own delegate.
         var received: [NativeDigitizerTouch] = []
         let touches = try await NativeDigitizerTouches(digitizer: input, interface: interface) { received.append($0) }
+        // Preparing them leaves the digitizer as it was, so a touch that starts meanwhile stays with its own delegate.
+        #expect(try delegate() === ownDelegate)
+        try touches.install()
         weak let replacement = try delegate()
         #expect(replacement != nil && replacement !== ownDelegate)
         do {
@@ -5342,7 +5369,7 @@ struct InputFocusTests {
         #expect(try reading("landscapeLeft", "landscapeLeft") == (.landscapeLeft, 90))
         #expect(try reading("landscapeRight", "landscapeRight") == (.landscapeRight, -90))
         #expect(try reading("faceUp", "landscapeLeft") == (.faceUp, 90))
-        #expect(throws: SimulatorError.self) { try reading("faceDown", "faceDown") }
+        #expect(throws: DeviceDomainError.self) { try reading("faceDown", "faceDown") }
     }
 
     @Test func orientationCommandsAreShownWithDisplayRotation() throws {
@@ -7914,7 +7941,7 @@ struct InputFocusTests {
             try preferences.saveAudioRoute("Speakers", forDevice: identifier, in: .output)
         }
 
-        a.selectAudioRoute("Loopback", in: .output)
+        a.selectAudioRoute { $0.chooseAudioRoute("Loopback", in: .output) }
         #expect(preferences.values[HostPreferences.recentAudioOutputDeviceUIDs] as? [String]
             == ["Loopback", AudioRouting.systemDefault])
         #expect(ports.map(\.requests) == [["output Loopback"], ["output Loopback"]])
@@ -7924,14 +7951,14 @@ struct InputFocusTests {
         }
         #expect(preferences.recentAudioRoutes(in: .input) == [AudioRouting.systemDefault])
 
-        b.selectAudioRoute("Gone", in: .output)
+        b.selectAudioRoute { $0.chooseAudioRoute("Gone", in: .output) }
         #expect(ports.map(\.requests) == [["output Loopback"], ["output Loopback"]])
-        b.selectAudioRoute(AudioRouting.systemDefault, in: .output)
+        b.selectAudioRoute { $0.chooseAudioRoute(AudioRouting.systemDefault, in: .output) }
         #expect(ports.map(\.requests.last) == ["output \(AudioRouting.systemDefault)", "output \(AudioRouting.systemDefault)"])
         for identifier in ["A", "B"] {
             #expect(try preferences.preferredAudioRoutes(forDevice: identifier, in: .output).first == AudioRouting.systemDefault)
         }
-        for route in ["Loopback", "One", "Two", "Three", "Gone"] { a.selectAudioRoute(route, in: .input) }
+        for route in ["Loopback", "One", "Two", "Three", "Gone"] { a.selectAudioRoute { $0.chooseAudioRoute(route, in: .input) } }
         #expect(preferences.recentAudioRoutes(in: .input) == ["Gone", "Three", "Two", "One", "Loopback"])
         #expect(preferences.recentAudioRoutes(in: .output) == [AudioRouting.systemDefault, "Gone", "Loopback"])
         // Simulator.app falls back to System for empty or foreign lists.
@@ -8005,13 +8032,13 @@ struct InputFocusTests {
         controller.session.connectAudioRoutes { automatic.append($0.localizedDescription) }
         #expect(automatic == ["Could not route the audio output of Test iPhone to BlackHole 2ch: port failed"])
         #expect(window.attachedSheet == nil)
-        controller.selectAudioRoute("Speakers", in: .output)
+        controller.selectAudioRoute { $0.chooseAudioRoute("Speakers", in: .output) }
         #expect(port.requests == ["output Loopback", "output Speakers"])
         let sheet = try #require(window.attachedSheet)
         window.endSheet(sheet)
         port.routeError = nil
         port.refusal = SimulatorError.operation("refused")
-        controller.selectAudioRoute("Loopback", in: .output)
+        controller.selectAudioRoute { $0.chooseAudioRoute("Loopback", in: .output) }
         window.endSheet(try #require(window.attachedSheet))
 
         let (unconnected, display) = try makeAudioController(nil, device: "B", preferences: MemoryPreferences())
@@ -8021,7 +8048,7 @@ struct InputFocusTests {
         unconnected.session.connectAudioRoutes { reasons.append($0.localizedDescription) }
         #expect(display.audioConnections == 1 && reasons == ["The device has no audio route port."])
         #expect(unconnected.window?.attachedSheet == nil)
-        unconnected.selectAudioRoute("Loopback", in: .input)
+        unconnected.selectAudioRoute { $0.chooseAudioRoute("Loopback", in: .input) }
         let unavailable = try #require(unconnected.window?.attachedSheet)
         #expect(texts(in: unavailable.contentView).contains(
             "Could not change the audio input of Test iPhone: The device has no audio route port."))
@@ -10742,13 +10769,704 @@ struct InputFocusTests {
         #expect(!app.items.contains { $0.title == "Display Host" })
     }
 
+    // MARK: Optional services
+
+    private func inputPlan(_ family: DeviceCapabilities.Family, _ features: Set<String>, plugin: Bool = false,
+                           deviceType: String = "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                           defaultSet: Bool = true) -> NativeInputPlan {
+        NativeInputPlan(capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
+                                                         supportsFeature: { features.contains($0) },
+                                                         hasUserInterfacePlugin: plugin),
+                        deviceTypeIdentifier: deviceType, isInDefaultSet: defaultSet)
+    }
+
+    @Test func inputRoutesFollowWhatTheDeviceIs() {
+        let keyboard = DeviceCapabilities.keyboard
+        // A phone or pad reaches the guest that owns its screen, in any device set.
+        #expect(inputPlan(.iPhone, [keyboard]) == .guest)
+        #expect(inputPlan(.iPad, [keyboard], defaultSet: false) == .guest)
+        // An independent canvas is the screen of a Duo in the default set; elsewhere CoreDevice cannot reach it.
+        #expect(inputPlan(.iPhone, [keyboard], deviceType: NativeInputPlan.duoDeviceType) == .canvas)
+        #expect(inputPlan(.iPhone, [keyboard], deviceType: NativeInputPlan.duoDeviceType, defaultSet: false) == .simulatorKit)
+        // CoreDevice lists only the default set.
+        #expect(inputPlan(.tv, [keyboard]) == .coreDevice(keyboard: true, trackpad: true, touches: false))
+        #expect(inputPlan(.tv, [keyboard], defaultSet: false) == .simulatorKit)
+        #expect(inputPlan(.iPad, []) == .coreDevice(keyboard: false, trackpad: true, touches: true))
+        // A crown or dial, and a device UI plugin's overlay, keep the pointer with SimulatorKit.
+        #expect(inputPlan(.watch, [keyboard, DeviceCapabilities.digitalCrown])
+            == .coreDevice(keyboard: true, trackpad: false, touches: false))
+        #expect(inputPlan(.watch, [DeviceCapabilities.digitalCrown]) == .simulatorKit)
+        #expect(inputPlan(.vision, [keyboard], plugin: true) == .coreDevice(keyboard: true, trackpad: false, touches: false))
+    }
+
+    /// Native input would make the guest drop SimulatorKit's touches, the only ones that carry pressure, so a 3D Touch
+    /// screen keeps SimulatorKit's input whatever else it supports.
+    @Test func touchPressureKeepsSimulatorKitInput() {
+        let pressure: Set<String> = [DeviceCapabilities.keyboard, DeviceCapabilities.touchPressure]
+        #expect(inputPlan(.iPhone, pressure) == .simulatorKit)
+        #expect(inputPlan(.iPhone, pressure, defaultSet: false) == .simulatorKit)
+        #expect(inputPlan(.iPad, [DeviceCapabilities.touchPressure]) == .simulatorKit)
+    }
+
+    @MainActor
+    private final class Counter {
+        var value: Int
+        init(_ value: Int = 0) { self.value = value }
+    }
+
+    /// One call that stays open until a test finishes it.
+    @MainActor
+    private final class HeldCalls<Value> {
+        private var held: CheckedContinuation<Value, any Error>?
+        private(set) var calls = 0
+        var isHolding: Bool { held != nil }
+        func call() async throws -> Value {
+            calls += 1
+            return try await withCheckedThrowingContinuation { held = $0 }
+        }
+        func finish(_ result: Result<Value, any Error>) {
+            let held = held
+            self.held = nil
+            // The waiting call shares this test's actor.
+            nonisolated(unsafe) let result = result
+            held?.resume(with: result)
+        }
+    }
+
+    private func isPending(_ readiness: SimulatorServiceReadiness) -> Bool { if case .pending = readiness { true } else { false } }
+    private func isReady(_ readiness: SimulatorServiceReadiness) -> Bool { if case .ready = readiness { true } else { false } }
+    private func isUnsupported(_ readiness: SimulatorServiceReadiness) -> Bool { if case .unsupported = readiness { true } else { false } }
+    private func isNotRouted(_ readiness: SimulatorServiceReadiness) -> Bool { if case .notRouted = readiness { true } else { false } }
+
+    @Test(.timeLimit(.minutes(1)))
+    func inputConnectsAfterTheDisplayAndActivatesInPlace() async throws {
+        let services = DeviceOptionalServices()
+        let connecting = HeldCalls<NativeInputServices?>()
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
+                                               activate: { _ in activations.value += 1 })
+        #expect(isPending(services.input))
+        activation.start()
+        try await wait { connecting.isHolding }
+        // Nothing the display does waits on this, and starting again joins it.
+        #expect(isPending(services.input) && activations.value == 0)
+        activation.start()
+        services.retryInput()
+        #expect(connecting.calls == 1)
+        connecting.finish(.success(NativeInputServices()))
+        try await wait { isReady(services.input) }
+        #expect(activations.value == 1)
+        // A ready route has nothing to retry.
+        services.retryInput()
+        #expect(connecting.calls == 1)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aDeviceWithoutTheRouteIsUnsupportedWithoutActivating() async throws {
+        let services = DeviceOptionalServices()
+        let connecting = HeldCalls<NativeInputServices?>()
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
+                                               activate: { _ in activations.value += 1 })
+        activation.start()
+        try await wait { connecting.isHolding }
+        connecting.finish(.success(nil))
+        try await wait { isUnsupported(services.input) }
+        services.retryInput()
+        #expect(activations.value == 0 && connecting.calls == 1)
+    }
+
+    /// A transport that did not answer says nothing about the device: this is neither unsupported nor another route.
+    @Test(.timeLimit(.minutes(1)))
+    func aFailedRouteStaysFailedUntilItIsRetriedOnTheSameRoute() async throws {
+        let services = DeviceOptionalServices()
+        let connecting = HeldCalls<NativeInputServices?>()
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
+                                               activate: { _ in activations.value += 1 })
+        activation.start()
+        try await wait { connecting.isHolding }
+        connecting.finish(.failure(DeviceIOError.temporary("fixture-timeout", "The guest did not answer.")))
+        try await wait { services.input.failure != nil }
+        #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-timeout")
+        #expect(activations.value == 0 && connecting.calls == 1)
+
+        services.retryInput()
+        #expect(isPending(services.input))
+        try await wait { connecting.isHolding }
+        #expect(connecting.calls == 2)
+        connecting.finish(.success(NativeInputServices()))
+        try await wait { isReady(services.input) }
+        #expect(activations.value == 1)
+    }
+
+    /// A display that could not take the services over stays on SimulatorKit, says so, and can try again.
+    @Test(.timeLimit(.minutes(1)))
+    func aFailedActivationIsTheRoutesFailure() async throws {
+        let services = DeviceOptionalServices()
+        let refuses = Counter(1)
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: { NativeInputServices() }, activate: { _ in
+            activations.value += 1
+            if refuses.value == 1 { throw DeviceIOError.unavailable("fixture-digitizer", "The digitizer has no delegate.") }
+        })
+        activation.start()
+        try await wait { services.input.failure != nil }
+        refuses.value = 0
+        services.retryInput()
+        try await wait { isReady(services.input) }
+        #expect(activations.value == 2)
+    }
+
+    /// Connecting sends the guest nothing, so what answers after the display ended is let go without being activated.
+    @Test(.timeLimit(.minutes(1)))
+    func aCancelledConnectionActivatesNothing() async throws {
+        let services = DeviceOptionalServices()
+        let connecting = HeldCalls<NativeInputServices?>()
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: { try await connecting.call() },
+                                               activate: { _ in activations.value += 1 })
+        activation.start()
+        try await wait { connecting.isHolding }
+        activation.cancel()
+        // A native call that ignores its cancellation holds its owner's wait, which stop() reports.
+        #expect(await !activation.ends(before: ContinuousClock.now))
+        connecting.finish(.success(NativeInputServices()))
+        #expect(await activation.ends(before: ContinuousClock.now + .seconds(30)))
+        #expect(activations.value == 0 && isPending(services.input))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aPasteboardFailureFallsBackToNothingAndTheNextTransferAsksAgain() async throws {
+        let services = DeviceOptionalServices()
+        let connecting = HeldCalls<(any PasteboardTransport)?>()
+        let route = SimulatorPasteboardRoute(services: services, make: { try await connecting.call() })
+        #expect(isPending(services.pasteboard))
+
+        let refused = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+        try await wait { connecting.isHolding }
+        connecting.finish(.failure(DeviceIOError.temporary("fixture-timeout", "CoreDevice did not answer.")))
+        await #expect(throws: DeviceIOError.self) { try await refused.value }
+        #expect((services.pasteboard.failure as? DeviceIOError)?.identifier == "fixture-timeout")
+
+        let transport = TestPasteboardTransport()
+        let retried = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+        try await wait { connecting.isHolding }
+        #expect(isPending(services.pasteboard) && connecting.calls == 2)
+        connecting.finish(.success(transport))
+        #expect(try await retried.value == ObjectIdentifier(transport))
+        #expect(isReady(services.pasteboard))
+        // The answer holds for the device's connection.
+        #expect(try await route.transport() === transport)
+        #expect(connecting.calls == 2)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func simPasteboardPlusServesOnlyADeviceWithoutARoutedTransport() async throws {
+        let services = DeviceOptionalServices()
+        let route = SimulatorPasteboardRoute(services: services, make: { nil })
+        #expect(try await route.transport() == nil)
+        #expect(isUnsupported(services.pasteboard))
+
+        let unrouted = DeviceOptionalServices()
+        #expect(try await SimulatorPasteboardRoute(services: unrouted, make: nil).transport() == nil)
+        #expect(isNotRouted(unrouted.pasteboard))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aCancelledPasteboardConnectionIsNotAFailure() async {
+        let services = DeviceOptionalServices()
+        let route = SimulatorPasteboardRoute(services: services, make: { throw CancellationError() })
+        await #expect(throws: CancellationError.self) { _ = try await route.transport() }
+        #expect(isPending(services.pasteboard))
+    }
+
+    /// A simulator's CoreDevice record, which a test changes as CoreDevice does.
+    @MainActor
+    private final class RecordFixture: CoreDeviceFeatureRecord {
+        var connected = false
+        var features: Set<String> = []
+        var heldConnection: HeldCalls<Bool>?
+        func isConnected() async throws -> Bool {
+            if let heldConnection { return try await heldConnection.call() }
+            return connected
+        }
+        func supports(_ feature: String) throws -> Bool { features.contains(feature) }
+    }
+
+    /// CoreDevice's list and notifications. Each stream starts with what is current, as CoreDevice's do.
+    @MainActor
+    private final class RecordSourceFixture: CoreDeviceRecordSource {
+        var current: RecordFixture?
+        var readFailure: (any Error)?
+        var heldReads: HeldCalls<RecordFixture?>?
+        private(set) var reads = 0
+        private(set) var recordFollows = 0
+        private(set) var listNotifications = 0
+        /// What each stream follows: a record, or CoreDevice's list for nil.
+        private var streams: [Int: (record: RecordFixture?, continuation: AsyncThrowingStream<Void, any Error>.Continuation)] = [:]
+        private var nextStream = 0
+        var followers: Int { streams.count }
+        func followers(of record: RecordFixture?) -> Int { streams.values.count { $0.record === record } }
+
+        func record() async throws -> RecordFixture? {
+            reads += 1
+            if let heldReads { return try await heldReads.call() }
+            if let readFailure { throw readFailure }
+            return current
+        }
+        func followInventory(_ changed: @escaping @MainActor () -> Void) async throws { try await follow(nil, changed) }
+        func follow(_ record: RecordFixture, _ changed: @escaping @MainActor () -> Void) async throws {
+            recordFollows += 1
+            try await follow(.some(record), changed)
+        }
+        func change() { for stream in streams.values { stream.continuation.yield() } }
+        func change(of record: RecordFixture?) { for stream in streams.values where stream.record === record { stream.continuation.yield() } }
+        func endStreams(throwing error: any Error) { for stream in streams.values { stream.continuation.finish(throwing: error) } }
+        /// Changes CoreDevice's list, and returns once what follows the list has heard of it.
+        func changeList(to record: RecordFixture?) async throws {
+            current = record
+            let heard = listNotifications
+            change(of: nil)
+            try await wait { listNotifications > heard }
+        }
+
+        private func follow(_ record: RecordFixture?, _ changed: @MainActor () -> Void) async throws {
+            let (stream, continuation) = AsyncThrowingStream.makeStream(of: Void.self)
+            let number = nextStream
+            nextStream += 1
+            streams[number] = (record, continuation)
+            defer { streams[number] = nil }
+            continuation.yield()
+            for try await _ in stream {
+                changed()
+                if record == nil { listNotifications += 1 }
+            }
+        }
+    }
+
+    /// The display is open before CoreDevice lists the device. Neither no record nor a record that is not connected says
+    /// what the device has, and the input CoreDevice then offers arrives on that same display, with nothing left followed.
+    @Test(.timeLimit(.minutes(1)))
+    func delayedDiscoveryGivesTheChosenRouteOnTheOpenDisplay() async throws {
+        let display = TestDisplay()
+        let session = try makeSession(display)
+        let services = session.optionalServices
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        discovery.onAwaitingChange = { services.setAwaitingDeviceRecord($0) }
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: {
+            guard case .supported = try await discovery.answer(for: ["input"]) else { return nil }
+            return NativeInputServices()
+        }, activate: { _ in activations.value += 1 })
+        activation.start()
+        try await wait { source.followers == 1 }
+        #expect(isPending(services.input) && services.isAwaitingDeviceRecord)
+
+        let record = RecordFixture()
+        source.current = record
+        source.change()
+        try await wait { source.followers == 2 }
+        #expect(isPending(services.input) && activations.value == 0)
+
+        record.connected = true
+        record.features = ["input"]
+        source.change()
+        try await wait { isReady(services.input) && source.followers == 0 }
+        #expect(activations.value == 1 && !services.isAwaitingDeviceRecord)
+        #expect(session.display === display)
+    }
+
+    /// CoreDevice's list replaces the record that a wait follows, and only the new record's own notification says when it
+    /// connects. A read returns a new value of an unchanged record too, which is no reason to follow again.
+    @Test(.timeLimit(.minutes(1)))
+    func aWaitFollowsTheRecordThatReplacedTheOneItFollowed() async throws {
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        defer { discovery.stop() }
+        let old = RecordFixture()
+        source.current = old
+        let waiting = Task.immediate { () -> ObjectIdentifier? in
+            guard case .supported(let record) = try await discovery.answer(for: ["input"]) else { return nil }
+            return ObjectIdentifier(record)
+        }
+        try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+        source.current = RecordFixture()
+        let reads = source.reads
+        source.change(of: old)
+        try await wait { source.reads > reads }
+        #expect(source.recordFollows == 1 && source.followers(of: old) == 1)
+
+        let new = RecordFixture()
+        source.current = new
+        source.change(of: nil)
+        try await wait { source.followers(of: old) == 0 && source.followers(of: new) == 1 }
+
+        new.connected = true
+        new.features = ["input"]
+        source.change(of: new)
+        #expect(try await waiting.value == ObjectIdentifier(new))
+        try await wait { source.followers == 0 }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func replacementDuringTheInitialDecisionUsesTheCurrentRecord() async throws {
+        let source = RecordSourceFixture()
+        let connection = HeldCalls<Bool>()
+        let old = RecordFixture()
+        old.heldConnection = connection
+        source.current = old
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        defer { discovery.stop() }
+        let answer = Task.immediate { () -> ObjectIdentifier? in
+            guard case .supported(let record) = try await discovery.answer(for: ["input"]) else { return nil }
+            return ObjectIdentifier(record)
+        }
+        try await wait { connection.isHolding }
+        let current = RecordFixture()
+        current.connected = true
+        current.features = ["input"]
+        try await source.changeList(to: current)
+        connection.finish(.success(true))
+        #expect(try await answer.value == ObjectIdentifier(current))
+        try await wait { source.followers == 0 }
+    }
+
+    /// A decision on a record that the list has since replaced is no answer, even a connected record's lack of the feature,
+    /// which a route would keep for the connection's lifetime. The list as it is now decides, also for an asker whose first
+    /// read it was, which no notification wakes because it waits on none yet.
+    @Test(.timeLimit(.minutes(1)))
+    func aDecisionOnARecordThatTheListReplacedIsNoAnswer() async throws {
+        for byAnotherAsker in [false, true] {
+            let services = DeviceOptionalServices()
+            let source = RecordSourceFixture()
+            let discovery = CoreDeviceRecordDiscovery(source: source)
+            defer { discovery.stop() }
+            let route = SimulatorPasteboardRoute(services: services, make: {
+                guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+                return TestPasteboardTransport()
+            })
+            let old = RecordFixture()
+            source.current = old
+            let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+            try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+            let connection = HeldCalls<Bool>()
+            old.heldConnection = connection
+            var asker: Task<ObjectIdentifier?, any Error>?
+            if byAnotherAsker {
+                asker = Task.immediate { () -> ObjectIdentifier? in
+                    guard case .supported(let record) = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+                    return ObjectIdentifier(record)
+                }
+            } else {
+                source.change(of: old)
+            }
+            try await wait { connection.isHolding }
+
+            let new = RecordFixture()
+            try await source.changeList(to: new)
+            connection.finish(.success(true))
+            try await wait { source.followers(of: new) == 1 || !isPending(services.pasteboard) }
+            #expect(isPending(services.pasteboard))
+
+            new.connected = true
+            new.features = ["pasteboard"]
+            source.change(of: new)
+            #expect(try await transfer.value != nil)
+            if let asker { #expect(try await asker.value == ObjectIdentifier(new)) }
+            #expect(isReady(services.pasteboard))
+            try await wait { source.followers == 0 }
+        }
+    }
+
+    /// A read that fails after the list changed failed on what the list no longer holds, so the next read decides, and a
+    /// failure of a read of the list as it is now is told.
+    @Test(.timeLimit(.minutes(1)))
+    func aFailedReadOfAListThatChangedLeavesTheNextReadToDecide() async throws {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        defer { discovery.stop() }
+        let route = SimulatorPasteboardRoute(services: services, make: {
+            guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+            return TestPasteboardTransport()
+        })
+        let old = RecordFixture()
+        source.current = old
+        let transfer = Task.immediate { _ = try await route.transport() }
+        try await wait { source.recordFollows == 1 && source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+        let reads = HeldCalls<RecordFixture?>()
+        source.heldReads = reads
+        source.change(of: old)
+        try await wait { reads.isHolding }
+        try await source.changeList(to: RecordFixture())
+        reads.finish(.failure(DeviceIOError.temporary("fixture-old", "The list no longer holds it.")))
+        try await wait { reads.calls == 2 && reads.isHolding || !isPending(services.pasteboard) }
+        #expect(isPending(services.pasteboard))
+
+        reads.finish(.failure(DeviceIOError.temporary("fixture-current", "CoreDevice did not answer.")))
+        await #expect(throws: DeviceIOError.self) { try await transfer.value }
+        #expect((services.pasteboard.failure as? DeviceIOError)?.identifier == "fixture-current")
+        try await wait { source.followers == 0 }
+    }
+
+    /// A record that leaves CoreDevice's list is no answer and is no longer followed, and the owner's stop ends what followed its successor.
+    @Test(.timeLimit(.minutes(1)))
+    func aRemovedRecordIsNoLongerFollowedAndItsSuccessorEndsWithTheOwner() async throws {
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let old = RecordFixture()
+        source.current = old
+        let waiting = Task.immediate { _ = try await discovery.answer(for: ["input"]) }
+        try await wait { source.followers(of: old) == 1 && source.followers(of: nil) == 1 }
+
+        source.current = nil
+        source.change(of: nil)
+        try await wait { source.followers(of: old) == 0 && source.followers == 1 }
+
+        let new = RecordFixture()
+        source.current = new
+        source.change(of: nil)
+        try await wait { source.followers(of: new) == 1 && source.followers == 2 }
+
+        discovery.stop()
+        await #expect(throws: CancellationError.self) { try await waiting.value }
+        try await wait { source.followers == 0 }
+    }
+
+    /// Only a connected record without the feature is evidence, and it is what takes SimPasteboardPlus.
+    @Test(.timeLimit(.minutes(1)))
+    func onlyAConnectedRecordWithoutTheFeatureIsUnsupported() async throws {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let record = RecordFixture()
+        source.current = record
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: {
+            guard case .supported = try await discovery.answer(for: ["input"]) else { return nil }
+            return NativeInputServices()
+        }, activate: { _ in activations.value += 1 })
+        let route = SimulatorPasteboardRoute(services: services, make: {
+            guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+            return TestPasteboardTransport()
+        })
+        activation.start()
+        let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+        try await wait { source.followers == 2 }
+        #expect(isPending(services.input) && isPending(services.pasteboard))
+
+        record.connected = true
+        source.change()
+        try await wait { isUnsupported(services.input) && isUnsupported(services.pasteboard) }
+        #expect(try await transfer.value == nil)
+        #expect(activations.value == 0)
+    }
+
+    /// A read that fails and notifications that end say nothing about the device, and asking again goes through the same owner.
+    @Test(.timeLimit(.minutes(1)))
+    func aFailureToReadTheRecordIsNotUnsupportedAndCanBeRetried() async throws {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let activations = Counter()
+        let activation = NativeInputActivation(services: services, connect: {
+            guard case .supported = try await discovery.answer(for: ["input"]) else { return nil }
+            return NativeInputServices()
+        }, activate: { _ in activations.value += 1 })
+        source.readFailure = DeviceIOError.temporary("fixture-read", "CoreDevice did not answer.")
+        activation.start()
+        try await wait { services.input.failure != nil }
+        #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-read")
+        #expect(source.followers == 0)
+
+        source.readFailure = nil
+        services.retryInput()
+        try await wait { source.followers == 1 }
+        #expect(isPending(services.input))
+        source.endStreams(throwing: DeviceIOError.temporary("fixture-stream", "CoreDevice stopped reporting."))
+        try await wait { services.input.failure != nil && source.followers == 0 }
+        #expect((services.input.failure as? DeviceIOError)?.identifier == "fixture-stream")
+
+        let record = RecordFixture()
+        record.connected = true
+        record.features = ["input"]
+        source.current = record
+        services.retryInput()
+        try await wait { isReady(services.input) }
+        #expect(activations.value == 1)
+    }
+
+    /// The owner ends with its connection: what waits is cancelled, which says nothing about the device, and nothing is followed.
+    @Test(.timeLimit(.minutes(1)))
+    func stoppingTheRecordsOwnerEndsWhatWaitsWithoutAnAnswer() async throws {
+        let services = DeviceOptionalServices()
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let route = SimulatorPasteboardRoute(services: services, make: {
+            guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+            return TestPasteboardTransport()
+        })
+        let transfer = Task.immediate { try await route.transport().map(ObjectIdentifier.init) }
+        let cancelled = Task.immediate { _ = try await discovery.answer(for: ["input"]) }
+        try await wait { source.followers == 1 }
+        // One asker's cancellation leaves the other's wait.
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(source.followers == 1 && isPending(services.pasteboard))
+
+        discovery.stop()
+        await #expect(throws: CancellationError.self) { _ = try await transfer.value }
+        try await wait { source.followers == 0 }
+        #expect(isPending(services.pasteboard))
+        await #expect(throws: CancellationError.self) { _ = try await discovery.answer(for: ["pasteboard"]) }
+    }
+
+    /// A stop is terminal while a read is out, before anything waits on notifications, and nothing but a transfer's own
+    /// wait would end that transfer: whatever the read then finds, it ends as cancelled, says nothing and follows nothing.
+    @Test(.timeLimit(.minutes(1)))
+    func aStopDuringAReadEndsTheWaitWhateverTheReadThenFinds() async throws {
+        func stopping(_ source: RecordSourceFixture, isHeld: () -> Bool, then finish: () -> Void) async throws {
+            let services = DeviceOptionalServices()
+            let discovery = CoreDeviceRecordDiscovery(source: source)
+            let route = SimulatorPasteboardRoute(services: services, make: {
+                guard case .supported = try await discovery.answer(for: ["pasteboard"]) else { return nil }
+                return TestPasteboardTransport()
+            })
+            let transfer = Task.immediate { _ = try await route.transport() }
+            try await wait(until: isHeld)
+            discovery.stop()
+            finish()
+            #expect(await transfer.ends(before: .now + .seconds(5)))
+            transfer.cancel()
+            await #expect(throws: CancellationError.self) { try await transfer.value }
+            #expect(isPending(services.pasteboard) && source.followers == 0)
+        }
+        let connected = RecordFixture()
+        connected.connected = true
+        connected.features = ["pasteboard"]
+        let failure = DeviceIOError.temporary("fixture-read", "CoreDevice did not answer.")
+        // While the source finds no record, one that is not connected, one that answers, or fails.
+        for result in [.success(nil), .success(RecordFixture()), .success(connected), .failure(failure)] as [Result<RecordFixture?, any Error>] {
+            let reads = HeldCalls<RecordFixture?>()
+            let source = RecordSourceFixture()
+            source.heldReads = reads
+            try await stopping(source, isHeld: { reads.isHolding }, then: { reads.finish(result) })
+        }
+        // While the record says whether it is connected.
+        for isConnected in [false, true] {
+            let connection = HeldCalls<Bool>()
+            let record = RecordFixture()
+            record.features = ["pasteboard"]
+            record.heldConnection = connection
+            let source = RecordSourceFixture()
+            source.current = record
+            try await stopping(source, isHeld: { connection.isHolding }, then: { connection.finish(.success(isConnected)) })
+        }
+    }
+
+    /// A screen that cannot exist without the record waits for it in any state, and a record that does not come is a failure.
+    @Test(.timeLimit(.minutes(1)))
+    func aScreenThatNeedsTheRecordWaitsForItUntilItsLimit() async throws {
+        let source = RecordSourceFixture()
+        let discovery = CoreDeviceRecordDiscovery(source: source)
+        let waiting = Task.immediate { try await discovery.record(limit: .seconds(30)) }
+        try await wait { source.followers == 1 }
+        let record = RecordFixture()
+        source.current = record
+        source.change()
+        #expect(try await waiting.value === record)
+        try await wait { source.followers == 0 }
+
+        source.current = nil
+        await #expect(throws: DeviceIOError.self) { _ = try await discovery.record(limit: .milliseconds(20)) }
+        try await wait { source.followers == 0 }
+    }
+
+    @Test func serviceStatusSaysWhatTheServicesSay() {
+        let failure = DeviceIOError.temporary("fixture", "It did not answer.")
+        #expect(DeviceServiceStatus(input: .notRouted, pasteboard: .notRouted) == nil)
+        #expect(DeviceServiceStatus(input: .ready, pasteboard: .ready) == nil)
+        #expect(DeviceServiceStatus(input: .unsupported, pasteboard: .unsupported) == nil)
+        // Only a transfer waits for the pasteboard, so its connecting costs nothing yet.
+        #expect(DeviceServiceStatus(input: .ready, pasteboard: .pending) == nil)
+        // A wait for CoreDevice's word about the device can last, so it shows even when only a transfer waits.
+        #expect(DeviceServiceStatus(input: .ready, pasteboard: .pending, isAwaitingDeviceRecord: true)?.message.contains("CoreDevice") == true)
+        #expect(DeviceServiceStatus(input: .pending, pasteboard: .ready)?.offersRetry == false)
+        let input = DeviceServiceStatus(input: .failed(failure), pasteboard: .failed(failure))
+        #expect(input?.offersRetry == true && input?.message.contains("It did not answer.") == true)
+        let pasteboard = DeviceServiceStatus(input: .ready, pasteboard: .failed(failure))
+        #expect(pasteboard?.offersRetry == false && pasteboard?.message.contains("pasteboard") == true)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func serviceStatusChangesNothingOfTheScreensGeometry() async throws {
+        let display = TestDisplay()
+        let controller = try makeController(display)
+        defer { controller.close() }
+        controller.showCompactWindow()
+        let window = try #require(controller.window)
+        window.layoutIfNeeded()
+        let (frame, windowFrame) = (display.view.frame, window.frame)
+        let services = controller.session.optionalServices
+        var retries = 0
+        services.onRetryInput = { retries += 1 }
+
+        services.setInput(.pending)
+        try await wait { controller.serviceStatus?.offersRetry == false }
+        window.layoutIfNeeded()
+        #expect(display.view.frame == frame && window.frame == windowFrame)
+
+        services.setInput(.failed(DeviceIOError.temporary("fixture", "It did not answer.")))
+        try await wait { controller.serviceStatus?.offersRetry == true }
+        window.layoutIfNeeded()
+        #expect(display.view.frame == frame && window.frame == windowFrame)
+        services.retryInput()
+        #expect(retries == 1)
+
+        services.setInput(.ready)
+        try await wait { controller.serviceStatus == nil }
+        window.layoutIfNeeded()
+        #expect(display.view.frame == frame && window.frame == windowFrame)
+    }
+
+    /// The screen beneath keeps its input: only Retry takes events.
+    @Test func serviceStatusPassesEventsThroughExceptRetry() throws {
+        var retries = 0
+        let view = DeviceServiceStatusView { retries += 1 }
+        view.show(try #require(DeviceServiceStatus(input: .failed(DeviceIOError.temporary("fixture", "Failed.")), pasteboard: .ready)))
+        view.frame = NSRect(origin: .zero, size: view.size(fitting: 420))
+        view.layoutSubtreeIfNeeded()
+        let hitViews = stride(from: CGFloat(0.5), to: view.bounds.width, by: 4).compactMap {
+            view.hitTest(NSPoint(x: $0, y: view.bounds.midY))
+        }
+        let button = try #require(hitViews.first as? NSButton)
+        #expect(hitViews.allSatisfy { $0 === button })
+        button.performClick(nil)
+        #expect(retries == 1)
+    }
+
+    @Test func displaysAreFoundWithoutBeingKeptAlive() {
+        let displays = SimulatorDisplaySet()
+        var display: TestDisplay? = TestDisplay()
+        weak let released = display
+        displays.register(display!)
+        #expect(displays.full(for: display!) === display)
+        display = nil
+        #expect(released == nil)
+    }
+
     /// Follows the key-window responder chain without making a test window key.
     private func responder(in window: NSWindow, taking action: Selector) -> NSResponder? {
         window.firstResponder.flatMap { sequence(first: $0, next: \.nextResponder).first { $0.responds(to: action) } }
     }
 
     /// Loads the selected Xcode's private runtime.
-    private func makeRuntime() async throws -> SimulatorRuntime { try await loadTestRuntime() }
+    private func makeRuntime() async throws -> SimulatorPresentationRuntime { try await loadTestRuntime() }
 
     private func makeController(_ display: TestDisplay,
                                 family: DeviceCapabilities.Family = .iPhone,
@@ -10791,7 +11509,7 @@ struct InputFocusTests {
                                       userInterfacePlugin: userInterfacePlugin, runtimeVersion: runtimeVersion,
                                       enhancedMultitasking: enhancedMultitasking, appResizeTransport: appResizeTransport)
         return try DeviceWindowController(
-            session: session, preferences: preferences,
+            session: session, displays: testDisplays, preferences: preferences,
             touchPressure: touchPressure ?? TouchPressure(preferences: preferences, forceTouchTrackpad: { false }),
             tvRemote: tvRemote ?? TVRemoteController(target: { nil }),
             performWindowDrag: performWindowDrag, presentCompactWindow: presentCompactWindow,
@@ -10915,8 +11633,10 @@ struct InputFocusTests {
                              runtimeVersion: UInt32 = 0x1B_00_00,
                              enhancedMultitasking: Bool = false,
                              appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil) throws -> DeviceSession {
+        if let pasteboard { display.managedPasteboard = pasteboard }
+        display.pasteboardTransport = pasteboardTransport
         // Keep the external-display timeout short enough to exercise expiry.
-        DeviceSession(
+        return DeviceSession(
             device: availableDevice(identifier, "Test iPhone", runtime: "iOS", state: 3, deviceSetPath: deviceSetPath),
             capabilities: DeviceCapabilities(family: family, runtimeVersion: runtimeVersion,
                                              supportsFeature: { features.contains($0) },
@@ -10928,8 +11648,7 @@ struct InputFocusTests {
             tools: try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                    simctl: simctl, devicectl: devicectl),
             model: model, recordings: recordings, recordingProcess: recordingProcess, openLog: openLog, preferences: preferences,
-            hostKeyboardLanguage: keyboardLanguage, pasteboard: pasteboard, pasteboardSync: pasteboardSync,
-            pasteboardTransport: pasteboardTransport,
+            hostKeyboardLanguage: keyboardLanguage, pasteboardSync: pasteboardSync,
             externalDisplayChanges: externalDisplayChanges, externalScreenTimeout: .milliseconds(100),
             appResizeTransport: appResizeTransport)
     }
@@ -11248,6 +11967,9 @@ private final class TestDisplayView: NSView {
     }
 }
 
+/// The test displays, which each test window finds its sessions' displays in.
+@MainActor private let testDisplays = SimulatorDisplaySet()
+
 @MainActor
 private final class TestDisplay: SimulatorDisplay {
     var usesNativeCanvas = false
@@ -11264,7 +11986,7 @@ private final class TestDisplay: SimulatorDisplay {
     var holdsAppDisplayConnection = false
     var appDisplayConnection: CheckedContinuation<Void, Never>?
     func completeAppDisplayConnection() { appDisplayConnection?.resume(); appDisplayConnection = nil }
-    func connectAppDisplay(uniqueID: String) async throws -> any SimulatorDisplay {
+    func connectAppDisplay(uniqueID: String) async throws -> any DeviceSessionDisplay {
         requestedDisplayUniqueIDs.append(uniqueID)
         if holdsAppDisplayConnection { await withCheckedContinuation { appDisplayConnection = $0 } }
         if let appDisplayError { throw appDisplayError }
@@ -11275,7 +11997,7 @@ private final class TestDisplay: SimulatorDisplay {
     var plugin: SimulatorUserInterfacePlugin?
     var pluginError: Error?
     private var foundPlugin: SimulatorUserInterfacePlugin?
-    func userInterfacePlugin() throws -> SimulatorUserInterfacePlugin? {
+    func userInterfacePlugin() async throws -> SimulatorUserInterfacePlugin? {
         if let pluginError { throw pluginError }
         foundPlugin = plugin
         return plugin
@@ -11309,6 +12031,7 @@ private final class TestDisplay: SimulatorDisplay {
     var disconnectCount = 0
     var onDisconnect: () -> Void = {}
     init() {
+        defer { testDisplays.register(self) }
         view.addSubview(input)
         (view as? TestDisplayView)?.displaySize = { [unowned self] in size(for: renderScale) }
     }
@@ -11391,7 +12114,7 @@ private final class TestDisplay: SimulatorDisplay {
         try await worker?.read("read the device's state")
         return GuestStateReading(
             notifications: Dictionary(uniqueKeysWithValues: notifications.map { ($0, notificationStates[$0] ?? 0) }),
-            debugOptions: Dictionary(uniqueKeysWithValues: debugOptions.map { ($0, caDebugOptions.contains($0)) }))
+            debugOptions: Dictionary(uniqueKeysWithValues: debugOptions.map { ($0.rawValue, caDebugOptions.contains($0)) }))
     }
     var logFolder = URL(fileURLWithPath: "/nonexistent")
     var memoryWarningURL = URL(fileURLWithPath: "/nonexistent/memory_warning_simulation")
@@ -11485,19 +12208,27 @@ private final class TestDisplay: SimulatorDisplay {
     var pasteboards: [TestPasteboard] = []
     /// Fails once, then clears itself.
     var pasteboardError: Error?
+    /// The Mac pasteboard that this display's connections manage.
+    var managedPasteboard = NSPasteboard.general
+    var hostPasteboardChangeCount: Int { managedPasteboard.changeCount }
+    /// The native transport that a pasteboard route chose, when it chose one.
+    var pasteboardTransport: (any PasteboardTransport)?
     /// What the latest connection reports to, from before it returns.
     private(set) var connectingPasteboardEvents: (@MainActor (SimulatorPasteboardEvent) -> Void)?
     private(set) var pasteboardConnectionAttempts = 0
-    func connectPasteboard(_ pasteboard: NSPasteboard,
+    func connectPasteboard(sync: PasteboardSync?,
                            events: @escaping @MainActor (SimulatorPasteboardEvent) -> Void) async throws -> any SimulatorPasteboard {
         connectingPasteboardEvents = events
         pasteboardConnectionAttempts += 1
+        if let pasteboardTransport {
+            return NativePasteboardConnection(transport: pasteboardTransport, managing: managedPasteboard, sync: sync, events: events)
+        }
         try await worker?.read("connect the device's pasteboard")
         if let error = pasteboardError {
             pasteboardError = nil
             throw error
         }
-        let connection = TestPasteboard(pasteboard: pasteboard, events: events)
+        let connection = TestPasteboard(pasteboard: managedPasteboard, events: events)
         pasteboards.append(connection)
         return connection
     }
@@ -11850,7 +12581,7 @@ private final class TestExternalScreen: SimulatorExternalScreen {
 
     var prepareDisplay: (() async -> Void)?
 
-    func makeDisplay() async throws -> any SimulatorDisplay {
+    func makeDisplay() async throws -> any DeviceSessionDisplay {
         await prepareDisplay?()
         let display = TestDisplay()
         display.naturalSize = NSSize(width: current.pixelSize.width / current.scale,

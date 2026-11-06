@@ -1,5 +1,6 @@
-import NeoSimulatorKit
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 import Security
 
 package struct CodeSignatureValidator: Sendable {
@@ -77,7 +78,7 @@ private func checkAppleCodeSignature(
         &staticCode
     )
     guard createStatus == errSecSuccess, let staticCode else {
-        throw CLIError.unavailable(
+        throw HostOperationError.unavailable(
             "code-signature",
             "could not inspect the signature of \(codeURL.path): \(securityMessage(createStatus))"
         )
@@ -91,7 +92,7 @@ private func checkAppleCodeSignature(
         &requirement
     )
     guard requirementStatus == errSecSuccess, let requirement else {
-        throw CLIError.software(
+        throw HostOperationError.software(
             "code-requirement",
             "could not create the Apple code requirement: \(securityMessage(requirementStatus))"
         )
@@ -103,7 +104,7 @@ private func checkAppleCodeSignature(
         requirement
     )
     guard validationStatus == errSecSuccess else {
-        throw CLIError.unavailable(
+        throw HostOperationError.unavailable(
             "code-signature",
             "\(codeURL.path) is not intact Apple-signed \(policy.description) with identifier \(identifier): \(securityMessage(validationStatus))"
         )

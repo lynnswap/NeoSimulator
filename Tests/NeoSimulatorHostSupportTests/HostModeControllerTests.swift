@@ -1,10 +1,11 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
-import Foundation
 import Darwin
+import Foundation
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+import Synchronization
 import Testing
 import XCTest
-import Synchronization
 
 
 @MainActor
@@ -304,7 +305,7 @@ struct HostModeControllerTests {
                 cleanupStarted.fulfill()
                 try Task.checkCancellation()
                 for await _ in exit.stream { break }
-                if cleanupFails { throw CLIError.temporary("termination", "Renderer did not exit") }
+                if cleanupFails { throw HostOperationError.temporary("termination", "Renderer did not exit") }
             }
         }
         opening.cancel()
@@ -315,7 +316,7 @@ struct HostModeControllerTests {
         exit.continuation.yield(())
         do { try await opening.value; Issue.record("A cancelled launch succeeded") }
         catch is CancellationError { #expect(!cleanupFails) }
-        catch let error as CLIError {
+        catch let error as HostOperationError {
             #expect(cleanupFails)
             #expect(error.identifier == "neo-host-launch-cleanup")
             #expect(error.message.contains("Renderer did not exit"))
@@ -351,7 +352,7 @@ struct HostModeControllerTests {
         do {
             try await WorkspaceClient.waitForNeoHostStartup(resultURL: result, isTerminated: { true })
             Issue.record("A terminated renderer was accepted as ready")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-startup")
             #expect(error.message == "NeoSimulator exited during startup")
         }
@@ -426,7 +427,7 @@ struct HostModeControllerTests {
         let rendererURL = URL(fileURLWithPath: "/Renderer.app")
         let application = RunningApplication(processIdentifier: 1, bundleURL: rendererURL,
             bundleIdentifier: ToolConstants.neoHostBundleIdentifier)
-        let failure = CLIError.temporary("previous-renderer-termination-timeout", "fixture cleanup did not finish")
+        let failure = HostOperationError.temporary("previous-renderer-termination-timeout", "fixture cleanup did not finish")
         var launched = false
         do {
             try await WorkspaceClient.waitForPreviousRendererOwners(at: rendererURL, applications: [application],
@@ -436,7 +437,7 @@ struct HostModeControllerTests {
                 ownerIsAbsent: { _ in true }, waitForTermination: { _ in throw failure })
             launched = true
             Issue.record("A replacement launched before the previous renderer finished cleanup")
-        } catch { #expect((error as? CLIError)?.identifier == failure.identifier) }
+        } catch { #expect((error as? HostOperationError)?.identifier == failure.identifier) }
         #expect(!launched)
     }
 
@@ -613,7 +614,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected missing standalone host to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-bundle")
             #expect(error.category == .unavailable)
         }
@@ -632,7 +633,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected changed devicectl wrapper to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "devicectl-wrapper-version")
             #expect(error.category == .unavailable)
         }
@@ -650,7 +651,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected missing SimulatorKit runtime symbols to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-runtime")
             #expect(error.category == .unavailable)
         }
@@ -698,11 +699,11 @@ struct HostModeControllerTests {
 
     @Test func deviceHubLaunchFailureReportsConfiguredRouteAndRecoveryReceipt() async throws {
         let fixture = try ControllerFixture(initialState: .coreSimulator)
-        fixture.workspace.openDeviceHubError = CLIError.io("launch", "injected Device Hub launch failure")
+        fixture.workspace.openDeviceHubError = HostOperationError.io("launch", "injected Device Hub launch failure")
         do {
             _ = try await fixture.controller.use(.deviceHub)
             Issue.record("expected launch failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "device-hub-host-launch-partial-success")
             #expect(error.message.contains("Restore Original Settings"))
         }
@@ -712,7 +713,7 @@ struct HostModeControllerTests {
 
     @Test func deviceHubModeDoesNotChangePreferencesWhenHostCannotClose() async throws {
         let fixture = try ControllerFixture(initialState: .coreSimulator)
-        fixture.workspace.terminateNeoHostsError = CLIError.temporary(
+        fixture.workspace.terminateNeoHostsError = HostOperationError.temporary(
             "injected-termination",
             "injected standalone host termination failure"
         )
@@ -720,7 +721,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.deviceHub)
             Issue.record("expected standalone host termination failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "injected-termination")
         }
 
@@ -763,7 +764,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected injected transition failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "transition-rolled-back")
         }
 
@@ -780,7 +781,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected injected transition failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "transition-rolled-back")
         }
 
@@ -796,7 +797,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected injected verification failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "transition-rolled-back")
         }
 
@@ -812,7 +813,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected rollback failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "inconsistent-preferences")
             #expect(SimulatorHostFailure(error).kind == .preferencesChanged)
         }
@@ -835,7 +836,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.restore()
             Issue.record("expected external conflict")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "preference-conflict")
             #expect(error.category == .configuration)
         }
@@ -863,7 +864,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.deviceHub)
             Issue.record("expected external change to be reported")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "preference-conflict")
             #expect(error.category == .configuration)
         }
@@ -899,7 +900,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected external change to be reported")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "preference-conflict")
         }
 
@@ -934,7 +935,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected external change to be reported")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "preference-conflict")
         }
         fixture.runner.beforeRun = nil
@@ -943,7 +944,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected ambiguous state to remain protected")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "ambiguous-intermediate")
         }
 
@@ -1007,7 +1008,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected ambiguous intermediate state")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "ambiguous-intermediate")
         }
 
@@ -1046,7 +1047,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.restore()
             Issue.record("expected normal restore to preserve ambiguity")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "ambiguous-intermediate")
         }
         #expect(fixture.runner.mutationCount == 0)
@@ -1064,13 +1065,13 @@ struct HostModeControllerTests {
         let fixture = try ControllerFixture()
         let reason = "Device Hub is running or launched during startup; close it before opening NeoSimulator"
         let recovery = "Close the other display app, then choose View Screen again."
-        fixture.workspace.openNeoHostError = CLIError(category: .temporary, identifier: "neo-host-startup", message: reason,
+        fixture.workspace.openNeoHostError = HostOperationError(category: .temporary, identifier: "neo-host-startup", message: reason,
             failureReason: reason, recoverySuggestion: recovery)
 
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected standalone host launch failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-launch-partial-success")
             let failure = SimulatorHostFailure(error)
             #expect(failure.kind == .partialSuccess)
@@ -1086,7 +1087,7 @@ struct HostModeControllerTests {
 
     @Test func deviceHubTerminationFailureDoesNotOpenTheStandaloneHost() async throws {
         let fixture = try ControllerFixture()
-        fixture.workspace.terminateDeviceHubsError = CLIError.temporary(
+        fixture.workspace.terminateDeviceHubsError = HostOperationError.temporary(
             "injected-termination",
             "injected Device Hub termination failure"
         )
@@ -1094,7 +1095,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected Device Hub termination failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "device-hub-termination-partial-success")
             #expect(error.category == .temporary)
         }
@@ -1112,7 +1113,7 @@ struct HostModeControllerTests {
 
     @Test func deviceHubIdentityFailurePreservesConfigurationExitCategory() async throws {
         let fixture = try ControllerFixture()
-        fixture.workspace.terminateDeviceHubsError = CLIError.configuration(
+        fixture.workspace.terminateDeviceHubsError = HostOperationError.configuration(
             "device-hub-substitution",
             "injected mismatched Device Hub"
         )
@@ -1120,7 +1121,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected Device Hub identity failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "device-hub-termination-partial-success")
             #expect(error.category == .configuration)
         }
@@ -1129,11 +1130,11 @@ struct HostModeControllerTests {
 
     @Test func deviceHubFailurePreventsAConfiguredHostLaunchFailure() async throws {
         let fixture = try ControllerFixture()
-        fixture.workspace.terminateDeviceHubsError = CLIError.temporary(
+        fixture.workspace.terminateDeviceHubsError = HostOperationError.temporary(
             "injected-termination",
             "injected Device Hub termination failure"
         )
-        fixture.workspace.openNeoHostError = CLIError.io(
+        fixture.workspace.openNeoHostError = HostOperationError.io(
             "injected-open",
             "injected standalone host open failure"
         )
@@ -1141,7 +1142,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected Device Hub termination failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "device-hub-termination-partial-success")
             #expect(error.message.contains("Device Hub"))
         }
@@ -1164,7 +1165,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected post-await preference conflict")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-invalidated")
             #expect(error.category == .configuration)
         }
@@ -1184,7 +1185,7 @@ struct HostModeControllerTests {
             do {
                 _ = try await fixture.controller.use(.deviceHub)
                 Issue.record("expected concurrent switch to be serialized")
-            } catch let error as CLIError {
+            } catch let error as HostOperationError {
                 #expect(error.identifier == "operation-lock")
                 #expect(error.category == .temporary)
             }
@@ -1203,7 +1204,7 @@ struct HostModeControllerTests {
             do {
                 _ = try await fixture.controller.use(.deviceHub)
                 Issue.record("expected concurrent switch to be serialized")
-            } catch let error as CLIError {
+            } catch let error as HostOperationError {
                 #expect(error.identifier == "operation-lock")
                 #expect(error.category == .temporary)
             } catch {
@@ -1213,7 +1214,7 @@ struct HostModeControllerTests {
             do {
                 _ = try await fixture.controller.restore()
                 Issue.record("expected concurrent restore to be serialized")
-            } catch let error as CLIError {
+            } catch let error as HostOperationError {
                 #expect(error.identifier == "operation-lock")
                 #expect(error.category == .temporary)
             } catch {
@@ -1230,12 +1231,12 @@ struct HostModeControllerTests {
 
     @Test func neoHostLaunchFailureWithoutAReceiptDoesNotSuggestRestore() async throws {
         let fixture = try ControllerFixture(initialState: .coreSimulator)
-        fixture.workspace.openNeoHostError = CLIError.io("open", "injected open failure")
+        fixture.workspace.openNeoHostError = HostOperationError.io("open", "injected open failure")
 
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected standalone host launch failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-launch-partial-success")
             #expect(error.message.contains("No restoration receipt exists"))
             #expect(!error.message.contains("run restore"))
@@ -1297,7 +1298,7 @@ struct HostModeControllerTests {
             do {
                 _ = try await fixture.controller.restore()
                 Issue.record("expected restore to observe the active operation lock")
-            } catch let error as CLIError {
+            } catch let error as HostOperationError {
                 #expect(error.identifier == "operation-lock")
                 #expect(error.category == .temporary)
             } catch {
@@ -1338,7 +1339,7 @@ struct HostModeControllerTests {
         do {
             _ = try await fixture.controller.use(.neo)
             Issue.record("expected root user to be rejected")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "root-user")
         }
         #expect(fixture.runner.mutationCount == 0)
@@ -1387,7 +1388,7 @@ struct HostModeControllerTests {
         #expect(fixture.runner.calls.filter { $0.executable.path == "/usr/bin/defaults" } == preferenceCalls)
 
         // An explicit host change still reads the actual values and preserves failures.
-        await #expect(throws: CLIError.self) { try await fixture.controller.use(.deviceHub) }
+        await #expect(throws: HostOperationError.self) { try await fixture.controller.use(.deviceHub) }
         #expect(try await fixture.controller.selectionStatus().host == .neo)
     }
 
@@ -1508,8 +1509,8 @@ struct HostModeControllerTests {
         #expect(devices.allSatisfy { $0.deviceSetPath == nil })
         var reportedFailure = false
         let available = try await SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: {
-            throw CLIError.io("testing-catalog", "unavailable alternate device set")
-        }, onFailure: { error in reportedFailure = (error as? CLIError)?.identifier == "testing-catalog" })
+            throw HostOperationError.io("testing-catalog", "unavailable alternate device set")
+        }, onFailure: { error in reportedFailure = (error as? HostOperationError)?.identifier == "testing-catalog" })
         #expect(available == devices)
         #expect(reportedFailure)
         reportedFailure = false

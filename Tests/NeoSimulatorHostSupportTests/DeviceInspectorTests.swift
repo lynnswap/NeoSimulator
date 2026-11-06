@@ -1,4 +1,4 @@
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -263,7 +263,7 @@ import Testing
             let data = URL(fileURLWithPath: command.arguments[index + 1])
             try FileManager.default.createDirectory(at: data, withIntermediateDirectories: false)
             try Data("partial".utf8).write(to: data.appendingPathComponent("partial"))
-            throw CLIError.io("copy-fixture", "Device disconnected during transfer")
+            throw DeviceIOError.io("copy-fixture", "Device disconnected during transfer")
         }
         let inspector = try Self.remote(transport: .init(run: { try await calls.run($0) }))
         let destination = directory.url.appendingPathComponent("App.xcappdata")
@@ -282,7 +282,7 @@ import Testing
             #expect(try String(contentsOf: remaining.appendingPathComponent("AppData/partial"), encoding: .utf8) == "partial")
             #expect(failure.deviceID == .coreDevice("core-command-id"))
             #expect(failure.source == .coreDevice)
-            #expect((failure.error as? CLIError)?.identifier == "copy-fixture")
+            #expect((failure.error as? DeviceIOError)?.identifier == "copy-fixture")
         }
         #expect(try String(contentsOf: original, encoding: .utf8) == "original export")
     }
