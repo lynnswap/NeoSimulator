@@ -272,7 +272,18 @@ struct CaptureAndImportTests {
         }
         let moved = try capture()
         let destination = other.appendingPathComponent("Shot.png")
-        try CaptureFile.relocate(moved, to: destination, renaming: across(moved))
+        let locations = CaptureFile.Locations()
+        var stagedCopy: URL?
+        try CaptureFile.relocate(moved, to: destination, renaming: { from, to in
+            if from == moved { throw POSIXError(.EXDEV) }
+            stagedCopy = from
+            #expect(Set(locations.locations) == [from, destination])
+            #expect(FileManager.default.fileExists(atPath: from.path))
+            #expect(!FileManager.default.fileExists(atPath: destination.path))
+            try CaptureFile.renameExclusively(from, to: to)
+        }, locations: locations)
+        #expect(stagedCopy != nil && locations.locations == [destination])
+        locations.clear()
         #expect(!FileManager.default.fileExists(atPath: moved.path))
         #expect(try Data(contentsOf: destination) == Data("capture".utf8))
         #expect(try names(other) == ["Shot.png"])
@@ -918,16 +929,22 @@ struct CaptureThumbnailTests {
         CaptureThumbnail(content, image: nil, parent: window, source: source, spacing: .zero) { _ in }.show()
         let finishing = Task.immediate { await CaptureThumbnail.finishAll(owner: owner) }
         await lane.untilHeld(1)
+        let other = try capture(named: "Other.png", in: directory, owner: UUID(), lane: lane)
+        let otherSave = Task.immediate { try await other.saveToDefaultLocation() }
+        await lane.untilHeld(2)
         _ = TerminationAccount.shared.take()
-        #expect(await CaptureThumbnail.failures(of: finishing, before: .now + .milliseconds(50)).isEmpty)
-        #expect(TerminationAccount.shared.take().contains { $0.contains(content.file.path) })
+        let failures = await CaptureThumbnail.failures(of: finishing, before: .now + .milliseconds(50), owner: owner)
+        #expect(failures.count == 1 && failures[0].localizedDescription.contains(content.file.path))
+        #expect(!failures[0].localizedDescription.contains(other.file.path))
+        #expect(TerminationAccount.shared.take().isEmpty)
         #expect(CaptureThumbnail.unfinishedCaptures().contains(content.file))
         #expect(FileManager.default.fileExists(atPath: content.file.path))
         lane.open()
+        _ = try await otherSave.value
         #expect(await CaptureThumbnail.failures(of: finishing, before: .now + .seconds(30)).isEmpty)
         #expect(TerminationAccount.shared.take().isEmpty)
         #expect(content.isResolved && !CaptureThumbnail.unfinishedCaptures().contains(content.file))
-        #expect(try savedNames(in: directory) == ["Held.png"])
+        #expect(try savedNames(in: directory) == ["Held.png", "Other.png"])
     }
 
     @Test func aMenuActionOwnsTheCaptureUntilItEndsEvenIfItsThumbnailEnds() async throws {

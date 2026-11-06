@@ -1063,7 +1063,7 @@ package final class DeviceWindowController: NSWindowController, NSWindowDelegate
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
-        panel.directoryURL = CaptureFile.screenshotFolder()
+        panel.directoryURL = CaptureFile.preferredScreenshotFolder
         panel.nameFieldStringValue = CaptureFile.screenshotName(device: session.device.name, date: Date())
         let applyMask = NSButton(checkboxWithTitle: "Apply device mask to screenshot", target: nil, action: nil)
         applyMask.toolTip = "Apply device mask to non-rectangular screens when taking screenshots."

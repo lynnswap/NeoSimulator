@@ -1205,7 +1205,7 @@ package final class SimulatorScreenHost: NSObject {
             defer { stoppingTask = nil }
             if retryingCleanup {
                 let inputFailures = await finishDisconnectedInput()
-                let captureFailures = await CaptureThumbnail.failures(of: endingCaptures, before: .now + HostPreferences.terminationLimit)
+                let captureFailures = await CaptureThumbnail.failures(of: endingCaptures, before: .now + HostPreferences.terminationLimit, owner: captureOwner)
                 let failures = inputFailures + (await finishExternalDisplayChanges()) + captureFailures.map(\.localizedDescription)
                 if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
             } else {
@@ -1234,11 +1234,11 @@ package final class SimulatorScreenHost: NSObject {
         let displayFailures = await finishExternalDisplayChanges()
         let failures = inputFailures + displayFailures + (await shutDownForTermination(devices))
         let captureDeadline = ContinuousClock.now + HostPreferences.terminationLimit
-        let endedCaptures = await CaptureThumbnail.failures(of: endingCaptures, before: captureDeadline)
+        let endedCaptures = await CaptureThumbnail.failures(of: endingCaptures, before: captureDeadline, owner: captureOwner)
         // Captures may have been handed over since stopping began.
         let lastCaptures = await CaptureThumbnail.failures(of: Task.immediate { [captureOwner] in
             await CaptureThumbnail.finishAll(owner: captureOwner)
-        }, before: captureDeadline)
+        }, before: captureDeadline, owner: captureOwner)
         let captureFailures = recordingTerminationErrors + endedCaptures + lastCaptures
         recordingTerminationErrors.removeAll()
         shutdown()

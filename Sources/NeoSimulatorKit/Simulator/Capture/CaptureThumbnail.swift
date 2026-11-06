@@ -26,6 +26,7 @@ package final class CapturedContent {
     /// Names another capture will take, which saving skips.
     private let isReserved: @MainActor (URL) async -> Bool
     private let lane: any CaptureLane
+    private let locations = CaptureFile.Locations()
     /// Whether the capture has been saved, deleted, or handed to another app. Set once that has succeeded.
     package private(set) var isResolved = false
     /// Where it was saved, from which a late drag delivery copies it.
@@ -54,8 +55,9 @@ package final class CapturedContent {
     /// who owns the file.
     private func inOrder<Value: Sendable>(_ operation: @escaping @MainActor () async throws -> Value) async throws -> Value {
         let previous = lastOperation
-        let task = Task { @MainActor in
+        let task = Task { @MainActor [self] in
             await previous?.value
+            defer { locations.clear() }
             return try await operation()
         }
         operations += 1
@@ -78,6 +80,8 @@ package final class CapturedContent {
 
     /// The captures with file work in flight.
     fileprivate static var inFlight: [CapturedContent] { Array(working.values) }
+
+    fileprivate var unfinishedFiles: [URL] { [saved ?? file] + locations.locations }
 
     /// Reads a screenshot and returns its decoded image, away from the main actor, and holds its bytes.
     package func loadPreview() async -> NSImage? {
@@ -147,7 +151,8 @@ package final class CapturedContent {
 
     private func move(into folder: URL) async throws -> URL {
         do {
-            let saved = try await CaptureFile.move(file, into: folder, named: name, lane: lane, isReserved: isReserved)
+            let saved = try await CaptureFile.move(file, into: folder, named: name, lane: lane, isReserved: isReserved,
+                                                   locations: locations)
             isResolved = true
             self.saved = saved
             return saved
@@ -172,15 +177,19 @@ package final class CapturedContent {
     package func deliver(to destination: URL) async throws {
         try await inOrder { [self] in
             if let saved {
-                return try await lane.run { try CaptureFile.copy(saved, to: destination) }
+                let locations = locations
+                return try await lane.run { try CaptureFile.copy(saved, to: destination, locations: locations) }
             }
             guard !isResolved else { throw SimulatorError.operation("\(name) was already saved or deleted.") }
             let file = file
+            let locations = locations
             do {
-                try await lane.run { try CaptureFile.relocate(file, to: destination) }
+                try await lane.run { try CaptureFile.relocate(file, to: destination, locations: locations) }
                 isResolved = true
+                saved = destination
             } catch let failure as CaptureLeftBehind {
                 isResolved = true
+                saved = failure.destination
                 throw failure
             }
         }
@@ -524,17 +533,20 @@ package final class CaptureThumbnail: NSObject {
 
     /// What `finishing` reports if it ends before `deadline`. A disk that holds it longer does not hold a quit, which then
     /// says where each capture remains; the work carries on until the process ends, and cannot lose the original.
-    package static func failures(of finishing: Task<[Error], Never>, before deadline: ContinuousClock.Instant) async -> [Error] {
+    package static func failures(of finishing: Task<[Error], Never>, before deadline: ContinuousClock.Instant,
+                                 owner: UUID? = nil) async -> [Error] {
         if await finishing.ends(before: deadline) { return await finishing.value }
-        for file in unfinishedCaptures() {
-            TerminationAccount.shared.note("A capture had not finished saving when NeoSimulator quit. It remains at \(file.path).")
-        }
-        return []
+        let locations = unfinishedCaptures(owner: owner).map(\.path).joined(separator: "\n")
+        let detail = locations.isEmpty ? "" : " Check these file locations:\n\(locations)"
+        return [SimulatorError.operation("Capture file work did not finish before the context stopped.\(detail)")]
     }
 
-    /// The temporary files of captures that are still unresolved.
-    package static func unfinishedCaptures() -> [URL] {
-        Set((active.map(\.content) + pending + CapturedContent.inFlight).filter { !$0.isResolved }.map(\.file)).sorted { $0.path < $1.path }
+    /// Original, saved and staged files that unfinished capture work may still be using.
+    package static func unfinishedCaptures(owner: UUID? = nil) -> [URL] {
+        func belongs(_ content: CapturedContent) -> Bool { owner == nil || content.owner == owner }
+        let unresolved = (active.map(\.content) + pending).filter { belongs($0) && !$0.isResolved }.map(\.file)
+        let working = CapturedContent.inFlight.filter(belongs).flatMap(\.unfinishedFiles)
+        return Set(unresolved + working).sorted { $0.path < $1.path }
     }
 
     // MARK: Device window
@@ -627,8 +639,7 @@ package final class CaptureThumbnail: NSObject {
 
     /// The screenshot folder when it is not the Desktop, which has its own item.
     private static func customFolder() -> URL? {
-        guard HostPreferences.defaults.string(forKey: HostPreferences.screenShotSaveLocation) != nil else { return nil }
-        let folder = CaptureFile.screenshotFolder()
+        guard let folder = CaptureFile.configuredScreenshotFolder else { return nil }
         let desktop = CaptureFile.desktop?.lastPathComponent
         return folder.lastPathComponent.caseInsensitiveCompare(desktop ?? "") == .orderedSame ? nil : folder
     }
