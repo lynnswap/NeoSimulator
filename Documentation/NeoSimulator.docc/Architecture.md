@@ -172,8 +172,9 @@ Hub mode.
 | --- | --- |
 | `SimulatorHostController` | Serialize route changes, track renderer ownership, and resolve the Xcode for each device. |
 | `SimulatorManagerModel` | Own observable inventory and its DeviceKit Active values, loading state, and the accepted operation queue. |
-| `DeviceSettingsModel` | Own the selected settings snapshot, cancellable reads, and readback after queued edits. |
-| `BackgroundServicesModel` | Show the selected simulator's background services as launchd last reported them, with accepted changes on top until the readback after each queued change. |
+| `DeviceRegistry` | Keep one stable `DeviceModel` for each device for as long as the inventory lists it. A record leaves only when a source that lists it read successfully without it. An application owns its registry, and each process has its own. |
+| `DeviceModel`, `DeviceSettingsState`, `BackgroundServicesState` | Hold what one device last answered, for everything in the process that presents it: its settings field by field, its background services, its command state, audio routes and location, its health and its last issue. Own that device's accepted changes and their order, independently of other devices. See [Device state](#Device-state). |
+| `ManagerSelection` | Hold which device the manager shows, and keep that device's state current while it does. It holds no device state itself. |
 | `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
 | `ManagerWindowController` | Present the sidebar, device screen pane, and settings inspector in `NSSplitViewController`, own the selection, the toolbar, and the latest placement choice for the selected device, and decide where each opened or restored screen goes. |
 | `DeviceScreenViewController` | Show the selected device's screen or preview in the center pane, with its canvas controls and activity footer; move screens in the order the window accepts them, stopping a move once a later choice replaces it; and return to the preview when that screen closes. |
@@ -196,7 +197,6 @@ Hub mode.
 | `CommandReads` | Stop every read a controller has running while the operations waiting on them finish, so quitting does not cancel an accepted change and an unresponsive child cannot hold it. A stopped read ends as `CancellationError`, and its consumers publish nothing. |
 | `UninterruptedCommands` | Hold the commands that keep running when their callers are cancelled, so that a quit that has waited for them can stop them and bound the rollbacks that follow. |
 | `SimulatorDeviceChannel`, `DeviceIOHub` | Own each device's native requests, one channel per identifier and device-set path for the life of the process: their order, deadlines, cancellation and what is still in flight. See [Native device requests](#Native-device-requests). |
-| `SimulatorDeviceModel`, `SimulatorDeviceRegistry` | Hold what a device last answered, its health and its last issue, one per device, for everything that presents it. |
 | `DeviceToolRunner` | Run a device's selected-Xcode tools one at a time and let its session cancel the running one. |
 | `PasteboardSync` | Exchange copies between the Mac and connected sessions. |
 | `ExternalDisplayChanges` | Serialize display and CarPlay changes across sessions for one device. |
@@ -288,7 +288,7 @@ their deadlines, while requests over a bridge they already reach go on. Stopping
 the device that holds the lookup releases it. Another process has its own
 connection, and so is not affected.
 
-Validating a menu reads `SimulatorDeviceModel` and asks the device nothing. A menu
+Validating a menu reads `DeviceModel` and asks the device nothing. A menu
 that opens, a connection, the session's own changes and a recovery read the guest
 again, one read at a time, and an open menu updates if that changes what it shows.
 Audio route reports coalesce the same way, so a device that does not answer gains
@@ -309,6 +309,41 @@ unknown. Later uninterrupted commands, such as a rollback, each have that grace 
 Everything that waits on a device during a quit is bounded and notes what it left
 in `TerminationAccount`; the quit's owner reports those notes and what
 `DeviceIOHub` still holds, logging them and showing them for a limited time.
+
+## Device state
+
+A `DeviceRegistry` holds one `DeviceModel` per device in a process, so the
+inspector, a screen's commands and an external client read the same values and
+selecting a device again blanks nothing and reads nothing. Choosing what to show
+stays outside: `keepCurrent(_:)` keeps a device's state current until its result is
+released, and what nothing keeps current is read when something next does.
+
+Settings read in groups. Each group publishes as it finishes, independently of the
+others, and changes only the properties whose values changed, so a view updates only
+for what it read. A failed read keeps the group's values and reports its reason in
+`status(of:)`; `unsupported` clears only that group. Only the next invalidation reads
+a failed group again.
+
+A read that began before an accepted change does not answer for the group it changed,
+and a read that began before the device restarted or changed what it can answer for
+answers for nothing. Each accepted change shows at once and stays attached to its
+device, which runs its changes in the order they were accepted, without waiting for
+any other device. Its outcome is what the change's own caller receives, and what
+confirms it is one read after the last change accepted for the device, even if nothing
+shows the device any longer.
+
+Inventory reads list which sources answered. A failed source says nothing of what
+only it listed, so those records and their state stay; only a successful read of
+every source that listed a device removes it. A device that returns after that is a
+new device. An inventory change that alters no answer, such as a new name, asks the
+device nothing.
+
+Reads run on an invalidation and never by a timer: a native report, a session's own
+command, the device changing state, an explicit refresh, or the application coming to
+the foreground. Invalidations that arrive while a read runs coalesce into one read
+after it. A value that something outside this process changes, without a signal this
+process can observe, stays as it was last read until one of those happens. That
+includes another process's registry, which shares no objects with this one.
 
 ## Failure ownership
 

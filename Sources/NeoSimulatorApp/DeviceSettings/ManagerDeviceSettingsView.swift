@@ -27,23 +27,23 @@ struct ManagerDeviceSettingsView: View {
     private var settingsForm: some View {
         Form {
             Section {
-                picker("Appearance", symbol: "circle.lefthalf.filled", value: model.binding(for: \.appearance), choices: model.appearanceChoices)
-                slider("Liquid Glass", symbol: "drop.halffull", value: model.binding(for: \.liquidGlassOpacity), range: 0...1)
-                picker("Color Filter", symbol: "camera.filters", value: model.binding(for: \.colorFilter), choices: model.colorFilterChoices)
+                picker("Appearance", symbol: "circle.lefthalf.filled", group: .appearance, value: model.binding(for: \.appearance), choices: model.appearanceChoices)
+                slider("Liquid Glass", symbol: "drop.halffull", group: .accessibility, value: model.binding(for: \.liquidGlassOpacity), range: 0...1)
+                picker("Color Filter", symbol: "camera.filters", group: .accessibility, value: model.binding(for: \.colorFilter), choices: model.colorFilterChoices)
                 if model.colorFilterIntensity != nil {
-                    slider("Intensity", symbol: "slider.horizontal.3", value: model.binding(for: \.colorFilterIntensity), range: 0.25...1)
+                    slider("Intensity", symbol: "slider.horizontal.3", group: .accessibility, value: model.binding(for: \.colorFilterIntensity), range: 0.25...1)
                 }
-                picker("Display Zoom", symbol: "rectangle.inset.filled", value: model.binding(for: \.displayZoom), choices: model.displayZoomChoices)
+                picker("Display Zoom", symbol: "rectangle.inset.filled", group: .displayZoom, value: model.binding(for: \.displayZoom), choices: model.displayZoomChoices)
                     .help("Applying Display Zoom restarts the device's interface.")
-                slider("Text Size", symbol: "textformat.size", value: model.binding(for: \.textSize), range: 0...11,
+                slider("Text Size", symbol: "textformat.size", group: .textSize, value: model.binding(for: \.textSize), range: 0...11,
                        tickMarks: 12, help: model.textSizeDescription)
-                toggle("Bold Text", symbol: "bold", value: model.binding(for: \.boldText))
-                toggle("Reduce Motion", symbol: "figure.walk.motion", value: model.binding(for: \.reduceMotion))
+                toggle("Bold Text", symbol: "bold", group: .boldText, value: model.binding(for: \.boldText))
+                toggle("Reduce Motion", symbol: "figure.walk.motion", group: .accessibility, value: model.binding(for: \.reduceMotion))
                 slowAnimationsRow
-                toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", value: model.binding(for: \.increaseContrast))
-                toggle("Show Borders", symbol: "square.dashed", value: model.binding(for: \.showBorders))
-                toggle("Reduce Transparency", symbol: "square.on.square", value: model.binding(for: \.reduceTransparency))
-                toggle("VoiceOver", symbol: "person.wave.2", value: model.binding(for: \.voiceOver))
+                toggle("Increase Contrast", symbol: "circle.lefthalf.striped.horizontal", group: .contrast, value: model.binding(for: \.increaseContrast))
+                toggle("Show Borders", symbol: "square.dashed", group: .accessibility, value: model.binding(for: \.showBorders))
+                toggle("Reduce Transparency", symbol: "square.on.square", group: .accessibility, value: model.binding(for: \.reduceTransparency))
+                toggle("VoiceOver", symbol: "person.wave.2", group: .voiceOver, value: model.binding(for: \.voiceOver))
             }
             Section {
                 LabeledContent {
@@ -61,13 +61,14 @@ struct ManagerDeviceSettingsView: View {
                 }
             }
             Section {
-                slider("Sound", symbol: "speaker.wave.2", value: model.binding(for: \.volume), range: 0...100)
-                picker("Output", symbol: "speaker", value: model.binding(for: \.audioOutput), choices: model.audioOutputChoices)
-                picker("Input", symbol: "mic", value: model.binding(for: \.audioInput), choices: model.audioInputChoices)
+                slider("Sound", symbol: "speaker.wave.2", group: .audio, value: model.binding(for: \.volume), range: 0...100)
+                picker("Output", symbol: "speaker", group: .audio, value: model.binding(for: \.audioOutput), choices: model.audioOutputChoices)
+                picker("Input", symbol: "mic", group: .audio, value: model.binding(for: \.audioInput), choices: model.audioInputChoices)
             }
             if let message = model.message {
                 Section { Text(message).font(.caption).foregroundStyle(.secondary).help(model.issue) }
             }
+            Section { Button("Refresh", action: model.refresh) }
         }
         .formStyle(.grouped)
         .labelStyle(.titleAndIcon)
@@ -97,7 +98,7 @@ struct ManagerDeviceSettingsView: View {
     }
 
     @ViewBuilder
-    private func picker(_ title: String, symbol: String, value: Binding<String>?, choices: [DeviceSettingsPanelModel.Choice]) -> some View {
+    private func picker(_ title: String, symbol: String, group: DeviceSettingsGroup, value: Binding<String>?, choices: [DeviceSettingsPanelModel.Choice]) -> some View {
         if let value {
             Picker(selection: value) {
                 if !choices.contains(where: { $0.id == value.wrappedValue }) { Text("Unavailable").tag(value.wrappedValue) }
@@ -106,21 +107,21 @@ struct ManagerDeviceSettingsView: View {
             .disabled(choices.isEmpty)
             .buttonStyle(.borderless)
         } else {
-            unavailable(title, symbol: symbol)
+            placeholder(title, symbol: symbol, group: group)
         }
     }
 
     @ViewBuilder
-    private func toggle(_ title: String, symbol: String, value: Binding<Bool>?) -> some View {
+    private func toggle(_ title: String, symbol: String, group: DeviceSettingsGroup, value: Binding<Bool>?) -> some View {
         if let value {
             Toggle(isOn: value) { Label(title, systemImage: symbol) }.toggleStyle(.switch)
         } else {
-            unavailable(title, symbol: symbol)
+            placeholder(title, symbol: symbol, group: group)
         }
     }
 
     @ViewBuilder
-    private func slider(_ title: String, symbol: String, value: Binding<Double>?, range: ClosedRange<Double>,
+    private func slider(_ title: String, symbol: String, group: DeviceSettingsGroup, value: Binding<Double>?, range: ClosedRange<Double>,
                         tickMarks: Int = 0, help: String = "") -> some View {
         if let value {
             LabeledContent {
@@ -132,8 +133,12 @@ struct ManagerDeviceSettingsView: View {
                 Label(title, systemImage: symbol).layoutPriority(1)
             }
         } else {
-            unavailable(title, symbol: symbol)
+            placeholder(title, symbol: symbol, group: group)
         }
+    }
+
+    private func placeholder(_ title: String, symbol: String, group: DeviceSettingsGroup) -> some View {
+        LabeledContent { Text(model.placeholder(for: group)).foregroundStyle(.secondary) } label: { Label(title, systemImage: symbol) }
     }
 
     private func unavailable(_ title: String, symbol: String) -> some View {

@@ -6,7 +6,7 @@ import NeoSimulatorHostSupport
 enum CoreDeviceInventoryProbe {
     static func main() async {
         do {
-            let data = try await SimulatorHostController.readCoreDeviceInventory()
+            let data = try await LiveDeviceInventory.readCoreDevices()
             let devices = try CoreDeviceInventoryDecoder.decode(data)
             print("Decoded \(devices.count) CoreDevice records.")
         } catch {

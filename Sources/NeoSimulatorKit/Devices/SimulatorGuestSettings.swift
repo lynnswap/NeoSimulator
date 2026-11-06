@@ -1,7 +1,6 @@
 import ABIBridge
 import Foundation
 import NeoSimulatorDeviceIO
-import NeoSimulatorKit
 import XPC
 
 /// Settings of the simulator that owns the selected screen, independent of CoreDevice discovery.
@@ -33,21 +32,6 @@ package final class SimulatorGuestSettings {
         return try await preparation.value
     }
 
-    package func execute(_ arguments: [String]) async throws -> Data {
-        guard arguments.count == 3 else { throw CLIError.configuration("guest-settings-operation", "Expected a simulator settings operation.") }
-        switch arguments[1] {
-        case "read":
-            guard let query = SimulatorSettingsBackend.Query(rawValue: arguments[2]) else {
-                throw CLIError.configuration("guest-settings-operation", "Unknown simulator settings query.")
-            }
-            return try JSONEncoder().encode(await read(query, device: selectedDevice()))
-        case "set":
-            try await set(JSONDecoder().decode(SimulatorDeviceSetting.self, from: Data(arguments[2].utf8)), device: selectedDevice())
-            return Data()
-        default: throw CLIError.configuration("guest-settings-operation", "Unknown simulator settings operation.")
-        }
-    }
-
     private func service(device: SimulatorDevice) async throws -> GuestSettingsActions {
         if let actionPreparation { return try await actionPreparation.value }
         let preparation = Task { [device] in
@@ -57,33 +41,39 @@ package final class SimulatorGuestSettings {
         return try await preparation.value
     }
 
-    private func read(_ query: SimulatorSettingsBackend.Query, device: SimulatorDevice) async -> SimulatorDeviceSettings {
-        var result = SimulatorDeviceSettings()
-        func capture<T>(_ name: String, _ read: () async throws -> T) async -> T? {
-            guard !Task.isCancelled else { return nil }
-            do { return try await read() }
-            catch {
-                if !Task.isCancelled { result.issues.append("\(name): \(error.localizedDescription)") }
-                return nil
+    /// Reads one group. A value that fails names itself and keeps what is known of it; the rest of the group still applies.
+    package func read(_ group: DeviceSettingsGroup) async throws -> DeviceSettingsGroupRead {
+        let device = try await selectedDevice()
+        var failures: [String] = []
+        var changes: [@Sendable (inout SimulatorDeviceSettings) -> Void] = []
+        func capture<T: Sendable>(_ name: String, _ read: () async throws -> T,
+                                  set: @escaping @Sendable (inout SimulatorDeviceSettings, T) -> Void) async {
+            guard !Task.isCancelled else { return }
+            do {
+                let value = try await read()
+                changes.append { set(&$0, value) }
+            } catch {
+                if !Task.isCancelled { failures.append("\(name): \(error.localizedDescription)") }
             }
         }
         func get(_ declaration: String) async throws -> DeviceInspectorValue {
             try await service(device: device).get(declaration)
         }
-        switch query {
-        case .simulatorContentSize:
-            result.contentSize = await capture("content_size") {
+        switch group {
+        case .textSize:
+            await capture("content_size", {
                 let category = try await device.contentSizeCategory()
-                guard (1...SimulatorDeviceSettings.contentSizes.count).contains(category) else {
+                let sizes = DeviceContentSize.allCases
+                guard (1...sizes.count).contains(category) else {
                     throw CLIError.unavailable("content-size", "The simulator returned an unknown text size: \(category).")
                 }
-                return SimulatorDeviceSettings.contentSizes[category - 1]
-            }
-        case .appearance:
-            result.lookAndFeel = await capture("look and feel") {
+                return sizes[category - 1]
+            }, set: { $0.contentSize = $1 })
+        case .accessibility:
+            await capture("look and feel", {
                 try await get("GetDeviceLookAndFeelActionDeclaration")["lookAndFeel"]?["name"]?.string
-            } ?? nil
-            if let supported = await capture("supported looks and feels", {
+            }, set: { $0.lookAndFeel = $1 })
+            await capture("supported looks and feels", {
                 let values = try await get("GetSupportedLooksAndFeelsActionDeclaration")["looksAndFeels"]?.array ?? []
                 var supported: [SimulatorLookAndFeel] = []
                 for choice in SimulatorLookAndFeel.allCases {
@@ -91,64 +81,56 @@ package final class SimulatorGuestSettings {
                     if values.contains(try DeviceInspectorValue.propertyList(native)) { supported.append(choice) }
                 }
                 return supported
-            }) {
-                result.supportedLooksAndFeels = supported
-            }
-            result.liquidGlassOpacity = await capture("Liquid Glass") {
+            }, set: { $0.supportedLooksAndFeels = $1 })
+            await capture("Liquid Glass", {
                 try await get("GetLiquidGlassConfigurationActionDeclaration")["configuration"]?["opacity"]?.numeric
-            } ?? nil
-            if let filter = await capture("color filter", { try await get("GetColorFilterActionDeclaration")["colorFilter"] }) {
-                if filter?["enabled"]?.boolean == false { result.colorFilter = SimulatorColorFilter.none }
-                else if let name = filter?["filterType"]?["name"]?.string {
-                    result.colorFilter = SimulatorColorFilter(rawValue: name.lowercased())
-                }
-                if filter?["enabled"]?.boolean == true, result.colorFilter == nil {
-                    result.issues.append("color filter: The device returned an unrecognized enabled color filter.")
-                }
-                result.colorFilterIntensity = filter?["intensity"]?.numeric
-            }
-            result.reduceMotion = await capture("Reduce Motion") {
+            }, set: { $0.liquidGlassOpacity = $1 })
+            await capture("color filter", { try await get("GetColorFilterActionDeclaration")["colorFilter"] }, set: { settings, filter in
+                if filter?["enabled"]?.boolean == false { settings.colorFilter = SimulatorColorFilter.none }
+                else if let name = filter?["filterType"]?["name"]?.string { settings.colorFilter = SimulatorColorFilter(rawValue: name.lowercased()) }
+                settings.colorFilterIntensity = filter?["intensity"]?.numeric
+            })
+            await capture("Reduce Motion", {
                 try await get("GetReduceMotionActionDeclaration")["reduceMotion"]?["enabled"]?.boolean
-            } ?? nil
-            result.showBorders = await capture("Show Borders") {
+            }, set: { $0.reduceMotion = $1 })
+            await capture("Show Borders", {
                 try await get("GetShowBordersActionDeclaration")["showBorders"]?["enabled"]?.boolean
-            } ?? nil
-            result.reduceTransparency = await capture("Reduce Transparency") {
+            }, set: { $0.showBorders = $1 })
+            await capture("Reduce Transparency", {
                 try await get("GetReduceTransparencyActionDeclaration")["reduceTransparency"]?["enabled"]?.boolean
-            } ?? nil
+            }, set: { $0.reduceTransparency = $1 })
         case .voiceOver:
-            result.voiceOver = await capture("VoiceOver") {
+            await capture("VoiceOver", {
                 try await get("GetVoiceOverActionDeclaration")["voiceOverConfiguration"]?["enabled"]?.boolean
-            } ?? nil
+            }, set: { $0.voiceOver = $1 })
         case .audio:
-            result.volume = await capture("volume") {
+            await capture("volume", {
                 let volume = try await device.notificationState("com.apple.springboard.volumestate")
                 guard volume <= 100 else {
                     throw CLIError.io("audio-volume", "The simulator returned a volume outside 0...100.")
                 }
                 return Int(volume)
-            }
-            if let state = await capture("audio routes", {
+            }, set: { $0.volume = $1 })
+            await capture("audio routes", {
                 let audio = try await SimulatorAudioInterface(runtime: .shared)
                 let connection = try await audio.connect(to: device, changed: { _ in })
                 defer { connection.disconnect() }
                 return try await connection.state()
-            }) {
-                result.updateAudioRoutes(state)
-            }
-        default:
-            result.issues.append("settings: This query uses the simulator command-line tools.")
+            }, set: { $0.updateAudioRoutes($1) })
+        case .appearance, .contrast, .displayZoom, .boldText, .location:
+            throw CLIError.configuration("guest-settings-operation", "This group uses the simulator command-line tools.")
         }
-        return result
+        return .values(group, failures: failures) { [changes] settings in changes.forEach { $0(&settings) } }
     }
 
-    private func set(_ setting: SimulatorDeviceSetting, device: SimulatorDevice) async throws {
+    package func set(_ setting: DeviceSettingChange) async throws {
+        let device = try await selectedDevice()
         func change(_ declaration: String, _ input: [String: Any]) async throws {
             try await service(device: device).set(declaration, input: input)
         }
         switch setting {
         case .contentSize(let value):
-            guard let index = SimulatorDeviceSettings.contentSizes.firstIndex(of: value) else {
+            guard let index = DeviceContentSize.allCases.firstIndex(of: value) else {
                 throw CLIError.configuration("guest-settings-operation", "Unknown text size: \(value).")
             }
             try await device.setContentSizeCategory(index + 1)

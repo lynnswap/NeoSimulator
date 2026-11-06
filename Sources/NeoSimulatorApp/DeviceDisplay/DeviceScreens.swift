@@ -171,7 +171,7 @@ final class DeviceScreens {
         if displayXcodeURL != displayURL { displayXcodeURL = displayURL }
         let sourceURL = request.xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
         let context = try await context(for: sourceURL)
-        guard case .simulator(let udid, let path) = request.deviceID else { return }
+        guard case .simulator(let udid, let path) = request.deviceID.destination else { return }
         let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
         var previousPresentation: SimulatorScreenRestoration.Presentation?
         for (url, previous) in contexts where url != sourceURL {
@@ -215,6 +215,7 @@ final class DeviceScreens {
 
         var configuration = SimulatorContextConfiguration()
         configuration.pasteboardSync = pasteboardSync
+        configuration.deviceRegistry = model.registry
         configuration.offersLifetimeChoice = true
         configuration.onOpen = { identifier in
             HostPreferences.defaults.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
@@ -274,7 +275,7 @@ final class DeviceScreens {
         do {
             for device in devices {
                 guard case .simulator(let simulator) = device, device.supports(action), entries[device.id] != nil,
-                      case .simulator(let udid, let path) = device.id else { continue }
+                      case .simulator(let udid, let path) = device.id.destination else { continue }
                 let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
                 guard let context = contexts.values.first(where: { !$0.isStopped && $0.screen(for: identifier) != nil }) else { continue }
                 switch action {
@@ -304,7 +305,7 @@ final class DeviceScreens {
         guard action == .restart || action == .erase else { return }
         var failures: [String] = []
         for device in devices {
-            guard case .simulator(let udid, let path) = device.id else { continue }
+            guard case .simulator(let udid, let path) = device.id.destination else { continue }
             let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
             guard let context = contexts.values.first(where: { !$0.isStopped && $0.screen(for: identifier) != nil }) else { continue }
             do { try await context.finishManagedRestart(identifier) }

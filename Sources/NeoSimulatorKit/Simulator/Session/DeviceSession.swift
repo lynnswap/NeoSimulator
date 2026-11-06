@@ -245,6 +245,22 @@ package enum LocationSelection: Equatable {
     }
 }
 
+extension SimulatorHostDevice {
+    /// A record of a device that a session shows, for a process that has not read an inventory.
+    package init(presenting device: AvailableDevice, ownerXcodeURL: URL?) {
+        let family = switch DeviceCapabilities.Family(rawValue: device.productFamily) {
+        case .iPad: "iPad"
+        case .tv: "Apple TV"
+        case .watch: "Apple Watch"
+        case .vision: "Apple Vision"
+        case .iPhone, nil: "iPhone"
+        }
+        self.init(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
+                  runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName, productFamily: family,
+                  state: device.isBooted ? "Booted" : "Shutdown", ownerXcodeURL: ownerXcodeURL, deviceSetPath: device.deviceSetPath)
+    }
+}
+
 /// Shared desired locations survive a renderer handoff without replacing another device's choice.
 package struct DeviceLocationPreset {
     package let selection: LocationSelection
@@ -412,7 +428,9 @@ package final class DeviceSession {
     }
     @ObservationIgnored package let tools: DeviceTools
     /// What the device last reported, which every presentation of it shares.
-    @ObservationIgnored package let model: SimulatorDeviceModel
+    @ObservationIgnored package let model: DeviceModel
+    /// This session's presentation of `model`, until it disconnects.
+    @ObservationIgnored private var presentation: UUID?
     /// Follows the device's recoveries until this session disconnects.
     @ObservationIgnored private var guestRecovery: Task<Void, Never>?
     @ObservationIgnored private var isReapplyingGuestSettings = false
@@ -481,15 +499,17 @@ package final class DeviceSession {
     /// The guest's interface orientation angle last observed, so that only its
     /// changes rotate the display. A manual rotation does not change it.
     @ObservationIgnored private var guestAngle: Double?
-    /// The location routes the device's runtime listed when this session connected.
-    package private(set) var locationScenarios: [LocationScenario] = []
-    /// Last location applied by the host; CoreSimulator does not report the guest's location.
-    package private(set) var location: LocationSelection?
+    /// The location routes the device's runtime listed.
+    package var locationScenarios: [LocationScenario] { model.locationScenarios }
+    /// Last location chosen for the device; CoreSimulator does not report the guest's location.
+    package var location: LocationSelection? { model.location }
+    /// Whether this session has a location to send when the device recovers: the model can know one this session has not sent.
+    @ObservationIgnored private var hasChosenLocation = false
 
     /// The pasteboard is untouched until a transfer or synchronization starts.
     /// `externalScreenTimeout` defaults to the host's wait for the primary screen.
     package init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
-         tools: DeviceTools, model: SimulatorDeviceModel = SimulatorDeviceModel(), recordings: RecordingStore = RecordingStore(),
+         tools: DeviceTools, model: DeviceModel? = nil, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
          openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
          preferences: any PreferenceStore = HostPreferences.defaults,
@@ -505,6 +525,7 @@ package final class DeviceSession {
         self.capabilities = capabilities
         self.primaryDisplay = display
         self.tools = tools
+        let model = model ?? DeviceModel(inventory: .simulator(SimulatorHostDevice(presenting: device, ownerXcodeURL: nil)), source: LiveDeviceStateSource())
         self.model = model
         self.preferences = preferences
         self.hostKeyboardLanguage = hostKeyboardLanguage
@@ -517,6 +538,7 @@ package final class DeviceSession {
         else { makeRecordingProcess = { tools.recordingProcess(to: $0, mask: $1, codec: codec, displayID: $2) } }
         self.openLog = openLog
         if let appResizeTransport { prepareAppResize(appResizeTransport) }
+        presentation = model.beginPresentation { [weak self] in self?.refreshGuestState() }
         let recoveries = model.recoveries()
         guestRecovery = Task { [weak self] in
             for await _ in recoveries {
@@ -905,6 +927,7 @@ package final class DeviceSession {
 
     package func toggleAppearance() async throws {
         guard canPerformCommands else { return }
+        defer { model.settings.invalidate([.appearance]) }
         try await display.toggleAppearance()
     }
 
@@ -985,6 +1008,7 @@ package final class DeviceSession {
     /// Changes text size, clamped to the supported accessibility range, as one request.
     package func changeTextSize(by delta: Int) async throws {
         guard canPerformCommands else { return }
+        defer { model.settings.invalidate([.textSize]) }
         try await display.updateContentSizeCategory { category in
             let sizes = 1...12
             guard sizes.contains(category) else {
@@ -997,6 +1021,7 @@ package final class DeviceSession {
     /// Flips Increase Contrast as one request.
     package func toggleIncreaseContrast() async throws {
         guard canPerformCommands else { return }
+        defer { model.settings.invalidate([.contrast]) }
         try await display.updateIncreaseContrast { mode in
             switch mode {
             case 1: true
@@ -1229,7 +1254,8 @@ package final class DeviceSession {
     /// Reflects a location already applied by the manager without applying it again.
     package func refreshLocationSelection() throws {
         if let preset = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: locationScenarios) {
-            location = preset.selection
+            hasChosenLocation = true
+            model.settings.observe(location: preset.selection)
         }
     }
 
@@ -1239,8 +1265,8 @@ package final class DeviceSession {
         // Right after a boot, listing takes up to a second. The session can
         // end meanwhile, and a choice made meanwhile is kept.
         guard !isDisconnected else { return }
-        locationScenarios = scenarios
-        guard !scenarios.isEmpty, location == nil else { return }
+        model.settings.observe(locationScenarios: scenarios)
+        guard !scenarios.isEmpty, !hasChosenLocation else { return }
         if let preset = try DeviceLocationPreset.load(for: device.identity.preferenceIdentifier, among: scenarios) {
             try await use(preset.selection, coordinate: preset.coordinate, savesDevicePreset: false)
         } else {
@@ -1266,7 +1292,8 @@ package final class DeviceSession {
     // Save before applying so failure preserves the choice for retry.
     private func use(_ selection: LocationSelection, coordinate: (latitude: Double, longitude: Double)? = nil,
                      savesDevicePreset: Bool = true) async throws {
-        location = selection
+        hasChosenLocation = true
+        model.settings.observe(location: selection)
         selection.save()
         let coordinate = try coordinate ?? savedCustomCoordinate(for: selection)
         if savesDevicePreset {
@@ -1277,7 +1304,7 @@ package final class DeviceSession {
 
     /// Sends the device its current location again, whose choice is already saved; with no choice yet, restores it.
     private func reapplyLocation() async throws {
-        guard let location else { return try await restoreLocation() }
+        guard hasChosenLocation, let location else { return try await restoreLocation() }
         try await send(location, coordinate: savedCustomCoordinate(for: location))
     }
 
@@ -1502,7 +1529,7 @@ package final class DeviceSession {
 
     /// The device's audio routes as its audio port last reported them; nil
     /// until the port connects, and when it cannot.
-    package private(set) var audioRoutes: AudioRouteState?
+    package var audioRoutes: AudioRouteState? { model.audioRoutes }
     @ObservationIgnored private var audioConnection: (any SimulatorAudioRoutes)?
     /// Why the device's audio port could not connect.
     @ObservationIgnored private var audioConnectionFailure: Error?
@@ -1557,7 +1584,7 @@ package final class DeviceSession {
             do {
                 let state = try await audioConnection.state()
                 guard !isDisconnected else { return }
-                audioRoutes = state
+                model.observe(audioRoutes: state)
             } catch {
                 guard !isDisconnected, !error.isCancellation else { return }
                 failure(SimulatorError.operation("Could not read the audio routes of \(device.name): \(error.localizedDescription)"))
@@ -2032,7 +2059,8 @@ package final class DeviceSession {
         isConnected = false
         guestRecovery?.cancel()
         guestRecovery = nil
-        model.forgetGuestState()
+        if let presentation { model.endPresentation(presentation) }
+        presentation = nil
         operation?.cancel()
         tools.cancel()
         recording?.stop()

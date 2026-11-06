@@ -132,7 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] notification in
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   ["dev.lynnswap.NeoSimulator", "com.apple.dt.Xcode", "com.apple.dt.Devices"].contains(app.bundleIdentifier ?? "") else { return }
-            Task { @MainActor in await self?.model.refresh() }
+            Task { @MainActor in
+                if app == NSRunningApplication.current { self?.model.revalidateDevices() }
+                await self?.model.refresh()
+            }
         }
         startManager()
         startInventoryObservation()

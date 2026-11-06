@@ -15,30 +15,30 @@ final class DeviceSettingsPanelModel {
 
     let preferences: SimulatorPreferences
     @ObservationIgnored private let manager: SimulatorManagerModel
-    @ObservationIgnored private let source: DeviceSettingsModel
+    @ObservationIgnored private let selection: ManagerSelection
     @ObservationIgnored private let screens: DeviceScreens
     @ObservationIgnored private let showCustomLocation: () -> Void
 
     init(manager: SimulatorManagerModel, screens: DeviceScreens, preferences: SimulatorPreferences,
          customLocation: @escaping () -> Void) {
         self.manager = manager
-        source = manager.settings
+        selection = manager.selection
         self.screens = screens
         self.preferences = preferences
         showCustomLocation = customLocation
     }
 
-    private var device: InventoryDevice? { source.device }
-    private var values: SimulatorDeviceSettings? { source.settings }
+    private var device: DeviceModel? { selection.device }
+    private var values: DeviceSettingsState? { selection.device?.settings }
     private var screen: DeviceScreen? {
-        guard let device, case .simulator = device else { return nil }
+        guard let device, device.id.isSimulator else { return nil }
         return screens.screen(for: device.id)
     }
     var content: Content {
-        if source.selectionCount > 1 { return .multipleSelection }
-        guard source.selectionCount == 1, let device else { return .noSelection }
+        if selection.count > 1 { return .multipleSelection }
+        guard selection.count == 1, let device else { return .noSelection }
         guard device.canInspectSettings else { return .unavailable }
-        if values == nil && source.issue == nil { return .loading }
+        if device.settings.isLoading { return .loading }
         return hasSettings ? .settings : .unavailable
     }
     private var hasSettings: Bool {
@@ -49,22 +49,28 @@ final class DeviceSettingsPanelModel {
             || values.reduceTransparency != nil || values.voiceOver != nil || values.locationAvailable
             || values.volume != nil || (values.audioOutputDevice != nil && !values.audioOutputDevices.isEmpty)
             || (values.audioInputDevice != nil && !values.audioInputDevices.isEmpty)
+            || DeviceSettingsGroup.allCases.contains { values.status(of: $0) == .unread }
     }
+    /// What a setting's row says while it has no value: its group may still answer.
+    func placeholder(for group: DeviceSettingsGroup) -> String {
+        values?.status(of: group) == .unread ? "Loading…" : "Unavailable"
+    }
+    func refresh() { device?.revalidate(.settings) }
     var holdsEdits: Bool {
         device.map { !manager.canEditSettings(for: $0.id) } ?? true
     }
-    var issue: String { source.issue ?? values?.issues.joined(separator: "\n") ?? "" }
+    var issue: String { values?.failures.joined(separator: "\n") ?? "" }
     var message: String? {
         guard let device else { return "Select a device to change its settings." }
-        switch device {
+        switch device.inventory {
         case .simulator(let simulator):
             guard simulator.isAvailable else { return "Install a compatible runtime to use this simulator’s settings." }
             guard simulator.state == "Booted" else { return "Start this simulator to change its settings." }
         case .remote(let remote):
             guard remote.isAvailable else { return "Connect this device to change its settings." }
         }
-        if source.issue != nil || values?.issues.isEmpty == false {
-            return hasSettings ? "Some settings could not be loaded for this device." : "Settings could not be loaded for this device."
+        if values?.failures.isEmpty == false {
+            return hasSettings ? "Some settings could not be read for this device, and may be out of date." : "Settings could not be loaded for this device."
         }
         return nil
     }
@@ -88,11 +94,14 @@ final class DeviceSettingsPanelModel {
         }
     }
 
-    private func apply(_ setting: SimulatorDeviceSetting) {
+    private func apply(_ setting: DeviceSettingChange) {
         guard let device else { return }
         manager.setDeviceSetting(setting, for: device.id)
     }
-    var appearance: String? { get { values?.appearance } set { if let newValue { apply(.appearance(newValue)) } } }
+    var appearance: String? {
+        get { values?.appearance?.rawValue }
+        set { if let newValue, let value = DeviceAppearance(rawValue: newValue) { apply(.appearance(value)) } }
+    }
     var liquidGlassOpacity: Double? { get { values?.liquidGlassOpacity } set { if let newValue { apply(.liquidGlassOpacity(newValue)) } } }
     var colorFilter: String? {
         get { values?.colorFilter?.rawValue }
@@ -110,15 +119,15 @@ final class DeviceSettingsPanelModel {
         set { if let newValue, let mode = UInt64(newValue) { apply(.displayZoom(mode)) } }
     }
     var textSize: Double? {
-        get { values?.contentSize.flatMap { SimulatorDeviceSettings.contentSizes.firstIndex(of: $0) }.map(Double.init) }
+        get { values?.contentSize.flatMap { DeviceContentSize.allCases.firstIndex(of: $0) }.map(Double.init) }
         set {
             guard let newValue else { return }
             let index = Int(newValue.rounded())
-            guard SimulatorDeviceSettings.contentSizes.indices.contains(index) else { return }
-            apply(.contentSize(SimulatorDeviceSettings.contentSizes[index]))
+            guard DeviceContentSize.allCases.indices.contains(index) else { return }
+            apply(.contentSize(DeviceContentSize.allCases[index]))
         }
     }
-    var textSizeDescription: String { values?.contentSize?.split(separator: "-").map { $0.capitalized }.joined(separator: " ") ?? "" }
+    var textSizeDescription: String { values?.contentSize?.rawValue.split(separator: "-").map { $0.capitalized }.joined(separator: " ") ?? "" }
     var boldText: Bool? { get { values?.boldText } set { if let newValue { apply(.boldText(newValue)) } } }
     var reduceMotion: Bool? { get { values?.reduceMotion } set { if let newValue { apply(.reduceMotion(newValue)) } } }
     var increaseContrast: Bool? { get { values?.increaseContrast } set { if let newValue { apply(.increaseContrast(newValue)) } } }
@@ -149,10 +158,10 @@ final class DeviceSettingsPanelModel {
     var locationAvailable: Bool { values?.locationAvailable == true }
     var locationTitle: String {
         switch values?.locationMode {
-        case "none": "None"
-        case "custom": "Custom"
-        case "scenario": locationScenarios.first { $0.name == values?.locationScenario }?.displayName ?? "Unavailable"
-        default: "Set Location"
+        case .some(.none): "None"
+        case .some(.custom): "Custom"
+        case .some(.scenario): locationScenarios.first { $0.name == values?.locationScenario }?.displayName ?? "Unavailable"
+        case nil: "Set Location"
         }
     }
     func clearLocation() { apply(.clearLocation) }
@@ -160,7 +169,7 @@ final class DeviceSettingsPanelModel {
     func customLocation() { showCustomLocation() }
 
     var slowAnimationsControl: SlowAnimationsControl {
-        guard case .simulator = device else { return .hidden }
+        guard device?.id.isSimulator == true else { return .hidden }
         guard let capabilities = screen?.simulatorCapabilities else { return .unavailable }
         return capabilities.supportsFeature(DeviceCapabilities.slowMotionStateful) ? .toggle : .button
     }

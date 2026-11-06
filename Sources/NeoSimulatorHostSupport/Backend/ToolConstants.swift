@@ -8,8 +8,6 @@ extension ToolConstants {
     package static let deviceHubBundleIdentifier = "com.apple.dt.Devices"
     package static let deviceKitBundleIdentifier = "com.apple.dt.DeviceKit"
     package static let simulatorBundleIdentifier = "com.apple.iphonesimulator"
-    package static let neoManagerBundleIdentifier = "dev.lynnswap.NeoSimulator"
-    package static let neoHostBundleIdentifier = "dev.lynnswap.NeoSimulator.Renderer"
     package static let coreSimulatorBundleIdentifier = "com.apple.CoreSimulator"
     package static let coreDeviceBundleIdentifier = "com.apple.CoreDevice"
     package static let simctlBundleIdentifier = "com.apple.CoreSimulator.simctl"
@@ -19,12 +17,6 @@ extension ToolConstants {
     package static let simulatorKitBundleIdentifier = "com.apple.SimulatorKit"
     package static let idePlaygroundSimulatorBundleIdentifier =
         "com.apple.dt.IDE.IDEPlaygroundSimulator"
-
-    package static var managerDefaults: UserDefaults? {
-        // Foundation rejects the current app's bundle identifier as a suite name.
-        Bundle.main.bundleIdentifier == neoManagerBundleIdentifier
-            ? .standard : UserDefaults(suiteName: neoManagerBundleIdentifier)
-    }
 
     package static let xcodePreference = ManagedPreference(
         domain: "com.apple.dt.Xcode",

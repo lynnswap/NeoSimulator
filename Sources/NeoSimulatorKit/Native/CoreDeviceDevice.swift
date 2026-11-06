@@ -1,54 +1,5 @@
 import Foundation
 
-/// CoreDevice identifiers are command destinations; simulator UDIDs also retain their device-set identity.
-package enum DeviceInventoryID: Hashable, Sendable, Codable {
-    case simulator(udid: String, deviceSetPath: String?)
-    case coreDevice(String)
-
-    private enum CodingKeys: String, CodingKey { case identifier, deviceSetPath, coreDeviceIdentifier }
-    package init(from decoder: any Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        if let identifier = try values.decodeIfPresent(String.self, forKey: .coreDeviceIdentifier) {
-            self = .coreDevice(identifier)
-        } else {
-            self = .simulator(udid: try values.decode(String.self, forKey: .identifier),
-                              deviceSetPath: try values.decodeIfPresent(String.self, forKey: .deviceSetPath))
-        }
-    }
-    package func encode(to encoder: any Encoder) throws {
-        var values = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .simulator(let identifier, let path):
-            try values.encode(identifier, forKey: .identifier)
-            try values.encodeIfPresent(path, forKey: .deviceSetPath)
-        case .coreDevice(let identifier): try values.encode(identifier, forKey: .coreDeviceIdentifier)
-        }
-    }
-
-    package var sortKey: String {
-        switch self {
-        case .simulator(let identifier, let path): "simulator:\(identifier):\(path ?? "")"
-        case .coreDevice(let identifier): "coredevice:\(identifier)"
-        }
-    }
-
-    package var simulatorAddress: (identifier: String, deviceSetPath: String?) {
-        get throws {
-            guard case .simulator(let identifier, let path) = self else {
-                throw CLIError.configuration("simulator-device", "Choose a simulator for this operation.")
-            }
-            return (identifier, path)
-        }
-    }
-
-}
-
-package enum DeviceInventoryKind: Equatable, Sendable {
-    case simulator, physical, virtualMachine
-    /// An observed CoreDevice reality that this client does not classify yet.
-    case other(String)
-}
-
 /// The fields of CoreDevice's typed `BuildUpdate` that its native ordering compares.
 ///
 /// Inventory retains a value only when those fields have types and values CoreDevice can compare:

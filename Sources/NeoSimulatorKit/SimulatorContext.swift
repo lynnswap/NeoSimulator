@@ -83,6 +83,7 @@ package struct SimulatorContextConfiguration {
     package var guestLifetime: ManagedGuestLifetime?
     package var onHostConflictBegan: ((SimulatorContext, String) -> Void)?
     package var onHostConflictEnded: ((SimulatorContext, (any Error)?) -> Void)?
+    package var deviceRegistry: DeviceRegistry?
 
     package init() {}
 }
@@ -134,9 +135,12 @@ public final class SimulatorContext {
     }
 
     /// Loads the selected Xcode's runtime, or the process's selected display Xcode when omitted.
-    /// Loading does not boot devices or open windows.
-    public static func load(xcodeURL: URL? = nil) async throws -> SimulatorContext {
-        try await load(xcodeURL: xcodeURL, configuration: SimulatorContextConfiguration())
+    /// Loading does not boot devices or open windows. Screens share the device state of `deviceRegistry`, which an
+    /// application that also reads devices should own and pass here; by default the context has its own.
+    public static func load(xcodeURL: URL? = nil, deviceRegistry: DeviceRegistry? = nil) async throws -> SimulatorContext {
+        var configuration = SimulatorContextConfiguration()
+        configuration.deviceRegistry = deviceRegistry
+        return try await load(xcodeURL: xcodeURL, configuration: configuration)
     }
 
     package static func load(xcodeURL: URL?, configuration: SimulatorContextConfiguration) async throws -> SimulatorContext {
@@ -145,7 +149,8 @@ public final class SimulatorContext {
         try Task.checkCancellation()
         let engine = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true,
                                              pasteboardSync: configuration.pasteboardSync,
-                                             offersLifetimeChoice: configuration.offersLifetimeChoice)
+                                             offersLifetimeChoice: configuration.offersLifetimeChoice,
+                                             deviceRegistry: configuration.deviceRegistry ?? DeviceRegistry())
         let context = SimulatorContext(engine: engine, configuration: configuration)
         try engine.start(attachingBootedDevices: false)
         return context
@@ -523,14 +528,9 @@ public final class SimulatorScreen {
         controller.session.send(button.input, failure: onFailure)
     }
 
-    /// What is known of the device, held so that reading it asks the device nothing. `refreshDeviceState()` updates it.
-    public var deviceModel: SimulatorDeviceModel { controller.session.model }
-
-    /// Asks the device for what `deviceModel` holds, without waiting for its answer.
-    public func refreshDeviceState() {
-        guard !isClosed else { return }
-        controller.session.refreshGuestState()
-    }
+    /// What is known of the device, held so that reading it asks the device nothing. It is the same model that the
+    /// context's device registry lists, and its command state updates through ``DeviceModel/revalidate(_:)``.
+    public var deviceModel: DeviceModel { controller.session.model }
 
     /// Flips the guest between its light and dark appearance.
     public func toggleAppearance() async throws {

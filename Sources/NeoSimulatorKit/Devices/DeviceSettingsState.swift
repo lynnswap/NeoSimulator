@@ -1,0 +1,286 @@
+import Foundation
+import NeoSimulatorDeviceIO
+import Observation
+
+/// One device's settings, each its own property so that an observer is told only of what it read. A group's values
+/// publish as its read finishes. Accepted changes show at once and until their outcome is known.
+@MainActor @Observable
+public final class DeviceSettingsState {
+    public private(set) var appearance: DeviceAppearance?
+    public private(set) var contentSize: DeviceContentSize?
+    public private(set) var boldText: Bool?
+    public private(set) var displayZoom: SimulatorDisplayZoomMode?
+    public private(set) var supportedDisplayZoomModes: [SimulatorDisplayZoomMode] = []
+    public private(set) var increaseContrast: Bool?
+    public private(set) var lookAndFeel: String?
+    public private(set) var supportedLooksAndFeels: [SimulatorLookAndFeel] = []
+    public private(set) var liquidGlassOpacity: Double?
+    public private(set) var colorFilter: SimulatorColorFilter?
+    public private(set) var colorFilterIntensity: Double?
+    public private(set) var reduceMotion: Bool?
+    public private(set) var showBorders: Bool?
+    public private(set) var reduceTransparency: Bool?
+    public private(set) var voiceOver: Bool?
+    public private(set) var volume: Int?
+    /// `systemDefault`, or a CoreAudio device UID.
+    public private(set) var audioInputDevice: String?
+    public private(set) var audioOutputDevice: String?
+    public private(set) var audioInputDevices: [SimulatorAudioDevice] = []
+    public private(set) var audioOutputDevices: [SimulatorAudioDevice] = []
+    public private(set) var locationAvailable = false
+    public private(set) var locationScenarios: [SimulatorLocationScenario] = []
+    public private(set) var locationMode: DeviceLocationMode?
+    public private(set) var locationScenario: String?
+    /// Whether no group has answered yet.
+    public private(set) var isLoading = true
+
+    @Observable
+    fileprivate final class GroupRead {
+        var status = DeviceReadStatus.unread
+    }
+
+    private struct PendingEdit {
+        let id = UUID()
+        let change: DeviceSettingChange
+    }
+
+    /// What identifies a batch of reads when its results arrive.
+    @MainActor
+    private final class ReadBatch {
+        let epoch: Int
+        let serials: [DeviceSettingsGroup: Int]
+        var answered: Set<DeviceSettingsGroup> = []
+
+        init(epoch: Int, serials: [DeviceSettingsGroup: Int]) {
+            self.epoch = epoch
+            self.serials = serials
+        }
+    }
+
+    @ObservationIgnored package weak var owner: DeviceModel?
+    @ObservationIgnored private let reads = Dictionary(uniqueKeysWithValues: DeviceSettingsGroup.allCases.map { ($0, GroupRead()) })
+    @ObservationIgnored private var confirmed = SimulatorDeviceSettings()
+    @ObservationIgnored private var pending: [PendingEdit] = []
+    @ObservationIgnored private var dirty = Set(DeviceSettingsGroup.allCases)
+    /// Out-of-date groups that read regardless of interest, because they confirm a change.
+    @ObservationIgnored private var forced: Set<DeviceSettingsGroup> = []
+    @ObservationIgnored private var reading: Set<DeviceSettingsGroup> = []
+    /// Changes with each accepted change, so that a result read before it is dropped and read again.
+    @ObservationIgnored private var serials: [DeviceSettingsGroup: Int] = [:]
+    @ObservationIgnored private var readTasks: [UUID: Task<Void, Never>] = [:]
+
+    package init() {}
+
+    /// What the last read of `group` answered.
+    public func status(of group: DeviceSettingsGroup) -> DeviceReadStatus { reads[group]!.status }
+
+    /// Why groups' values may be out of date. Values that remain are from the read before.
+    public var failures: [String] {
+        DeviceSettingsGroup.allCases.compactMap { group in
+            if case .stale(let reason) = status(of: group) { reason } else { nil }
+        }
+    }
+
+    /// Accepts `change`, which shows at once, and returns when the device has applied it. Cancelling before its turn sends
+    /// nothing. Cancelling later leaves its outcome unknown, which the thrown error says and a read then settles.
+    public func set(_ change: DeviceSettingChange) async throws {
+        let write = try accept(change)
+        try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }
+    }
+
+    /// `hold` is what the change must follow other than the device's earlier changes.
+    package func accept(_ change: DeviceSettingChange, after hold: Task<Void, Never>? = nil) throws -> DeviceWrite {
+        guard let owner else { throw CancellationError() }
+        try owner.checkAcceptsChanges()
+        let edit = PendingEdit(change: change)
+        pending.append(edit)
+        serials[change.group, default: 0] += 1
+        publish()
+        return owner.enqueueWrite(after: hold) { [weak owner] in
+            guard let owner else { throw CancellationError() }
+            try await owner.source.write(change, to: owner.inventory)
+        } settle: { [weak self] result in
+            self?.settle(edit, result)
+        }
+    }
+
+    private func settle(_ edit: PendingEdit, _ result: DeviceWriteResult) {
+        pending.removeAll { $0.id == edit.id }
+        let group = edit.change.group
+        switch result {
+        case .applied:
+            confirmed = confirmed.applying(edit.change)
+            forced.insert(group)
+        case .notStarted:
+            break
+        case .failed(let error):
+            switch error {
+            case DeviceOperationFailure.notSent: break
+            case is DeviceOperationFailure, is CancellationError:
+                setStatus(.stale(error.localizedDescription), of: group)
+                forced.insert(group)
+            default: forced.insert(group)
+            }
+        }
+        dirty.insert(group)
+        publish()
+        scheduleReads()
+    }
+
+    // MARK: Reading
+
+    package func markAllDirty() { dirty.formUnion(DeviceSettingsGroup.allCases) }
+
+    /// Something other than a change through this object may have changed `groups`, such as a device command.
+    package func invalidate(_ groups: Set<DeviceSettingsGroup>) {
+        for group in groups { serials[group, default: 0] += 1 }
+        dirty.formUnion(groups)
+        scheduleReads()
+    }
+
+    /// Starts what is out of date, of what something wants. A group with a running read gets one more read after it, and
+    /// a group with an accepted change reads after its outcome.
+    package func scheduleReads() {
+        guard let owner, !owner.readsStopped, owner.inventory.canInspectSettings else { return }
+        var wanted = owner.wants(.settings) ? dirty : dirty.intersection(forced)
+        // What confirms a change reads once, after the last change accepted for the device.
+        if !pending.isEmpty { wanted.subtract(forced) }
+        let groups = wanted.subtracting(reading).subtracting(pending.map(\.change.group))
+        guard !groups.isEmpty else { return }
+        dirty.subtract(groups)
+        forced.subtract(groups)
+        reading.formUnion(groups)
+        let batch = ReadBatch(epoch: owner.epoch, serials: serials)
+        let identifier = UUID()
+        let source = owner.source
+        let device = owner.inventory
+        readTasks[identifier] = Task { [weak self] in
+            await source.readSettings(groups, of: device) { [weak self] read in
+                await self?.receive(read, batch)
+            }
+            self?.finish(batch, requested: groups, identifier: identifier)
+        }
+    }
+
+    private func receive(_ read: DeviceSettingsGroupRead, _ batch: ReadBatch) {
+        guard let owner, batch.epoch == owner.epoch, reading.contains(read.group) else { return }
+        let group = read.group
+        batch.answered.insert(group)
+        reading.remove(group)
+        // A stopped read may have seen nothing, and one begun before an accepted change can predate it.
+        guard !owner.readsStopped, batch.serials[group, default: 0] == serials[group, default: 0] else {
+            dirty.insert(group)
+            return
+        }
+        switch read.outcome {
+        case .values:
+            read.apply(&confirmed)
+            if read.failures.isEmpty { setStatus(.current, of: group) }
+            else {
+                NSLog("NeoSimulator settings: %@", read.failures.joined(separator: "\n"))
+                setStatus(.stale(read.failures.joined(separator: "\n")), of: group)
+            }
+        case .failed(let reason):
+            NSLog("NeoSimulator settings: %@", reason)
+            setStatus(.stale(reason), of: group)
+        case .unsupported:
+            confirmed.replace(group, with: SimulatorDeviceSettings())
+            setStatus(.unsupported, of: group)
+        }
+        publish()
+    }
+
+    /// A group left unanswered, as by cancellation, stays out of date for the next invalidation.
+    private func finish(_ batch: ReadBatch, requested: Set<DeviceSettingsGroup>, identifier: UUID) {
+        readTasks[identifier] = nil
+        guard batch.epoch == owner?.epoch else { return }
+        let unanswered = requested.subtracting(batch.answered)
+        reading.subtract(unanswered)
+        scheduleReads()
+        dirty.formUnion(unanswered)
+    }
+
+    /// Reads of the device before now can answer nothing of the device now.
+    package func discardRunningReads() {
+        cancelReads()
+        reading.removeAll()
+        markAllDirty()
+    }
+
+    package func cancelReads() { readTasks.values.forEach { $0.cancel() } }
+
+    package func finishReading() async {
+        while let task = readTasks.values.first { await task.value }
+    }
+
+    private func setStatus(_ status: DeviceReadStatus, of group: DeviceSettingsGroup) {
+        let read = reads[group]!
+        if read.status != status { read.status = status }
+        let loading = reads.values.allSatisfy { $0.status == .unread }
+        if isLoading != loading { isLoading = loading }
+    }
+
+    // MARK: Observations
+
+    /// A value that a connected session knows does not need a read to be known, so the group's status does not change.
+    package func observe(audioRoutes: AudioRouteState) {
+        confirmed.updateAudioRoutes(audioRoutes)
+        publish()
+    }
+
+    package func observe(location: LocationSelection) {
+        switch location {
+        case .none:
+            confirmed.locationMode = DeviceLocationMode.none
+            confirmed.locationScenario = nil
+        case .custom:
+            confirmed.locationMode = .custom
+            confirmed.locationScenario = nil
+        case .scenario(let name):
+            confirmed.locationMode = .scenario
+            confirmed.locationScenario = name
+        }
+        publish()
+    }
+
+    package func observe(locationScenarios scenarios: [LocationScenario]) {
+        confirmed.locationAvailable = true
+        confirmed.locationScenarios = scenarios.map { SimulatorLocationScenario(name: $0.name, displayName: $0.localizedName) }
+        publish()
+    }
+
+    // MARK: Publication
+
+    private func publish() {
+        var values = confirmed
+        for edit in pending { values = values.applying(edit.change) }
+        assign(\.appearance, values.appearance)
+        assign(\.contentSize, values.contentSize)
+        assign(\.boldText, values.boldText)
+        assign(\.displayZoom, values.displayZoom)
+        assign(\.supportedDisplayZoomModes, values.supportedDisplayZoomModes)
+        assign(\.increaseContrast, values.increaseContrast)
+        assign(\.lookAndFeel, values.lookAndFeel)
+        assign(\.supportedLooksAndFeels, values.supportedLooksAndFeels)
+        assign(\.liquidGlassOpacity, values.liquidGlassOpacity)
+        assign(\.colorFilter, values.colorFilter)
+        assign(\.colorFilterIntensity, values.colorFilterIntensity)
+        assign(\.reduceMotion, values.reduceMotion)
+        assign(\.showBorders, values.showBorders)
+        assign(\.reduceTransparency, values.reduceTransparency)
+        assign(\.voiceOver, values.voiceOver)
+        assign(\.volume, values.volume)
+        assign(\.audioInputDevice, values.audioInputDevice)
+        assign(\.audioOutputDevice, values.audioOutputDevice)
+        assign(\.audioInputDevices, values.audioInputDevices)
+        assign(\.audioOutputDevices, values.audioOutputDevices)
+        assign(\.locationAvailable, values.locationAvailable)
+        assign(\.locationScenarios, values.locationScenarios)
+        assign(\.locationMode, values.locationMode)
+        assign(\.locationScenario, values.locationScenario)
+    }
+
+    private func assign<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<DeviceSettingsState, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+}

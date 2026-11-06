@@ -58,6 +58,8 @@ package final class SimulatorScreenHost: NSObject {
     private var openingDevices: Set<SimulatorDeviceIdentifier> = []
     private var stopped = false
     private var stoppingTask: Task<Void, Error>?
+    /// Where this host's sessions find their devices' state.
+    package let deviceRegistry: DeviceRegistry
     private var nextWindowPosition = NSPoint.zero
     private let touchPressure = TouchPressure()
     private let tvRemote = TVRemoteController()
@@ -70,8 +72,9 @@ package final class SimulatorScreenHost: NSObject {
 
     package init(runtime: SimulatorRuntime, conflicts: HostConflictMonitor, isManaged: Bool = false,
          headless: Bool = false, inProcess: Bool = false, pasteboardSync: PasteboardSync? = nil,
-         offersLifetimeChoice: Bool = true) throws {
+         offersLifetimeChoice: Bool = true, deviceRegistry: DeviceRegistry = DeviceRegistry()) throws {
         try conflicts.check()
+        self.deviceRegistry = deviceRegistry
         self.runtime = runtime
         self.conflicts = conflicts
         self.isManaged = isManaged
@@ -622,7 +625,7 @@ package final class SimulatorScreenHost: NSObject {
                             display: connection,
                             tools: try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,
                                                    deviceSetPath: device.deviceSetPath, lookUp: device.lookUp),
-                            model: SimulatorDeviceRegistry.shared.model(for: identifier, channel: device.channel),
+                            model: deviceRegistry.presentedModel(of: Self.describe(device), ownerXcodeURL: runtime.xcodeURL, channel: device.channel),
                             recordings: recordings, pasteboardSync: pasteboardSync, pasteboardTransport: pasteboardTransport,
                             externalDisplayChanges: externalDisplayChanges(of: device),
                             appResizeTransport: { try await CoreDeviceAppResizeTransport.make(simulatorUDID: identifier.identifier) })

@@ -52,101 +52,6 @@ package struct SimulatorHostStatus: Sendable {
     }
 }
 
-package struct SimulatorHostDevice: Sendable, Equatable {
-    package let identifier: String
-    package let name: String
-    package let descriptiveName: String
-    package let runtimeIdentifier: String
-    package let runtimeName: String
-    package let productFamily: String
-    package let state: String
-    package let ownerXcodeURL: URL?
-    /// The Xcode whose catalog listed this entry as available during an inventory read, if any.
-    /// It records where the entry came from; `ownerXcodeURL` remains the renderer that owns the device.
-    package let catalogXcodeURL: URL?
-    package let deviceSetPath: String?
-    package let modelIdentifier: String?
-    /// CoreSimulator's device-type identifier, used with a runtime to validate companion creation.
-    package let deviceTypeIdentifier: String?
-    package let isAvailable: Bool
-    package let lastUsedAt: Date?
-    /// Creation date of the simulator's device directory, when available.
-    package let createdAt: Date?
-    package let capabilities: Set<String>
-    package let pairIdentifiers: Set<String>
-    /// The active companion in the same simulator device set, when the catalog identifies one.
-    package let activePairedDeviceID: DeviceInventoryID?
-    /// CoreDevice's matching default-set record, including host connection information.
-    package let coreDevice: CoreDeviceDevice?
-
-    package init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, catalogXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, createdAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
-        self.identifier = identifier
-        self.name = name
-        self.descriptiveName = descriptiveName
-        self.runtimeIdentifier = runtimeIdentifier
-        self.runtimeName = runtimeName
-        self.productFamily = productFamily
-        self.state = state
-        self.ownerXcodeURL = ownerXcodeURL
-        self.catalogXcodeURL = catalogXcodeURL
-        self.deviceSetPath = deviceSetPath
-        self.modelIdentifier = modelIdentifier
-        self.deviceTypeIdentifier = deviceTypeIdentifier
-        self.isAvailable = isAvailable
-        self.lastUsedAt = lastUsedAt
-        self.createdAt = createdAt
-        self.capabilities = capabilities
-        self.pairIdentifiers = pairIdentifiers
-        self.activePairedDeviceID = activePairedDeviceID
-        self.coreDevice = coreDevice
-    }
-}
-
-package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
-    package enum Kind: Sendable, Equatable { case preferencesChanged, unavailableXcode, launchFailed, partialSuccess, operationFailed }
-    package let kind: Kind
-    package let technicalDetails: String
-    package let failureReason: String?
-    private let underlyingRecoverySuggestion: String?
-
-    package var errorDescription: String? {
-        switch kind {
-        case .preferencesChanged: "Xcode’s simulator settings changed outside NeoSimulator."
-        case .unavailableXcode: "Xcode cannot be used with NeoSimulator."
-        case .launchFailed: "The simulator display could not be opened."
-        case .partialSuccess: "Simulator settings changed, but the display could not be opened."
-        case .operationFailed: "The simulator operation could not be completed."
-        }
-    }
-    package var recoverySuggestion: String? {
-        if let underlyingRecoverySuggestion { return underlyingRecoverySuggestion }
-        return switch kind {
-        case .preferencesChanged: "Review your Xcode settings. To use the saved values, choose Restore Original Settings…, then Restore Saved Values…."
-        case .unavailableXcode: "Open Xcode 27 or later and finish installing its developer tools, then try again."
-        case .launchFailed: "Try View Screen again, or select the display app in Settings."
-        case .partialSuccess: "Try View Screen again, or select the display app in Settings."
-        case .operationFailed: "Try again and review the diagnostic details if the problem continues."
-        }
-    }
-    package init(_ error: any Error) {
-        failureReason = (error as? any LocalizedError)?.failureReason
-        underlyingRecoverySuggestion = (error as? any LocalizedError)?.recoverySuggestion
-        let identifier = (error as? CLIError)?.identifier ?? ""
-        technicalDetails = identifier.isEmpty ? error.localizedDescription : "\(identifier): \(error.localizedDescription)"
-        if ["preference-conflict", "ambiguous-intermediate", "inconsistent-preferences"].contains(identifier) || identifier.hasSuffix("-host-invalidated") {
-            kind = .preferencesChanged
-        } else if identifier.hasSuffix("-partial-success") {
-            kind = .partialSuccess
-        } else if identifier == "unsupported-xcode" || identifier == "xcode-bundle" {
-            kind = .unavailableXcode
-        } else if identifier.contains("launch") || identifier.contains("runtime") || identifier.contains("startup") {
-            kind = .launchFailed
-        } else {
-            kind = .operationFailed
-        }
-    }
-}
-
 package struct RendererRegistration: Codable, Sendable {
     package static var directoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -1121,108 +1026,6 @@ package actor SimulatorHostController {
         return CatalogResult(devices: combined, testingDiagnostic: diagnostic)
     }
 }
-package enum SimulatorDeviceCatalog {
-    private struct Catalog: Decodable {
-        struct Runtime: Decodable {
-            let identifier: String
-            let name: String
-            let isAvailable: Bool
-        }
-        struct Device: Decodable {
-            let udid: String
-            let deviceTypeIdentifier: String
-            let name: String
-            let state: String
-            let isAvailable: Bool
-            let lastUsedAt: String?
-            let dataPath: String?
-        }
-        struct DeviceType: Decodable {
-            let identifier: String
-            let productFamily: String
-            let modelIdentifier: String?
-        }
-        let devicetypes: [DeviceType]
-        let runtimes: [Runtime]
-        let devices: [String: [Device]]
-        struct Pair: Decodable {
-            struct Member: Decodable { let udid: String }
-            let watch: Member
-            let phone: Member
-            let state: String?
-
-            var isActive: Bool { state == "(active, connected)" || state == "(active, disconnected)" }
-        }
-        let pairs: [String: Pair]?
-    }
-
-    /// A failed testing catalog leaves the normal devices available. Cancellation ends the read instead,
-    /// because the testing devices did not go away.
-    package nonisolated(nonsending) static func appendingTestingDevices(
-        to devices: [SimulatorHostDevice], readTesting: () async throws -> [SimulatorHostDevice], onFailure: (any Error) -> Void
-    ) async throws -> [SimulatorHostDevice] {
-        do { return devices + (try await readTesting()) }
-        catch is CancellationError { throw CancellationError() }
-        catch { onFailure(error); return devices }
-    }
-
-    package static func decode(_ data: Data, deviceSetPath: String? = nil, includeUnavailable: Bool = false,
-                       catalogXcodeURL: URL? = nil) throws -> [SimulatorHostDevice] {
-        let catalog = try JSONDecoder().decode(Catalog.self, from: data)
-        let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
-        let supportedTypes = Dictionary(uniqueKeysWithValues: catalog.devicetypes.filter { supportedFamilies.contains($0.productFamily) }.map { ($0.identifier, $0) })
-        // Multiple installed builds can share a runtime identifier.
-        let runtimes = Dictionary(catalog.runtimes.map { ($0.identifier, $0) }, uniquingKeysWith: { first, next in
-            !first.isAvailable && next.isAvailable ? next : first
-        })
-        return catalog.devices.flatMap { runtimeIdentifier, devices in
-            let runtime = runtimes[runtimeIdentifier]
-            return devices.compactMap { device -> SimulatorHostDevice? in
-                let available = device.isAvailable && runtime?.isAvailable == true
-                let type = supportedTypes[device.deviceTypeIdentifier]
-                guard includeUnavailable || (available && type != nil) else { return nil }
-                let runtimeName = runtime?.name ?? runtimeIdentifier
-                let lastUsedAt = device.lastUsedAt.flatMap { value in
-                    (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(value))
-                        ?? (try? Date.ISO8601FormatStyle().parse(value))
-                }
-                return SimulatorHostDevice(
-                    identifier: device.udid,
-                    name: device.name,
-                    descriptiveName: "\(device.name) — \(runtimeName)",
-                    runtimeIdentifier: runtimeIdentifier,
-                    runtimeName: runtimeName,
-                    productFamily: type?.productFamily ?? "",
-                    state: device.state,
-                    catalogXcodeURL: available ? catalogXcodeURL : nil,
-                    deviceSetPath: deviceSetPath,
-                    modelIdentifier: type?.modelIdentifier,
-                    deviceTypeIdentifier: device.deviceTypeIdentifier,
-                    isAvailable: available,
-                    lastUsedAt: lastUsedAt,
-                    createdAt: device.dataPath.flatMap { path in
-                        try? URL(filePath: path).deletingLastPathComponent()
-                            .resourceValues(forKeys: [.creationDateKey]).creationDate
-                    },
-                    pairIdentifiers: Set((catalog.pairs ?? [:]).compactMap { pairID, pair in
-                        pair.watch.udid == device.udid || pair.phone.udid == device.udid ? pairID : nil
-                    }),
-                    activePairedDeviceID: (catalog.pairs ?? [:]).values.first(where: {
-                        $0.isActive && ($0.watch.udid == device.udid || $0.phone.udid == device.udid)
-                    }).map { pair in
-                        .simulator(udid: pair.watch.udid == device.udid ? pair.phone.udid : pair.watch.udid,
-                                   deviceSetPath: deviceSetPath)
-                    }
-                )
-            }
-        }.sorted {
-            let order = $0.runtimeName.compare($1.runtimeName, options: .numeric)
-            return order == .orderedSame
-                ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
-                : order == .orderedDescending
-        }
-    }
-}
 
 package struct XcodeSimulatorConnection: Sendable, Equatable {
     package struct Event: Sendable, Hashable, Comparable {
@@ -1402,7 +1205,7 @@ package final class SimulatorBootTracker {
         catalog = catalog.filter { $0.value.deviceSetPath == nil }
         pending.subtract(identifiers)
         cancelledAttachments = cancelledAttachments.filter {
-            if case .simulator(_, let path) = $0 { return path == nil }
+            if case .simulator(_, let path) = $0.destination { return path == nil }
             return true
         }
     }
@@ -1436,27 +1239,10 @@ package enum SimulatorStartupSelection {
     package static func device(in devices: [SimulatorHostDevice], attachInitially: Bool, startsSession: Bool, startsLastDevice: Bool, current: DeviceInventoryID?, hasOwnedDevices: Bool) -> SimulatorHostDevice? {
         guard startsSession, startsLastDevice, !hasOwnedDevices,
               !(attachInitially && devices.contains(where: { $0.state == "Booted" })) else { return nil }
-        if case .simulator(let savedIdentifier, let path)? = current,
+        if case .simulator(let savedIdentifier, let path)? = current?.destination,
            let identifier = UUID(uuidString: savedIdentifier),
            let chosen = devices.first(where: { $0.deviceSetPath == path && UUID(uuidString: $0.identifier) == identifier }) { return chosen }
         return devices.last(where: { $0.productFamily == "iPhone" }) ?? devices.first
     }
 }
 
-package enum SimulatorDeviceSets {
-    package static func testingPath() -> String? {
-        let renderer = UserDefaults(suiteName: ToolConstants.neoHostBundleIdentifier)
-        let manager = ToolConstants.managerDefaults
-        return testingPath(showTesting: renderer?.object(forKey: "ShowTestingDevices") as? Bool ?? manager?.object(forKey: "ShowTestingDevices") as? Bool ?? true,
-                           customPath: renderer?.string(forKey: "TestingDeviceSetPath") ?? manager?.string(forKey: "TestingDeviceSetPath"))
-    }
-
-    package static func testingPath(showTesting: Bool, customPath: String?, homeURL: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
-        guard showTesting else { return nil }
-        let path = customPath.map { NSString(string: $0).expandingTildeInPath }
-            ?? homeURL.appendingPathComponent("Library/Developer/XCTestDevices").path
-        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
-        guard url != homeURL.appendingPathComponent("Library/Developer/CoreSimulator/Devices").resolvingSymlinksInPath().standardizedFileURL else { return nil }
-        return url.path
-    }
-}

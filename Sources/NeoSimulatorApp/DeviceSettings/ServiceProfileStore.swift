@@ -3,45 +3,6 @@ import NeoSimulatorHostSupport
 import Foundation
 import Observation
 
-struct ServiceConfiguration: Codable, Equatable, Sendable {
-    var disabledLabels: Set<String> = []
-
-    static let labels = Set(SimulatorBackgroundServiceCategory.all.flatMap { $0.services.map(\.label) })
-
-    func state(productFamily: String = "") -> SimulatorBackgroundServices {
-        SimulatorBackgroundServices(disabled: disabledLabels, loaded: [], productFamily: productFamily)
-    }
-
-    func applying(_ overrides: [String: Bool]) -> Self {
-        var result = self
-        for (label, enabled) in overrides {
-            if enabled { result.disabledLabels.remove(label) }
-            else { result.disabledLabels.insert(label) }
-        }
-        return result
-    }
-
-    @discardableResult
-    mutating func set(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                      productFamily: String = "") -> Set<String> {
-        let categories = SimulatorBackgroundServiceCategory.all.filter { targets.contains(.category($0.id)) }
-        let named = targets.compactMap { target -> String? in
-            if case .service(let label) = target { return label }
-            return nil
-        }
-        var affected = Set(categories.flatMap { $0.services.map(\.label) }).union(named).intersection(Self.labels)
-        if enabled {
-            disabledLabels.subtract(affected)
-        } else {
-            let before = state(productFamily: productFamily)
-            affected.subtract(before.labelsKeptEnabled(disabling: categories, named: named))
-            affected = affected.filter { before.canDisable($0) }
-            disabledLabels.formUnion(affected)
-        }
-        return affected
-    }
-}
-
 @MainActor @Observable
 final class ServiceProfile: Identifiable, BackgroundServiceEditing {
     struct Record: Codable, Equatable, Sendable {
@@ -113,7 +74,7 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
     }
 }
 
-/// Owns reusable definitions and device-specific intent. Live launchd state stays in BackgroundServicesModel.
+/// Owns reusable definitions and device-specific intent. Live launchd state stays in each device's `BackgroundServicesState`.
 @MainActor @Observable
 final class ServiceProfileStore {
     private struct State: Codable, Equatable {

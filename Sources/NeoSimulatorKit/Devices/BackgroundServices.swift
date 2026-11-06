@@ -1,16 +1,15 @@
 import NeoSimulatorDeviceIO
-import NeoSimulatorKit
 import Foundation
 import Synchronization
 
 /// A launchd job in a simulator that NeoSimulator can stop and start.
-package struct SimulatorBackgroundService: Sendable, Hashable, Identifiable {
-    package let label: String
+public struct SimulatorBackgroundService: Sendable, Hashable, Identifiable {
+    public let label: String
     /// What the service does, in one short sentence.
-    package let summary: String
-    package var id: String { label }
+    public let summary: String
+    public var id: String { label }
 
-    package init(_ label: String, _ summary: String) {
+    public init(_ label: String, _ summary: String) {
         self.label = label
         self.summary = summary
     }
@@ -18,12 +17,12 @@ package struct SimulatorBackgroundService: Sendable, Hashable, Identifiable {
 
 /// A service that stays enabled because simulators need it.
 /// It can be enabled again after another tool disabled it, but it is never disabled.
-package struct SimulatorRequiredBackgroundService: Sendable, Hashable, Identifiable {
-    package let label: String
-    package let reason: String
-    package var id: String { label }
+public struct SimulatorRequiredBackgroundService: Sendable, Hashable, Identifiable {
+    public let label: String
+    public let reason: String
+    public var id: String { label }
 
-    package init(_ label: String, reason: String) {
+    public init(_ label: String, reason: String) {
         self.label = label
         self.reason = reason
     }
@@ -33,16 +32,16 @@ package struct SimulatorRequiredBackgroundService: Sendable, Hashable, Identifia
 ///
 /// Categories may share services. Disabling a category keeps a shared service running
 /// while another category that lists it is fully enabled.
-package struct SimulatorBackgroundServiceCategory: Sendable, Hashable, Identifiable {
-    package let id: String
-    package let name: String
-    package let summary: String
+public struct SimulatorBackgroundServiceCategory: Sendable, Hashable, Identifiable {
+    public let id: String
+    public let name: String
+    public let summary: String
     /// What stops working while the category is disabled.
-    package let consequence: String
-    package let services: [SimulatorBackgroundService]
-    package let requiredServices: [SimulatorRequiredBackgroundService]
+    public let consequence: String
+    public let services: [SimulatorBackgroundService]
+    public let requiredServices: [SimulatorRequiredBackgroundService]
 
-    package init(id: String, name: String, summary: String, consequence: String,
+    public init(id: String, name: String, summary: String, consequence: String,
          services: [SimulatorBackgroundService], requiredServices: [SimulatorRequiredBackgroundService] = []) {
         self.id = id
         self.name = name
@@ -53,12 +52,12 @@ package struct SimulatorBackgroundServiceCategory: Sendable, Hashable, Identifia
     }
 }
 
-package enum SimulatorBackgroundServiceState: Sendable, Equatable {
+public enum SimulatorBackgroundServiceState: Sendable, Equatable {
     case enabled, disabled, partiallyDisabled
 }
 
 /// What a background service change applies to.
-package enum SimulatorBackgroundServiceTarget: Sendable, Hashable {
+public enum SimulatorBackgroundServiceTarget: Sendable, Hashable {
     /// Every service in the category with this identifier.
     case category(String)
     /// One managed service, by its launchd label.
@@ -66,30 +65,30 @@ package enum SimulatorBackgroundServiceTarget: Sendable, Hashable {
 }
 
 /// A booted simulator's managed background services, as its launchd reports them.
-package struct SimulatorBackgroundServices: Sendable, Equatable {
+public struct SimulatorBackgroundServices: Sendable, Equatable {
     /// Managed labels that have a disable override.
-    package let disabledLabels: Set<String>
+    public let disabledLabels: Set<String>
     /// Managed labels loaded in the current boot session.
-    package let loadedLabels: Set<String>
+    public let loadedLabels: Set<String>
     /// Labels this simulator's platform keeps enabled although a category lists them.
-    package let platformRequiredLabels: Set<String>
+    public let platformRequiredLabels: Set<String>
 
-    package init(disabled: Set<String>, loaded: Set<String>, productFamily: String) {
+    public init(disabled: Set<String>, loaded: Set<String>, productFamily: String) {
         disabledLabels = disabled.intersection(BackgroundServiceCatalog.managed)
         loadedLabels = loaded.intersection(BackgroundServiceCatalog.managed)
         platformRequiredLabels = BackgroundServiceCatalog.platformRequired(productFamily: productFamily)
     }
 
-    package func isEnabled(_ label: String) -> Bool { !disabledLabels.contains(label) }
+    public func isEnabled(_ label: String) -> Bool { !disabledLabels.contains(label) }
 
     /// Whether disabling may stop this service on this simulator.
-    package func canDisable(_ label: String) -> Bool {
+    public func canDisable(_ label: String) -> Bool {
         BackgroundServiceCatalog.slimmable.contains(label) && !platformRequiredLabels.contains(label)
     }
 
     /// A category is disabled when each of its services is disabled or kept running for another fully
     /// enabled category, which is what disabling the category leaves behind.
-    package func state(of category: SimulatorBackgroundServiceCategory) -> SimulatorBackgroundServiceState {
+    public func state(of category: SimulatorBackgroundServiceCategory) -> SimulatorBackgroundServiceState {
         let labels = category.services.map(\.label).filter(canDisable)
         guard labels.contains(where: disabledLabels.contains) else { return .enabled }
         let settled = labels.allSatisfy { label in
@@ -101,7 +100,7 @@ package struct SimulatorBackgroundServices: Sendable, Equatable {
     }
 
     /// Shared services stay enabled while another fully enabled category needs them.
-    package func labelsKeptEnabled(disabling categories: [SimulatorBackgroundServiceCategory],
+    public func labelsKeptEnabled(disabling categories: [SimulatorBackgroundServiceCategory],
                                                     named: [String]) -> Set<String> {
         let covered = Set(categories.flatMap { $0.services.map(\.label) }).subtracting(named)
         var kept = Set<String>()
@@ -111,18 +110,18 @@ package struct SimulatorBackgroundServices: Sendable, Equatable {
         return kept
     }
 
-    package func isFullyEnabled(_ category: SimulatorBackgroundServiceCategory) -> Bool {
+    public func isFullyEnabled(_ category: SimulatorBackgroundServiceCategory) -> Bool {
         category.services.allSatisfy { isEnabled($0.label) }
     }
 }
 
 /// The result of a background service change, with the state read back from the simulator.
-package struct SimulatorBackgroundServicesUpdate: Sendable {
-    package let services: SimulatorBackgroundServices
+public struct SimulatorBackgroundServicesUpdate: Sendable {
+    public let services: SimulatorBackgroundServices
     /// Services a disable left running because the platform or another fully enabled category needs them.
-    package let stillEnabledLabels: [String]
+    public let stillEnabledLabels: [String]
     /// Enabled services that launchd did not load in the current boot session; they start at the next boot.
-    package let notStartedLabels: [String]
+    public let notStartedLabels: [String]
 
     package init(services: SimulatorBackgroundServices, stillEnabledLabels: [String],
                                    notStartedLabels: [String]) {
@@ -132,14 +131,56 @@ package struct SimulatorBackgroundServicesUpdate: Sendable {
     }
 }
 
+/// A saved set of disabled services, which a device's profile asks for.
+public struct ServiceConfiguration: Codable, Equatable, Sendable {
+    public var disabledLabels: Set<String> = []
+
+    public static let labels = Set(SimulatorBackgroundServiceCategory.all.flatMap { $0.services.map(\.label) })
+
+    public init(disabledLabels: Set<String> = []) { self.disabledLabels = disabledLabels }
+
+    public func state(productFamily: String = "") -> SimulatorBackgroundServices {
+        SimulatorBackgroundServices(disabled: disabledLabels, loaded: [], productFamily: productFamily)
+    }
+
+    public func applying(_ overrides: [String: Bool]) -> Self {
+        var result = self
+        for (label, enabled) in overrides {
+            if enabled { result.disabledLabels.remove(label) }
+            else { result.disabledLabels.insert(label) }
+        }
+        return result
+    }
+
+    @discardableResult
+    public mutating func set(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
+                             productFamily: String = "") -> Set<String> {
+        let categories = SimulatorBackgroundServiceCategory.all.filter { targets.contains(.category($0.id)) }
+        let named = targets.compactMap { target -> String? in
+            if case .service(let label) = target { return label }
+            return nil
+        }
+        var affected = Set(categories.flatMap { $0.services.map(\.label) }).union(named).intersection(Self.labels)
+        if enabled {
+            disabledLabels.subtract(affected)
+        } else {
+            let before = state(productFamily: productFamily)
+            affected.subtract(before.labelsKeptEnabled(disabling: categories, named: named))
+            affected = affected.filter { before.canDisable($0) }
+            disabledLabels.formUnion(affected)
+        }
+        return affected
+    }
+}
+
 /// A failed background service change with the state read after the attempt, including changes already made.
-package struct SimulatorBackgroundServicesUpdateFailure: Error, LocalizedError, Sendable {
+public struct SimulatorBackgroundServicesUpdateFailure: Error, LocalizedError, Sendable {
     /// Nil when the state could not be read after the failure.
-    package let services: SimulatorBackgroundServices?
+    public let services: SimulatorBackgroundServices?
     package let underlyingError: SimulatorHostFailure
-    package var errorDescription: String? { underlyingError.errorDescription }
-    package var failureReason: String? { underlyingError.failureReason }
-    package var recoverySuggestion: String? { underlyingError.recoverySuggestion }
+    public var errorDescription: String? { underlyingError.errorDescription }
+    public var failureReason: String? { underlyingError.failureReason }
+    public var recoverySuggestion: String? { underlyingError.recoverySuggestion }
 }
 
 package enum BackgroundServiceCatalog {
@@ -159,40 +200,6 @@ package enum BackgroundServiceCatalog {
         case "Apple Vision": ["com.apple.mobileassetd"]
         default: []
         }
-    }
-}
-
-extension SimulatorHostController {
-    /// Reads the managed background services of a booted simulator.
-    package func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices {
-        do { return try await backgroundServiceBackend(for: device).read() }
-        catch is CancellationError { throw CancellationError() }
-        catch let error as SimulatorHostFailure { throw error }
-        catch { throw SimulatorHostFailure(error) }
-    }
-
-    /// Enables or disables services in a booted simulator without rebooting it.
-    /// The disable overrides persist, so the change also applies to later boots. Once launchctl may have run,
-    /// a failure is a `SimulatorBackgroundServicesUpdateFailure` with the state read after the attempt.
-    package func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                                      for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
-        let backend: SimulatorBackgroundServiceBackend
-        do { backend = try await backgroundServiceBackend(for: device) }
-        catch is CancellationError { throw CancellationError() }
-        catch let error as SimulatorHostFailure { throw error }
-        catch { throw SimulatorHostFailure(error) }
-        return try await backend.update(targets, enabled: enabled)
-    }
-
-    private func backgroundServiceBackend(for device: InventoryDevice) async throws -> SimulatorBackgroundServiceBackend {
-        guard case .simulator(let simulator) = device, simulator.state == "Booted" else {
-            throw CLIError.unavailable("background-services-unavailable",
-                                       "Background services are available only on a booted simulator.")
-        }
-        guard let xcodeURL = try await inspector(for: device).simulatorXcodeURL else {
-            throw CLIError.configuration("background-services-source", "simctl requires the simulator's developer tools.")
-        }
-        return .live(device: simulator, xcodeURL: xcodeURL)
     }
 }
 
