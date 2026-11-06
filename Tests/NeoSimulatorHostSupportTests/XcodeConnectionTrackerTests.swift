@@ -12,7 +12,7 @@ struct XcodeConnectionTrackerTests {
                                                   deviceIdentifier: "A", xcodeURL: URL(fileURLWithPath: "/Xcode.app"))
         let tracker = XcodeConnectionTracker()
         _ = try? await tracker.synchronize(observations: [connection], runningDeviceIdentifiers: [device]) { _ in
-            throw CLIError.io("test", "retry")
+            throw CocoaError(.fileReadUnknown)
         }
         var transfers: [XcodeSimulatorConnection] = []
         // A restart passes through a stopped state, which is not the stop that retires a failed handoff.
