@@ -27,6 +27,29 @@ struct XcodeConnectionTrackerTests {
         #expect(transfers == [connection])
     }
 
+    @Test func aConnectionFirstSeenDuringAChangeOutlivesItsProcess() async throws {
+        let device = DeviceInventoryID.simulator(udid: "A", deviceSetPath: nil)
+        let connection = XcodeSimulatorConnection(event: .init(processIdentifier: 1, startSeconds: 10, startMicroseconds: 0),
+                                                  deviceIdentifier: "A", xcodeURL: URL(fileURLWithPath: "/Xcode.app"))
+        var transfers: [XcodeSimulatorConnection] = []
+        // The change may show the device stopped. Its transfer waits until the change settles, without its process.
+        let tracker = XcodeConnectionTracker()
+        #expect(try await !tracker.synchronize(observations: [connection], runningDeviceIdentifiers: [], changingDeviceIdentifiers: [device]) {
+            transfers.append($0)
+        })
+        #expect(transfers.isEmpty && tracker.hasPendingConnection(forDevice: device))
+        #expect(try await tracker.synchronize(observations: [], runningDeviceIdentifiers: [device]) { transfers.append($0) })
+        #expect(transfers == [connection])
+
+        // A change that leaves the device stopped retires the connection, as any stop does.
+        let stopped = XcodeConnectionTracker()
+        #expect(try await !stopped.synchronize(observations: [connection], runningDeviceIdentifiers: [device], changingDeviceIdentifiers: [device]) {
+            transfers.append($0)
+        })
+        #expect(try await !stopped.synchronize(observations: [], runningDeviceIdentifiers: []) { transfers.append($0) })
+        #expect(transfers == [connection] && !stopped.hasPendingConnection(forDevice: device))
+    }
+
     @Test func bootObservedByLaterXcodeRefreshesEarlierSourceBeforeHandlingConnection() async throws {
         let source = URL(fileURLWithPath: "/SourceXcode.app")
         let previousOwner = URL(fileURLWithPath: "/OtherXcode.app")

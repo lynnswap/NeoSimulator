@@ -684,7 +684,8 @@ package actor SimulatorHostController {
         changed = changed || bootObservation.changed
         if firstFailure == nil { firstFailure = bootObservation.failure }
         let ownedIdentifiers = bootObservation.ownedIdentifiers
-        if !self.startupHandled {
+        // A read during a change does not show which devices stay running, so a later one decides.
+        if !self.startupHandled, observedCatalog.changingDevices.isEmpty {
             self.startupHandled = true
             func savedBoolean(_ key: String) -> Bool {
                 rendererDefaults?.object(forKey: key) as? Bool ?? managerDefaults?.object(forKey: key) as? Bool ?? true
@@ -1182,8 +1183,9 @@ package final class XcodeConnectionTracker {
             && !changingDeviceIdentifiers.contains(identifier) {
             latestHandled[identifier] = connection.event
         }
-        for connection in observations where runningDeviceIdentifiers.contains(connection.deviceID)
-            && !changingDeviceIdentifiers.contains(connection.deviceID)
+        // The originating app may exit before the change ends, so its event is kept now and transferred afterwards.
+        for connection in observations where (runningDeviceIdentifiers.contains(connection.deviceID)
+            || changingDeviceIdentifiers.contains(connection.deviceID))
             && (connection.deviceSetPath == nil || connection.deviceSetPath == testingDeviceSetPath) {
             if let previous = latestObserved[connection.deviceID], previous.event >= connection.event { continue }
             latestObserved[connection.deviceID] = connection
@@ -1294,21 +1296,22 @@ package final class SimulatorBootTracker {
 
     private var catalog: [DeviceInventoryID: SimulatorHostDevice] = [:]
     private var pending: Set<DeviceInventoryID> = []
-    /// A cancelled open may have booted before the catalog observed it. Retire only that boot's automatic attach.
-    private var cancelledAttachments: Set<DeviceInventoryID> = []
+    /// A cancelled open may have booted before the catalog observed it, and a first read during a change cannot tell
+    /// whether the device ran before that change. Retire only that boot's automatic attach.
+    private var retiredAttachments: Set<DeviceInventoryID> = []
     private var initialized = false
 
-    package func reset() { pending = []; cancelledAttachments = []; initialized = false }
+    package func reset() { pending = []; retiredAttachments = []; initialized = false }
     package func didAttach(_ identifier: DeviceInventoryID) { pending.remove(identifier) }
     package func didCancelAttachment(_ identifier: DeviceInventoryID) {
         pending.remove(identifier)
-        cancelledAttachments.insert(identifier)
+        retiredAttachments.insert(identifier)
     }
     package func forgetTestingDevices() {
         let identifiers = Set(catalog.filter { $0.value.deviceSetPath != nil }.keys)
         catalog = catalog.filter { $0.value.deviceSetPath == nil }
         pending.subtract(identifiers)
-        cancelledAttachments = cancelledAttachments.filter {
+        retiredAttachments = retiredAttachments.filter {
             if case .simulator(_, let path) = $0.destination { return path == nil }
             return true
         }
@@ -1319,21 +1322,24 @@ package final class SimulatorBootTracker {
                  isCurrentObservation: (DeviceInventoryID) -> Bool = { _ in true }) -> Observation {
         var current = Dictionary(devices.map { ($0.inventoryID, $0) }, uniquingKeysWith: { first, _ in first })
         // A restart's stop and boot are steps of that change, not a device that newly booted.
-        for identifier in changing { current[identifier] = catalog[identifier] }
+        for identifier in changing {
+            if let previous = catalog[identifier] { current[identifier] = previous }
+        }
         let changed = current != catalog
         defer { catalog = current }
         guard allowsAttachments else {
             reset()
             return Observation(catalogChanged: changed, devicesToAttach: [])
         }
-        // Only a read outside a change can establish that a cancelled open's boot has ended.
-        cancelledAttachments = cancelledAttachments.filter { identifier in
+        if !initialized && !attachInitially { retiredAttachments.formUnion(changing.intersection(current.keys)) }
+        // Only a read outside a change can establish that a retired boot has ended.
+        retiredAttachments = retiredAttachments.filter { identifier in
             changing.contains(identifier) || !isCurrentObservation(identifier) || current[identifier]?.state != "Shutdown"
         }
         let booted = Set(current.filter { $0.value.state == "Booted" }.keys)
         pending.formIntersection(booted)
-        pending.subtract(cancelledAttachments)
-        for identifier in booted where !cancelledAttachments.contains(identifier) {
+        pending.subtract(retiredAttachments)
+        for identifier in booted where !retiredAttachments.contains(identifier) {
             if initialized {
                 if catalog[identifier]?.state != "Booted" { pending.insert(identifier) }
             } else if attachInitially { pending.insert(identifier) }
