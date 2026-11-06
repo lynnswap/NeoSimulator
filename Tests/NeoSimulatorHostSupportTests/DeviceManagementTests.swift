@@ -167,6 +167,10 @@ struct DeviceManagementTests {
         _ = try? await controller.xcodeURL(forDevice: second.inventoryID)
         try await controller.closeDevice(second.inventoryID, keepingDeviceRunning: true)
         try? await controller.openDevice(second.inventoryID)
+        let open = try await controller.prepareOpen(of: second.inventoryID) { @Sendable _ in
+            return { @Sendable in }
+        }
+        #expect(open != nil)
         try await controller.testingDeviceVisibilityDidChange()
         #expect(try await controller.operation(.devices([second.inventoryID])) { @Sendable in true })
         #expect(try await controller.operation(.independent) { @Sendable in true })
@@ -274,6 +278,110 @@ struct DeviceManagementTests {
 
         await fixture.completeShutdown("A")
         #expect(await events.next() == .command("boot", "A"))
+        #expect(await restarting.value.results[0].error == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func anOpenThatMustStartARendererKeepsItsPlaceAheadOfLaterWork() async throws {
+        let first = Self.simulator("A", state: "Booted")
+        let second = Self.simulator("B", state: "Booted")
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let restartingSecond = Task { await controller.manage(.restart, devices: [.simulator(second)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "B"))
+
+        let deciding = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+        var decisions = deciding.stream.makeAsyncIterator()
+        let seen = Mutex<[[String]]?>(nil)
+        let opening = Task {
+            try await controller.prepareOpen(of: first.inventoryID) { @Sendable startingRenderer in
+                guard startingRenderer else {
+                    await withCheckedContinuation { deciding.continuation.yield($0) }
+                    return nil
+                }
+                let commands = await fixture.commands.map(\.arguments)
+                seen.withLock { $0 = commands }
+                return { @Sendable in }
+            }
+        }
+        let decision = try #require(await decisions.next())
+
+        // Accepted while the open decides, so behind it, whatever the open turns out to need.
+        let stopping = Task { await controller.manage(.shutdown, devices: [.simulator(first)], using: fixture.backend) }
+        try await Self.waitForWaitingOperations(1, on: controller)
+        let transition = Task { try await controller.operation(.hostTransition) { @Sendable in true } }
+        try await Self.waitForWaitingOperations(2, on: controller)
+
+        // It follows B's change like any host transition, and its reservation holds what came after it.
+        decision.resume()
+        try await Self.waitForWaitingOperations(3, on: controller)
+        #expect(await !fixture.commands.contains { $0.arguments == ["shutdown", "A"] })
+        await fixture.completeShutdown("B")
+        #expect(await events.next() == .command("boot", "B"))
+        #expect(await restartingSecond.value.results[0].error == nil)
+
+        #expect(try await opening.value != nil)
+        let commands = try #require(seen.withLock { $0 })
+        #expect(commands.contains(["boot", "B"]) && !commands.contains(["shutdown", "A"]))
+        #expect(await events.next() == .command("shutdown", "A"))
+        await fixture.completeShutdown("A")
+        #expect(await stopping.value.results[0].error == nil)
+        #expect(try await transition.value)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func opensThatMustStartRenderersTakeTurnsInAcceptedOrder() async throws {
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        let deciding = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+        var decisions = deciding.stream.makeAsyncIterator()
+        let order = Mutex<[String]>([])
+        @Sendable func open(_ identifier: String) async throws {
+            _ = try await controller.prepareOpen(of: .simulator(udid: identifier, deviceSetPath: nil)) { @Sendable startingRenderer in
+                guard startingRenderer else {
+                    await withCheckedContinuation { deciding.continuation.yield($0) }
+                    return nil
+                }
+                order.withLock { $0.append(identifier) }
+                return { @Sendable in }
+            }
+        }
+        let first = Task { try await open("A") }
+        let decidingFirst = try #require(await decisions.next())
+        let second = Task { try await open("B") }
+        let decidingSecond = try #require(await decisions.next())
+
+        // B reserves its turn while A is still running. A's later reservation neither waits for it nor follows it.
+        decidingSecond.resume()
+        try await Self.waitForWaitingOperations(1, on: controller)
+        decidingFirst.resume()
+        try await first.value
+        try await second.value
+        #expect(order.withLock { $0 } == ["A", "B"])
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancellingAnOpenWaitingToStartARendererReleasesWhatItHeld() async throws {
+        let second = Self.simulator("B", state: "Booted")
+        let fixture = ManagementFixture(holdsShutdown: true)
+        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
+        var events = fixture.events.makeAsyncIterator()
+        let restarting = Task { await controller.manage(.restart, devices: [.simulator(second)], using: fixture.backend) }
+        #expect(await events.next() == .command("shutdown", "B"))
+        let device = DeviceInventoryID.simulator(udid: "A", deviceSetPath: nil)
+        let opening = Task {
+            try await controller.prepareOpen(of: device) { @Sendable startingRenderer in
+                if startingRenderer { Issue.record("A cancelled open started a renderer.") }
+                return nil
+            }
+        }
+        try await Self.waitForWaitingOperations(1, on: controller)
+        let later = Task { try await controller.operation(.devices([device])) { @Sendable in true } }
+        try await Self.waitForWaitingOperations(2, on: controller)
+
+        opening.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await opening.value }
+        #expect(try await later.value)
+
+        await fixture.completeShutdown("B")
+        #expect(await events.next() == .command("boot", "B"))
         #expect(await restarting.value.results[0].error == nil)
     }
 

@@ -230,10 +230,10 @@ screen opens and closes, follows only earlier work on those devices. Reads and
 creation of a new simulator follow no device. Changes of the host, its preferences
 or a renderer's lifetime follow everything accepted before them and hold everything
 accepted after them, so that nothing overtakes one. A screen open prepares in its
-device's order and becomes such a change only when it must start a renderer. A
-catalog read that runs during a change to a device leaves that device's automatic
-attachment to the next read. The manager's queue applies the same rule in its own
-order and owns the availability that the browser displays.
+device's order and becomes such a change, keeping its place, only when it must start
+a renderer. A catalog read that runs during a change to a device leaves that device's
+automatic attachment to the next read. The manager's queue applies the same rule in
+its own order and owns the availability that the browser displays.
 Synchronous discovery, catalog decoding, process scans, and host preference I/O
 run in `@concurrent` helpers. Initial native bindings resolve asynchronously
 while UI receivers and framework loading stay on MainActor. Concurrent loads of

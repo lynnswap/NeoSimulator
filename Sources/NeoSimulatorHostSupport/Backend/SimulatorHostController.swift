@@ -228,9 +228,14 @@ package actor SimulatorHostController {
     private var startupDeviceIdentifier: DeviceInventoryID?
     private var screenOpenTasks: [DeviceInventoryID: (id: UUID, task: Task<Void, any Error>)] = [:]
     private var connectionSynchronization: Task<Bool, any Error>?
-    private var runningOperations: [UUID: HostOperationScope] = [:]
-    /// In accepted order.
-    private var operationWaiters: [(id: UUID, scope: HostOperationScope, continuation: CheckedContinuation<Void, any Error>)] = []
+    private struct AcceptedOperation {
+        let id: UUID
+        var scope: HostOperationScope
+        /// Present while the operation waits for its turn.
+        var continuation: CheckedContinuation<Void, any Error>?
+    }
+    /// Running and waiting operations, in accepted order.
+    private var operations: [AcceptedOperation] = []
     /// The devices being changed at some time during each catalog read in progress.
     private var catalogReads: [UUID: Set<DeviceInventoryID>] = [:]
     var shutdownTransactions: [SimulatorShutdownTransaction] = []
@@ -246,8 +251,8 @@ package actor SimulatorHostController {
     package nonisolated func stopReads() { reads.stop() }
     package nonisolated func resumeReads() { reads.resume() }
 
-    /// The operations that have not started.
-    package var waitingOperations: Int { operationWaiters.count }
+    /// The operations waiting for their turn.
+    package var waitingOperations: Int { operations.count { $0.continuation != nil } }
 
     package func status() async throws -> SimulatorHostStatus {
         try await operation(.independent) {
@@ -514,13 +519,17 @@ package actor SimulatorHostController {
         try await open?()
     }
 
-    /// Prepares an open in its device's order. An open that needs a new renderer prepares again as a host transition,
-    /// which `prepare` must then complete.
-    private func prepareOpen(of deviceID: DeviceInventoryID,
-                             _ prepare: (_ startingRenderer: Bool) async throws -> (@Sendable () async throws -> Void)?)
+    /// Prepares an open in its device's order. An open that needs a new renderer prepares again as a host transition in
+    /// the same place, which `prepare` must then complete.
+    func prepareOpen(of deviceID: DeviceInventoryID,
+                     _ prepare: (_ startingRenderer: Bool) async throws -> (@Sendable () async throws -> Void)?)
         async throws -> (@Sendable () async throws -> Void)? {
-        if let open = try await operation(.devices([deviceID]), { try await prepare(false) }) { return open }
-        return try await operation(.hostTransition) { try await prepare(true) }
+        let id = UUID()
+        return try await runOperation(id, .devices([deviceID])) {
+            if let open = try await prepare(false) { return open }
+            try await self.escalateToHostTransition(id)
+            return try await prepare(true)
+        }
     }
 
     package nonisolated static func openDeviceHub(boot: @Sendable () async throws -> Void,
@@ -712,8 +721,8 @@ package actor SimulatorHostController {
         // The observation starts before I/O: a later cancellation must also invalidate stale Shutdown results.
         let identities = screenOpenCancellations.snapshot()
         let id = UUID()
-        catalogReads[id] = runningOperations.values.reduce(into: []) { changing, scope in
-            if case .devices(let devices) = scope { changing.formUnion(devices) }
+        catalogReads[id] = operations.reduce(into: []) { changing, operation in
+            if operation.continuation == nil, case .devices(let devices) = operation.scope { changing.formUnion(devices) }
         }
         defer { catalogReads[id] = nil }
         let catalogs = try await read()
@@ -1008,18 +1017,14 @@ package actor SimulatorHostController {
     /// Runs `body` once nothing accepted before it conflicts with `scope`, so that a long change to one device holds only
     /// what concerns that device, and a host transition stays ahead of everything accepted after it.
     package func operation<T>(_ scope: HostOperationScope, _ body: () async throws -> T) async throws -> T {
+        try await runOperation(UUID(), scope, body)
+    }
+
+    private func runOperation<T>(_ id: UUID, _ scope: HostOperationScope, _ body: () async throws -> T) async throws -> T {
         try Task.checkCancellation()
-        let id = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                operationWaiters.append((id, scope, continuation))
-                admitOperations()
-            }
-        } onCancel: {
-            Task { await self.cancelOperationWaiter(id) }
-        }
+        try await waitForTurn(of: id) { operations.append(AcceptedOperation(id: id, scope: scope, continuation: $0)) }
         defer {
-            runningOperations[id] = nil
+            operations.removeAll { $0.id == id }
             admitOperations()
         }
         do {
@@ -1030,24 +1035,50 @@ package actor SimulatorHostController {
         catch { throw SimulatorHostFailure(error) }
     }
 
+    /// Turns a running operation into a waiting host transition in its accepted place. Work accepted before it ends first,
+    /// and none of that concerns its devices, or it could not have started. Work accepted after it stays behind it, and
+    /// another operation in this state no longer runs, so neither holds the other beyond their order.
+    private func escalateToHostTransition(_ id: UUID) async throws {
+        try await waitForTurn(of: id) { continuation in
+            for index in operations.indices where operations[index].id == id {
+                operations[index].scope = .hostTransition
+                operations[index].continuation = continuation
+            }
+        }
+    }
+
+    private func waitForTurn(of id: UUID, joining join: (CheckedContinuation<Void, any Error>) -> Void) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                join(continuation)
+                admitOperations()
+            }
+        } onCancel: {
+            Task { await self.cancelOperationWaiter(id) }
+        }
+    }
+
     /// Starts every waiter that conflicts with nothing running or waiting ahead of it.
     private func admitOperations() {
-        var ahead = Array(runningOperations.values)
-        operationWaiters.removeAll { waiter in
-            defer { ahead.append(waiter.scope) }
-            guard !ahead.contains(where: { $0.conflicts(with: waiter.scope) }) else { return false }
-            runningOperations[waiter.id] = waiter.scope
-            if case .devices(let devices) = waiter.scope {
+        var ahead = operations.filter { $0.continuation == nil }.map(\.scope)
+        for index in operations.indices {
+            guard let continuation = operations[index].continuation else { continue }
+            let scope = operations[index].scope
+            defer { ahead.append(scope) }
+            guard !ahead.contains(where: { $0.conflicts(with: scope) }) else { continue }
+            operations[index].continuation = nil
+            if case .devices(let devices) = scope {
                 for read in catalogReads.keys { catalogReads[read]?.formUnion(devices) }
             }
-            waiter.continuation.resume()
-            return true
+            continuation.resume()
         }
     }
 
     private func cancelOperationWaiter(_ id: UUID) {
-        guard let index = operationWaiters.firstIndex(where: { $0.id == id }) else { return }
-        operationWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+        guard let index = operations.firstIndex(where: { $0.id == id }),
+              let continuation = operations[index].continuation else { return }
+        operations.remove(at: index)
+        continuation.resume(throwing: CancellationError())
         admitOperations()
     }
     /// For a change. A catalog read goes through ``readSimctlList(xcode:deviceSetPath:)`` instead.
