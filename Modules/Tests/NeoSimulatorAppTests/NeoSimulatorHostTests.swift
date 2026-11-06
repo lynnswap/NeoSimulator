@@ -8837,9 +8837,9 @@ struct InputFocusTests {
         #expect(model.deviceTypes.map(\.identifier) == ["a", "b", "x"])
         #expect(model.runtimes.map(\.identifier) == ["old", "new"])
         #expect(model.deviceType == "b" && model.runtime == "old")
-        model.selectFamily(2)
+        model.selectCategory(.iPad)
         #expect(model.deviceTypes.map(\.identifier) == ["c"] && model.runtime == "new")
-        model.selectFamily(1)
+        model.selectCategory(.iPhone)
         model.selectDeviceType("x")
         #expect(model.runtime == nil && !model.canProceed)
         model.selectDeviceType("a")
@@ -8892,6 +8892,101 @@ struct InputFocusTests {
         model.forward()
         await model.waitForCreation()
         #expect(createdRuntime == candidate.identifier)
+    }
+
+    private enum Duo {
+        static let phone = "com.apple.CoreSimulator.SimDeviceType.iPhone-17"
+        static let duo = "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"
+        static let watch = "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-11"
+        static let ios270 = "com.apple.CoreSimulator.SimRuntime.iOS-27-0"
+        static let ios271 = "com.apple.CoreSimulator.SimRuntime.iOS-27-1"
+        static let ios272 = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
+        static let ios272Duo = "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4"
+        static let watchOS = "com.apple.CoreSimulator.SimRuntime.watchOS-27-2"
+
+        /// Lists Duo first to show that CoreSimulator's order doesn't decide the default category.
+        static func catalog() -> SimulatorCatalog {
+            SimulatorCatalog(
+                deviceTypes: [.init(identifier: duo, name: "iPhone Duo", productFamily: 1),
+                              .init(identifier: phone, name: "iPhone 17", productFamily: 1),
+                              .init(identifier: "pad", name: "iPad", productFamily: 2),
+                              .init(identifier: watch, name: "Apple Watch Series 11", productFamily: 4)],
+                runtimes: [.init(identifier: ios270, name: "iOS 27.0", buildVersion: "24A434"),
+                           .init(identifier: ios271, name: "iOS 27.1", buildVersion: "24A94401"),
+                           .init(identifier: ios272, name: "iOS 27.2", buildVersion: "24B114"),
+                           .init(identifier: ios272Duo, name: "iOS 27.2", buildVersion: "24B91016s"),
+                           .init(identifier: watchOS, name: "watchOS 27.2", buildVersion: "24R1")],
+                supportedDeviceTypes: [ios270: [phone, "pad"], ios271: [duo], ios272: [phone, "pad"], ios272Duo: [duo],
+                                       watchOS: [watch]],
+                canPair: { _, _, _, _ in true })
+        }
+    }
+
+    @Test func newSimulatorSeparatesIPhoneDuoFromSameVersionRuntimes() async {
+        var created: [String] = []
+        let model = NewSimulatorModel(catalog: Duo.catalog(), create: { _, type, runtime in
+            created = [type, runtime]
+            return "device"
+        }, pair: { _, _ in Issue.record("Paired without a watch") })
+        #expect(model.categories.map(\.name) == ["iPhone", "iPhone Duo", "iPad", "Apple Watch"])
+        #expect(model.category == .iPhone && model.deviceTypes.map(\.identifier) == [Duo.phone])
+        #expect(model.runtimes.map(\.identifier) == [Duo.ios270, Duo.ios272])
+
+        model.selectCategory(.iPhoneDuo)
+        #expect(model.deviceTypes.map(\.identifier) == [Duo.duo])
+        #expect(model.runtimes.map(\.identifier) == [Duo.ios271, Duo.ios272Duo])
+        #expect(model.deviceType == Duo.duo && model.runtime == Duo.ios271)
+        #expect(model.canAddWatch)
+
+        model.selectRuntime(Duo.ios272Duo)
+        model.forward()
+        await model.waitForCreation()
+        #expect(created == [Duo.duo, Duo.ios272Duo])
+    }
+
+    @Test func newSimulatorRemembersIPhoneAndDuoSelectionsIndependently() throws {
+        let domain = "NeoSimulator.DuoCreationChoices.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        func makeForm() -> NewSimulatorModel {
+            NewSimulatorModel(catalog: Duo.catalog(), create: { _, _, _ in "" }, pair: { _, _ in },
+                              preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults))
+        }
+        let first = makeForm()
+        first.selectRuntime(Duo.ios270)
+        first.selectCategory(.iPhoneDuo)
+        first.selectRuntime(Duo.ios272Duo)
+
+        let reopened = makeForm()
+        #expect(reopened.category == .iPhoneDuo)
+        #expect(reopened.deviceType == Duo.duo && reopened.runtime == Duo.ios272Duo)
+        reopened.selectCategory(.iPhone)
+        #expect(reopened.deviceType == Duo.phone && reopened.runtime == Duo.ios270)
+        reopened.selectCategory(.iPhoneDuo)
+        #expect(reopened.deviceType == Duo.duo && reopened.runtime == Duo.ios272Duo)
+
+        let refreshed = makeForm()
+        refreshed.selectCategory(.iPad)
+        refreshed.restoreInput(from: reopened)
+        #expect(refreshed.category == .iPhoneDuo && refreshed.runtime == Duo.ios272Duo)
+
+        let companion = NewSimulatorModel(catalog: Duo.catalog(), pairingWith: .init(
+            identifier: "watch", name: "Watch", productFamily: "Apple Watch", deviceType: Duo.watch, runtime: Duo.watchOS),
+            create: { _, _, _ in "" }, pair: { _, _ in },
+            preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults))
+        #expect(companion.deviceType == Duo.phone && companion.runtime == Duo.ios270)
+    }
+
+    @Test func newIPhoneForAWatchListsDuoWithOnlyItsOwnRuntimes() {
+        let model = NewSimulatorModel(catalog: Duo.catalog(), pairingWith: .init(
+            identifier: "watch", name: "Watch", productFamily: "Apple Watch", deviceType: Duo.watch, runtime: Duo.watchOS),
+            create: { _, _, _ in "" }, pair: { _, _ in })
+        #expect(model.deviceTypes.map(\.identifier) == [Duo.duo, Duo.phone])
+        model.selectDeviceType(Duo.phone)
+        #expect(model.runtimes.map(\.identifier) == [Duo.ios270, Duo.ios272] && model.runtime == Duo.ios270)
+        model.selectDeviceType(Duo.duo)
+        #expect(model.runtimes.map(\.identifier) == [Duo.ios271, Duo.ios272Duo] && model.runtime == Duo.ios271)
+        #expect(model.canProceed)
     }
 
     @Test func newSimulatorWithoutRuntimesCannotCreate() {
@@ -8947,9 +9042,9 @@ struct InputFocusTests {
         #expect(model.canAddWatch && !model.addsWatch && model.forwardTitle == "Create")
         model.setAddsWatch(true)
         #expect(model.forwardTitle == "Next")
-        model.selectFamily(2)
+        model.selectCategory(.iPad)
         #expect(!model.canAddWatch && !model.addsWatch && model.forwardTitle == "Create")
-        model.selectFamily(1)
+        model.selectCategory(.iPhone)
         #expect(model.canAddWatch && !model.addsWatch)
         model.setAddsWatch(true)
         model.setAddsWatch(false)
@@ -8987,7 +9082,7 @@ struct InputFocusTests {
         #expect(reopened.watchType == "w2" && reopened.watchRuntime == "new")
         #expect(reopened.name.isEmpty && reopened.watchName.isEmpty && !reopened.addsWatch)
 
-        first.selectFamily(2)
+        first.selectCategory(.iPad)
         first.selectDeviceType("second-pad")
         first.selectRuntime("next-ios")
         let companion = NewSimulatorModel(catalog: catalog, pairingWith: .init(
@@ -8997,19 +9092,19 @@ struct InputFocusTests {
         companion.selectDeviceType("phone")
         companion.selectRuntime("ios")
         let afterCompanion = makeForm(catalog)
-        #expect(afterCompanion.family == 2 && afterCompanion.deviceType == "second-pad")
+        #expect(afterCompanion.category == .iPad && afterCompanion.deviceType == "second-pad")
         #expect(afterCompanion.runtime == "next-ios")
-        afterCompanion.selectFamily(1)
+        afterCompanion.selectCategory(.iPhone)
         #expect(afterCompanion.deviceType == "phone" && afterCompanion.runtime == "ios")
 
-        afterCompanion.selectFamily(4)
+        afterCompanion.selectCategory(.appleWatch)
         afterCompanion.selectDeviceType("w3")
         let refreshedWatch = makeForm(catalog)
         refreshedWatch.restoreInput(from: afterCompanion)
         let reopenedWatch = makeForm(catalog)
         #expect(reopenedWatch.deviceType == "w3" && reopenedWatch.runtime == "old")
 
-        afterCompanion.selectFamily(1)
+        afterCompanion.selectCategory(.iPhone)
         afterCompanion.selectDeviceType("incompatible-phone")
         afterCompanion.selectRuntime("next-ios")
         let changedCatalog = SimulatorCatalog(

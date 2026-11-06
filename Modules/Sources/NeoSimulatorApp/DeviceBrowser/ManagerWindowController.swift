@@ -296,7 +296,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         return model.inventory.filter {
             kindFilter.includes($0) && availabilityFilter.includes($0)
-                && (familyFilter == nil || family(of: $0) == familyFilter)
+                && (familyFilter == nil || filterCategory(of: $0) == familyFilter)
                 && (query.isEmpty || $0.name.localizedStandardContains(query)
                     || ($0.operatingSystem?.localizedStandardContains(query) ?? false)
                     || (modelName(of: $0)?.localizedStandardContains(query) ?? false))
@@ -1047,6 +1047,11 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return platform(of: device).isEmpty ? "Other" : platform(of: device)
     }
 
+    /// Divides the native family for the filter only; artwork keeps using `family(of:)`.
+    private func filterCategory(of device: InventoryDevice) -> String {
+        device.isIPhoneDuo ? "iPhone Duo" : family(of: device)
+    }
+
     private func platform(of device: InventoryDevice) -> String {
         switch device {
         case .simulator(let simulator): simulator.runtimeName.split(separator: " ").first.map(String.init) ?? ""
@@ -1573,7 +1578,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         allTypes.target = self
         allTypes.state = familyFilter == nil ? .on : .off
         menu.addItem(allTypes)
-        for family in Set(model.inventory.map { family(of: $0) }).sorted() {
+        for family in Set(model.inventory.map { filterCategory(of: $0) }).sorted() {
             let item = NSMenuItem(title: family, action: #selector(filterFamily(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = family

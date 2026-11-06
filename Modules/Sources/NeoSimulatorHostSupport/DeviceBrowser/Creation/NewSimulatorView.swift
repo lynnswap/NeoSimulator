@@ -40,9 +40,9 @@ package struct NewSimulatorView: View {
 
     @ViewBuilder private var simulatorFields: some View {
         if model.existingDevice == nil {
-            Picker("Device", selection: Binding(get: { model.family }, set: model.selectFamily)) {
-                ForEach(model.families, id: \.id) { family in
-                    Text(family.name).tag(Optional(family.id))
+            Picker("Device", selection: Binding(get: { model.category }, set: model.selectCategory)) {
+                ForEach(model.categories, id: \.id) { category in
+                    Text(category.name).tag(Optional(category.id))
                 }
             }
         }

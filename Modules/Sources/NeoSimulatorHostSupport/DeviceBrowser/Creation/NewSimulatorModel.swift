@@ -30,7 +30,7 @@ package final class NewSimulatorModel {
     private let pair: Pair
     package var name = ""
     package var watchName = ""
-    package private(set) var family: Int?
+    package private(set) var category: DeviceCategory?
     package private(set) var deviceType: String?
     package private(set) var runtime: String?
     package private(set) var watchType: String?
@@ -65,10 +65,10 @@ package final class NewSimulatorModel {
         self.create = create
         self.pair = pair
         self.preferences = preferences
-        let saved = preferences?.newSimulatorFamily
-        family = families.contains(where: { $0.id == saved }) ? saved : families.first?.id
-        let savedWatchType = preferences?.newSimulatorDeviceType(for: 4)
-        let savedWatchRuntime = preferences?.newSimulatorRuntime(for: 4)
+        let saved = preferences?.newSimulatorCategory
+        category = categories.contains(where: { $0.id == saved }) ? saved : categories.first?.id
+        let savedWatchType = preferences?.newSimulatorDeviceType(for: .appleWatch)
+        let savedWatchRuntime = preferences?.newSimulatorRuntime(for: .appleWatch)
         resetSimulatorSelection()
         watchType = watchTypes.first?.identifier
         availableWatchRuntimes = catalog.runtimes.filter { runtime in
@@ -89,35 +89,46 @@ package final class NewSimulatorModel {
         existingDevice.map { "Create \(createsPhone ? "an iPhone" : "an Apple Watch") for \($0.name)" }
             ?? "Create a new simulator"
     }
-    package var families: [(id: Int, name: String)] {
-        var seen: Set<Int> = []
-        return catalog.deviceTypes.compactMap { type in
-            guard seen.insert(type.productFamily).inserted else { return nil }
-            let name: String = switch type.productFamily {
-            case 1: "iPhone"
-            case 2: "iPad"
-            case 3: "Apple TV"
-            case 4: "Apple Watch"
-            case 7: "Apple Vision Pro"
+    package var categories: [(id: DeviceCategory, name: String)] {
+        var seen: Set<DeviceCategory> = []
+        var categories = catalog.deviceTypes.compactMap { type -> (id: DeviceCategory, name: String)? in
+            guard seen.insert(type.category).inserted else { return nil }
+            let name: String = switch type.category {
+            case .iPhone: "iPhone"
+            case .iPhoneDuo: "iPhone Duo"
+            case .iPad: "iPad"
+            case .appleTV: "Apple TV"
+            case .appleWatch: "Apple Watch"
+            case .appleVision: "Apple Vision Pro"
             default: type.name
             }
-            return (type.productFamily, name)
+            return (type.category, name)
         }
+        // Keeps iPhone as the default category and Duo beside it, wherever the catalog lists Duo.
+        if let duo = categories.firstIndex(where: { $0.id == .iPhoneDuo }) {
+            let category = categories.remove(at: duo)
+            categories.insert(category, at: categories.firstIndex { $0.id == .iPhone }.map { $0 + 1 } ?? duo)
+        }
+        return categories
     }
     package var deviceTypes: [SimulatorCatalog.DeviceType] {
         catalog.deviceTypes.filter { type in
-            if existingDevice == nil { return type.productFamily == family }
+            if existingDevice == nil { return type.category == category }
             return !createsPhone || (type.productFamily == 1 && catalog.runtimes.contains {
                 simulatorRuntimeSupports($0.identifier, type: type.identifier)
             })
         }
     }
     package var runtimes: [SimulatorCatalog.Runtime] {
-        catalog.runtimes.filter { runtime in
+        // A companion iPhone has no category picker, so its selected model keeps same-version runtimes apart.
+        let modelCategory = deviceType.flatMap(catalog.deviceType)?.category
+        return catalog.runtimes.filter { runtime in
             if existingDevice == nil {
                 return deviceTypes.contains { catalog.runtime(runtime.identifier, supports: $0.identifier) }
             }
-            return !createsPhone || deviceTypes.contains { simulatorRuntimeSupports(runtime.identifier, type: $0.identifier) }
+            return !createsPhone || deviceTypes.contains {
+                $0.category == modelCategory && simulatorRuntimeSupports(runtime.identifier, type: $0.identifier)
+            }
         }
     }
     package func runtimeName(_ runtime: SimulatorCatalog.Runtime) -> String {
@@ -162,15 +173,15 @@ package final class NewSimulatorModel {
         return catalog.canPair(watch, watchRuntime, phone, phoneRuntime)
     }
 
-    package func selectFamily(_ value: Int?) {
-        family = value
-        preferences?.newSimulatorFamily = value
+    package func selectCategory(_ value: DeviceCategory?) {
+        category = value
+        preferences?.newSimulatorCategory = value
         resetSimulatorSelection()
     }
     private func resetSimulatorSelection() {
-        let selectionFamily = createsPhone ? 1 : family
-        let savedDeviceType = selectionFamily.flatMap { preferences?.newSimulatorDeviceType(for: $0) }
-        let savedRuntime = selectionFamily.flatMap { preferences?.newSimulatorRuntime(for: $0) }
+        let selectionCategory = createsPhone ? .iPhone : category
+        let savedDeviceType = selectionCategory.flatMap { preferences?.newSimulatorDeviceType(for: $0) }
+        let savedRuntime = selectionCategory.flatMap { preferences?.newSimulatorRuntime(for: $0) }
         deviceType = deviceTypes.first?.identifier
         runtime = runtimes.first?.identifier
         updateRuntime(runtime)
@@ -180,7 +191,7 @@ package final class NewSimulatorModel {
 
     private func restoreSimulatorSelection(deviceType savedDeviceType: String?, runtime savedRuntime: String?) {
         if let savedDeviceType, deviceTypes.contains(where: { $0.identifier == savedDeviceType }),
-           runtimes.contains(where: { simulatorRuntimeSupports($0.identifier, type: savedDeviceType) }) {
+           catalog.runtimes.contains(where: { simulatorRuntimeSupports($0.identifier, type: savedDeviceType) }) {
             updateDeviceType(savedDeviceType)
         }
         if let savedRuntime, let deviceType, simulatorRuntimeSupports(savedRuntime, type: deviceType) {
@@ -213,8 +224,8 @@ package final class NewSimulatorModel {
     }
 
     private func saveSimulatorSelection() {
-        guard let family = deviceType.flatMap(catalog.deviceType)?.productFamily else { return }
-        preferences?.setNewSimulatorSelection(deviceType: deviceType, runtime: runtime, for: family)
+        guard let category = deviceType.flatMap(catalog.deviceType)?.category else { return }
+        preferences?.setNewSimulatorSelection(deviceType: deviceType, runtime: runtime, for: category)
     }
 
     package func setAddsWatch(_ value: Bool) { addsWatch = canAddWatch && value }
@@ -253,7 +264,7 @@ package final class NewSimulatorModel {
     }
 
     private func saveWatchSelection() {
-        preferences?.setNewSimulatorSelection(deviceType: watchType, runtime: watchRuntime, for: 4)
+        preferences?.setNewSimulatorSelection(deviceType: watchType, runtime: watchRuntime, for: .appleWatch)
     }
 
     private func simulatorRuntimeSupports(_ runtime: String, type: String) -> Bool {
@@ -270,8 +281,8 @@ package final class NewSimulatorModel {
     package func restoreInput(from previous: NewSimulatorModel) {
         name = previous.name
         watchName = previous.watchName
-        if families.contains(where: { $0.id == previous.family }) {
-            family = previous.family
+        if categories.contains(where: { $0.id == previous.category }) {
+            category = previous.category
             resetSimulatorSelection()
         }
         restoreSimulatorSelection(deviceType: previous.deviceType, runtime: previous.runtime)
