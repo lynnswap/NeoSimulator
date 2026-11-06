@@ -1,4 +1,5 @@
 import Foundation
+import NeoSimulatorDeviceIO
 
 package struct XcodeInstallationInspector {
     private static let xcodeSelect = URL(fileURLWithPath: "/usr/bin/xcode-select")
@@ -11,14 +12,22 @@ package struct XcodeInstallationInspector {
         self.environment = environment
     }
 
-    package func selectedXcode() throws -> XcodeInstallation {
-        let developerDirectory = try selectedDeveloperDirectory()
+    package nonisolated(nonsending) func selectedXcode() async throws -> XcodeInstallation {
+        let developerDirectory = try await selectedDeveloperDirectory()
         let xcodeURL = try xcodeApplicationURL(forDeveloperDirectory: developerDirectory)
         return try xcode(at: xcodeURL)
     }
 
-    package func xcodeForUIFrameworks(override: URL?) throws -> XcodeInstallation {
-        try override.map { try xcode(at: $0) } ?? selectedXcode()
+    /// Nil when no usable Xcode is selected. Cancellation still throws, because it says nothing about the selection.
+    package nonisolated(nonsending) func selectedXcodeIfUsable() async throws -> XcodeInstallation? {
+        do { return try await selectedXcode() }
+        catch is CancellationError { throw CancellationError() }
+        catch { return nil }
+    }
+
+    package nonisolated(nonsending) func xcodeForUIFrameworks(override: URL?) async throws -> XcodeInstallation {
+        if let override { return try xcode(at: override) }
+        return try await selectedXcode()
     }
 
     package func xcode(at url: URL) throws -> XcodeInstallation {
@@ -33,12 +42,12 @@ package struct XcodeInstallationInspector {
         return xcode
     }
 
-    private func selectedDeveloperDirectory() throws -> URL {
+    private nonisolated(nonsending) func selectedDeveloperDirectory() async throws -> URL {
         if let path = environment["DEVELOPER_DIR"], !path.isEmpty {
             return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         }
 
-        let output = try runner.run(executable: Self.xcodeSelect, arguments: ["-p"])
+        let output = try await runner.runCancellable(SystemCommand(executable: Self.xcodeSelect, arguments: ["-p"], policy: .cancellable))
         guard output.terminationStatus == 0, !output.stdoutText.isEmpty else {
             let detail = output.stderrText.isEmpty
                 ? "exit status \(output.terminationStatus)"

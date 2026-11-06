@@ -1,4 +1,5 @@
 import AppKit
+import NeoSimulatorDeviceIO
 
 /// Owns simulator connections and their resources independently of an application's menus or routing.
 @MainActor
@@ -1022,6 +1023,8 @@ package final class SimulatorScreenHost: NSObject {
             self.rescan()
             if let completion { completion(failure); return }
             guard let failure, !(failure is CancellationError), !self.stopped else { return }
+            // Cancelling a restart is part of closing its device, which reads the state next.
+            if failure is DeviceRestartInterruption { hostLog(failure.localizedDescription); return }
             if self.sessions[identifier] === controller { controller.present(failure) } else { self.report(failure) }
         }
     }

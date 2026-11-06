@@ -146,14 +146,6 @@ package struct ReceiptStore {
         return try await body()
     }
 
-    package func withExistingExclusiveLock<T>(_ body: () throws -> T) throws -> T {
-        let descriptor = try acquireExclusiveLock(createIfNeeded: false)
-        defer {
-            releaseExclusiveLock(descriptor)
-        }
-        return try body()
-    }
-
     package nonisolated(nonsending)
     func withExistingExclusiveLock<T>(
         _ body: () async throws -> T

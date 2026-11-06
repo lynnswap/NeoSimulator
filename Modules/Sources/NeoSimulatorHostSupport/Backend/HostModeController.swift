@@ -31,16 +31,16 @@ package struct HostModeController {
         self.effectiveUserID = effectiveUserID
     }
 
-    package func routeStatus() throws -> SimulatorRouteStatus {
-        try readStatusSnapshot {
-            try makeRouteStatus()
+    package nonisolated(nonsending) func routeStatus() async throws -> SimulatorRouteStatus {
+        try await readStatusSnapshot {
+            try await makeRouteStatus()
         }
     }
 
     /// Local metadata records preference only. Applying or releasing a session checks live settings;
     /// catalog polling does not open protected app containers.
-    package func selectionStatus() throws -> SimulatorHostSelectionStatus {
-        try readStatusSnapshot { try makeSelectionStatus() }
+    package nonisolated(nonsending) func selectionStatus() async throws -> SimulatorHostSelectionStatus {
+        try await readStatusSnapshot { try makeSelectionStatus() }
     }
 
     private func makeSelectionStatus() throws -> SimulatorHostSelectionStatus {
@@ -63,26 +63,26 @@ package struct HostModeController {
 
     /// Opens the chosen host without reapplying or inspecting Xcode's preferences.
     package nonisolated(nonsending) func launch(_ host: SimulatorHost, xcodeURL: URL?, initialDeviceIdentifier: String? = nil) async throws {
-        let xcode = try installationInspector.validatedTargetXcode(at: xcodeURL)
+        let xcode = try await installationInspector.validatedTargetXcode(at: xcodeURL)
         switch host {
         case .neo:
-            let renderer = try installationInspector.validatedNeoHost(for: xcode)
+            let renderer = try await installationInspector.validatedNeoHost(for: xcode)
             _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier)
         case .deviceHub:
             _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL)
         }
     }
 
-    private func readStatusSnapshot<T>(_ makeSnapshot: () throws -> T) throws -> T {
+    private nonisolated(nonsending) func readStatusSnapshot<T>(_ makeSnapshot: () async throws -> T) async throws -> T {
         if try !receiptStore.stateDirectoryExists() {
-            let snapshot = try makeSnapshot()
+            let snapshot = try await makeSnapshot()
             if try !receiptStore.stateDirectoryExists() {
                 return snapshot
             }
         }
 
-        return try receiptStore.withExistingExclusiveLock {
-            try makeSnapshot()
+        return try await receiptStore.withExistingExclusiveLock {
+            try await makeSnapshot()
         }
     }
 
@@ -96,15 +96,15 @@ package struct HostModeController {
 
     nonisolated(nonsending) private func apply(_ request: SimulatorHost, xcodeURL: URL?, launchDisplay: Bool,
                                              initialDeviceIdentifier: String?) async throws -> ModeChangeReport {
-        let xcode = try installationInspector.validatedTargetXcode(at: xcodeURL)
+        let xcode = try await installationInspector.validatedTargetXcode(at: xcodeURL)
         let host: ResolvedHost = switch request {
-        case .neo: .neo(try installationInspector.validatedNeoHost(for: xcode))
+        case .neo: .neo(try await installationInspector.validatedNeoHost(for: xcode))
         case .deviceHub: .deviceHub
         }
-        _ = try recoverManagedContext()
+        _ = try await recoverManagedContext()
         let terminatedNeo = request == .deviceHub
             ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
-        let didChange = try transition(to: host.mode.targetState, capturingWith: xcode)
+        let didChange = try await transition(to: host.mode.targetState, capturingWith: xcode)
         let receiptURL = try receiptStore.load() == nil ? nil : receiptStore.receiptURL
         do { try receiptStore.saveHostSelection(request) }
         catch {
@@ -120,7 +120,7 @@ package struct HostModeController {
             }
         }
         do {
-            let observed = try defaultsStore.readState()
+            let observed = try await defaultsStore.readState()
             guard observed == host.mode.targetState else {
                 throw conflictError(expected: host.mode.targetState, observed: observed)
             }
@@ -151,22 +151,22 @@ package struct HostModeController {
             // The receipt remains authoritative until recovery succeeds. Persist the
             // post-restore choice before recovery can remove that receipt.
             try receiptStore.saveHostSelection(.deviceHub)
-            if force { _ = try defaultsStore.readState() } else { _ = try recoverManagedContext() }
+            if force { _ = try await defaultsStore.readState() } else { _ = try await recoverManagedContext() }
             let terminatedNeo = originalReceipt.original.effectiveRoute == .deviceHub
                 ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
             if force {
-                return try forceRestore(originalReceipt, terminatedNeoHostCount: terminatedNeo)
+                return try await forceRestore(originalReceipt, terminatedNeoHostCount: terminatedNeo)
             }
-            guard let receipt = try recoverManagedContext().receipt else {
+            guard let receipt = try await recoverManagedContext().receipt else {
                 return RestoreReport(didRestore: false, restoredState: nil, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: terminatedNeo)
             }
-            let didChange = try transition(to: receipt.original, capturingWith: nil)
+            let didChange = try await transition(to: receipt.original, capturingWith: nil)
             return RestoreReport(didRestore: didChange, restoredState: receipt.original, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: terminatedNeo)
         }
     }
 
-    private func makeRouteStatus() throws -> SimulatorRouteStatus {
-        let preferences = try defaultsStore.readState()
+    private nonisolated(nonsending) func makeRouteStatus() async throws -> SimulatorRouteStatus {
+        let preferences = try await defaultsStore.readState()
         let receipt = try receiptStore.load()
         return SimulatorRouteStatus(
             preferences: preferences,
@@ -174,11 +174,11 @@ package struct HostModeController {
         )
     }
 
-    private func transition(
+    private nonisolated(nonsending) func transition(
         to target: ManagedPreferenceState,
         capturingWith xcode: XcodeInstallation?
-    ) throws -> Bool {
-        var context = try recoverManagedContext()
+    ) async throws -> Bool {
+        var context = try await recoverManagedContext()
         let before = context.observed
 
         if context.receipt == nil {
@@ -217,14 +217,14 @@ package struct HostModeController {
         try receiptStore.save(receipt)
 
         do {
-            _ = try defaultsStore.apply(target, from: before)
+            _ = try await defaultsStore.apply(target, from: before)
         } catch let mismatch as DefaultsStore.StateMismatch {
             throw conflictError(
                 expected: mismatch.expected.first ?? before,
                 observed: mismatch.observed
             )
         } catch {
-            try rollback(
+            try await rollback(
                 after: error,
                 to: before,
                 attemptedTarget: target,
@@ -242,15 +242,15 @@ package struct HostModeController {
         return true
     }
 
-    private func recoverManagedContext() throws -> ManagedContext {
+    private nonisolated(nonsending) func recoverManagedContext() async throws -> ManagedContext {
         guard var receipt = try receiptStore.load() else {
             return ManagedContext(
                 receipt: nil,
-                observed: try defaultsStore.readState()
+                observed: try await defaultsStore.readState()
             )
         }
 
-        let observed = try defaultsStore.readState()
+        let observed = try await defaultsStore.readState()
         if let pending = receipt.pending {
             if observed == pending.before {
                 if observed == receipt.original {
@@ -316,11 +316,11 @@ package struct HostModeController {
         )
     }
 
-    private func forceRestore(
+    private nonisolated(nonsending) func forceRestore(
         _ receipt: RestorationReceipt,
         terminatedNeoHostCount: Int
-    ) throws -> RestoreReport {
-        let observed = try defaultsStore.readState()
+    ) async throws -> RestoreReport {
+        let observed = try await defaultsStore.readState()
         guard observed != receipt.original else {
             try receiptStore.deleteReceipt()
             return RestoreReport(
@@ -340,11 +340,11 @@ package struct HostModeController {
         try receiptStore.save(forcedReceipt)
 
         do {
-            _ = try defaultsStore.apply(receipt.original, from: observed)
+            _ = try await defaultsStore.apply(receipt.original, from: observed)
         } catch let mismatch as DefaultsStore.StateMismatch {
             throw conflictError(expected: observed, observed: mismatch.observed)
         } catch {
-            try rollback(
+            try await rollback(
                 after: error,
                 to: observed,
                 attemptedTarget: receipt.original,
@@ -361,14 +361,14 @@ package struct HostModeController {
         )
     }
 
-    private func rollback(
+    private nonisolated(nonsending) func rollback(
         after primaryError: any Error,
         to before: ManagedPreferenceState,
         attemptedTarget: ManagedPreferenceState,
         receipt: RestorationReceipt
-    ) throws -> Never {
+    ) async throws -> Never {
         do {
-            _ = try defaultsStore.rollback(
+            _ = try await defaultsStore.rollback(
                 to: before,
                 fromAttemptedTarget: attemptedTarget
             )

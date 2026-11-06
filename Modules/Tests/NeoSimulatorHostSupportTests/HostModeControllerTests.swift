@@ -357,7 +357,7 @@ struct HostModeControllerTests {
         }
     }
 
-    @Test func managedRendererLaunchIncludesTheManagersExactIdentity() throws {
+    @Test func managedRendererLaunchIncludesTheManagersExactIdentity() async throws {
         let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
         let arguments = WorkspaceClient.rendererLaunchArguments(owner: owner,
             startupResultURL: URL(fileURLWithPath: "/Startup/result"), xcodeURL: URL(fileURLWithPath: "/Xcode.app"),
@@ -370,7 +370,7 @@ struct HostModeControllerTests {
         #expect(headless == arguments + ["--headless"])
     }
 
-    @Test func rendererRegistrationNeverAdoptsAnotherManagerOrAReusedManagerPID() throws {
+    @Test func rendererRegistrationNeverAdoptsAnotherManagerOrAReusedManagerPID() async throws {
         let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
         let identities: [(Int32?, Date?)] = [(321, owner.launchDate), (nil, nil), (123, owner.launchDate),
                                            (321, owner.launchDate.addingTimeInterval(1))]
@@ -523,14 +523,14 @@ struct HostModeControllerTests {
         let fixture = try ControllerFixture(initialState: original)
         _ = try await fixture.controller.use(suppression == .trueValue ? .deviceHub : .neo)
         _ = try await fixture.controller.restore()
-        let restored = try fixture.controller.routeStatus()
+        let restored = try await fixture.controller.routeStatus()
         #expect(restored.preferences == original)
         #expect(restored.receiptStatus == .unmanaged)
-        #expect(try fixture.controller.selectionStatus().host == .deviceHub)
-        #expect(try !fixture.controller.selectionStatus().allowsAutomaticHosting)
+        #expect(try await fixture.controller.selectionStatus().host == .deviceHub)
+        #expect(try await !fixture.controller.selectionStatus().allowsAutomaticHosting)
         _ = try await fixture.controller.use(.neo)
-        #expect(try fixture.controller.selectionStatus().host == .neo)
-        #expect(try fixture.controller.selectionStatus().allowsAutomaticHosting)
+        #expect(try await fixture.controller.selectionStatus().host == .neo)
+        #expect(try await fixture.controller.selectionStatus().allowsAutomaticHosting)
     }
 
     @Test func restorePreservesExplicitFalseAndTrueValues() async throws {
@@ -819,7 +819,7 @@ struct HostModeControllerTests {
 
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
-        let status = try fixture.controller.routeStatus()
+        let status = try await fixture.controller.routeStatus()
         #expect(status.receiptStatus == .ambiguousIntermediate)
     }
 
@@ -828,7 +828,7 @@ struct HostModeControllerTests {
         _ = try await fixture.controller.use(.neo)
         fixture.runner.setStoredValue(false, for: ToolConstants.xcodePreference)
 
-        let status = try fixture.controller.routeStatus()
+        let status = try await fixture.controller.routeStatus()
         #expect(status.receiptStatus.hasConflict)
         let eventsBeforeRestore = fixture.workspace.events
 
@@ -955,7 +955,7 @@ struct HostModeControllerTests {
 
     @Test func pendingAppliedMutationIsFinalizedBeforeTheNextUse() async throws {
         let fixture = try ControllerFixture()
-        let xcode = try InstallationInspector(
+        let xcode = try await InstallationInspector(
             runner: fixture.runner,
             environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
             signatureValidator: .acceptingTestFixtures
@@ -985,7 +985,7 @@ struct HostModeControllerTests {
 
     @Test func ambiguousIntermediateIsNotOverwrittenByTheNextUse() async throws {
         let fixture = try ControllerFixture()
-        let xcode = try InstallationInspector(
+        let xcode = try await InstallationInspector(
             runner: fixture.runner,
             environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
             signatureValidator: .acceptingTestFixtures
@@ -1024,7 +1024,7 @@ struct HostModeControllerTests {
 
     @Test func forceRestoreCanResolveAnAmbiguousIntermediateState() async throws {
         let fixture = try ControllerFixture()
-        let xcode = try InstallationInspector(
+        let xcode = try await InstallationInspector(
             runner: fixture.runner,
             environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
             signatureValidator: .acceptingTestFixtures
@@ -1344,7 +1344,7 @@ struct HostModeControllerTests {
         #expect(fixture.runner.mutationCount == 0)
     }
 
-    @Test func statusIsReadOnly() throws {
+    @Test func statusIsReadOnly() async throws {
         let fixture = try ControllerFixture()
         #expect(
             !FileManager.default.fileExists(
@@ -1358,7 +1358,7 @@ struct HostModeControllerTests {
             ),
         ]
         fixture.runner.failPreferenceReads = true
-        let status = try fixture.controller.selectionStatus()
+        let status = try await fixture.controller.selectionStatus()
 
         #expect(status.host == .neo)
         #expect(status.allowsAutomaticHosting)
@@ -1380,7 +1380,7 @@ struct HostModeControllerTests {
         fixture.runner.failPreferenceReads = true
         let preferenceCalls = fixture.runner.calls.filter { $0.executable.path == "/usr/bin/defaults" }
 
-        let selection = try fixture.controller.selectionStatus()
+        let selection = try await fixture.controller.selectionStatus()
         #expect(selection.host == .neo && selection.allowsAutomaticHosting)
         try await fixture.controller.launch(selection.host, xcodeURL: nil)
         #expect(Array(fixture.workspace.events.suffix(1)) == ["open-neo-host"])
@@ -1388,7 +1388,7 @@ struct HostModeControllerTests {
 
         // An explicit host change still reads the actual values and preserves failures.
         await #expect(throws: CLIError.self) { try await fixture.controller.use(.deviceHub) }
-        #expect(try fixture.controller.selectionStatus().host == .neo)
+        #expect(try await fixture.controller.selectionStatus().host == .neo)
     }
 
     @Test func beginningASessionAppliesThePreferenceWithoutOpeningAScreen() async throws {
@@ -1421,31 +1421,31 @@ struct HostModeControllerTests {
         let fixture = try ControllerFixture()
         _ = try await fixture.controller.beginSession()
         try fixture.receiptStore.saveHostSelection(.deviceHub)
-        #expect(try fixture.controller.selectionStatus().host == .deviceHub)
+        #expect(try await fixture.controller.selectionStatus().host == .deviceHub)
         #expect(try await fixture.controller.beginSession() == .deviceHub)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(fixture.workspace.openedDeviceHubs.isEmpty)
     }
 
-    @Test func legacyReceiptsSelectNeoWithoutReadingLivePreferencesAndPendingWritesDoNotAutoAttach() throws {
+    @Test func legacyReceiptsSelectNeoWithoutReadingLivePreferencesAndPendingWritesDoNotAutoAttach() async throws {
         let fixture = try ControllerFixture()
-        let xcode = try InstallationInspector(runner: fixture.runner,
+        let xcode = try await InstallationInspector(runner: fixture.runner,
             environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
             signatureValidator: .acceptingTestFixtures).validatedTargetXcode()
         var receipt = RestorationReceipt(capturedAt: Date(), xcode: xcode, original: .deviceHub)
         receipt.expectedCurrent = .coreSimulator
         try fixture.receiptStore.withExclusiveLock { try fixture.receiptStore.save(receipt) }
         fixture.runner.failPreferenceReads = true
-        #expect(try fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
+        #expect(try await fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
             restorationAvailable: true, allowsAutomaticHosting: true))
         receipt.pending = PendingMutation(before: .coreSimulator, target: .deviceHub)
         try fixture.receiptStore.save(receipt)
-        #expect(try fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
+        #expect(try await fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
             restorationAvailable: true, allowsAutomaticHosting: false))
         #expect(!fixture.runner.calls.contains { $0.executable.path == "/usr/bin/defaults" })
     }
 
-    @Test func routeStatusRetriesWhenStateAppearsDuringTheOptimisticSnapshot() throws {
+    @Test func routeStatusRetriesWhenStateAppearsDuringTheOptimisticSnapshot() async throws {
         let fixture = try ControllerFixture()
         var createdState = false
         fixture.runner.beforeRun = { call in
@@ -1463,7 +1463,7 @@ struct HostModeControllerTests {
             }
         }
 
-        let status = try fixture.controller.routeStatus()
+        let status = try await fixture.controller.routeStatus()
 
         #expect(createdState)
         #expect(status.preferences == .deviceHub)
@@ -1478,7 +1478,7 @@ struct HostModeControllerTests {
 }
 
 @Suite struct SimulatorDeviceCatalogTests {
-    @Test func menusListAvailableDevicesAcrossSupportedFamilies() throws {
+    @Test func menusListAvailableDevicesAcrossSupportedFamilies() async throws {
         let data = Data(#"""
         {
           "devicetypes": [
@@ -1507,11 +1507,18 @@ struct HostModeControllerTests {
         #expect(clones.allSatisfy { $0.deviceSetPath == "/custom/XCTestDevices" })
         #expect(devices.allSatisfy { $0.deviceSetPath == nil })
         var reportedFailure = false
-        let available = SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: {
+        let available = try await SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: {
             throw CLIError.io("testing-catalog", "unavailable alternate device set")
         }, onFailure: { error in reportedFailure = (error as? CLIError)?.identifier == "testing-catalog" })
         #expect(available == devices)
         #expect(reportedFailure)
+        reportedFailure = false
+        // A stopped read says nothing about the testing devices, so it neither omits them nor reports them unavailable.
+        await #expect(throws: CancellationError.self) {
+            _ = try await SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: { throw CancellationError() },
+                                                                         onFailure: { _ in reportedFailure = true })
+        }
+        #expect(!reportedFailure)
         #expect(Set(devices.map(\.identifier)) == ["phone", "tv"])
         #expect(devices.first(where: { $0.identifier == "phone" })?.state == "Booted")
         #expect(devices.first(where: { $0.identifier == "phone" })?.runtimeName == "iOS 27.0")
@@ -1524,7 +1531,7 @@ struct HostModeControllerTests {
 @Suite
 struct HostHandoffTerminationTests {
     @Test(arguments: [HostTerminationRequest.deviceHubHandoff, .rendererHandoff])
-    func handoffsAvoidUserQuit(_ request: HostTerminationRequest) throws {
+    func handoffsAvoidUserQuit(_ request: HostTerminationRequest) async throws {
         let directory = try TemporaryTestDirectory()
         let cleanup = directory.url.appendingPathComponent("signal-cleanup")
         let process = Process()

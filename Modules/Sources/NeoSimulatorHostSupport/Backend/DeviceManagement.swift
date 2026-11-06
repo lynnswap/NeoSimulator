@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import Foundation
 
@@ -103,6 +104,8 @@ extension SimulatorHostController {
                        preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport {
         let backend = DeviceManagementBackend(
             context: { try await self.deviceManagementContext(for: $0, requiresRenderer: $1) },
+            renderer: { device in try await self.registeredRenderers().first { $0.deviceIdentifiers.contains(device.inventoryID) } },
+            readPairs: { try await self.readManagementPairs(xcode: $0, path: $1) },
             runSimctl: Self.runManagementSimctl, runDevicectl: Self.runManagementDevicectl,
             shutdownSimulator: Self.shutdownSimulator,
             manageCoreDevice: { action, identifier in try await CoreDeviceManagementClient.perform(action, deviceID: identifier) },
@@ -160,21 +163,25 @@ extension SimulatorHostController {
     }
 
     private static func shutdownSimulator(_ xcode: URL, _ identifier: String, _ path: String?) async throws {
-        let arguments = (path.map { ["--set", $0] } ?? []) + ["shutdown", identifier]
-        let environment = ProcessInfo.processInfo.environment.merging([
-            "DEVELOPER_DIR": xcode.appendingPathComponent("Contents/Developer").path
-        ]) { _, new in new }
-        let output = try await SystemCommandRunner.runCancellable(
-            executable: URL(fileURLWithPath: ToolConstants.coreSimulatorFrameworkPath)
-                .appendingPathComponent(ToolConstants.simctlBinaryPath), arguments: arguments, environment: environment)
+        let output = try await SystemCommandRunner().run(.simctl(
+            xcodeURL: xcode, arguments: ["shutdown", identifier], deviceSetPath: path, policy: .cancellable))
         guard output.terminationStatus == 0 else {
             throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
     }
 
     @concurrent
+    private func readManagementPairs(xcode: URL, path: String?) async throws -> Data {
+        let output = try await reads.run(.simctl(xcodeURL: xcode, arguments: ["list", "pairs", "--json"], deviceSetPath: path, policy: .cancellable))
+        guard output.terminationStatus == 0 else {
+            throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
+        }
+        return output.stdout
+    }
+
+    @concurrent
     private static func runManagementSimctl(_ xcode: URL, _ arguments: [String], _ path: String?) async throws -> Data {
-        let output = try SystemCommandRunner().runSimctl(xcodeURL: xcode, arguments: arguments, deviceSetPath: path)
+        let output = try await SystemCommandRunner().run(.simctl(xcodeURL: xcode, arguments: arguments, deviceSetPath: path, policy: .uninterrupted))
         guard output.terminationStatus == 0 else {
             throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
@@ -183,9 +190,9 @@ extension SimulatorHostController {
 
     @concurrent
     private static func runManagementDevicectl(_ arguments: [String]) async throws -> Data {
-        let output = try SystemCommandRunner().run(
-            executable: URL(fileURLWithPath: "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"),
-            arguments: arguments + ["--json-output", "-", "--quiet", "--timeout", "300"])
+        let output = try await SystemCommandRunner().run(.devicectl(
+            arguments: arguments + ["--json-output", "-", "--quiet", "--timeout", String(DeviceOperationLimit.devicectlManagement)],
+            policy: .uninterrupted))
         guard output.terminationStatus == 0 else {
             throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
@@ -194,7 +201,11 @@ extension SimulatorHostController {
 }
 
 package struct DeviceManagementBackend: Sendable {
+    /// Reads the catalog before a change, so stopping it leaves the device untouched.
     package var context: @Sendable (SimulatorHostDevice, Bool) async throws -> DeviceManagementContext
+    /// The renderer showing a device, for cleanup that must not depend on a catalog read that can be stopped.
+    package var renderer: @Sendable (SimulatorHostDevice) async throws -> RendererRegistration?
+    package var readPairs: @Sendable (URL, String?) async throws -> Data
     package var runSimctl: @Sendable (URL, [String], String?) async throws -> Data
     package var runDevicectl: @Sendable ([String]) async throws -> Data
     package var shutdownSimulator: @Sendable (URL, String, String?) async throws -> Void
@@ -262,8 +273,7 @@ package struct DeviceManagementBackend: Sendable {
             if results[index].error is CancellationError, results[index].completedSteps.isEmpty { continue }
             if case .simulator(let device) = target, device.deviceSetPath == nil {
                 do {
-                    let resolved = try await context(device, true)
-                    if let renderer = resolved.renderer {
+                    if let renderer = try await renderer(device) {
                         try await release(renderer, device.inventoryID)
                         results[index] = results[index].recordingDisplayCleanup(.success(()))
                     }
@@ -405,7 +415,7 @@ package struct DeviceManagementBackend: Sendable {
                         }
                         if let eraseFailure { throw eraseFailure }
                     case .unpair:
-                        let data = try await runSimctl(resolved.xcodeURL, ["list", "pairs", "--json"], device.deviceSetPath)
+                        let data = try await readPairs(resolved.xcodeURL, device.deviceSetPath)
                         let pairs = try JSONDecoder().decode(PairList.self, from: data).pairs
                         for (identifier, pair) in pairs.sorted(by: { $0.key < $1.key }) where pair.watch.udid == device.identifier || pair.phone.udid == device.identifier {
                             _ = try await command(["unpair", identifier], step: "Unpaired")
@@ -548,7 +558,7 @@ actor SimulatorShutdownTransaction {
         }
         accepting = false
         for escalation in escalations.values { _ = await escalation.task.value }
-        for index in results.indices where results[index].error is CancellationError && forciblyStopped.contains(results[index].deviceID) {
+        for index in results.indices where results[index].error?.isCancellation == true && forciblyStopped.contains(results[index].deviceID) {
             if let preparation = preparations[results[index].deviceID] {
                 results[index] = preparedResult(await preparation.value, deviceID: results[index].deviceID, forced: true)
             }

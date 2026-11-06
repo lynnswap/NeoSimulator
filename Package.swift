@@ -17,16 +17,18 @@ let package = Package(
         .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.8"),
     ],
     targets: [
+        .target(name: "NeoSimulatorDeviceIO", path: "Modules/Sources/NeoSimulatorDeviceIO"),
         .target(
             name: "NeoSimulatorKit",
             dependencies: [
+                "NeoSimulatorDeviceIO",
                 .product(name: "ABIBridge", package: "ABIBridge"),
                 .product(name: "ObservationBridge", package: "ObservationBridge"),
             ],
             path: "Modules/Sources/NeoSimulatorKit"
         ),
         .target(name: "NeoSimulatorHostSupport", dependencies: [
-            "NeoSimulatorKit",
+            "NeoSimulatorDeviceIO", "NeoSimulatorKit",
             .product(name: "ABIBridge", package: "ABIBridge"),
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ], path: "Modules/Sources/NeoSimulatorHostSupport"),
@@ -40,7 +42,7 @@ let package = Package(
         .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorHostSupport"],
                           path: "Modules/Sources/CoreDeviceInventoryProbe"),
         .testTarget(name: "NeoSimulatorAppTests", dependencies: [
-            "NeoSimulatorApp", "NeoSimulatorKit", "NeoSimulatorHostSupport", "NeoSimulatorService",
+            "NeoSimulatorApp", "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorHostSupport", "NeoSimulatorService",
             .product(name: "ABIBridge", package: "ABIBridge"),
         ], path: "Modules/Tests/NeoSimulatorAppTests", swiftSettings: [
             .enableUpcomingFeature("MemberImportVisibility"),
@@ -48,7 +50,7 @@ let package = Package(
             .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
         ]),
         .testTarget(name: "NeoSimulatorHostSupportTests", dependencies: [
-            "NeoSimulatorKit", "NeoSimulatorHostSupport",
+            "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorHostSupport",
             .product(name: "ABIBridge", package: "ABIBridge"),
         ], path: "Modules/Tests/NeoSimulatorHostSupportTests"),
     ]

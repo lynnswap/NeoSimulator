@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 @testable import NeoSimulatorApp
@@ -126,13 +127,13 @@ struct ManagerModelTests {
         do {
             let access = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: chooseFile)
             try await access.request()
-            try domains.write(.trueValue, to: preference)
+            try await domains.write(.trueValue, to: preference)
         }
         let restored = HostPreferenceAccess(defaults: defaults, file: file, chooseFile: chooseFile)
         #expect(restored.restore())
         try await restored.request()
         #expect(selections == 1)
-        #expect(try domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == true)
+        #expect(try await domains.readDomain(preference.domain, keys: [preference.key])[preference.key] as? Bool == true)
         #if DEBUG
         restored.reset()
         #expect(!restored.restore())
@@ -592,7 +593,7 @@ struct ManagerModelTests {
           "hardware":{"fidelity":"simulated","udid":"same-udid"},"state":{"name":"Default"},
           "connection":{"state":"unavailable","lastConnectionDate":100}}}]}}
         """#.utf8)
-        let snapshot = await DeviceInventoryReader(
+        let snapshot = try await DeviceInventoryReader(
             readSimulators: { DeviceInventorySnapshot(devices: [defaultDevice, customDevice, newDevice], issues: []) },
             readCoreDevices: { payload }).read()
         #expect(snapshot.issues.isEmpty)
@@ -2378,6 +2379,98 @@ struct ManagerModelTests {
         #expect(await events.next() == .quit)
     }
 
+    /// The child never exits by itself and the accepted close is not cancelled, so only stopping the read lets the quit finish.
+    @Test func quittingStopsAnInventoryReadHeldByAnUnresponsiveChild() async throws {
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        // A read that published would remove the device.
+        await source.setDevices([])
+        let child = try unresponsiveRead(in: directory)
+        await source.holdReads(in: child.command)
+        manager.closeDevice(device.id, keepingDeviceRunning: true, after: Task {})
+        let identifier = try #require(try await child.identifier.value)
+        try await manager.prepareForQuit()
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+        #expect(manager.inventory.map(\.id) == [device.id])
+        #expect(manager.backgroundIssue == nil)
+
+        await source.holdReads(in: nil)
+        manager.resumeAfterCancelledQuit()
+        try await wait { manager.inventory.isEmpty }
+    }
+
+    /// Quitting releases the read and reports that the accepted change did not run.
+    @Test func quittingStopsAManagementCatalogReadHeldByAnUnresponsiveChild() async throws {
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        let manager = SimulatorManagerModel(source: source)
+        var reported: [any Error] = []
+        manager.onError = { reported.append($0) }
+        await manager.refresh()
+        let child = try unresponsiveRead(in: directory)
+        await source.holdReads(in: child.command)
+        manager.manage(.rename("Renamed"), devices: [device])
+        let identifier = try #require(try await child.identifier.value)
+        try await manager.prepareForQuit()
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+        #expect(await source.managementRequests == 0)
+        let failure = try #require(reported.first as? any LocalizedError)
+        #expect(reported.count == 1)
+        #expect(failure.recoverySuggestion?.contains("stopped before the requested change was applied") == true)
+    }
+
+    /// Reads run through the real runner, so the backend's read back ends with the cancelled change, and the consumer has to read again.
+    @Test func aStoppedServiceChangeReachesItsConsumerWithItsOutcomeAndIsReadAgain() async throws {
+        let directory = URL.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let child = try unresponsiveRead(in: directory)
+        let command = child.command
+        let label = "com.apple.searchd"
+        let device = simulator()
+        let changeStarted = Mutex(false)
+        let model = BackgroundServicesModel(source: ServiceChangeSource(backend: SimulatorBackgroundServiceBackend(launchctl: { arguments in
+            guard ["print-disabled", "list"].contains(arguments[0]) else {
+                changeStarted.withLock { $0 = true }
+                return try await SystemCommandRunner().run(command)
+            }
+            let disabled = arguments[0] == "print-disabled" && changeStarted.withLock { $0 }
+            return try await SystemCommandRunner().run(SystemCommand(executable: URL(fileURLWithPath: "/bin/echo"),
+                arguments: [disabled ? "\"\(label)\" => disabled" : ""], policy: .backgroundServiceCommand))
+        }, jobPlists: { _ in [:] }, pause: { _ in }, productFamily: "iPhone")))
+        model.inspect(device, selectionCount: 1)
+        model.setVisible(true)
+        let change = model.accept([.service(label)], enabled: false, for: device)
+        let applying = Task { try await model.apply(change) }
+        let identifier = try #require(try await child.identifier.value)
+        applying.cancel()
+        let failure = try await #require(throws: SimulatorHostFailure.self) { try await applying.value }
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+        #expect(failure.failureReason?.contains("disable \(label): sh was stopped before it finished, so what it changed is unknown.") == true)
+        #expect(model.changingDeviceIDs.isEmpty)
+        try await wait { model.services?.disabledLabels == [label] }
+    }
+
+    /// A read that reports its process identifier to the returned task and then never exits by itself.
+    private func unresponsiveRead(in directory: URL) throws -> (command: SystemCommand, identifier: Task<Int32?, any Error>) {
+        let ready = directory.appending(path: "ready-\(UUID().uuidString)")
+        try #require(mkfifo(ready.path, 0o600) == 0)
+        let identifier = Task {
+            let data = try await performBlockingIO { try FileHandle(forReadingFrom: ready).readToEnd() ?? Data() }
+            return Int32(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return (SystemCommand(executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf '%s\\n' \"$$\" > \"$1\"; exec /bin/sleep 300", "fixture", ready.path], policy: .cancellable), identifier)
+    }
+
     @Test func editingDuringRefreshStillReadsExternalChanges() async throws {
         let device = simulator()
         let source = ManagerModelSource(devices: [device])
@@ -3922,6 +4015,15 @@ struct ManagerModelTests {
     }
 }
 
+private struct ServiceChangeSource: BackgroundServicesSource {
+    let backend: SimulatorBackgroundServiceBackend
+    func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices { try await backend.read() }
+    func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
+                               for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
+        try await backend.update(targets, enabled: enabled)
+    }
+}
+
 actor ManagerModelSource: SimulatorManagerSource {
     private var failsSessionStart = false
     private(set) var sessionEvents: [String] = []
@@ -3993,7 +4095,17 @@ actor ManagerModelSource: SimulatorManagerSource {
         return [SimulatorXcode(url: URL(fileURLWithPath: "/Applications/Test Xcode.app"), version: "27.1", name: "Test Xcode")]
     }
     func setDevices(_ devices: [InventoryDevice]) { self.devices = devices }
-    func inventory() async -> DeviceInventorySnapshot {
+    private nonisolated let reads = CommandReads()
+    private var heldRead: SystemCommand?
+    nonisolated func stopReads() { reads.stop() }
+    nonisolated func resumeReads() { reads.resume() }
+    /// Inventory and management catalog reads wait for this command, through the production read boundary.
+    func holdReads(in command: SystemCommand?) { heldRead = command }
+    private func readThroughHeldCommand() async throws {
+        if let heldRead { _ = try await reads.run(heldRead) }
+    }
+    func inventory() async throws -> DeviceInventorySnapshot {
+        try await readThroughHeldCommand()
         if holdsInventoryReads {
             await withCheckedContinuation { waiting in
                 inventoryRead = waiting
@@ -4159,7 +4271,11 @@ actor ManagerModelSource: SimulatorManagerSource {
             }
         } else { preparation = nil }
         let backend = DeviceManagementBackend(context: { device, _ in
-            DeviceManagementContext(device: device, xcodeURL: URL(fileURLWithPath: "/Fixture.app"), renderer: nil)
+            try await self.readThroughHeldCommand()
+            return DeviceManagementContext(device: device, xcodeURL: URL(fileURLWithPath: "/Fixture.app"), renderer: nil)
+        }, renderer: { _ in nil }, readPairs: { _, _ in
+            await self.beginManagement(request, action: action, devices: devices)
+            return Data()
         }, runSimctl: { _, _, _ in
             await self.beginManagement(request, action: action, devices: devices)
             return Data()

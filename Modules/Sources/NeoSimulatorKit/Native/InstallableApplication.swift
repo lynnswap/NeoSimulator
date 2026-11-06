@@ -1,4 +1,5 @@
 import Foundation
+import NeoSimulatorDeviceIO
 
 /// Calls `body` with an application bundle that the device's installer accepts.
 ///
@@ -18,8 +19,8 @@ package func withInstallableApplication(at url: URL, _ body: (URL) async throws 
     try manager.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     let result: Result<Void, any Error>
     do {
-        let output = try await SystemCommandRunner.runCancellable(executable: URL(fileURLWithPath: "/usr/bin/ditto"),
-                                                                  arguments: ["-x", "-k", url.path, directory.path])
+        let output = try await SystemCommandRunner().runCancellable(SystemCommand(
+            executable: URL(fileURLWithPath: "/usr/bin/ditto"), arguments: ["-x", "-k", url.path, directory.path], policy: .cancellable))
         guard output.terminationStatus == 0 else {
             throw DeviceInspectorError.commandFailed(status: output.terminationStatus, stdout: output.stdoutText, stderr: output.stderrText)
         }

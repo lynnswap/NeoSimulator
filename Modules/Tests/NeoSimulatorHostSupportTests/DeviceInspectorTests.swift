@@ -1,3 +1,4 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -308,7 +309,7 @@ import Testing
 
     @Test func packageInstallsItsExtractedMainApplicationOnTheSelectedDestination() async throws {
         let directory = try TemporaryTestDirectory()
-        let package = try Self.applicationPackage(in: directory, bundles: ["Payload/App.app", "Payload/App.app/Watch/Watch.app"])
+        let package = try await Self.applicationPackage(in: directory, bundles: ["Payload/App.app", "Payload/App.app/Watch/Watch.app"])
         let calls = InspectorCalls { command in
             let application = try #require(command.arguments.first { $0.hasSuffix(".app") })
             #expect(try String(contentsOfFile: application + "/Info.plist", encoding: .utf8) == "Payload/App.app")
@@ -332,7 +333,7 @@ import Testing
         let directory = try TemporaryTestDirectory()
         let corrupt = directory.url.appendingPathComponent("Corrupt.ipa")
         try Data("not an archive".utf8).write(to: corrupt)
-        let unpackaged = try Self.applicationPackage(in: directory, bundles: ["App.app"])
+        let unpackaged = try await Self.applicationPackage(in: directory, bundles: ["App.app"])
         let calls = InspectorCalls { _ in Self.output("") }
         let inspector = Self.simulator(transport: .init(run: { try await calls.run($0) }))
         do { try await inspector.installApplication(at: corrupt); Issue.record("A corrupt package was installed") }
@@ -347,7 +348,7 @@ import Testing
 
     @Test func packageInstallerOutcomesKeepTheirErrorsAndRemoveStaging() async throws {
         let directory = try TemporaryTestDirectory()
-        let package = try Self.applicationPackage(in: directory, bundles: ["Payload/App.app"])
+        let package = try await Self.applicationPackage(in: directory, bundles: ["Payload/App.app"])
         let calls = InspectorCalls { command in
             if command.source == .coreDevice { throw CancellationError() }
             return CommandOutput(terminationStatus: 1, stdout: Data(), stderr: Data("Incompatible platform".utf8))
@@ -380,7 +381,7 @@ import Testing
     }
 
     /// Archives each bundle, with an Info.plist naming its path, as an application package.
-    private static func applicationPackage(in directory: TemporaryTestDirectory, bundles: [String]) throws -> URL {
+    private static func applicationPackage(in directory: TemporaryTestDirectory, bundles: [String]) async throws -> URL {
         let contents = directory.url.appendingPathComponent(UUID().uuidString, isDirectory: true)
         for bundle in bundles {
             let url = contents.appendingPathComponent(bundle, isDirectory: true)
@@ -388,7 +389,7 @@ import Testing
             try Data(bundle.utf8).write(to: url.appendingPathComponent("Info.plist"))
         }
         let package = directory.url.appendingPathComponent("\(UUID().uuidString).ipa")
-        let output = try SystemCommandRunner().run(executable: URL(fileURLWithPath: "/usr/bin/ditto"), arguments: ["-c", "-k", contents.path, package.path])
+        let output = try await SystemCommandRunner().run(SystemCommand(executable: URL(fileURLWithPath: "/usr/bin/ditto"), arguments: ["-c", "-k", contents.path, package.path], policy: .uninterrupted))
         try #require(output.terminationStatus == 0, "\(output.stderrText)")
         return package
     }

@@ -59,7 +59,7 @@ import Testing
             InventoryDevice.simulator(SimulatorHostDevice(identifier: udid, name: "Phone", descriptiveName: "Phone",
                 runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted", deviceSetPath: path))
         }
-        let snapshot = await DeviceInventoryReader(readSimulators: {
+        let snapshot = try await DeviceInventoryReader(readSimulators: {
             DeviceInventorySnapshot(devices: simulators, issues: [])
         }, readCoreDevices: { payload }).read()
         let phone = try #require(snapshot.devices.first { $0.id == .coreDevice(phoneID.uuidString) })

@@ -94,7 +94,11 @@ protocol SimulatorManagerSource: DeviceSettingsSource, BackgroundServicesSource 
     func status() async throws -> SimulatorHostStatus
     func beginSession() async throws
     func endSession() async throws
-    func inventory() async -> DeviceInventorySnapshot
+    /// Only cancellation throws: a stopped read observed nothing to publish.
+    func inventory() async throws -> DeviceInventorySnapshot
+    /// Stops the reads running now and refuses new ones until ``resumeReads()``, without stopping any change.
+    nonisolated func stopReads()
+    nonisolated func resumeReads()
     func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func installedXcodes() async throws -> [SimulatorXcode]
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) async throws
@@ -502,7 +506,8 @@ final class SimulatorManagerModel {
                 do { try await self.afterManagingSimulators?(action, targets) }
                 catch { presentationError = error }
                 if !self.stopping { await self.refreshCatalog() }
-                if report.results.contains(where: { $0.error != nil }) || presentationError != nil {
+                let failed = report.results.contains { $0.error != nil }
+                if failed || presentationError != nil {
                     self.onError?(DeviceManagementFailure(devices: targets, report: report, presentationError: presentationError))
                 }
             } catch { self.onError?(error) }
@@ -596,7 +601,13 @@ final class SimulatorManagerModel {
         repeat {
             inventoryRefreshRequested = false
             refreshHostStatus()
-            let snapshot = await controller.inventory()
+            let snapshot: DeviceInventorySnapshot
+            do { snapshot = try await controller.inventory() }
+            catch {
+                // What is published stays until a read completes, which a cancelled quit starts again.
+                inventoryRefreshRequested = true
+                return
+            }
             inventory = snapshot.devices
             reconcileDevicePostures()
             inventoryIssues = snapshot.issues
@@ -674,6 +685,7 @@ final class SimulatorManagerModel {
         defer { synchronizing = false }
         do {
             if try await controller.synchronizeXcodeConnections() { await refresh() }
+        } catch is CancellationError {
         } catch {
             await refresh()
             reportBackgroundError(error)
@@ -771,6 +783,9 @@ final class SimulatorManagerModel {
         cancelPendingOpens()
         settings.stopReading()
         backgroundServices.stopReading()
+        // Accepted changes finish below, but no child that only reads state can hold them or this wait.
+        controller.stopReads()
+        defer { controller.resumeReads() }
         await stopDevicePostures()
         statusRefreshTask?.cancel()
         await operationTask?.value
@@ -798,6 +813,7 @@ final class SimulatorManagerModel {
         stopping = false
         settings.resumeReading()
         backgroundServices.resumeReading()
+        if inventoryRefreshRequested { Task { await refresh() } }
     }
 
     private func reportBackgroundError(_ error: any Error) {
@@ -959,7 +975,15 @@ private struct DeviceManagementFailure: LocalizedError {
             guard let error = result.error else { return nil }
             let name = devices.first { $0.id == result.deviceID }?.name ?? "Device"
             let completed = result.completedSteps.isEmpty ? "" : "\nCompleted: \(result.completedSteps.joined(separator: ", "))."
-            return "\(name): \(error.localizedDescription)\(completed)"
+            let reason: String
+            if error is CancellationError {
+                reason = result.completedSteps.isEmpty
+                    ? "The operation was stopped before the requested change was applied."
+                    : "The operation was stopped."
+            } else {
+                reason = error.localizedDescription
+            }
+            return "\(name): \(reason)\(completed)"
         }
         return (failures + [presentationError?.localizedDescription].compactMap { $0 }).joined(separator: "\n\n")
     }

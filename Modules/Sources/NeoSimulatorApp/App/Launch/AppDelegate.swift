@@ -396,6 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 form.showWindow(nil)
                 form.window?.makeKeyAndOrderFront(nil)
                 NSApp.activate()
+            } catch is CancellationError {
             } catch { self.present(error) }
         }
     }

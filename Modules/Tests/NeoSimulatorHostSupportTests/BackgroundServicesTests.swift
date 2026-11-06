@@ -1,5 +1,7 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
+import Darwin
 import Foundation
 import Synchronization
 import Testing
@@ -183,6 +185,81 @@ struct BackgroundServicesTests {
         #expect(failure.services?.disabledLabels == search.subtracting(["com.apple.searchd"]))
         #expect(failure.failureReason?.contains("com.apple.searchd") == true)
         #expect(launchd.commands.filter { $0 == ["disable", "system/com.apple.searchd"] }.count == SimulatorBackgroundServiceBackend.transitionPasses)
+    }
+
+    /// `bootout` runs in an owned child that never exits by itself, and `disable` finished before it started.
+    @Test(.timeLimit(.minutes(1))) func cancellingAStartedChangeReportsTheStoppedCommandAndWhatFinished() async throws {
+        let directory = try TemporaryTestDirectory()
+        let held = try HeldChildren(in: directory.url)
+        defer { held.release() }
+        let command = try held.command(then: "", policy: .backgroundServiceCommand)
+        let label = "com.apple.searchd"
+        let launchd = FakeLaunchd()
+        let answering = launchd.backend().launchctl
+        let backend = SimulatorBackgroundServiceBackend(launchctl: { arguments in
+            guard arguments == ["bootout", "system/" + label] else { return try await answering(arguments) }
+            return try await SystemCommandRunner().run(command)
+        }, jobPlists: { _ in [:] }, pause: { _ in }, productFamily: "iPhone")
+        let change = Task { try await backend.update([.service(label)], enabled: false) }
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+        change.cancel()
+        let failure = try await #require(throws: SimulatorBackgroundServicesUpdateFailure.self) { try await change.value }
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+        let reason = try #require(failure.failureReason)
+        #expect(reason.contains("bootout \(label): sh was stopped before it finished, so what it changed is unknown."))
+        #expect(reason.contains("Finished: disable \(label)."))
+        #expect(failure.underlyingError.technicalDetails.hasPrefix("background-service-stopped: "))
+        #expect(failure.services?.disabledLabels == [label])
+        // The cancelled change does not start another pass.
+        #expect(launchd.commands.filter { $0 == ["disable", "system/" + label] }.count == 1)
+    }
+
+    /// A batch's exit status is not trusted, but a chunk that was stopped still leaves its outcome unknown.
+    @Test(.timeLimit(.minutes(1))) func cancellingAStartedBatchIsNotReportedAsPlainCancellation() async throws {
+        let directory = try TemporaryTestDirectory()
+        let held = try HeldChildren(in: directory.url)
+        defer { held.release() }
+        let command = try held.command(then: "", policy: .backgroundServiceCommand)
+        let label = "com.apple.searchd"
+        let launchd = FakeLaunchd()
+        let answering = launchd.backend()
+        let backend = SimulatorBackgroundServiceBackend(launchctl: { arguments in
+            guard arguments.first == "unload" else { return try await answering.launchctl(arguments) }
+            return try await SystemCommandRunner().run(command)
+        }, jobPlists: answering.jobPlists, pause: { _ in }, productFamily: "iPhone")
+        let change = Task { try await backend.update([.service(label)], enabled: false) }
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+        change.cancel()
+        let failure = try await #require(throws: SimulatorBackgroundServicesUpdateFailure.self) { try await change.value }
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+        #expect(failure.failureReason?.contains("unload 1 services: sh was stopped before it finished") == true)
+    }
+
+    @Test func cancellingBeforeAnyChangeRanEndsAsCancellation() async throws {
+        let launchd = FakeLaunchd(plists: [])
+        let backend = launchd.backend()
+        let change = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await backend.update([.service("com.apple.searchd")], enabled: false)
+        }
+        await #expect(throws: CancellationError.self) { try await change.value }
+        #expect(launchd.disabled.isEmpty)
+    }
+
+    /// A read leaves nothing to account for, and retrying it would only delay the caller.
+    @Test(.timeLimit(.minutes(1))) func stoppingALiveStyleReadEndsItWithoutARetry() async throws {
+        let directory = try TemporaryTestDirectory()
+        let held = try HeldChildren(in: directory.url)
+        defer { held.release() }
+        let command = try held.command(then: "", policy: .backgroundServiceCommand)
+        let pauses = Mutex(0)
+        let backend = SimulatorBackgroundServiceBackend(launchctl: { _ in try await SystemCommandRunner().run(command) },
+            jobPlists: { _ in nil }, pause: { _ in pauses.withLock { $0 += 1 } }, productFamily: "iPhone")
+        let reading = Task { try await backend.read() }
+        _ = try await held.waitUntilStarted(1)
+        reading.cancel()
+        await #expect(throws: CancellationError.self) { try await reading.value }
+        #expect(pauses.withLock { $0 } == 0)
     }
 
     @Test func readsWaitWhileLaunchdStartsABootSession() async throws {

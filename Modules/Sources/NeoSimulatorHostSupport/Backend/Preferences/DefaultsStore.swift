@@ -1,18 +1,19 @@
+import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import CoreFoundation
 import Foundation
 
 package protocol PreferenceDomainAccessing {
-    func readDomain(_ domain: String, keys: [String]) throws -> [String: Any]
-    func write(_ value: StoredBoolean, to preference: ManagedPreference) throws
+    nonisolated(nonsending) func readDomain(_ domain: String, keys: [String]) async throws -> [String: Any]
+    nonisolated(nonsending) func write(_ value: StoredBoolean, to preference: ManagedPreference) async throws
 }
 
 package struct SystemPreferenceDomains: PreferenceDomainAccessing {
     private let runner: any CommandRunning
     package init(runner: any CommandRunning = SystemCommandRunner()) { self.runner = runner }
 
-    package func readDomain(_ domain: String, keys: [String]) throws -> [String: Any] {
-        let output = try run(["export", domain, "-"], operation: "read")
+    package nonisolated(nonsending) func readDomain(_ domain: String, keys: [String]) async throws -> [String: Any] {
+        let output = try await run(["export", domain, "-"], operation: "read")
         let values = try PropertyListSerialization.propertyList(from: output, options: [], format: nil)
         guard let dictionary = values as? [String: Any] else {
             throw CLIError.configuration("preference-domain-type", "Preferences for \(domain) are not a dictionary with String keys.")
@@ -20,15 +21,16 @@ package struct SystemPreferenceDomains: PreferenceDomainAccessing {
         return dictionary.filter { keys.contains($0.key) }
     }
 
-    package func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {
+    package nonisolated(nonsending) func write(_ value: StoredBoolean, to preference: ManagedPreference) async throws {
         let arguments = value.booleanValue.map {
             ["write", preference.domain, preference.key, "-bool", $0 ? "true" : "false"]
         } ?? ["delete", preference.domain, preference.key]
-        _ = try run(arguments, operation: "write")
+        _ = try await run(arguments, operation: "write")
     }
 
-    private func run(_ arguments: [String], operation: String) throws -> Data {
-        let output = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/defaults"), arguments: arguments)
+    /// A transaction reads and writes through here, and must be able to finish or roll back after its caller is cancelled.
+    private nonisolated(nonsending) func run(_ arguments: [String], operation: String) async throws -> Data {
+        let output = try await runner.run(SystemCommand(executable: URL(fileURLWithPath: "/usr/bin/defaults"), arguments: arguments, policy: .uninterrupted))
         guard output.terminationStatus == 0 else {
             throw CLIError.io("preference-\(operation)", output.stderrText)
         }
@@ -54,30 +56,30 @@ package struct DefaultsStore {
         self.domains = domains
     }
 
-    package func readState() throws -> ManagedPreferenceState {
+    package nonisolated(nonsending) func readState() async throws -> ManagedPreferenceState {
         return ManagedPreferenceState(
-            xcodeSession: try read(
+            xcodeSession: try await read(
                 ToolConstants.xcodePreference
             ),
-            deviceHubAutoStartSuppression: try read(
+            deviceHubAutoStartSuppression: try await read(
                 ToolConstants.deviceHubPreference
             )
         )
     }
 
     @discardableResult
-    package func apply(
+    package nonisolated(nonsending) func apply(
         _ target: ManagedPreferenceState,
         from expected: ManagedPreferenceState
-    ) throws -> Bool {
-        try apply(target, allowedCurrentStates: [expected])
+    ) async throws -> Bool {
+        try await apply(target, allowedCurrentStates: [expected])
     }
 
-    package func rollback(
+    package nonisolated(nonsending) func rollback(
         to before: ManagedPreferenceState,
         fromAttemptedTarget target: ManagedPreferenceState
-    ) throws -> Bool {
-        return try apply(
+    ) async throws -> Bool {
+        return try await apply(
             before,
             allowedCurrentStates: [
                 before,
@@ -98,11 +100,11 @@ package struct DefaultsStore {
             && observed == intermediate
     }
 
-    private func apply(
+    private nonisolated(nonsending) func apply(
         _ target: ManagedPreferenceState,
         allowedCurrentStates: [ManagedPreferenceState]
-    ) throws -> Bool {
-        let current = try readState()
+    ) async throws -> Bool {
+        let current = try await readState()
         guard allowedCurrentStates.contains(current) else {
             throw StateMismatch(
                 expected: allowedCurrentStates,
@@ -113,15 +115,15 @@ package struct DefaultsStore {
         let steps = mutationSteps(from: current, to: target)
         var expected = current
         for step in steps {
-            let observed = try readState()
+            let observed = try await readState()
             guard observed == expected else {
                 throw StateMismatch(expected: [expected], observed: observed)
             }
-            try write(step.value, to: step.preference)
+            try await write(step.value, to: step.preference)
             expected = step.resultingState
         }
 
-        let observed = try readState()
+        let observed = try await readState()
         guard observed == target else {
             throw StateMismatch(expected: [target], observed: observed)
         }
@@ -171,8 +173,8 @@ package struct DefaultsStore {
         )
     }
 
-    private func read(_ preference: ManagedPreference) throws -> StoredBoolean {
-        let domain = try domains.readDomain(preference.domain, keys: [preference.key])
+    private nonisolated(nonsending) func read(_ preference: ManagedPreference) async throws -> StoredBoolean {
+        let domain = try await domains.readDomain(preference.domain, keys: [preference.key])
         guard let rawValue = domain[preference.key] else {
             return .absent
         }
@@ -189,7 +191,7 @@ package struct DefaultsStore {
         return StoredBoolean(number.boolValue)
     }
 
-    private func write(_ value: StoredBoolean, to preference: ManagedPreference) throws {
-        try domains.write(value, to: preference)
+    private nonisolated(nonsending) func write(_ value: StoredBoolean, to preference: ManagedPreference) async throws {
+        try await domains.write(value, to: preference)
     }
 }

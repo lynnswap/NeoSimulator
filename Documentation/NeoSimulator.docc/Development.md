@@ -11,13 +11,14 @@ Implementation lives under `Modules/Sources`:
 
 | Module | Responsibility |
 | --- | --- |
+| `NeoSimulatorDeviceIO` | Package-only subprocess execution and each operation's deadlines. |
 | `NeoSimulatorKit` | Public simulator API, display and input sessions, and native runtime bindings. |
 | `NeoSimulatorHostSupport` | Package-only host selection, settings transactions, inventory, renderer ownership, and shared menus. |
 | `NeoSimulatorApp` | Manager UI, device operations, inspectors, and application lifecycle. |
 | `NeoSimulatorService` | Embedded renderer startup, arguments, and owner monitoring. |
 
-The package exposes Kit, App, and Service as library products. The host-support
-module is shared only within the package. Tests in `Modules/Tests` import these
+The package exposes Kit, App, and Service as library products. The device-I/O
+and host-support modules are shared only within the package. Tests in `Modules/Tests` import these
 modules rather than compiling their implementation again.
 
 The Xcode application targets contain their entry points and bundle resources.

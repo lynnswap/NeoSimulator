@@ -1,5 +1,7 @@
+import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
+import Darwin
 import Foundation
 import Testing
 
@@ -61,6 +63,25 @@ import Testing
         let copy = try #require(await calls.commands.last)
         #expect(copy.source == .coreDevice && copy.arguments.contains("report-device"))
         #expect(copy.arguments.contains("systemCrashLogs") && copy.arguments.contains("Nested/Report.ips"))
+    }
+
+    /// Quitting waits for a preview's download, so cancelling it has to reach a child that never answers.
+    @Test(.timeLimit(.minutes(1))) func cancellingAPreviewStopsItsHeldDownloadAndRemovesItsDirectory() async throws {
+        let directory = try TemporaryTestDirectory()
+        let held = try HeldChildren(in: directory.url)
+        defer { held.release() }
+        let cache = directory.url.appendingPathComponent("Previews", isDirectory: true)
+        let inspector = try Self.remote(transport: .init(run: { command in
+            guard command.arguments.starts(with: ["device", "copy", "from"]) else { return Self.output(Self.files) }
+            return try await SystemCommandRunner().run(held.command(then: "", policy: command.policy))
+        }))
+        let report = try await inspector.report(relativePath: "Nested/Report.ips")
+        let preview = Task { try await inspector.previewReport(report, in: cache) }
+        let identifier = try #require(try await held.waitUntilStarted(1).first)
+        preview.cancel()
+        await #expect(throws: DeviceInspectorFailure.self) { _ = try await preview.value }
+        #expect(kill(identifier, 0) == -1 && errno == ESRCH)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
     }
 
     @Test func failedTransferPreservesExistingFileAndReportsOwnedPartialData() async throws {
