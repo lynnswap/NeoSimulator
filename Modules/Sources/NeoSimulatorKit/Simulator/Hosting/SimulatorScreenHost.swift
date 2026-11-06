@@ -580,7 +580,7 @@ package final class SimulatorScreenHost: NSObject {
                         let takesNativeTouches = capabilities.isPhoneOrPad
                             && !capabilities.supportsFeature(DeviceCapabilities.touchPressure)
                         if isDuo, device.deviceSetPath == nil {
-                            nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier)
+                            nativeCanvas = try await NativeDeviceCanvas.connect(simulatorUDID: device.identifier, lookUp: device.lookUp)
                         } else if !isDuo, capabilities.supportsFeature(DeviceCapabilities.keyboard), takesNativeTrackpad,
                                   takesNativeTouches {
                             nativeCanvas = nil

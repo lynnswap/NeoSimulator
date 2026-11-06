@@ -1662,7 +1662,8 @@ package final class SimulatorConnection: SimulatorDisplay {
     private var trackpadInput: NativeTrackpadInput?
     /// The device's native touchscreen and buttons, which take the touches that SimulatorKit's digitizer interprets on the
     /// integrated screen and the device's buttons and HID usages, instead of SimulatorKit's Indigo messages. This
-    /// connection owns them; external and app-resizing displays keep SimulatorKit's input.
+    /// connection owns them; external and app-resizing displays keep SimulatorKit's input. A native canvas has only the
+    /// buttons here, since its touches go through DeviceKit's view.
     private let screenInput: NativeDeviceScreenInput?
     private var digitizerTouches: NativeDigitizerTouches?
 
@@ -1688,7 +1689,7 @@ package final class SimulatorConnection: SimulatorDisplay {
             chromeView = nil
             self.keyboard = keyboard
             self.trackpad = trackpad
-            screenInput = nil
+            screenInput = nativeCanvas.buttons
             nativeCanvas.onSizeChange = { [weak self] in self?.onPropertiesChange?() }
             return
         }
@@ -1893,11 +1894,6 @@ package final class SimulatorConnection: SimulatorDisplay {
     package func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws {
         if let usage = message.input.nativeButtonUsage {
             let state: RemoteDeviceButtonState = message.state == .down ? .down : .up
-            if let nativeCanvas {
-                try nativeCanvas.sendButton(usagePage: usage.page, usage: usage.usage, state: state)
-                completion?(nil)
-                return
-            }
             if let screenInput, !disconnected {
                 try screenInput.sendButton(usagePage: usage.page, usage: usage.usage, state: state) { completion?($0) }
                 return

@@ -1,6 +1,7 @@
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import AppKit
+import Observation
 import SwiftUI
 import Testing
 import XCTest
@@ -62,6 +63,71 @@ struct NativeDeviceCanvasTests {
             #expect(abs(enlargedLocal.x - 30) < 0.5 && abs(enlargedLocal.y - 20) < 0.5)
         }
     }
+
+    /// The window sets `onError` after the screen connects, which pose discovery does not wait for.
+    @Test(.timeLimit(.minutes(1)))
+    func poseControlsKeepADiscoveryFailureForTheWindowThatConnectsAfterIt() async {
+        let (finished, finish) = AsyncStream.makeStream(of: Void.self)
+        let poses = NativeDevicePoseControls { _ in
+            defer { finish.finish() }
+            throw CLIError.unavailable("fixture-poses", "DeviceKit's action providers are unavailable.")
+        }
+        #expect(!poses.isAvailable)
+        for await _ in finished {}
+        var errors: [String] = []
+        poses.onError = { errors.append($0.localizedDescription) }
+        #expect(errors == ["DeviceKit's action providers are unavailable."])
+        // A window that reconnects to the same controls does not report it again.
+        poses.onError = { errors.append($0.localizedDescription) }
+        #expect(errors.count == 1)
+    }
+
+    /// DeviceKit's provider offers no controls until CoreDevice reports the device as booted.
+    @Test(.timeLimit(.minutes(1)))
+    func poseControlsAppearWhenTheProviderStartsOfferingThemAfterTheScreenOpened() async {
+        let provider = PoseProviderFixture()
+        let (read, finishRead) = AsyncStream.makeStream(of: Void.self)
+        let poses = NativeDevicePoseControls { poses in
+            try await poses.discover(readProviders: { [] }, prepareControls: { _ in
+                {
+                    defer { finishRead.finish() }
+                    return provider.offersControls ? NativeDevicePoseControls.Controls(
+                        rotation: AnyView(EmptyView()), postures: AnyView(EmptyView()), divider: nil) : nil
+                }
+            })
+        }
+        for await _ in read {}
+        #expect(!poses.isAvailable)
+        provider.offersControls = true
+        while !poses.isAvailable { await Task.yield() }
+        #expect(poses.actionBarControls.count == 2)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func disconnectingPoseControlsEndsTheirDiscoveryWithoutReportingIt() async {
+        let (finished, finish) = AsyncStream.makeStream(of: Void.self)
+        let (started, start) = AsyncStream.makeStream(of: Void.self)
+        let poses = NativeDevicePoseControls { _ in
+            defer { finish.finish() }
+            start.finish()
+            // Native discovery does not stop for cancellation, and fails after the disconnect.
+            try? await Task.sleep(for: .seconds(3600))
+            #expect(Task.isCancelled)
+            throw CLIError.unavailable("fixture-poses", "DeviceKit's action providers are unavailable.")
+        }
+        var errors: [String] = []
+        poses.onError = { errors.append($0.localizedDescription) }
+        for await _ in started {}
+        poses.disconnect()
+        for await _ in finished {}
+        poses.onError = { errors.append($0.localizedDescription) }
+        #expect(errors.isEmpty)
+    }
+}
+
+@MainActor @Observable
+private final class PoseProviderFixture {
+    var offersControls = false
 }
 
 private final class RecorderView: NSView {}

@@ -435,10 +435,7 @@ package final class GuestScreenInput: NativeScreenInputTransport {
         case .touch(let point, let second, let phase, let edge):
             try digitizer.post(.digitizerEvent, codec.digitizerEvent(at: point, second: second, phase: phase, edge: edge))
         case .button(let page, let usage, let state):
-            guard let usagePage = UInt16(exactly: page), let usageCode = UInt16(exactly: usage) else {
-                throw CLIError.unavailable("guest-button-usage", "The guest's buttons take 16-bit usage pages and usages.")
-            }
-            try buttons.post(.buttonEvent, codec.buttonEvent(usagePage: usagePage, usage: usageCode, state: state))
+            try buttons.postButton(usagePage: page, usage: usage, state: state)
         case .key, .pointer, .pointerButton, .trackpad, .gesturePointer:
             throw CLIError.unavailable("remote-display-input", "The guest's screen input carries only touches and buttons.")
         }
@@ -459,5 +456,55 @@ package final class GuestScreenInput: NativeScreenInputTransport {
         await digitizer.flush()
         await buttons.flush()
         if !failures.isEmpty { throw CLIError.io("remote-input-release", failures.joined(separator: "\n")) }
+    }
+}
+
+/// Sends a simulator's button usages to the guest's button service, as the Indigo events that CoreDevice's button service
+/// sends it, for a screen whose touches DeviceKit's view owns. The buttons need only the booted guest, not CoreDevice's
+/// view of it. They prepare and connect at the first press, so neither holds the screen. A press whose connection has
+/// ended connects again; what was sent before is not sent again.
+@MainActor
+package final class GuestButtonInput: NativeScreenInputTransport {
+    private let prepare: @MainActor () async throws -> SimulatorGuestHID
+    private var connection: GuestHIDConnection?
+    private var pressed = RemoteScreenPressedInputs()
+
+    package init(prepare: @escaping @MainActor () async throws -> SimulatorGuestHID) {
+        self.prepare = prepare
+    }
+
+    package func send(_ input: RemoteScreenInput) async throws {
+        guard case .button(let page, let usage, let state) = input else {
+            throw CLIError.unavailable("remote-display-input", "The guest's button input carries only buttons.")
+        }
+        let connection: GuestHIDConnection
+        if let current = self.connection, !current.hasFailed {
+            connection = current
+        } else {
+            connection = try await prepare().connection(to: CoreDeviceScreenInput.features[.button]!)
+            self.connection = connection
+        }
+        try connection.postButton(usagePage: page, usage: usage, state: state)
+        pressed.record(input)
+    }
+
+    /// Releases the buttons that the guest holds, and waits until the connection has sent every message. What could not
+    /// be released stays held for the next stop.
+    package func stop() async throws {
+        var failures: [String] = []
+        for button in pressed.buttons.sorted(by: { ($0.page, $0.usage) < ($1.page, $1.usage) }) {
+            do { try await send(.button(button.page, button.usage, .up)) } catch { failures.append(error.localizedDescription) }
+        }
+        await connection?.flush()
+        if !failures.isEmpty { throw CLIError.io("remote-input-release", failures.joined(separator: "\n")) }
+    }
+}
+
+private extension GuestHIDConnection {
+    func postButton(usagePage page: Int, usage: Int, state: RemoteDeviceButtonState) throws {
+        guard let usagePage = UInt16(exactly: page), let usageCode = UInt16(exactly: usage) else {
+            throw CLIError.unavailable("guest-button-usage", "The guest's buttons take 16-bit usage pages and usages.")
+        }
+        try post(.buttonEvent, codec.buttonEvent(usagePage: usagePage, usage: usageCode, state: state))
     }
 }

@@ -179,10 +179,11 @@ package final class CoreDeviceDisplayGeometry {
 package final class NativeDeviceCanvas {
     package let view: NSView
     package let poseControls: NativeDevicePoseControls
+    /// The guest's buttons; DeviceKit's view owns the touches.
+    package let buttons: NativeDeviceScreenInput
     private let hosting: NativeCanvasHostingView
     private let presentation: NativeCanvasPresentation
     private let values: [NativeSwiftValue]
-    private let sendNativeButton: (Int, Int, RemoteDeviceButtonState) throws -> Void
     private let readCaptureDisplayID: () throws -> UInt32
     package var naturalSize: CGSize { presentation.naturalSize }
     package var captureDisplayID: UInt32 { get throws { try readCaptureDisplayID() } }
@@ -242,22 +243,18 @@ package final class NativeDeviceCanvas {
         }
     }
 
-    package static func connect(simulatorUDID: String) async throws -> NativeDeviceCanvas {
+    /// Requires what the view itself needs: DeviceKit and the simulator's CoreDevice record, which names the device to
+    /// DeviceView whatever state CoreDevice reports for it. The controls around the view have their own readiness and
+    /// report their own errors when they are used. `lookUp` returns a caller-owned send right to the guest's Mach service
+    /// of a name, as the simulator's `SimDevice` looks it up.
+    package static func connect(simulatorUDID: String,
+                                lookUp: @escaping @MainActor (String) throws -> UInt32) async throws -> NativeDeviceCanvas {
         try await CoreDeviceDisplayGeometry.loadRuntime()
         guard let identifier = try await CoreDeviceRemoteScreenDevice.simulatorIdentifier(udid: simulatorUDID),
               let uuid = UUID(uuidString: identifier) else {
-            throw CLIError.unavailable("native-device-canvas", "The simulator is not available in DeviceKit.")
+            throw CLIError.unavailable("native-device-canvas", "CoreDevice has no record of this simulator, so DeviceKit cannot show its screen.")
         }
-        let remote = try await CoreDeviceRemoteScreenDevice(identifier: identifier)
-        let button = try await remote.implementation(capability: "ButtonHIDCapability",
-            feature: CoreDeviceScreenInput.features[.button]!)
-        let runtime = ABIRuntime.shared
-        let buttonState = try await runtime.resolve(.swift(.type("CoreDevice.HIDButtonState")))
-        let down = try buttonState.makeEnumCase(named: "down")
-        let up = try buttonState.makeEnumCase(named: "up")
-        let send = try await button.type.resolve(.swift(.method("CoreDevice.HIDButton.sendCustomButton(usagePage:usageCode:state:)",
-            as: ((Int, Int, NativeSwiftValue) throws -> Void).self)))
-        let bindings = try await Bindings(runtime: runtime)
+        let bindings = try await Bindings(runtime: ABIRuntime.shared)
         let base = try unsafe bindings.make.unsafeInvoke(uuid)
         let activation = try unsafe bindings.start.unsafeInvoke(on: base, bindings.behavior)
         let shown = try unsafe bindings.chrome.unsafeInvoke(on: base, bindings.visible)
@@ -282,25 +279,25 @@ package final class NativeDeviceCanvas {
         let presentation = NativeCanvasPresentation()
         let root = NativeCanvasRoot(presentation: presentation, shown: try activated(content(shown)),
             hidden: try activated(content(hidden)), canvasPath: bindings.canvasPath, zoomPath: bindings.zoomPath)
-        let poses = try await NativeDevicePoseControls.connect(deviceIdentifier: uuid)
-        let captureDisplay = try await captureDisplayReader(for: remote)
-        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation, poseControls: poses,
-            captureDisplay: captureDisplay,
-            values: [base, activation, shown, hidden] + bindings.environmentValues) { page, usage, state in
-                try unsafe send.unsafeInvoke(on: button, page, usage, state == .down ? down : up)
-            }
+        let captureDisplay: () throws -> UInt32
+        do { captureDisplay = try await captureDisplayReader(deviceIdentifier: identifier) }
+        catch is CancellationError { throw CancellationError() }
+        catch { captureDisplay = { throw error } }
+        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation,
+            poseControls: NativeDevicePoseControls(deviceIdentifier: uuid),
+            buttons: NativeDeviceScreenInput(input: GuestButtonInput { try await SimulatorGuestHID(lookUp: lookUp) }),
+            captureDisplay: captureDisplay, values: [base, activation, shown, hidden] + bindings.environmentValues)
     }
 
-    private static func captureDisplayReader(for remote: CoreDeviceRemoteScreenDevice) async throws -> () throws -> UInt32 {
+    /// Reads the display when a capture starts: CoreDevice may report no displays until it finds the booted device.
+    private static func captureDisplayReader(deviceIdentifier: String) async throws -> () throws -> UInt32 {
+        let remote = try await CoreDeviceRemoteScreenDevice(identifier: deviceIdentifier)
         let runtime = remote.runtime
         let infoType = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
         let displayInfo = try await runtime.resolve(.swift(.type("CoreDevice.DisplayInfo")))
         let display = try await runtime.resolve(.swift(.type("CoreDevice.Display")))
         let abis = try Dictionary(uniqueKeysWithValues: [displayInfo, display]
             .map { ($0, try NativeType.opaque(named: $0.name)) })
-        let initial = try await remote.type.resolve(.swift(.getter("displayInfo",
-            as: (() async throws -> NativeSwiftValue).self, valueABIs: abis)))
-        _ = try await unsafe initial.unsafeInvoke(on: remote.object)
         let deviceInfo = try await remote.type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
         let current = try await infoType.resolve(.swift(.getter("displayInfo", as: (() -> NativeSwiftValue?).self, valueABIs: abis)))
         let displays = try await displayInfo.resolve(.swift(.getter("displays", as: (() -> [NativeSwiftValue]).self, valueABIs: abis)))
@@ -309,12 +306,13 @@ package final class NativeDeviceCanvas {
         let identifier = try await display.resolve(.swift(.getter("displayId", as: (() -> UInt32).self, valueABIs: abis)))
         return {
             let info = try unsafe deviceInfo.unsafeInvoke(on: remote.object)
-            if let current = try unsafe current.unsafeInvoke(on: info) {
-                for display in try unsafe displays.unsafeInvoke(on: current) {
-                    if try unsafe active.unsafeInvoke(on: display) == true,
-                       try unsafe !external.unsafeInvoke(on: display) {
-                        return try unsafe identifier.unsafeInvoke(on: display)
-                    }
+            guard let current = try unsafe current.unsafeInvoke(on: info) else {
+                throw CLIError.unavailable("capture-display", "CoreDevice reports no display information for this simulator.")
+            }
+            for display in try unsafe displays.unsafeInvoke(on: current) {
+                if try unsafe active.unsafeInvoke(on: display) == true,
+                   try unsafe !external.unsafeInvoke(on: display) {
+                    return try unsafe identifier.unsafeInvoke(on: display)
                 }
             }
             throw CLIError.unavailable("capture-display", "The device has no active integrated display to capture.")
@@ -322,15 +320,14 @@ package final class NativeDeviceCanvas {
     }
 
     private init(root: AnyView, presentation: NativeCanvasPresentation, poseControls: NativeDevicePoseControls,
-                 captureDisplay: @escaping () throws -> UInt32, values: [NativeSwiftValue],
-                 sendButton: @escaping (Int, Int, RemoteDeviceButtonState) throws -> Void) {
+                 buttons: NativeDeviceScreenInput, captureDisplay: @escaping () throws -> UInt32, values: [NativeSwiftValue]) {
         hosting = NativeCanvasHostingView(rootView: root)
         hosting.sizingOptions = []
         self.presentation = presentation
         self.poseControls = poseControls
+        self.buttons = buttons
         readCaptureDisplayID = captureDisplay
         self.values = values
-        sendNativeButton = sendButton
         view = hosting
         hosting.contentSize = { CGSize(width: presentation.naturalSize.width * presentation.zoom,
                                        height: presentation.naturalSize.height * presentation.zoom) }
@@ -354,9 +351,6 @@ package final class NativeDeviceCanvas {
     package func setZoom(_ zoom: CGFloat) {
         presentation.zoom = zoom
         hosting.invalidateIntrinsicContentSize()
-    }
-    package func sendButton(usagePage: Int, usage: Int, state: RemoteDeviceButtonState) throws {
-        try sendNativeButton(usagePage, usage, state)
     }
     package func disconnect() {
         poseControls.disconnect()
