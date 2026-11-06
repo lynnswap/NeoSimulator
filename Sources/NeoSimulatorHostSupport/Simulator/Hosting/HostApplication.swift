@@ -475,17 +475,18 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         let requests = openRequests.values.map(\.task)
         requests.forEach { $0.cancel() }
         terminationTask = Task {
+            var notes: [String] = []
             do { try await stopping.value }
             catch {
                 if ownerExitRequested || handoverRequested { hostLog(error.localizedDescription) }
-                else { NSAlert(presenting: error).runModal() }
+                else { notes.append(error.localizedDescription) }
             }
             let deadline = ContinuousClock.now + HostPreferences.terminationLimit
             for request in requests where await !request.ends(before: deadline) {
                 TerminationAccount.shared.note("A screen had not finished opening when NeoSimulator quit.")
             }
             let unresolved = await DeviceIOHub.shared.unresolvedOperations().map(\.description)
-            QuitReport.present(TerminationAccount.shared.take() + unresolved)
+            QuitReport.present(notes + TerminationAccount.shared.take() + unresolved)
             shutdown()
             sender.reply(toApplicationShouldTerminate: true)
         }

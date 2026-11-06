@@ -144,6 +144,38 @@ struct DeviceSetLaneTests {
         #expect(published == [1, 2])
     }
 
+    /// A registration's retry goes out as soon as the channel reports that its call returned, and has to find the late
+    /// registration already removed.
+    @Test func aRetryWhenTheChannelAnswersAgainFollowsTheLateRegistrationsRemoval() async throws {
+        let channel = setChannel()
+        let handlers = Mutex<(next: Int, active: Set<Int>, most: Int)>((0, [], 0))
+        @Sendable func register() -> Int {
+            handlers.withLock { handlers in
+                handlers.next += 1
+                handlers.active.insert(handlers.next)
+                handlers.most = max(handlers.most, handlers.active.count)
+                return handlers.next
+            }
+        }
+        let gate = Gate()
+        defer { gate.release() }
+        await #expect(throws: DeviceOperationFailure.noAnswer(operation: "observe the device set", limit: .milliseconds(20))) {
+            try await channel.read("observe the device set", limit: .milliseconds(20), lateCompletion: { (result: Result<Int, any Error>) in
+                if case .success(let token) = result { _ = handlers.withLock { $0.active.remove(token) } }
+            }) {
+                gate.pass()
+                return register()
+            }
+        }
+        gate.release()
+        await waitForHealth(of: channel) { $0 == .ready }
+
+        let retry = try await channel.read("observe the device set", limit: .seconds(30)) { register() }
+        #expect(retry == 2)
+        #expect(handlers.withLock { $0.active } == [2])
+        #expect(handlers.withLock { $0.most } == 1)
+    }
+
     // MARK: CoreDevice's initialization
 
     @Test func aPendingInitializationBoundsItsCallersAndIsNeverReplaced() async throws {

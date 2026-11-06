@@ -257,7 +257,11 @@ package actor SimulatorDeviceChannel {
         else { return }
         running = next
         // The deadline outlives its caller: a cancelled call that stays held still makes the channel unresponsive.
-        let deadline = DispatchWorkItem { [weak self] in self?.assumeIsolated { $0.deadlinePassed(next) } }
+        // Only `running` keeps the request for it, because the queue keeps a cancelled work item until its time comes.
+        let deadline = DispatchWorkItem { [weak self, weak next] in
+            guard let next else { return }
+            self?.assumeIsolated { $0.deadlinePassed(next) }
+        }
         next.deadline = deadline
         let (seconds, attoseconds) = next.limit.components
         queue.asyncAfter(deadline: .now() + Double(seconds) + Double(attoseconds) / 1e18, execute: deadline)
@@ -270,6 +274,7 @@ package actor SimulatorDeviceChannel {
     /// The native call has returned, which is the only thing that makes the channel ready again.
     private func finish(_ request: DeviceRequest, _ completion: DeviceRequest.Completion) {
         request.deadline?.cancel()
+        request.deadline = nil
         running = nil
         if request.isAnswered {
             if !request.isCleanup {

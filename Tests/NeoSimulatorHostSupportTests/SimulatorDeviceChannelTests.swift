@@ -86,6 +86,47 @@ struct SimulatorDeviceChannelTests {
         #expect(cleaned.withLock { $0 } == [.success("resource")])
     }
 
+    @Test func aRequestReleasesWhatItCapturedOnceItsCallHasReturned() async throws {
+        let channel = makeChannel()
+        // A deadline this far away cannot be what releases anything.
+        let limit = Duration.seconds(3600)
+        weak var answered: CapturedResource?
+        do {
+            let resource = CapturedResource()
+            answered = resource
+            try await channel.read("read", limit: limit) { withExtendedLifetime(resource) {} }
+        }
+        weak var late: CapturedResource?
+        let call = HeldCall()
+        defer { call.release() }
+        do {
+            let resource = CapturedResource()
+            late = resource
+            let stopped = Task {
+                try await channel.read("connect", limit: limit, lateCompletion: { _ in withExtendedLifetime(resource) {} }) {
+                    withExtendedLifetime(resource) { call.hold() }
+                }
+            }
+            await call.waitUntilHeld()
+            stopped.cancel()
+            await #expect(throws: CancellationError.self) { try await stopped.value }
+            #expect(late != nil)
+            call.release()
+        }
+        weak var cleanedUp: CapturedResource?
+        do {
+            let resource = CapturedResource()
+            cleanedUp = resource
+            channel.cleanUp("release") { withExtendedLifetime(resource) {} }
+        }
+        for _ in 0..<500 where answered != nil || late != nil || cleanedUp != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(answered == nil)
+        #expect(late == nil)
+        #expect(cleanedUp == nil)
+    }
+
     @Test func aCleanupIsNotRefusedAndRunsWhenTheHeldCallReturns() async throws {
         let channel = makeChannel()
         let call = HeldCall()
@@ -242,6 +283,8 @@ struct SimulatorDeviceChannelTests {
 }
 
 private struct DeviceCleanupFixture: Error, Equatable {}
+
+private final class CapturedResource: Sendable {}
 
 /// Blocks the thread that calls ``hold()`` until ``release()``, as a native call blocks its worker.
 private final class HeldCall: Sendable {
