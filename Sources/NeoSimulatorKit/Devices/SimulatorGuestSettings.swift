@@ -40,6 +40,24 @@ package final class SimulatorGuestSettings {
         }
     }
 
+    // dtconfigurationd permits color-filter writes only on iOS/tvOS 27 and later. Older guests still report
+    // a readable disabled filter, which must not be presented as a setting the user can change.
+    private static let colorFilterMinimumVersion: UInt32 = 27 << 16
+
+    package static func colorFilter(runtimeVersion: UInt32,
+                                   read: () async throws -> DeviceInspectorValue) async throws -> SimulatorDeviceSettings {
+        var settings = SimulatorDeviceSettings()
+        guard runtimeVersion >= colorFilterMinimumVersion else {
+            settings.colorFilterRequiredOSVersion = 27
+            return settings
+        }
+        let filter = try await read()["colorFilter"]
+        if filter?["enabled"]?.boolean == false { settings.colorFilter = SimulatorColorFilter.none }
+        else if let name = filter?["filterType"]?["name"]?.string { settings.colorFilter = SimulatorColorFilter(rawValue: name.lowercased()) }
+        settings.colorFilterIntensity = filter?["intensity"]?.numeric
+        return settings
+    }
+
     /// Reads one group. A value that fails names itself and keeps what is known of it; the rest of the group still applies.
     package func read(_ group: DeviceSettingsGroup) async throws -> DeviceSettingsGroupRead {
         let device = try await selectedDevice()
@@ -84,10 +102,14 @@ package final class SimulatorGuestSettings {
             await capture("Liquid Glass", {
                 try await get("GetLiquidGlassConfigurationActionDeclaration")["configuration"]?["opacity"]?.numeric
             }, set: { $0.liquidGlassOpacity = $1 })
-            await capture("color filter", { try await get("GetColorFilterActionDeclaration")["colorFilter"] }, set: { settings, filter in
-                if filter?["enabled"]?.boolean == false { settings.colorFilter = SimulatorColorFilter.none }
-                else if let name = filter?["filterType"]?["name"]?.string { settings.colorFilter = SimulatorColorFilter(rawValue: name.lowercased()) }
-                settings.colorFilterIntensity = filter?["intensity"]?.numeric
+            await capture("color filter", {
+                try await Self.colorFilter(runtimeVersion: device.runtimeVersion) {
+                    try await get("GetColorFilterActionDeclaration")
+                }
+            }, set: { settings, filter in
+                settings.colorFilter = filter.colorFilter
+                settings.colorFilterIntensity = filter.colorFilterIntensity
+                settings.colorFilterRequiredOSVersion = filter.colorFilterRequiredOSVersion
             })
             await capture("Reduce Motion", {
                 try await get("GetReduceMotionActionDeclaration")["reduceMotion"]?["enabled"]?.boolean
@@ -140,6 +162,9 @@ package final class SimulatorGuestSettings {
         case .liquidGlassOpacity(let value):
             try await change("SetLiquidGlassConfigurationActionDeclaration", ["configuration": ["opacity": value]])
         case .colorFilter(let value, let intensity):
+            guard device.runtimeVersion >= Self.colorFilterMinimumVersion else {
+                throw DeviceDomainError.unavailable("color-filter-unavailable", "This simulator runtime does not support changing color filters.")
+            }
             // The provider rejects intensity for grayscale and disabled filters.
             try await service(device: device).setColorFilter(named: value == .none ? nil : value.rawValue,
                                                              takesIntensity: value != .none && value != .grayscale, intensity: intensity)

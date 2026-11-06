@@ -30,6 +30,7 @@ struct ManagerDeviceSettingsView: View {
                 picker("Appearance", symbol: "circle.lefthalf.filled", group: .appearance, value: model.binding(for: \.appearance), choices: model.appearanceChoices)
                 slider("Liquid Glass", symbol: "drop.halffull", group: .accessibility, value: model.binding(for: \.liquidGlassOpacity), range: 0...1)
                 picker("Color Filter", symbol: "camera.filters", group: .accessibility, value: model.binding(for: \.colorFilter), choices: model.colorFilterChoices)
+                    .help(Text(verbatim: model.colorFilterRequirement))
                 if model.colorFilterIntensity != nil {
                     slider("Intensity", symbol: "slider.horizontal.3", group: .accessibility, value: model.binding(for: \.colorFilterIntensity), range: 0.25...1)
                 }

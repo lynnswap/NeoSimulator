@@ -17,6 +17,8 @@ public final class DeviceSettingsState {
     public private(set) var liquidGlassOpacity: Double?
     public private(set) var colorFilter: SimulatorColorFilter?
     public private(set) var colorFilterIntensity: Double?
+    /// The OS version required when this guest cannot change color filters.
+    public private(set) var colorFilterRequiredOSVersion: Int?
     public private(set) var reduceMotion: Bool?
     public private(set) var showBorders: Bool?
     public private(set) var reduceTransparency: Bool?
@@ -265,6 +267,7 @@ public final class DeviceSettingsState {
         assign(\.liquidGlassOpacity, values.liquidGlassOpacity)
         assign(\.colorFilter, values.colorFilter)
         assign(\.colorFilterIntensity, values.colorFilterIntensity)
+        assign(\.colorFilterRequiredOSVersion, values.colorFilterRequiredOSVersion)
         assign(\.reduceMotion, values.reduceMotion)
         assign(\.showBorders, values.showBorders)
         assign(\.reduceTransparency, values.reduceTransparency)

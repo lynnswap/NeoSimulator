@@ -107,6 +107,9 @@ final class DeviceSettingsPanelModel {
         get { values?.colorFilter?.rawValue }
         set { if let newValue, let filter = SimulatorColorFilter(rawValue: newValue) { apply(.colorFilter(filter)) } }
     }
+    var colorFilterRequirement: String {
+        values?.colorFilterRequiredOSVersion.map { "OS \($0)+" } ?? ""
+    }
     var colorFilterIntensity: Double? {
         get {
             guard let filter = values?.colorFilter, filter != .none && filter != .grayscale else { return nil }

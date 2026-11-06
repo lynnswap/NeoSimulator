@@ -121,6 +121,7 @@ package struct SimulatorDeviceSettings: Sendable, Equatable {
     package var liquidGlassOpacity: Double?
     package var colorFilter: SimulatorColorFilter?
     package var colorFilterIntensity: Double?
+    package var colorFilterRequiredOSVersion: Int?
     package var reduceMotion: Bool?
     package var showBorders: Bool?
     package var reduceTransparency: Bool?
@@ -169,6 +170,7 @@ package struct SimulatorDeviceSettings: Sendable, Equatable {
             liquidGlassOpacity = values.liquidGlassOpacity
             colorFilter = values.colorFilter
             colorFilterIntensity = values.colorFilterIntensity
+            colorFilterRequiredOSVersion = values.colorFilterRequiredOSVersion
             reduceMotion = values.reduceMotion
             showBorders = values.showBorders
             reduceTransparency = values.reduceTransparency
