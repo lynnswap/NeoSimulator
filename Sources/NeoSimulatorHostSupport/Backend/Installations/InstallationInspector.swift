@@ -56,7 +56,7 @@ package struct InstallationInspector {
                 == ToolConstants.deviceHubBundleIdentifier,
               let deviceHubExecutable = deviceHubInfo["CFBundleExecutable"] as? String
         else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "device-hub-bundle",
                 "the selected Xcode does not contain the expected Device Hub"
             )
@@ -224,7 +224,7 @@ package struct InstallationInspector {
     ) throws -> URL {
         let infoURL = applicationURL.appendingPathComponent("Contents/Info.plist")
         guard fileManager.isReadableFile(atPath: infoURL.path) else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "\(identifier)-bundle",
                 "missing application bundle at \(applicationURL.path)"
             )
@@ -234,7 +234,7 @@ package struct InstallationInspector {
               let executable = info["CFBundleExecutable"] as? String,
               !executable.isEmpty
         else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "\(identifier)-bundle",
                 "\(applicationURL.path) is not the expected \(expectedBundleIdentifier) application"
             )
@@ -259,7 +259,7 @@ package struct InstallationInspector {
             identifier: "\(identifier)-version"
         )
         guard let source = String(data: data, encoding: .utf8) else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "\(identifier)-version",
                 "\(wrapperURL.path) is not a UTF-8 wrapper script"
             )
@@ -275,7 +275,7 @@ package struct InstallationInspector {
               assignment.hasPrefix(prefix),
               assignment.hasSuffix("\"")
         else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "\(identifier)-version",
                 "\(wrapperURL.path) must contain exactly one EXPECTED_VERSION=\"<numeric version>\" literal"
             )
@@ -299,7 +299,7 @@ package struct InstallationInspector {
                       }
               })
         else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "\(identifier)-version",
                 "\(wrapperURL.path) has an invalid EXPECTED_VERSION literal"
             )
@@ -331,7 +331,7 @@ package struct InstallationInspector {
             "Versions/A/Resources/Info.plist"
         )
         guard fileManager.isReadableFile(atPath: infoURL.path) else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "\(identifier)-bundle",
                 "missing framework bundle at \(frameworkURL.path)"
             )
@@ -341,7 +341,7 @@ package struct InstallationInspector {
               let executable = info["CFBundleExecutable"] as? String,
               !executable.isEmpty
         else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "\(identifier)-bundle",
                 "\(frameworkURL.path) is not the expected \(expectedBundleIdentifier) framework"
             )
@@ -366,7 +366,7 @@ package struct InstallationInspector {
     ) throws -> URL {
         let infoURL = pluginURL.appendingPathComponent("Contents/Info.plist")
         guard fileManager.isReadableFile(atPath: infoURL.path) else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "simulator-core-device-plugin-bundle",
                 "missing plugin bundle at \(pluginURL.path)"
             )
@@ -377,7 +377,7 @@ package struct InstallationInspector {
               let executable = info["CFBundleExecutable"] as? String,
               !executable.isEmpty
         else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "simulator-core-device-plugin-bundle",
                 "\(pluginURL.path) is not the expected \(ToolConstants.simulatorCoreDevicePluginBundleIdentifier) plugin"
             )
@@ -416,7 +416,7 @@ package struct InstallationInspector {
         let binary = try binaryData(at: binaryURL, identifier: identifier)
         for fragment in Self.forbiddenCoreDeviceLoadPathFragments {
             guard binary.range(of: Data(fragment.utf8)) == nil else {
-                throw CLIError.unavailable(
+                throw HostOperationError.unavailable(
                     identifier,
                     "\(binaryURL.path) requires forbidden DeviceKit/Device Hub component \(fragment)"
                 )
@@ -433,7 +433,7 @@ package struct InstallationInspector {
         let binary = try binaryData(at: binaryURL, identifier: identifier)
         for requiredString in requiredStrings {
             guard binary.range(of: Data(requiredString.utf8)) != nil else {
-                throw CLIError.unavailable(
+                throw HostOperationError.unavailable(
                     identifier,
                     "\(description) no longer contains the required private surface \(requiredString)"
                 )
@@ -462,7 +462,7 @@ package struct InstallationInspector {
             } else {
                 "exit status \(output.terminationStatus)"
             }
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 "neo-host-runtime",
                 "NeoSimulator rejected Xcode \(xcode.version) build \(xcode.buildVersion): \(detail)"
             )
@@ -471,7 +471,7 @@ package struct InstallationInspector {
 
     private func requireExecutable(at url: URL, identifier: String) throws {
         guard fileManager.isExecutableFile(atPath: url.path) else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 identifier,
                 "missing executable at \(url.path)"
             )
@@ -480,7 +480,7 @@ package struct InstallationInspector {
 
     private func binaryData(at url: URL, identifier: String) throws -> Data {
         guard fileManager.isReadableFile(atPath: url.path) else {
-            throw CLIError.unavailable(
+            throw HostOperationError.unavailable(
                 identifier,
                 "missing readable binary at \(url.path)"
             )
@@ -488,7 +488,7 @@ package struct InstallationInspector {
         do {
             return try Data(contentsOf: url, options: .mappedIfSafe)
         } catch {
-            throw CLIError.io(
+            throw HostOperationError.io(
                 identifier,
                 "could not read \(url.path): \(error.localizedDescription)"
             )

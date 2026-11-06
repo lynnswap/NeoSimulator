@@ -1,5 +1,8 @@
-import NeoSimulatorKit
 import AppKit
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
+import NeoSimulatorUI
 
 /// Builds the main menu and routes device commands to the key window.
 @MainActor
@@ -525,7 +528,7 @@ package final class AudioRouteMenu: NSObject, NSMenuDelegate {
 
     @objc private func select(_ sender: NSMenuItem) {
         guard let route = sender.representedObject as? String else { return }
-        DeviceWindowController.keyDeviceWindow?.selectAudioRoute(route, in: scope)
+        DeviceWindowController.keyDeviceWindow?.selectAudioRoute { $0.chooseAudioRoute(route, in: scope) }
     }
 }
 
@@ -539,7 +542,7 @@ package final class EditMenu: NSMenu {
                 return window?.firstResponder === controller.display.inputView
             }
             if let controller = DeviceWindowController.deviceWindow(for: window) {
-                return window?.firstResponder === controller.session.display.inputView
+                return window?.firstResponder === controller.display.inputView
             }
             return false
         }

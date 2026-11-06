@@ -1,11 +1,15 @@
 # MinimalSimulatorApp
 
-This independent Swift package imports only the public `NeoSimulatorKit` product.
-It lists simulators, opens one in a window or an AppKit view controller, and releases
-its display resources when the app quits.
+This independent Swift package imports only the public `NeoSimulatorKit` and `NeoSimulatorUI`
+products. It lists simulators with `NeoSimulatorKit`, which loads no UI toolkit, opens one in a
+window or an AppKit view controller with `NeoSimulatorUI`'s `SimulatorScreens`, and releases its
+display resources when the app quits.
 
 The application retains one `DeviceRegistry` and passes it to `SimulatorContext.load`.
-Its inventory and each screen's `deviceModel` share the same observable object.
+Its inventory and each screen's `session.deviceModel` share the same observable object.
+A screen is usable before its optional services are: `session.inputReadiness` and
+`session.pasteboardReadiness` say how far they have come, a failure there never switches to another
+route, and `session.retryInput()` connects the same input route again.
 Keep a `DeviceReadInterest` returned by `model.keepCurrent(.settings)` while a settings
 view needs updates; returning to a device reuses its values. Call `registry.revalidate()`
 when the application returns to the foreground to refresh changes made elsewhere.

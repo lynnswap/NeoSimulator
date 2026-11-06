@@ -1,10 +1,11 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
-import SwiftUI
-import UniformTypeIdentifiers
+import NeoSimulatorDeviceIO
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
 import Observation
 import ObservationBridge
+import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,

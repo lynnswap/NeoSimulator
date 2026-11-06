@@ -1,7 +1,10 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
 import ImageIO
+import NeoSimulatorDeviceIO
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
+import NeoSimulatorUI
 import UniformTypeIdentifiers
 
 @MainActor

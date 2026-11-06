@@ -302,7 +302,7 @@ package actor SimulatorHostController {
     private func readCreationCatalog(xcodeURL: URL? = nil, deviceSetPath: String? = nil) async throws -> SimulatorCreationContext {
         guard let bundle = Bundle(url: rendererApplicationURL), bundle.bundleIdentifier == ToolConstants.neoHostBundleIdentifier,
               let executable = bundle.executableURL else {
-            throw CLIError.unavailable("neo-host-bundle", "The embedded simulator display could not be found.")
+            throw HostOperationError.unavailable("neo-host-bundle", "The embedded simulator display could not be found.")
         }
         var candidates: [XcodeInstallation] = []
         if let xcodeURL {
@@ -317,7 +317,7 @@ package actor SimulatorHostController {
             do {
                 let output = try await reads.run(SystemCommand(
                     executable: executable, arguments: ["--creation-catalog", "--xcode", xcode.applicationURL.path], policy: .cancellable))
-                guard output.terminationStatus == 0 else { throw CLIError.unavailable("creation-catalog", output.stderrText) }
+                guard output.terminationStatus == 0 else { throw HostOperationError.unavailable("creation-catalog", output.stderrText) }
                 return SimulatorCreationContext(xcodeURL: xcode.applicationURL, data: output.stdout, deviceSetPath: deviceSetPath)
             } catch is CancellationError { throw CancellationError() }
             catch {
@@ -326,7 +326,7 @@ package actor SimulatorHostController {
             }
         }
         if let firstFailure { throw firstFailure }
-        throw CLIError.unavailable("creation-catalog", "No compatible simulator creation catalog is available.")
+        throw HostOperationError.unavailable("creation-catalog", "No compatible simulator creation catalog is available.")
     }
 
     package func createSimulator(named name: String, deviceType: String, runtime: String, context: SimulatorCreationContext) async throws -> String {
@@ -506,7 +506,7 @@ package actor SimulatorHostController {
                     if bootIfNeeded && device.state == "Shutdown" {
                         let output = try await SystemCommandRunner().runCancellable(.simctl(xcodeURL: xcode.applicationURL,
                             arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath, policy: .cancellable))
-                        guard output.terminationStatus == 0 else { throw CLIError.io("simctl", output.stderrText) }
+                        guard output.terminationStatus == 0 else { throw HostOperationError.io("simctl", output.stderrText) }
                     }
                 }, launch: { try await self.launchHost(.deviceHub, xcodeURL: xcode.applicationURL) })
             }
@@ -553,7 +553,7 @@ package actor SimulatorHostController {
             try await launchHost(.neo, xcodeURL: xcode.applicationURL)
         }
         guard let target = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) else {
-            throw CLIError.temporary("renderer-startup", "The simulator display exited before opening the device.")
+            throw HostOperationError.temporary("renderer-startup", "The simulator display exited before opening the device.")
         }
         return {
             try await Self.openRendererDevice(deviceID, in: target, bootIfNeeded: bootIfNeeded, launchesRenderer: launchesRenderer) {
@@ -578,7 +578,7 @@ package actor SimulatorHostController {
             }
             throw CancellationError()
         } catch {
-            throw CLIError.temporary(launchesRenderer ? "neo-host-launch-partial-success" : "renderer-device-launch", error.localizedDescription)
+            throw HostOperationError.temporary(launchesRenderer ? "neo-host-launch-partial-success" : "renderer-device-launch", error.localizedDescription)
         }
     }
 
@@ -803,7 +803,7 @@ package actor SimulatorHostController {
             let registration = try JSONDecoder().decode(RendererRegistration.self, from: data)
             guard registration.processIdentifier == application.processIdentifier,
                   sameURL(URL(fileURLWithPath: registration.applicationPath), rendererApplicationURL) else {
-                throw CLIError.configuration("renderer-registration", "The renderer registration does not match its running application.")
+                throw HostOperationError.configuration("renderer-registration", "The renderer registration does not match its running application.")
             }
             if registration.isOwned(by: owner) { registrations.append(registration) }
         }
@@ -907,13 +907,13 @@ package actor SimulatorHostController {
         }
         if let unavailable { return unavailable }
         if let firstFailure { throw firstFailure }
-        throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
+        throw HostOperationError.unavailable("simulator-device", "The selected simulator is no longer available.")
     }
 
     @concurrent
     private func readManagementCatalog(xcodeURL: URL, path: String?) async throws -> [SimulatorHostDevice] {
         let output = try await reads.run(.simctl(xcodeURL: xcodeURL, arguments: ["list", "--json"], deviceSetPath: path, policy: .cancellable))
-        guard output.terminationStatus == 0 else { throw CLIError.io("simulator-management", output.stderrText) }
+        guard output.terminationStatus == 0 else { throw HostOperationError.io("simulator-management", output.stderrText) }
         return try SimulatorDeviceCatalog.decode(output.stdout, deviceSetPath: path, includeUnavailable: true)
     }
 
@@ -943,7 +943,7 @@ package actor SimulatorHostController {
             catch { if firstFailure == nil { firstFailure = error } }
         }
         if !readAnyCatalog, let firstFailure { throw firstFailure }
-        throw CLIError.unavailable("simulator-device", "The selected simulator is no longer available.")
+        throw HostOperationError.unavailable("simulator-device", "The selected simulator is no longer available.")
     }
 
     @concurrent
@@ -1054,14 +1054,14 @@ package actor SimulatorHostController {
     @concurrent
     private func runSimctl(xcode: XcodeInstallation, arguments: [String], deviceSetPath: String? = nil) async throws -> Data {
         let output = try await SystemCommandRunner().run(.simctl(xcodeURL: xcode.applicationURL, arguments: arguments, deviceSetPath: deviceSetPath, policy: .uninterrupted))
-        guard output.terminationStatus == 0 else { throw CLIError.io("simctl", output.stderrText) }
+        guard output.terminationStatus == 0 else { throw HostOperationError.io("simctl", output.stderrText) }
         return output.stdout
     }
 
     @concurrent
     private func readSimctlList(xcode: XcodeInstallation, deviceSetPath: String? = nil) async throws -> Data {
         let output = try await reads.run(.simctl(xcodeURL: xcode.applicationURL, arguments: ["list", "--json"], deviceSetPath: deviceSetPath, policy: .cancellable))
-        guard output.terminationStatus == 0 else { throw CLIError.io("simctl", output.stderrText) }
+        guard output.terminationStatus == 0 else { throw HostOperationError.io("simctl", output.stderrText) }
         return output.stdout
     }
 
@@ -1184,10 +1184,10 @@ package enum SimulatorProcessConnections {
     package static func read() throws -> [XcodeSimulatorConnection] {
         let testingDeviceSetPath = SimulatorDeviceSets.testingPath()
         let capacity = Int(proc_listallpids(nil, 0)) + 128
-        guard capacity > 128 else { throw CLIError.io("process-list", "Could not enumerate simulator application processes.") }
+        guard capacity > 128 else { throw HostOperationError.io("process-list", "Could not enumerate simulator application processes.") }
         var processes = [pid_t](repeating: 0, count: capacity)
         let count = processes.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
-        guard count >= 0 else { throw CLIError.io("process-list", "Could not enumerate simulator application processes.") }
+        guard count >= 0 else { throw HostOperationError.io("process-list", "Could not enumerate simulator application processes.") }
         var result: [XcodeSimulatorConnection] = []
         for pid in processes.prefix(Int(count)) where pid > 0 {
             var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))

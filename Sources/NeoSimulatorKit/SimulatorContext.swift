@@ -1,4 +1,5 @@
-import AppKit
+import Foundation
+import NeoSimulatorDeviceIO
 
 /// A snapshot of a simulator in its Xcode device set.
 public struct SimulatorDeviceSnapshot: Identifiable, Sendable {
@@ -50,14 +51,14 @@ public enum SimulatorScreenEnd: Sendable {
 public enum SimulatorButton: Sendable {
     case home, lock, side, siri, volumeUp, volumeDown
 
-    @MainActor package var command: DeviceCommand.ID {
+    /// Whether the device has this button.
+    package func isSupported(by capabilities: DeviceCapabilities) -> Bool {
         switch self {
-        case .home: .home
-        case .lock: .lock
-        case .side: .sideButton
-        case .siri: .siri
-        case .volumeUp: .increaseVolume
-        case .volumeDown: .decreaseVolume
+        case .home: true
+        case .lock: capabilities.isPhoneOrPad || capabilities.family == .watch
+        case .side: capabilities.family == .watch
+        case .siri: capabilities.supportsFeature(DeviceCapabilities.siri)
+        case .volumeUp, .volumeDown: capabilities.supportsFeature(DeviceCapabilities.routableAudio)
         }
     }
 
@@ -103,19 +104,111 @@ package struct ManagedGuestLifetime {
     }
 }
 
+/// One device's open session: its model, guest commands and lifetime, without any of its presentation.
+///
+/// NeoSimulatorUI's `SimulatorScreens` opens these and presents them. Every call on a closed session throws, and
+/// `onEnd` tells when and why it ended.
+@MainActor
+public final class SimulatorDeviceSession {
+    /// The device snapshot taken when this session opened.
+    public let device: SimulatorDeviceSnapshot
+    public private(set) var isClosed = false
+    /// Called once after the session ends. Closing a session leaves its guest running.
+    public var onEnd: ((SimulatorScreenEnd) -> Void)?
+    package let presentation: any DevicePresentation
+    private weak var context: SimulatorContext?
+    private var session: DeviceSession { presentation.session }
+
+    fileprivate init(device: SimulatorDeviceSnapshot, presentation: any DevicePresentation, context: SimulatorContext) {
+        self.device = device
+        self.presentation = presentation
+        self.context = context
+    }
+
+    /// Enqueues a hardware button press. Delivery errors arrive through `onFailure`.
+    public func press(_ button: SimulatorButton, onFailure: @escaping @MainActor (any Error) -> Void) throws {
+        try checkOpen()
+        guard button.isSupported(by: session.capabilities), session.canPerformCommands else {
+            throw SimulatorError.operation("This hardware button is unavailable for the simulator.")
+        }
+        session.send(button.input, failure: onFailure)
+    }
+
+    /// What is known of the device, held so that reading it asks the device nothing. It is the same model that the
+    /// context's device registry lists, and its command state updates through ``DeviceModel/revalidate(_:)``.
+    public var deviceModel: DeviceModel { session.model }
+
+    /// The device's native keyboard, trackpad and touches. While they are not ready, SimulatorKit's input stays live.
+    public var inputReadiness: SimulatorServiceReadiness { session.optionalServices.input }
+    /// The device's routed pasteboard transport, which a transfer waits for and whose failure it reports.
+    public var pasteboardReadiness: SimulatorServiceReadiness { session.optionalServices.pasteboard }
+    /// Connects the native input again after ``inputReadiness`` failed.
+    public func retryInput() { session.optionalServices.retryInput() }
+
+    /// Flips the guest between its light and dark appearance.
+    public func toggleAppearance() async throws {
+        try checkOpen()
+        try await mappingToSimulatorError { try await session.toggleAppearance() }
+    }
+
+    /// Changes the guest's preferred text size by `delta` steps, stopping at the ends of its range.
+    public func changeTextSize(by delta: Int) async throws {
+        try checkOpen()
+        try await mappingToSimulatorError { try await session.changeTextSize(by: delta) }
+    }
+
+    public func toggleIncreaseContrast() async throws {
+        try checkOpen()
+        try await mappingToSimulatorError { try await session.toggleIncreaseContrast() }
+    }
+
+    /// Flips whether biometrics are enrolled, where the device has them. Touch ID, Face ID, and Optic ID share this state.
+    public func toggleBiometricEnrollment() async throws {
+        try checkOpen()
+        try await mappingToSimulatorError { try await session.toggleBiometricEnrollment() }
+    }
+
+    /// Flips a Core Animation debug option, and throws if the device does not report the new state.
+    public func toggle(_ option: CADebugOption) async throws {
+        try checkOpen()
+        try await mappingToSimulatorError { try await session.toggle(option) }
+    }
+
+    /// Releases this session's resources without shutting down the guest.
+    /// If cleanup fails after the session closes, this throws and `isClosed` remains true.
+    /// Call again, or invalidate the context, to retry the unfinished cleanup.
+    public func close() async throws {
+        try await mappingToSimulatorError { try await context?.close(self) }
+    }
+
+    fileprivate func finish(_ reason: SimulatorScreenEnd) {
+        guard !isClosed else { return }
+        isClosed = true
+        onEnd?(reason)
+    }
+
+    /// Throws once the session has ended or its context has gone.
+    package func checkOpen() throws {
+        guard !isClosed, context != nil else {
+            throw SimulatorError.operation("The simulator screen has been closed.")
+        }
+    }
+}
+
 /// Owns simulator connections for one Xcode installation.
 ///
-/// Keep the context alive while using its screens. Call `invalidate()` to finish
+/// Keep the context alive while using its sessions. Call `invalidate()` to finish
 /// recordings and release input and display resources; this leaves guests running.
 @MainActor
 public final class SimulatorContext {
     private let engine: SimulatorScreenHost
     private let guestLifetime: ManagedGuestLifetime?
-    private var screens: [SimulatorDeviceIdentifier: SimulatorScreen] = [:]
+    private var screens: [SimulatorDeviceIdentifier: SimulatorDeviceSession] = [:]
     private var boots: [SimulatorDeviceIdentifier: Task<SimulatorBootOutcome, any Error>] = [:]
     private var invalidation: Task<Void, any Error>?
     private var isInvalidating = false
-    private var openings: [SimulatorDeviceIdentifier: Task<SimulatorScreen, any Error>] = [:]
+    private var isInstallingPresentation = false
+    private var openings: [SimulatorDeviceIdentifier: Task<SimulatorDeviceSession, any Error>] = [:]
     private final class ReleaseIntent { var shutsDownGuest = false }
     private var releases: [SimulatorDeviceIdentifier: (intent: ReleaseIntent, task: Task<Void, any Error>)] = [:]
 
@@ -135,7 +228,7 @@ public final class SimulatorContext {
     }
 
     /// Loads the selected Xcode's runtime, or the process's selected display Xcode when omitted.
-    /// Loading does not boot devices or open windows. Screens share the device state of `deviceRegistry`, which an
+    /// Loading does not boot devices or open windows, and loads no UI toolkit. Sessions share the device state of `deviceRegistry`, which an
     /// application that also reads devices should own and pass here; by default the context has its own.
     public static func load(xcodeURL: URL? = nil, deviceRegistry: DeviceRegistry? = nil) async throws -> SimulatorContext {
         var configuration = SimulatorContextConfiguration()
@@ -144,10 +237,10 @@ public final class SimulatorContext {
     }
 
     package static func load(xcodeURL: URL?, configuration: SimulatorContextConfiguration) async throws -> SimulatorContext {
-        let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
-        let runtime = try await SimulatorRuntime.load(xcodeURL: xcodeURL ?? displayURL, uiXcodeURL: displayURL)
+        let runtime = if let xcodeURL { try await SimulatorIORuntime.load(xcodeURL: xcodeURL) }
+            else { try await SimulatorIORuntime.load(xcodeURL: try await CoreDeviceRuntime.uiXcodeURL()) }
         try Task.checkCancellation()
-        let engine = try SimulatorScreenHost(runtime: runtime, conflicts: HostConflictMonitor(), inProcess: true,
+        let engine = try SimulatorScreenHost(runtime: runtime, inProcess: true,
                                              pasteboardSync: configuration.pasteboardSync,
                                              offersLifetimeChoice: configuration.offersLifetimeChoice,
                                              deviceRegistry: configuration.deviceRegistry ?? DeviceRegistry())
@@ -202,7 +295,7 @@ public final class SimulatorContext {
                 guestLifetime.restart(id, erasing)
                 return
             }
-            guard let controller = self.engine.controller(for: id) else { return }
+            guard let controller = self.engine.presentation(for: id) else { return }
             self.engine.restartDevice(controller, erasing: erasing)
         }
         engine.onShutDown = { [weak self] id in
@@ -218,14 +311,35 @@ public final class SimulatorContext {
         }
     }
 
+    /// Gives this context what presents its devices, which `conflicts` can stop.
+    package func install(presenter: any DevicePresenter, conflicts: any HostConflictChecking) throws {
+        try engine.install(presenter: presenter, conflicts: conflicts)
+    }
+
+    /// Runs `load`, what the presenter needs before it can connect anything, and gives this context the presenter. A
+    /// context takes one, and a second attempt while the first is loading fails without loading anything.
+    package func installPresentation(load: @escaping @MainActor () async throws -> Void, presenter: any DevicePresenter,
+                                     conflicts: any HostConflictChecking) async throws {
+        try checkActive()
+        guard engine.presenter == nil, !isInstallingPresentation else {
+            throw SimulatorError.operation("This simulator context already has its screens.")
+        }
+        isInstallingPresentation = true
+        defer { isInstallingPresentation = false }
+        try conflicts.check()
+        try await load()
+        try checkActive()
+        try engine.install(presenter: presenter, conflicts: conflicts)
+    }
+
     package func checkForHostConflict() { engine.handleHostConflict() }
 
     package var isStopped: Bool { isInvalidating || engine.isStopped || engine.isTerminating }
-    package var openScreens: [SimulatorScreen] { Array(screens.values) }
+    package var openSessions: [SimulatorDeviceSession] { Array(screens.values) }
 
-    package func screen(for id: SimulatorDeviceIdentifier) -> SimulatorScreen? { screens[id] }
+    package func session(for id: SimulatorDeviceIdentifier) -> SimulatorDeviceSession? { screens[id] }
 
-    package func releaseScreen(_ id: SimulatorDeviceIdentifier) async throws {
+    package func releaseSession(_ id: SimulatorDeviceIdentifier) async throws {
         try await beginRelease(id, shutsDownGuest: false).value
     }
 
@@ -250,12 +364,16 @@ public final class SimulatorContext {
     /// Reads the devices currently available in this context.
     public func devices() async throws -> [SimulatorDeviceSnapshot] {
         try checkActive()
-        return try await engine.readAvailableDevices().map(SimulatorDeviceSnapshot.init)
+        return try await mappingToSimulatorError { try await engine.readAvailableDevices().map(SimulatorDeviceSnapshot.init) }
     }
 
     /// Boots the guest and waits for CoreSimulator to report it running, without opening its screen.
     /// Concurrent callers for the same device share the boot operation.
     public func boot(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorBootOutcome {
+        try await mappingToSimulatorError { try await bootDevice(id) }
+    }
+
+    private func bootDevice(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorBootOutcome {
         try checkActive()
         while let release = releases[id] {
             try await CoreDeviceRuntime.preparedValue(of: release.task)
@@ -286,10 +404,10 @@ public final class SimulatorContext {
         return try await CoreDeviceRuntime.preparedValue(of: task)
     }
 
-    /// Attaches to an already running guest. Call `boot(_:)` first when necessary.
-    /// Reopening an attached device returns the same screen. Concurrent callers share
+    /// Attaches to an already running guest through the installed presenter. `boot(_:)` it first when necessary.
+    /// Reopening an attached device returns the same session. Concurrent callers share
     /// the connection; canceling one caller only cancels that caller's wait.
-    public func openScreen(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorScreen {
+    package func openSession(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorDeviceSession {
         try checkActive()
         while let release = releases[id] {
             try await CoreDeviceRuntime.preparedValue(of: release.task)
@@ -304,10 +422,10 @@ public final class SimulatorContext {
             defer { self.openings[id] = nil }
             if self.engine.hasUnfinishedCleanup(for: id) { try await self.engine.releasePresentation(for: id) }
             let device = SimulatorDeviceSnapshot(try await self.device(id))
-            let controller = try await self.engine.openPresentation(for: id)
+            let presentation = try await self.engine.openPresentation(for: id)
             try self.checkActive()
             if let screen = self.screens[id] { return screen }
-            let screen = SimulatorScreen(device: device, controller: controller, context: self)
+            let screen = SimulatorDeviceSession(device: device, presentation: presentation, context: self)
             self.screens[id] = screen
             return screen
         }
@@ -315,7 +433,7 @@ public final class SimulatorContext {
         return try await waitForScreen(task)
     }
 
-    private func waitForScreen(_ opening: Task<SimulatorScreen, any Error>) async throws -> SimulatorScreen {
+    private func waitForScreen(_ opening: Task<SimulatorDeviceSession, any Error>) async throws -> SimulatorDeviceSession {
         do { return try await CoreDeviceRuntime.preparedValue(of: opening) }
         catch is CancellationError where !Task.isCancelled {
             try checkActive()
@@ -328,7 +446,7 @@ public final class SimulatorContext {
     public func shutDown(_ id: SimulatorDeviceIdentifier) async throws {
         try checkActive()
         try Task.checkCancellation()
-        try await beginRelease(id, shutsDownGuest: true).value
+        try await mappingToSimulatorError { try await beginRelease(id, shutsDownGuest: true).value }
     }
 
     private func beginRelease(_ id: SimulatorDeviceIdentifier, shutsDownGuest: Bool,
@@ -390,6 +508,10 @@ public final class SimulatorContext {
     /// A capture that could not be saved is not attempted again: it stays at the location the error names, and every call
     /// throws until it has been moved away from there or ``acknowledgeCaptureFailures()`` has been called.
     public func invalidate() async throws {
+        try await mappingToSimulatorError { try await invalidateResources() }
+    }
+
+    private func invalidateResources() async throws {
         if let invalidation { try await invalidation.value; return }
         isInvalidating = true
         let task = Task {
@@ -417,7 +539,7 @@ public final class SimulatorContext {
     /// This leaves the files at the locations in the errors. Work still in progress can report a later failure.
     public func acknowledgeCaptureFailures() { engine.acknowledgeCaptureFailures() }
 
-    fileprivate func close(_ screen: SimulatorScreen) async throws {
+    fileprivate func close(_ screen: SimulatorDeviceSession) async throws {
         if let invalidation { try await invalidation.value; return }
         let id = screen.device.id
         if let release = releases[id] { try await release.task.value; return }
@@ -478,127 +600,4 @@ public final class SimulatorContext {
             catch { hostLog(error.localizedDescription) }
         }
     }
-}
-
-/// One connected simulator screen that can move between embedded and window presentations.
-@MainActor
-public final class SimulatorScreen {
-    /// The device snapshot taken when this screen was opened.
-    public let device: SimulatorDeviceSnapshot
-    public private(set) var isClosed = false
-    /// Called once after the screen ends. Closing a screen leaves its guest running.
-    public var onEnd: ((SimulatorScreenEnd) -> Void)?
-    package let controller: DeviceWindowController
-    private weak var context: SimulatorContext?
-
-    fileprivate init(device: SimulatorDeviceSnapshot, controller: DeviceWindowController, context: SimulatorContext) {
-        self.device = device
-        self.controller = controller
-        self.context = context
-    }
-
-    /// Moves this screen into a view controller, replacing its previous presentation.
-    /// One simulator screen can be embedded in each window.
-    public func embed(in viewController: NSViewController) throws {
-        try checkOpen()
-        try controller.validatePresentationMove()
-        controller.embed(in: viewController)
-    }
-
-    /// Moves this screen into its own window and brings it forward.
-    public func showWindow() throws {
-        try checkOpen()
-        try controller.validatePresentationMove()
-        controller.showCompactWindow()
-    }
-
-    /// Removes the current presentation while keeping the connection available.
-    public func detach() throws {
-        try checkOpen()
-        try controller.validatePresentationMove()
-        controller.detachPresentation()
-    }
-
-    public func focusInput() {
-        guard !isClosed else { return }
-        controller.focusInput()
-    }
-
-    /// Enqueues a hardware button press. Delivery errors arrive through `onFailure`.
-    public func press(_ button: SimulatorButton, onFailure: @escaping @MainActor (any Error) -> Void) throws {
-        try checkOpen()
-        let command = DeviceCommand.command(button.command)
-        guard command.isSupported(controller.session.capabilities), command.isEnabled(controller) else {
-            throw SimulatorError.operation("This hardware button is unavailable for the simulator.")
-        }
-        controller.session.send(button.input, failure: onFailure)
-    }
-
-    /// What is known of the device, held so that reading it asks the device nothing. It is the same model that the
-    /// context's device registry lists, and its command state updates through ``DeviceModel/revalidate(_:)``.
-    public var deviceModel: DeviceModel { controller.session.model }
-
-    /// Flips the guest between its light and dark appearance.
-    public func toggleAppearance() async throws {
-        try checkOpen()
-        try await controller.session.toggleAppearance()
-    }
-
-    /// Changes the guest's preferred text size by `delta` steps, stopping at the ends of its range.
-    public func changeTextSize(by delta: Int) async throws {
-        try checkOpen()
-        try await controller.session.changeTextSize(by: delta)
-    }
-
-    public func toggleIncreaseContrast() async throws {
-        try checkOpen()
-        try await controller.session.toggleIncreaseContrast()
-    }
-
-    /// Flips whether biometrics are enrolled, where the device has them. Touch ID, Face ID, and Optic ID share this state.
-    public func toggleBiometricEnrollment() async throws {
-        try checkOpen()
-        try await controller.session.toggleBiometricEnrollment()
-    }
-
-    /// Flips a Core Animation debug option, and throws if the device does not report the new state.
-    public func toggle(_ option: CADebugOption) async throws {
-        try checkOpen()
-        try await controller.session.toggle(option)
-    }
-
-    /// Releases this screen's resources without shutting down the guest.
-    /// If cleanup fails after the screen closes, this throws and `isClosed` remains true.
-    /// Call again, or invalidate the context, to retry the unfinished cleanup.
-    public func close() async throws {
-        try await context?.close(self)
-    }
-
-    fileprivate func finish(_ reason: SimulatorScreenEnd) {
-        guard !isClosed else { return }
-        isClosed = true
-        onEnd?(reason)
-    }
-
-    private func checkOpen() throws {
-        guard !isClosed, context != nil else {
-            throw SimulatorError.operation("The simulator screen has been closed.")
-        }
-    }
-}
-
-/// An AppKit container that presents a simulator screen through its supported embedding path.
-@MainActor
-public final class SimulatorScreenViewController: NSViewController {
-    public let screen: SimulatorScreen
-
-    public init(screen: SimulatorScreen) throws {
-        self.screen = screen
-        super.init(nibName: nil, bundle: nil)
-        try screen.embed(in: self)
-    }
-
-    public required init?(coder: NSCoder) { nil }
-
-    public override func loadView() { view = NSView() }
 }

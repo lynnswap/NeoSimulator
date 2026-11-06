@@ -1,15 +1,21 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
-@testable import NeoSimulatorApp
-@testable import NeoSimulatorService
 import AppKit
 import AVFoundation
 import Foundation
 import ImageIO
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorPresentationAdapters
+@testable import NeoSimulatorService
+@testable import NeoSimulatorUI
 import QuartzCore
 import Synchronization
 import Testing
+
+private extension SimulatorScreenHost {
+    var captureOwner: UUID { (presenter as! DeviceWindowPresenter).captureOwner }
+}
 
 @Suite @MainActor
 struct CaptureAndImportTests {
@@ -1107,7 +1113,8 @@ struct CaptureThumbnailTests {
     /// The saving host: a real one in this process, with no device, which stops as a public context's does. Its captures
     /// report as those of its device windows do once those have closed.
     private func stoppingHost(limit: Duration = .milliseconds(50)) async throws -> (host: SimulatorScreenHost, reported: () -> [String]) {
-        let host = try SimulatorScreenHost(runtime: try await loadTestRuntime(), conflicts: HostConflictMonitor(), inProcess: true)
+        let host = try SimulatorScreenHost(runtime: try await loadTestRuntime().io, conflicts: HostConflictMonitor(),
+                                           presenter: DeviceWindowPresenter(), inProcess: true)
         host.captureFinishLimit = limit
         final class Reports { var messages: [String] = [] }
         let reports = Reports()

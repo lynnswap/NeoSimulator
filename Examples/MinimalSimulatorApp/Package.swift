@@ -8,6 +8,7 @@ let package = Package(
     targets: [
         .executableTarget(name: "MinimalSimulatorApp", dependencies: [
             .product(name: "NeoSimulatorKit", package: "NeoSimulatorKit"),
+            .product(name: "NeoSimulatorUI", package: "NeoSimulatorKit"),
         ]),
     ]
 )

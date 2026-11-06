@@ -42,14 +42,14 @@ extension InventoryDevice {
 
     func checkSettingsWrite(_ setting: DeviceSettingChange) throws {
         if case .boldText = setting, !supportsIOSDisplaySettings {
-            throw CLIError.unavailable("bold-text-unavailable", "Bold Text is available only for iOS simulators.")
+            throw DeviceDomainError.unavailable("bold-text-unavailable", "Bold Text is available only for iOS simulators.")
         }
         if case .displayZoom = setting, !supportsIOSDisplaySettings {
-            throw CLIError.unavailable("display-zoom-unavailable", "Display Zoom is available only for iOS simulators.")
+            throw DeviceDomainError.unavailable("display-zoom-unavailable", "Display Zoom is available only for iOS simulators.")
         }
         if case .simulator = self { return }
         guard settingsAvailable else {
-            throw CLIError.unavailable("device-setting-unavailable", "The selected device is not currently available.")
+            throw DeviceDomainError.unavailable("device-setting-unavailable", "The selected device is not currently available.")
         }
         let feature: String? = switch setting {
         case .appearance: "customizeuistyle"
@@ -62,7 +62,7 @@ extension InventoryDevice {
         case .location, .locationScenario, .clearLocation: "simulatelocation"
         }
         guard let feature, supportsSettingsFeature(feature) else {
-            throw CLIError.unavailable("device-setting-capability", "The selected device does not currently expose this setting.")
+            throw DeviceDomainError.unavailable("device-setting-capability", "The selected device does not currently expose this setting.")
         }
     }
 }
@@ -89,8 +89,8 @@ package struct SimulatorSettingsBackend: Sendable {
         self.audioDevices = audioDevices
     }
 
-    package static var noGuest: CLIError {
-        CLIError.configuration("device-setting-source", "Guest settings require a simulator and its developer tools.")
+    package static var noGuest: DeviceDomainError {
+        DeviceDomainError.configuration("device-setting-source", "Guest settings require a simulator and its developer tools.")
     }
 
     /// Reads each group independently and publishes it as it finishes, so that one slow or failed read holds nothing else.
@@ -186,7 +186,7 @@ package struct SimulatorSettingsBackend: Sendable {
             return await values("Bold Text") {
                 let data = try await readCommand(.simctl, ["spawn", identifier, "defaults", "export", Self.boldTextDomain, "-"])
                 let values = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-                guard let values else { throw CLIError.io("bold-text-value", "The device returned an invalid accessibility preferences dictionary.") }
+                guard let values else { throw DeviceDomainError.io("bold-text-value", "The device returned an invalid accessibility preferences dictionary.") }
                 let enabled = (values[Self.boldTextKey] as? NSNumber)?.intValue == 1
                 return { $0.boldText = enabled }
             }
@@ -312,7 +312,7 @@ package struct SimulatorSettingsBackend: Sendable {
             do {
                 _ = try await run(.simctl, ["spawn", identifier, "notifyutil", "-p", Self.boldTextNotification])
             } catch {
-                throw CLIError.io("bold-text-notification", "Bold Text was saved, but its change notification failed: \(error.localizedDescription)")
+                throw DeviceDomainError.io("bold-text-notification", "Bold Text was saved, but its change notification failed: \(error.localizedDescription)")
             }
         case .increaseContrast(let enabled):
             if case .simulator = device { try await ui("increase_contrast", enabled ? "enabled" : "disabled") }
@@ -358,7 +358,7 @@ package struct SimulatorSettingsBackend: Sendable {
         let result = try JSONDecoder().decode(DisplayZoomResult.self, from: data)
         guard result.success else {
             let message = result.error?.description ?? "The device did not return a Display Zoom result."
-            throw CLIError.io("display-zoom", result.canvasApplied == true
+            throw DeviceDomainError.io("display-zoom", result.canvasApplied == true
                 ? "Display Zoom was applied, but its remaining apply steps failed: \(message)" : message)
         }
         return result
@@ -438,7 +438,7 @@ package struct SimulatorSettingsBackend: Sendable {
 
     package static func hostAudioDevices() throws -> (input: [SimulatorAudioDevice], output: [SimulatorAudioDevice]) {
         func check(_ status: OSStatus) throws {
-            guard status == noErr else { throw CLIError.io("host-audio-devices", "Could not read audio devices (CoreAudio status \(status)).") }
+            guard status == noErr else { throw DeviceDomainError.io("host-audio-devices", "Could not read audio devices (CoreAudio status \(status)).") }
         }
         let system = AudioObjectID(kAudioObjectSystemObject)
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -456,7 +456,7 @@ package struct SimulatorSettingsBackend: Sendable {
                 var value: Unmanaged<CFString>?
                 var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
                 try check(AudioObjectGetPropertyData(device, &property, 0, nil, &size, &value))
-                guard let value else { throw CLIError.io("host-audio-devices", "An audio device did not provide its name or identifier.") }
+                guard let value else { throw DeviceDomainError.io("host-audio-devices", "An audio device did not provide its name or identifier.") }
                 return value.takeRetainedValue() as String
             }
             let candidate = SimulatorAudioDevice(identifier: try string(kAudioDevicePropertyDeviceUID), name: try string(kAudioObjectPropertyName))

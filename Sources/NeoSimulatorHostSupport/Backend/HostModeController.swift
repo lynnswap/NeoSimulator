@@ -1,6 +1,7 @@
-import NeoSimulatorKit
 import Darwin
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 
 package struct HostModeController {
     private struct ManagedContext {
@@ -131,7 +132,7 @@ package struct HostModeController {
                 if launchDisplay { _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL) }
             }
         } catch {
-            let identifier = (error as? CLIError)?.identifier == "preference-conflict"
+            let identifier = (error as? HostOperationError)?.identifier == "preference-conflict"
                 ? "\(host.mode.rawValue)-host-invalidated" : "\(host.mode.rawValue)-host-launch-partial-success"
             throw hostPartialSuccessError(receiptURL: receiptURL, identifier: identifier, error: error, message: "\(host.mode.rawValue) mode is configured, but its UI host could not be opened")
         }
@@ -186,7 +187,7 @@ package struct HostModeController {
                 return false
             }
             guard let xcode else {
-                throw CLIError.software(
+                throw HostOperationError.software(
                     "missing-capture-xcode",
                     "a new restoration receipt requires a validated Xcode"
                 )
@@ -201,7 +202,7 @@ package struct HostModeController {
         }
 
         guard var receipt = context.receipt else {
-            throw CLIError.software(
+            throw HostOperationError.software(
                 "missing-receipt",
                 "preference transition lost its restoration receipt"
             )
@@ -289,7 +290,7 @@ package struct HostModeController {
                 from: pending.before,
                 to: pending.target
             ) {
-                throw CLIError.configuration(
+                throw HostOperationError.configuration(
                     "ambiguous-intermediate",
                     "the live preferences match a possible interrupted write, but the tool cannot distinguish that from an external change. Nothing was overwritten. Inspect \(receiptStore.receiptURL.path), then choose Restore Original Settings…, then Restore Saved Values… only if the saved original should win."
                 )
@@ -373,12 +374,12 @@ package struct HostModeController {
                 fromAttemptedTarget: attemptedTarget
             )
         } catch let mismatch as DefaultsStore.StateMismatch {
-            throw CLIError.configuration(
+            throw HostOperationError.configuration(
                 "inconsistent-preferences",
                 "transition failed (\(errorMessage(primaryError))) and rollback refused to overwrite an unexpected state (\(mismatch.observed)). Recovery data remains at \(receiptStore.receiptURL.path)"
             )
         } catch {
-            throw CLIError.configuration(
+            throw HostOperationError.configuration(
                 "inconsistent-preferences",
                 "transition failed (\(errorMessage(primaryError))) and rollback failed (\(errorMessage(error))). Recovery data remains at \(receiptStore.receiptURL.path)"
             )
@@ -394,13 +395,13 @@ package struct HostModeController {
                 try receiptStore.save(restoredReceipt)
             }
         } catch {
-            throw CLIError.io(
+            throw HostOperationError.io(
                 "rollback-receipt",
                 "preferences were rolled back after \(errorMessage(primaryError)), but recovery metadata could not be finalized: \(errorMessage(error))"
             )
         }
 
-        throw CLIError.io(
+        throw HostOperationError.io(
             "transition-rolled-back",
             "preference transition failed and was rolled back: \(errorMessage(primaryError))"
         )
@@ -437,7 +438,7 @@ package struct HostModeController {
 
     private func rejectRootMutation() throws {
         guard effectiveUserID != 0 else {
-            throw CLIError.configuration(
+            throw HostOperationError.configuration(
                 "root-user",
                 "NeoSimulator manages per-user Xcode preferences and cannot change them while running as root."
             )
@@ -449,15 +450,15 @@ package struct HostModeController {
         identifier: String,
         error: any Error,
         message: String
-    ) -> CLIError {
+    ) -> HostOperationError {
         let recoveryGuidance = if receiptURL != nil {
             "The preferences remain managed; use Restore Original Settings… to undo them."
         } else {
             "No restoration receipt exists because these are the original preferences."
         }
 
-        return CLIError(
-            category: (error as? CLIError)?.category ?? .io,
+        return HostOperationError(
+            category: (error as? HostOperationError)?.category ?? .io,
             identifier: identifier,
             message: "\(message): \(errorMessage(error)). \(recoveryGuidance)",
             failureReason: (error as? any LocalizedError)?.failureReason,
@@ -468,15 +469,15 @@ package struct HostModeController {
     private func conflictError(
         expected: ManagedPreferenceState,
         observed: ManagedPreferenceState
-    ) -> CLIError {
-        CLIError.configuration(
+    ) -> HostOperationError {
+        HostOperationError.configuration(
             "preference-conflict",
             "managed preferences changed outside this tool; expected \(expected), observed \(observed). Inspect \(receiptStore.receiptURL.path) before recovering."
         )
     }
 
     private func errorMessage(_ error: any Error) -> String {
-        if let error = error as? CLIError {
+        if let error = error as? HostOperationError {
             return error.message
         }
         return error.localizedDescription

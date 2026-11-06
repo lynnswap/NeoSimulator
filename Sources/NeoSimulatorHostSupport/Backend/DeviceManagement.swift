@@ -7,6 +7,41 @@ package enum DeviceManagementAction: Equatable, Sendable {
     case start, shutdown, forceShutdown, restart, erase, remove, pair, unpair, pause, resume
 }
 
+extension DeviceManagementAction {
+    /// The operation that CoreDevice performs for this action itself, when it does.
+    package var coreDeviceOperation: CoreDeviceManagementOperation? {
+        switch self {
+        case .start: .start
+        case .shutdown: .shutdown
+        case .forceShutdown: .forceShutdown
+        case .pause: .pause
+        case .resume: .resume
+        case .remove: .remove
+        default: nil
+        }
+    }
+
+    package var coreDeviceFeature: String? { coreDeviceOperation?.feature }
+}
+
+/// The identifier that CoreDevice knows `deviceID` by, for the operations it performs.
+@MainActor
+package func coreDeviceCommandIdentifier(
+    for deviceID: DeviceInventoryID,
+    resolveSimulator: @MainActor (String) async throws -> String? = CoreDeviceRemoteScreenDevice.simulatorIdentifier
+) async throws -> String {
+    switch deviceID.destination {
+    case .coreDevice(let identifier): return identifier
+    case .simulator(let udid, nil):
+        guard let identifier = try await resolveSimulator(udid) else {
+            throw HostOperationError.unavailable("coredevice-simulator", "The simulator is not registered with CoreDevice.")
+        }
+        return identifier
+    case .simulator(_, .some):
+        throw HostOperationError.unavailable("coredevice-simulator", "CoreDevice cannot distinguish this simulator's device-set identity.")
+    }
+}
+
 package struct DeviceManagementResult: Sendable {
     package let deviceID: DeviceInventoryID
     package let completedSteps: [String]
@@ -108,7 +143,12 @@ extension SimulatorHostController {
             readPairs: { try await self.readManagementPairs(xcode: $0, path: $1) },
             runSimctl: Self.runManagementSimctl, runDevicectl: Self.runManagementDevicectl,
             shutdownSimulator: Self.shutdownSimulator,
-            manageCoreDevice: { action, identifier in try await CoreDeviceManagementClient.perform(action, deviceID: identifier) },
+            manageCoreDevice: { action, deviceID in
+                guard let operation = action.coreDeviceOperation else {
+                    throw HostOperationError.software("coredevice-management", "CoreDevice does not perform this action.")
+                }
+                try await CoreDeviceManagementClient.perform(operation, identifier: try await coreDeviceCommandIdentifier(for: deviceID))
+            },
             release: { renderer, identifier in try await RendererDeviceRequestWaiter().release(identifier, from: renderer) },
             restart: { renderer, identifier, erasing in
                 try await RendererDeviceRequestWaiter().restart(identifier, in: renderer, erasing: erasing)
@@ -166,7 +206,7 @@ extension SimulatorHostController {
         let output = try await SystemCommandRunner().run(.simctl(
             xcodeURL: xcode, arguments: ["shutdown", identifier], deviceSetPath: path, policy: .cancellable))
         guard output.terminationStatus == 0 else {
-            throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
+            throw HostOperationError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
     }
 
@@ -174,7 +214,7 @@ extension SimulatorHostController {
     private func readManagementPairs(xcode: URL, path: String?) async throws -> Data {
         let output = try await reads.run(.simctl(xcodeURL: xcode, arguments: ["list", "pairs", "--json"], deviceSetPath: path, policy: .cancellable))
         guard output.terminationStatus == 0 else {
-            throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
+            throw HostOperationError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
         return output.stdout
     }
@@ -183,7 +223,7 @@ extension SimulatorHostController {
     private static func runManagementSimctl(_ xcode: URL, _ arguments: [String], _ path: String?) async throws -> Data {
         let output = try await SystemCommandRunner().run(.simctl(xcodeURL: xcode, arguments: arguments, deviceSetPath: path, policy: .uninterrupted))
         guard output.terminationStatus == 0 else {
-            throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
+            throw HostOperationError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
         return output.stdout
     }
@@ -194,7 +234,7 @@ extension SimulatorHostController {
             arguments: arguments + ["--json-output", "-", "--quiet", "--timeout", String(DeviceOperationLimit.devicectlManagement)],
             policy: .uninterrupted))
         guard output.terminationStatus == 0 else {
-            throw CLIError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
+            throw HostOperationError.io("device-management", output.stderrText.isEmpty ? output.stdoutText : output.stderrText)
         }
         return output.stdout
     }
@@ -331,7 +371,7 @@ package struct DeviceManagementBackend: Sendable {
                   let watch = devices.first(where: { $0.productFamily == "Apple Watch" }),
                   let phone = devices.first(where: { $0.productFamily == "iPhone" }),
                   watch.deviceSetPath == phone.deviceSetPath else {
-                throw CLIError.configuration("simulator-pair", "Select one Apple Watch and one iPhone from the same device set to pair.")
+                throw HostOperationError.configuration("simulator-pair", "Select one Apple Watch and one iPhone from the same device set to pair.")
             }
             let resolved = try await context(watch, false)
             _ = try await runSimctl(resolved.xcodeURL, ["pair", watch.identifier, phone.identifier], watch.deviceSetPath)
@@ -397,7 +437,7 @@ package struct DeviceManagementBackend: Sendable {
                             do { _ = try await command(["boot", identifier], step: "Started") }
                             catch {
                                 if let eraseFailure {
-                                    throw CLIError.io("device-management", "Erasing failed: \(eraseFailure.localizedDescription) Restarting also failed: \(error.localizedDescription)")
+                                    throw HostOperationError.io("device-management", "Erasing failed: \(eraseFailure.localizedDescription) Restarting also failed: \(error.localizedDescription)")
                                 }
                                 throw error
                             }
@@ -407,7 +447,7 @@ package struct DeviceManagementBackend: Sendable {
                                     completed.append("Display reopened")
                                 } catch {
                                     if let eraseFailure {
-                                        throw CLIError.io("device-management", "Erasing failed: \(eraseFailure.localizedDescription) Reopening the display also failed: \(error.localizedDescription)")
+                                        throw HostOperationError.io("device-management", "Erasing failed: \(eraseFailure.localizedDescription) Reopening the display also failed: \(error.localizedDescription)")
                                     }
                                     throw error
                                 }
@@ -460,8 +500,8 @@ package struct DeviceManagementBackend: Sendable {
         }
     }
 
-    private func unavailable(_ action: DeviceManagementAction, target: InventoryDevice) -> CLIError {
-        CLIError.unavailable("device-action-unavailable", "This device does not expose the requested management operation.")
+    private func unavailable(_ action: DeviceManagementAction, target: InventoryDevice) -> HostOperationError {
+        HostOperationError.unavailable("device-action-unavailable", "This device does not expose the requested management operation.")
     }
 
     private struct PairList: Decodable {

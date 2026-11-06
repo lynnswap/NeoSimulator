@@ -107,21 +107,21 @@ package final class DeviceTools {
         }
     }
     package func rotate(left: Bool) async throws -> OrientationReading {
-        if let guest = try await orientationConnection() { return try await guest.rotate(left: left) }
+        if let guest = try await orientationConnection() { return try OrientationReading(await guest.rotate(left: left)) }
         _ = try await runner.run(devicectlURL,
             arguments: ["device", "orientation", "rotate", "--device", identifier, left ? "left" : "right", "--quiet"],
             environment: environment)
         return try await orientation()
     }
     package func setOrientation(_ orientation: DeviceOrientation) async throws -> OrientationReading {
-        if let guest = try await orientationConnection() { return try await guest.set(orientation) }
+        if let guest = try await orientationConnection() { return try OrientationReading(await guest.set(named: orientation.rawValue)) }
         _ = try await runner.run(devicectlURL,
             arguments: ["device", "orientation", "set", "--device", identifier, orientation.rawValue, "--quiet"],
             environment: environment)
         return try await self.orientation()
     }
     package func orientation() async throws -> OrientationReading {
-        if let guest = try await orientationConnection() { return try await guest.read() }
+        if let guest = try await orientationConnection() { return try OrientationReading(await guest.read()) }
         return try OrientationReading(devicectlOutput: await endingOnCancellation {
             try await runner.run(devicectlURL,
                 arguments: ["device", "orientation", "get", "--device", identifier, "--json-output", "-", "--quiet"],

@@ -1,4 +1,4 @@
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
@@ -94,7 +94,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected Xcode 26 to be rejected")
-        } catch let error as CLIError {
+        } catch let error as DeviceIOError {
             #expect(error.identifier == "unsupported-xcode")
             #expect(error.category == .unavailable)
         }
@@ -128,7 +128,7 @@ struct InstallationInspectorTests {
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: CodeSignatureValidator { _, identifier in
                 if identifier == ToolConstants.xcodeBundleIdentifier {
-                    throw CLIError.unavailable(
+                    throw HostOperationError.unavailable(
                         "code-signature",
                         "injected invalid Xcode signature"
                     )
@@ -136,7 +136,7 @@ struct InstallationInspectorTests {
             }
         )
 
-        await #expect(throws: CLIError.self) {
+        await #expect(throws: HostOperationError.self) {
             _ = try await inspector.validatedTargetXcode()
         }
     }
@@ -151,7 +151,7 @@ struct InstallationInspectorTests {
             coreDeviceFrameworkURL: fixture.coreDeviceFrameworkURL,
             signatureValidator: CodeSignatureValidator { _, identifier in
                 if identifier == ToolConstants.simulatorKitBundleIdentifier {
-                    throw CLIError.unavailable(
+                    throw HostOperationError.unavailable(
                         "code-signature",
                         "injected invalid SimulatorKit signature"
                     )
@@ -163,7 +163,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid SimulatorKit signature to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "code-signature")
         }
     }
@@ -174,7 +174,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected missing key to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "xcode-preference-key")
         }
     }
@@ -189,7 +189,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected missing Device Hub executable to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "device-hub-executable")
         }
     }
@@ -200,7 +200,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await makeInspector(fixture).validatedTargetXcode()
             Issue.record("expected missing Device Hub key to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "device-hub-preference-key")
         }
     }
@@ -247,7 +247,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected private runtime validation to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-runtime")
             #expect(error.category == .unavailable)
             #expect(error.message.contains("required private symbol is unavailable"))
@@ -270,7 +270,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected missing simctl wrapper to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "simctl-wrapper")
         }
     }
@@ -287,7 +287,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected changed devicectl wrapper format to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "devicectl-wrapper-version")
         }
     }
@@ -304,7 +304,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected nonnumeric devicectl version to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "devicectl-wrapper-version")
         }
     }
@@ -325,7 +325,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected ambiguous simctl wrapper version to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "simctl-wrapper-version")
         }
     }
@@ -341,7 +341,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid simctl signature to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "code-signature")
         }
     }
@@ -357,7 +357,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid devicectl signature to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "code-signature")
         }
     }
@@ -374,7 +374,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected invalid simulator plugin signature to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "code-signature")
         }
     }
@@ -392,7 +392,7 @@ struct InstallationInspectorTests {
             do {
                 _ = try await inspector.validatedNeoHost(for: xcode)
                 Issue.record("expected forbidden devicectl linkage to fail")
-            } catch let error as CLIError {
+            } catch let error as HostOperationError {
                 #expect(error.identifier == "devicectl-linkage")
             }
         }
@@ -414,7 +414,7 @@ struct InstallationInspectorTests {
             do {
                 _ = try await inspector.validatedNeoHost(for: xcode)
                 Issue.record("expected forbidden simulator plugin linkage to fail")
-            } catch let error as CLIError {
+            } catch let error as HostOperationError {
                 #expect(
                     error.identifier == "simulator-core-device-plugin-linkage"
                 )
@@ -460,7 +460,7 @@ struct InstallationInspectorTests {
         do {
             _ = try await inspector.validatedNeoHost(for: xcode)
             Issue.record("expected missing packaged host to fail")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "neo-host-bundle")
             #expect(error.category == .unavailable)
         }
@@ -486,7 +486,7 @@ struct InstallationInspectorTests {
                 guard identifier == rejectingSignatureIdentifier else {
                     return
                 }
-                throw CLIError.unavailable(
+                throw HostOperationError.unavailable(
                     "code-signature",
                     "injected invalid signature for \(identifier)"
                 )
@@ -538,7 +538,7 @@ struct XcodeConnectionsTests {
     @Test func customSetSettingsNeverAddressADefaultSetDeviceThroughDevicectl() async throws {
         let commands = Mutex<[[String]]>([])
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
-            if case .devicectl = tool { throw CLIError.io("wrong-device", "devicectl cannot distinguish this device set") }
+            if case .devicectl = tool { throw HostOperationError.io("wrong-device", "devicectl cannot distinguish this device set") }
             if tool == .guestSettings { return Data(#"{"success":true,"modes":[],"current":null}"#.utf8) }
             commands.withLock { $0.append(arguments) }
             if arguments.first == "spawn" { return Data(#"<plist version="1.0"><dict/></plist>"#.utf8) }
@@ -641,7 +641,7 @@ struct XcodeConnectionsTests {
             try await opening.value
             Issue.record("A cancelled open succeeded")
         } catch is CancellationError { #expect(!cleanupFails) }
-        catch let error as CLIError { #expect(cleanupFails && error.message == "Owned cleanup failed") }
+        catch let error as HostOperationError { #expect(cleanupFails && error.message == "Owned cleanup failed") }
         #expect(cancellationSent)
         // The retired acknowledgement must not complete another request or resume twice.
         center.post(name: .init("dev.lynnswap.NeoSimulator.RendererOpened"), object: original["requestIdentifier"],
@@ -676,7 +676,7 @@ struct XcodeConnectionsTests {
             try await opening.value
             Issue.record("An open succeeded without its renderer")
         } catch is CancellationError { #expect(cancelled) }
-        catch let error as CLIError { #expect(!cancelled && error.identifier == "renderer-device-exit") }
+        catch let error as HostOperationError { #expect(!cancelled && error.identifier == "renderer-device-exit") }
     }
 
     @Test(.timeLimit(.minutes(1)), arguments: [true, false]) @MainActor
@@ -721,7 +721,7 @@ struct XcodeConnectionsTests {
             try await opening.value
             Issue.record("A cancelled open succeeded")
         } catch is CancellationError { #expect(rendererExits) }
-        catch let error as CLIError {
+        catch let error as HostOperationError {
             #expect(!rendererExits && error.identifier == "renderer-device-request" && error.message == "Recording cleanup failed")
         }
     }
@@ -745,7 +745,7 @@ struct XcodeConnectionsTests {
         do {
             try await waiter.close(target, in: renderer, keepingDeviceRunning: false)
             Issue.record("A failed close acknowledgement was accepted")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "renderer-device-request")
             #expect(error.message == "Fixture guest shutdown failed")
         }
@@ -773,17 +773,17 @@ struct XcodeConnectionsTests {
         let original = connection(pid: 1, start: 10)
         let otherDevice = connection(pid: 4, start: 15, device: "B")
         var transfers: [XcodeSimulatorConnection] = []
-        await #expect(throws: CLIError.self) {
+        await #expect(throws: HostOperationError.self) {
             _ = try await tracker.synchronize(observations: [original, otherDevice], runningDeviceIdentifiers: [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)]) {
-                if $0.deviceIdentifier == "A" { throw CLIError.io("test", "release failed") }
+                if $0.deviceIdentifier == "A" { throw HostOperationError.io("test", "release failed") }
                 transfers.append($0)
             }
         }
         #expect(try await tracker.synchronize(observations: [], runningDeviceIdentifiers: [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)]) { transfers.append($0) })
         #expect(transfers == [otherDevice, original])
         let pending = connection(pid: 2, start: 20)
-        await #expect(throws: CLIError.self) {
-            _ = try await tracker.synchronize(observations: [pending], runningDeviceIdentifiers: [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)]) { _ in throw CLIError.io("test", "launch failed after release") }
+        await #expect(throws: HostOperationError.self) {
+            _ = try await tracker.synchronize(observations: [pending], runningDeviceIdentifiers: [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)]) { _ in throw HostOperationError.io("test", "launch failed after release") }
         }
         let latest = connection(pid: 3, start: 30, xcode: "Xcode27.2")
         #expect(try await tracker.synchronize(observations: [latest], runningDeviceIdentifiers: [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)]) { transfers.append($0) })
@@ -793,9 +793,9 @@ struct XcodeConnectionsTests {
     @Test func shutdownCancelsFailedTransferWithoutReplayingItAfterReboot() async throws {
         let tracker = XcodeConnectionTracker()
         let pending = connection(pid: 1, start: 10)
-        await #expect(throws: CLIError.self) {
+        await #expect(throws: HostOperationError.self) {
             _ = try await tracker.synchronize(observations: [pending], runningDeviceIdentifiers: [.simulator(udid: "A", deviceSetPath: nil)]) { _ in
-                throw CLIError.io("test", "launch failed after release")
+                throw HostOperationError.io("test", "launch failed after release")
             }
         }
         #expect(tracker.hasPendingConnection(forDevice: .simulator(udid: "A", deviceSetPath: nil)))
@@ -915,8 +915,8 @@ struct XcodeConnectionsTests {
         let tracker = XcodeConnectionTracker()
         let clone = XcodeSimulatorConnection(event: .init(processIdentifier: 1, startSeconds: 10, startMicroseconds: 0),
             deviceIdentifier: "clone", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"), deviceSetPath: "/custom/XCTestDevices")
-        await #expect(throws: CLIError.self) {
-            _ = try await tracker.synchronize(observations: [clone], runningDeviceIdentifiers: [.simulator(udid: "clone", deviceSetPath: clone.deviceSetPath)], testingDeviceSetPath: clone.deviceSetPath) { _ in throw CLIError.io("test", "retry") }
+        await #expect(throws: HostOperationError.self) {
+            _ = try await tracker.synchronize(observations: [clone], runningDeviceIdentifiers: [.simulator(udid: "clone", deviceSetPath: clone.deviceSetPath)], testingDeviceSetPath: clone.deviceSetPath) { _ in throw HostOperationError.io("test", "retry") }
         }
         #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: [.simulator(udid: "clone", deviceSetPath: clone.deviceSetPath)]) { _ in Issue.record("A hidden testing device must not be attached.") })
         #expect(!tracker.hasPendingConnection(forDevice: clone.deviceID))
@@ -1026,7 +1026,7 @@ struct SimulatorSettingsBackendTests {
                 await published.next()
                 return Data(#"{"success":true,"modes":[],"current":{"rawMode":1,"nativeName":"Larger Text","width":960,"height":2079}}"#.utf8)
             }
-            guard arguments.first == "spawn" else { throw CLIError.io("fixture-query", "Unavailable.") }
+            guard arguments.first == "spawn" else { throw HostOperationError.io("fixture-query", "Unavailable.") }
             return Data(#"<plist version="1.0"><dict><key>EnhancedTextLegibilityEnabled</key><integer>1</integer></dict></plist>"#.utf8)
         }, audioDevices: { ([], []) })
         let settings = Mutex(SimulatorDeviceSettings())
@@ -1048,7 +1048,7 @@ struct SimulatorSettingsBackendTests {
                 if arguments.first == "spawn" { return Data(#"<plist version="1.0"><dict><key>EnhancedTextLegibilityEnabled</key><integer>1</integer></dict></plist>"#.utf8) }
                 return Data((arguments.last == "appearance" ? "dark" : "enabled").utf8)
             }
-            throw CLIError.io("unexpected-tool", "Simulator settings must not use devicectl.")
+            throw HostOperationError.io("unexpected-tool", "Simulator settings must not use devicectl.")
         }, readGuest: { group in
             switch group {
             case .textSize: return .values(group) { $0.contentSize = .large }
@@ -1101,7 +1101,7 @@ struct SimulatorSettingsBackendTests {
             return Data((arguments.last == "appearance" ? "light" : "disabled").utf8)
         }, readGuest: { group in
             queried.withLock { $0.append(group) }
-            guard group == .textSize else { throw CLIError.unavailable("unsupported", "This device is unavailable to CoreDevice.") }
+            guard group == .textSize else { throw HostOperationError.unavailable("unsupported", "This device is unavailable to CoreDevice.") }
             return .values(group) { $0.contentSize = .small }
         }, audioDevices: { ([], []) })
         let (value, issues, _) = await backend.merged(of: simulator("custom-set-device"))
@@ -1114,7 +1114,7 @@ struct SimulatorSettingsBackendTests {
         let (customValue, customIssues, _) = await backend.merged(of: custom)
         #expect(customValue.appearance == .light && customValue.locationAvailable && customValue.boldText == false)
         #expect(queried.withLock { $0.count } == 8 && customIssues.count == 3)
-        await #expect(throws: CLIError.self) { try await backend.set(.liquidGlassOpacity(0.75), device: custom) }
+        await #expect(throws: DeviceDomainError.self) { try await backend.set(.liquidGlassOpacity(0.75), device: custom) }
     }
 
     @Test func aGroupReadsOnlyItsActualValueAndSetsNothingElse() async {
@@ -1126,7 +1126,7 @@ struct SimulatorSettingsBackendTests {
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
             guard tool == .simctl, arguments == ["ui", "device-A", "appearance"] else {
                 Issue.record("An unrelated settings query ran.")
-                throw CLIError.io("unrelated-query", "Unavailable.")
+                throw HostOperationError.io("unrelated-query", "Unavailable.")
             }
             return Data("dark".utf8)
         }, readGuest: { _ in
@@ -1151,10 +1151,10 @@ struct SimulatorSettingsBackendTests {
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
             guard tool == .devicectl, arguments.starts(with: ["device", "info", "audio"]) else {
                 Issue.record("An unrelated settings query ran.")
-                throw CLIError.io("unrelated-query", "Unavailable.")
+                throw HostOperationError.io("unrelated-query", "Unavailable.")
             }
             return envelope(#"{"volume":45,"audioInputDevice":{"systemDefault":{}},"audioOutputDevice":{"device":{"_0":"speaker-uid"}}}"#)
-        }, audioDevices: { throw CLIError.io("host-audio-devices", "Device enumeration failed.") })
+        }, audioDevices: { throw DeviceDomainError.io("host-audio-devices", "Device enumeration failed.") })
         let device = try remote("virtual", features: ["audioinput", "audiooutput"])
         let (updated, issues, _) = await backend.merged([.audio], of: device, over: original)
         #expect(updated.volume == 45 && updated.appearance == .dark)
@@ -1172,10 +1172,10 @@ struct SimulatorSettingsBackendTests {
         let fails = Mutex(true)
         let backend = SimulatorSettingsBackend(run: { _, _ in
             Issue.record("An unrelated settings query ran.")
-            throw CLIError.io("unrelated-query", "Unavailable.")
+            throw HostOperationError.io("unrelated-query", "Unavailable.")
         }, readGuest: { group in
             #expect(group == .accessibility)
-            if fails.withLock({ $0 }) { throw CLIError.io("appearance-query", "Current failure.") }
+            if fails.withLock({ $0 }) { throw HostOperationError.io("appearance-query", "Current failure.") }
             return .values(group) {
                 $0.reduceMotion = true
                 $0.colorFilter = SimulatorColorFilter.none
@@ -1217,7 +1217,7 @@ struct SimulatorSettingsBackendTests {
         #expect(noModes.settings.displayZoom == nil && noModes.settings.volume == 60 && noModes.issues.isEmpty)
         let unsupported = try remote("physical", features: [])
         let count = commands.withLock { $0.count }
-        await #expect(throws: CLIError.self) { try await backend.set(.displayZoom(1), device: unsupported) }
+        await #expect(throws: DeviceDomainError.self) { try await backend.set(.displayZoom(1), device: unsupported) }
         #expect(commands.withLock { $0.count } == count)
     }
 
@@ -1230,11 +1230,11 @@ struct SimulatorSettingsBackendTests {
             commands.withLock { $0.append(arguments) }
             let failing = failure.withLock { $0 }
             if failing == "notifyutil", arguments.contains("write") { actualBoldText.withLock { $0 = arguments.last == "1" } }
-            if let failing, arguments.contains(failing) { throw CLIError.io("fixture-bold-text", "The command failed.") }
+            if let failing, arguments.contains(failing) { throw HostOperationError.io("fixture-bold-text", "The command failed.") }
             return Data()
         }, readCommand: { tool, arguments in
             #expect(tool == .simctl && arguments == ["spawn", "device-A", "defaults", "export", "com.apple.Accessibility", "-"])
-            if failure.withLock({ $0 }) == "export" { throw CLIError.io("fixture-bold-text", "The read failed.") }
+            if failure.withLock({ $0 }) == "export" { throw HostOperationError.io("fixture-bold-text", "The read failed.") }
             let enabled = actualBoldText.withLock { $0 }
             return Data("<plist version=\"1.0\"><dict><key>EnhancedTextLegibilityEnabled</key><integer>\(enabled ? 1 : 0)</integer></dict></plist>".utf8)
         }, audioDevices: { Issue.record("Unrelated audio choices were queried."); return ([], []) })
@@ -1255,13 +1255,13 @@ struct SimulatorSettingsBackendTests {
         failure.withLock { $0 = "write" }
         let writes = commands.withLock { $0.count }
         do { try await backend.set(.boldText(false), device: device); Issue.record("The write failure was lost.") }
-        catch { #expect((error as? CLIError)?.identifier == "fixture-bold-text") }
+        catch { #expect((error as? HostOperationError)?.identifier == "fixture-bold-text") }
         #expect(commands.withLock { $0.count } == writes + 1)
         failure.withLock { $0 = "notifyutil" }
         // What was saved stays honest, and the read that follows a failed change reports the value it took.
         do { try await backend.set(.boldText(true), device: device); Issue.record("The partial failure was lost.") }
         catch {
-            #expect((error as? CLIError)?.identifier == "bold-text-notification")
+            #expect((error as? DeviceDomainError)?.identifier == "bold-text-notification")
             #expect(error.localizedDescription.contains("saved"))
         }
         let saved = await backend.merged([.boldText], of: device, over: updated.settings)
@@ -1277,7 +1277,7 @@ struct SimulatorSettingsBackendTests {
             return Data()
         }, writeGuest: { change in
             changes.withLock { $0.append(change) }
-            if fail.withLock({ $0 }) { throw CLIError.io("device-setting", "The device rejected this setting.") }
+            if fail.withLock({ $0 }) { throw DeviceDomainError.io("device-setting", "The device rejected this setting.") }
         }, audioDevices: { ([], []) })
         try await backend.set(.colorFilter(.deuteranopia, intensity: 0.75), device: simulator("device-B"))
         try await backend.set(.voiceOver(true), device: simulator("device-B"))
@@ -1289,7 +1289,7 @@ struct SimulatorSettingsBackendTests {
         let commands = recorded.withLock { $0 }
         #expect(commands.count == 1 && commands[0].0 == .simctl && commands[0].1 == ["location", "device-B", "run", "City Run"])
         fail.withLock { $0 = true }
-        await #expect(throws: CLIError.self) { try await backend.set(.liquidGlassOpacity(0.75), device: simulator("device-B")) }
+        await #expect(throws: DeviceDomainError.self) { try await backend.set(.liquidGlassOpacity(0.75), device: simulator("device-B")) }
     }
 
     @Test func remoteQueriesKeepAvailableValuesWhenAnotherQueryFails() async throws {
@@ -1308,7 +1308,7 @@ struct SimulatorSettingsBackendTests {
                 """)
             }
             if arguments.contains("voiceover") { return envelope("{\"enabled\":true}") }
-            throw CLIError.io("fixture-location", "Location query failed.")
+            throw HostOperationError.io("fixture-location", "Location query failed.")
         }, audioDevices: { Issue.record("Physical device did not advertise host audio routing"); return ([], []) })
         let (settings, issues, unsupported) = await backend.merged(of: physical)
         #expect(settings.appearance == .dark && settings.contentSize == .accessibilityLarge)
@@ -1330,7 +1330,7 @@ struct SimulatorSettingsBackendTests {
         let backend = SimulatorSettingsBackend(run: { tool, arguments in
             #expect(tool == .devicectl)
             recorded.withLock { $0.append(arguments) }
-            if fail.withLock({ $0 }) { throw CLIError.io("fixture-settings", "The device rejected the write.") }
+            if fail.withLock({ $0 }) { throw HostOperationError.io("fixture-settings", "The device rejected the write.") }
             return Data()
         }, audioDevices: { ([], []) })
         try await backend.set(.appearance(.dark), device: virtual)
@@ -1349,7 +1349,7 @@ struct SimulatorSettingsBackendTests {
         #expect(commands[5] == ["device", "simulate", "location", "clear"] + target)
         fail.withLock { $0 = true }
         do { try await backend.set(.appearance(.light), device: virtual); Issue.record("The write failure was lost") }
-        catch { #expect((error as? CLIError)?.identifier == "fixture-settings") }
+        catch { #expect((error as? HostOperationError)?.identifier == "fixture-settings") }
     }
 
     @Test func unavailableOrUnsupportedRemoteSettingsDoNotRunCommands() async throws {
@@ -1359,16 +1359,16 @@ struct SimulatorSettingsBackendTests {
         let unsupportedValues = await backend.merged(of: unsupported)
         #expect(unsupportedValues.settings.volume == nil && unsupportedValues.settings.boldText == nil)
         #expect(unsupportedValues.unsupported == Set(DeviceSettingsGroup.allCases))
-        await #expect(throws: CLIError.self) { try await backend.set(.boldText(true), device: unsupported) }
-        await #expect(throws: CLIError.self) { try await backend.set(.audioOutputDevice("systemDefault"), device: unsupported) }
+        await #expect(throws: DeviceDomainError.self) { try await backend.set(.boldText(true), device: unsupported) }
+        await #expect(throws: DeviceDomainError.self) { try await backend.set(.audioOutputDevice("systemDefault"), device: unsupported) }
         let unavailable = try remote("virtual", features: ["customizeuistyle"], connection: "unavailable")
         #expect(await backend.merged(of: unavailable).settings.appearance == nil)
-        await #expect(throws: CLIError.self) { try await backend.set(.appearance(.dark), device: unavailable) }
+        await #expect(throws: DeviceDomainError.self) { try await backend.set(.appearance(.dark), device: unavailable) }
         let watch = InventoryDevice.simulator(SimulatorHostDevice(identifier: "watch", name: "Watch", descriptiveName: "Watch",
             runtimeIdentifier: "watchOS", runtimeName: "watchOS", productFamily: "Apple Watch", state: "Booted"))
         let watchValues = await backend.merged([.boldText], of: watch, over: SimulatorDeviceSettings(boldText: true))
         #expect(watchValues.unsupported == [.boldText])
-        await #expect(throws: CLIError.self) { try await backend.set(.boldText(true), device: watch) }
+        await #expect(throws: DeviceDomainError.self) { try await backend.set(.boldText(true), device: watch) }
         #expect(!ran.withLock { $0 })
     }
 }

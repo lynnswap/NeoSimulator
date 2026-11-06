@@ -1,7 +1,8 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
 import Foundation
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorPresentationAdapters
 import Observation
 import Testing
 

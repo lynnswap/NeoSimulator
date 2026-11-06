@@ -178,12 +178,17 @@ Hub mode.
 | `DeviceInspectorModel` | Own inspector records and reject results from an earlier selection or page. |
 | `ManagerWindowController` | Present the sidebar, device screen pane, and settings inspector in `NSSplitViewController`, own the selection, the toolbar, and the latest placement choice for the selected device, and decide where each opened or restored screen goes. |
 | `DeviceScreenViewController` | Show the selected device's screen or preview in the center pane, with its canvas controls and activity footer; move screens in the order the window accepts them, stopping a move once a later choice replaces it; and return to the preview when that screen closes. |
-| `DeviceScreens` | Index the manager's open screens by device, own a public `SimulatorContext` for each Xcode and the remote screen connections, and stop them without shutting devices down. |
+| `DeviceScreens` | Index the manager's open screens by device, own a public `SimulatorContext` and `SimulatorScreens` for each Xcode and the remote screen connections, and stop them without shutting devices down. |
 | `DeviceScreen` | Keep one open screen's canvas controls current from its state, and send their actions to that screen's device. |
-| `SimulatorRuntime` | Load and validate private framework interfaces through ABIBridge. |
+| `NativeFrameworks` | Load private frameworks and validate what is loaded on one serial queue of its own, off every UI and control executor, and keep the process's one UI toolkit by making each check, load and record of it a single step. |
+| `SimulatorIORuntime` | Load one Xcode's CoreSimulator and audio interfaces, which reading and managing devices need and which choose no UI toolkit. |
+| `SimulatorPresentationRuntime` | Load the display, input and pasteboard interfaces of the UI toolkit that the process has, over a `SimulatorIORuntime`. |
+| `SimulatorScreenRouter`, `NativeInputPlan` | Connect a device's display with what the display itself needs, and select its native input and pasteboard transports from what the device is, never from whether a transport answered. |
+| `NativeInputActivation`, `SimulatorPasteboardRoute`, `DeviceOptionalServices` | Connect a device's optional services after its display opens and hand them over in place, stating how far each has come. |
 | `CoreSimulator` | Device-set access and simulator model data. |
-| `SimulatorContext`, `SimulatorScreen` | Expose the public Kit API for discovery, guest lifetime, and AppKit screen presentation. The manager uses these same screen lifetimes, with package-only hooks routing guest management to its backend. |
-| `SimulatorScreenHost` | Observe one Xcode's device sets and own its simulator sessions, presentation controllers, and resource cleanup. |
+| `SimulatorContext`, `SimulatorDeviceSession` | Expose the public Kit API for discovery, guest lifetime, and an open device's state and commands, with no presentation dependency. |
+| `SimulatorScreens`, `SimulatorScreen` | Expose the public UI API for AppKit screen presentation. Creating `SimulatorScreens` loads the process's UI toolkit and gives its context a `DeviceWindowPresenter`. The manager uses these same screen lifetimes, with package-only hooks routing guest management to its backend. |
+| `SimulatorScreenHost` | Observe one Xcode's device sets and own its simulator sessions and resource cleanup, drawing them through a `DevicePresenter` when it has one. |
 | `HostApplication` | Compose the renderer's application lifecycle, menus, manager requests, and ownership registration around a `SimulatorScreenHost`. |
 | `DeviceSession` | Device connection, input, pasteboard, audio, external-display state, and device operations. |
 | `DeviceWindowController` | Present the device and forward user actions. |
@@ -381,8 +386,27 @@ CoreDevice's full initialization is one `SharedTask`: nothing replaces it while 
 pending, and no caller's cancellation stops it. Each caller waits for at most
 `DeviceOperationLimit.coreDeviceInitialization`, and is told so when that passes. The
 delay notice stays until the initialization actually finishes, and whoever asks after
-that gets its result. A screen that could not wait keeps SimulatorKit's input for that
-connection, while the inventory observation asks again.
+that gets its result. A screen's input route that could not wait reports that failure, which the
+screen shows with a Retry, and keeps SimulatorKit's input in the meantime, while the inventory
+observation asks again.
+
+A device's screen opens with what the screen itself needs: its display and, for a Duo, the
+independent canvas that is its screen. Its native input and pasteboard follow from what the device
+is. Only a connected CoreDevice record that lacks a feature makes the device `unsupported`, and only
+then does SimulatorKit or SimPasteboardPlus serve it for good. A simulator's record can arrive late
+and lists no features until CoreDevice connects, so one `CoreDeviceRecordDiscovery` for each connection
+waits on CoreDevice's `deviceChanges` and `deviceInfoChanges` while the service stays `pending`, with
+no timer. A change of the list can replace the record, so it also moves the `deviceInfoChanges`
+subscription to what the list then holds. A Duo's screen waits for the record the same way, until
+`DeviceOperationLimit.coreDeviceRecord`.
+A transport that did not answer says nothing about the device, so it is `failed`: nothing else takes
+its place, the failure stays visible, and asking again asks the same transport. A retry while a device's
+channel holds a call is refused unsent, and the channel saying the call returned starts one more attempt.
+What connected but no display took up stops through its own ports, however late it answered.
+Native input activates on the open screen once the pointer and any button SimulatorKit holds are
+up, the touches first, because the guest drops SimulatorKit's touches and buttons once native
+keyboard or trackpad input starts. A 3D Touch screen keeps SimulatorKit's input throughout, as only
+its touches carry pressure.
 
 SimulatorKit's `SimDisplayView` is AppKit and stays on MainActor, though creating
 one waits on the device's I/O server. A device's file paths come from its set's path

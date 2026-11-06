@@ -1,4 +1,4 @@
-import NeoSimulatorDeviceIO
+@testable import NeoSimulatorDeviceIO
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Darwin
@@ -115,10 +115,10 @@ struct DeviceInventoryTests {
             #expect(info.fields.filter { knownFields[$0.key] != nil } == knownFields)
             #expect(info.fields["state"] == .string("Booted"))
             let failedInfo = await DeviceInspector(device: joined, simulatorXcodeURL: normal.ownerXcodeURL,
-                transport: .init(run: { _ in throw CLIError.io("info-fixture", "Catalog unavailable") })).info()
+                transport: .init(run: { _ in throw DeviceIOError.io("info-fixture", "Catalog unavailable") })).info()
             #expect(failedInfo.fields == knownFields)
             #expect(failedInfo.issues.count == 1)
-            #expect((failedInfo.issues.first?.error as? CLIError)?.identifier == "info-fixture")
+            #expect((failedInfo.issues.first?.error as? DeviceIOError)?.identifier == "info-fixture")
         }
         let cloneInfo = await DeviceInspector(device: joinedClone, simulatorXcodeURL: clone.ownerXcodeURL,
                                               transport: transport).info()
@@ -128,7 +128,7 @@ struct DeviceInventoryTests {
 
     @Test(arguments: [true, false])
     func sourceFailuresRetainSuccessfulDevicesAndOriginalError(_ failCoreDevice: Bool) async throws {
-        let sourceError = CLIError.io("inventory-fixture", "fixture query failed")
+        let sourceError = DeviceIOError.io("inventory-fixture", "fixture query failed")
         let snapshot = try await DeviceInventoryReader(readSimulators: {
             failCoreDevice
                 ? DeviceInventorySnapshot(devices: [.simulator(Self.simulator("simulator-udid"))], issues: [])
@@ -139,7 +139,7 @@ struct DeviceInventoryTests {
         }).read()
         let issue = try #require(snapshot.issues.first)
         #expect(snapshot.issues.count == 1)
-        #expect((issue.error as? CLIError)?.identifier == "inventory-fixture")
+        #expect((issue.error as? DeviceIOError)?.identifier == "inventory-fixture")
         if failCoreDevice {
             #expect(issue.source == .coreDevice)
             #expect(snapshot.devices.map(\.id) == [.simulator(udid: "simulator-udid", deviceSetPath: nil)])
@@ -265,7 +265,7 @@ struct DeviceInventoryTests {
         let newer = URL(fileURLWithPath: "/Applications/Xcode-New.app")
         let older = URL(fileURLWithPath: "/Applications/Xcode-Old.app")
         let snapshot = try await SimulatorInventoryReader(installations: [newer, older], testingDeviceSetPath: "/testing") { xcode, path in
-            if xcode == newer, path != nil { throw CLIError.io("testing-inventory", "fixture testing set unavailable") }
+            if xcode == newer, path != nil { throw DeviceIOError.io("testing-inventory", "fixture testing set unavailable") }
             if xcode == older, path == nil {
                 return Data(String(decoding: Self.simulatorJSON, as: UTF8.self).replacingOccurrences(
                     of: "\"name\":\"Unavailable\",\"state\":\"Shutdown\",\"isAvailable\":false",
@@ -278,7 +278,7 @@ struct DeviceInventoryTests {
         let issue = try #require(snapshot.issues.first)
         #expect(snapshot.issues.count == 1)
         #expect(issue.source == .simulators(xcodeURL: newer, deviceSetPath: "/testing"))
-        #expect((issue.error as? CLIError)?.identifier == "testing-inventory")
+        #expect((issue.error as? DeviceIOError)?.identifier == "testing-inventory")
         #expect(snapshot.devices.first { $0.id == .simulator(udid: "unavailable", deviceSetPath: "/testing") }?.isAvailable == false)
         #expect(snapshot.devices.first { $0.id == .simulator(udid: "unavailable", deviceSetPath: nil) }?.isAvailable == true)
         func catalogXcodeURL(_ identifier: String, _ path: String?) -> URL? {

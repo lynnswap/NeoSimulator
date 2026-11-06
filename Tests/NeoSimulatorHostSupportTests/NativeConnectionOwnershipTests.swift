@@ -2,8 +2,9 @@ import ABIBridge
 import AppKit
 import Dispatch
 import Foundation
-import NeoSimulatorDeviceIO
-import NeoSimulatorKit
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorPresentationAdapters
 import Synchronization
 import Testing
 
@@ -168,8 +169,8 @@ struct NativeConnectionOwnershipTests {
     }
 }
 
-private func waitUntil(sourceLocation: SourceLocation = #_sourceLocation,
-                       _ condition: @MainActor () async -> Bool) async throws {
+func waitUntil(sourceLocation: SourceLocation = #_sourceLocation,
+               _ condition: @MainActor () async -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(10)
     while await !condition() {
         try #require(ContinuousClock.now < deadline, "The expected state did not arrive.", sourceLocation: sourceLocation)

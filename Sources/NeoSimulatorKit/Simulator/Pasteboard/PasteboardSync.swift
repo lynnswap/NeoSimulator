@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 
 /// Coordinates app-wide pasteboard synchronization across all connected devices.
 /// No connection sends a device-originated copy on by itself: SimPasteboardPlus

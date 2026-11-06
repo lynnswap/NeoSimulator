@@ -1,7 +1,8 @@
-import NeoSimulatorDeviceIO
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
 import Observation
 
 struct SimulatorScreenRestoration: Equatable {

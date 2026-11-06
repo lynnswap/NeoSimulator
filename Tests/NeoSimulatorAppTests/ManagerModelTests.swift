@@ -1,14 +1,15 @@
-import NeoSimulatorDeviceIO
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
-@testable import NeoSimulatorApp
-@testable import NeoSimulatorService
 import AppKit
 import Foundation
+@testable import NeoSimulatorApp
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
+@testable import NeoSimulatorPresentationAdapters
+@testable import NeoSimulatorService
 import Observation
 import SwiftUI
-import Testing
 import Synchronization
+import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
@@ -4402,7 +4403,7 @@ struct ManagerModelTests {
         let first = try #require(await cleanupEvents.next())
         #expect(first.0 == targets[0].id)
         #expect(manager.managingDeviceIDs == Set(targets.map(\.id)))
-        first.1.resume(throwing: CLIError.io("cleanup-fixture", "Recording could not be saved"))
+        first.1.resume(throwing: HostOperationError.io("cleanup-fixture", "Recording could not be saved"))
         let second = try #require(await cleanupEvents.next())
         #expect(second.0 == targets[1].id)
         second.1.resume()

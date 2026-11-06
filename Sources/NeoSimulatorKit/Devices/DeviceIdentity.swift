@@ -67,7 +67,7 @@ public struct DeviceInventoryID: Hashable, Sendable, Codable {
     package var simulatorAddress: (identifier: String, deviceSetPath: String?) {
         get throws {
             guard case .simulator(let identifier, let path) = destination else {
-                throw CLIError.configuration("simulator-device", "Choose a simulator for this operation.")
+                throw DeviceDomainError.configuration("simulator-device", "Choose a simulator for this operation.")
             }
             return (identifier, path)
         }

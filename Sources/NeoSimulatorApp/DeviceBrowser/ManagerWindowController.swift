@@ -1,9 +1,11 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
-import SwiftUI
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
+import NeoSimulatorUI
 import Observation
 import ObservationBridge
+import SwiftUI
 
 @MainActor
 final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,

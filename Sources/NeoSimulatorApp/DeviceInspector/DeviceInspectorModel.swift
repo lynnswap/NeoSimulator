@@ -1,6 +1,7 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
 import Observation
 
 @MainActor @Observable

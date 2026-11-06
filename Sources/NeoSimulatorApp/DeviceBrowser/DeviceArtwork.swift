@@ -1,6 +1,7 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
 import Observation
 import SwiftUI
 import UniformTypeIdentifiers

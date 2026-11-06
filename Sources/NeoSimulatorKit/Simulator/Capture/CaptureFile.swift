@@ -36,11 +36,18 @@ package enum CaptureFile {
     /// Destinations and private files touched by a transfer, until its owner acknowledges completion.
     package final class Locations: Sendable {
         private let files = Mutex<Set<URL>>([])
+        package init() {}
         package var locations: [URL] { files.withLock { Array($0) } }
         fileprivate func insert(_ file: URL) { files.withLock { _ = $0.insert(file) } }
         fileprivate func remove(_ file: URL) { files.withLock { _ = $0.remove(file) } }
         package func clear() { files.withLock { $0.removeAll() } }
     }
+
+    /// Whether `work` ended before `deadline`. Only this wait ends then, and the work carries on.
+    package static func settles(_ work: Task<Void, Never>, before deadline: ContinuousClock.Instant) async -> Bool {
+        await work.ends(before: deadline)
+    }
+
     /// Screenshot filename in local time.
     package static func screenshotName(device: String, date: Date) -> String {
         name("Simulator Screenshot", device: device, date: date, extension: "png")

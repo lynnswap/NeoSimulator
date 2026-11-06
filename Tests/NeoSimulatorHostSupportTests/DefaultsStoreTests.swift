@@ -1,6 +1,7 @@
-@testable import NeoSimulatorKit
-@testable import NeoSimulatorHostSupport
 import Foundation
+@testable import NeoSimulatorDeviceIO
+@testable import NeoSimulatorHostSupport
+@testable import NeoSimulatorKit
 import Testing
 
 
@@ -71,7 +72,7 @@ struct DefaultsStoreTests {
         do {
             _ = try await store.readState()
             Issue.record("expected export failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "preference-read")
             #expect(error.category == .io)
         } catch {
@@ -87,7 +88,7 @@ struct DefaultsStoreTests {
         do {
             _ = try await store.readState()
             Issue.record("expected domain listing failure")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "preference-read")
             #expect(error.category == .io)
         } catch {
@@ -120,7 +121,7 @@ struct DefaultsStoreTests {
         do {
             _ = try await store.apply(.coreSimulator, from: .deviceHub)
             Issue.record("expected invalid preference type")
-        } catch let error as CLIError {
+        } catch let error as HostOperationError {
             #expect(error.identifier == "preference-value-type")
             #expect(error.category == .configuration)
         } catch {
@@ -134,7 +135,7 @@ struct DefaultsStoreTests {
         runner.failMutationNumbers = [2]
         let store = DefaultsStore(domains: runner)
 
-        await #expect(throws: CLIError.self) {
+        await #expect(throws: HostOperationError.self) {
             try await store.apply(.coreSimulator, from: .deviceHub)
         }
         #expect(runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)

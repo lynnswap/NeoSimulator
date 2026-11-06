@@ -1,4 +1,5 @@
-import AppKit
+import CoreGraphics
+import Foundation
 import NeoSimulatorDeviceIO
 import Observation
 import Synchronization
@@ -28,6 +29,21 @@ package struct DeviceCapabilities {
     /// Whether the guest runs Stage Manager, also on an external display
     /// (`DeviceSupportsEnhancedMultitasking`), as iPads from M1 do.
     package var supportsEnhancedMultitasking = false
+
+    package init(family: Family?, runtimeVersion: UInt32, supportsFeature: @escaping (String) -> Bool,
+                 controlsOrientation: Bool = true, hasFramebufferMask: Bool = false, screenCornerRadius: Double = 0,
+                 screenPointsPerInch: Double? = nil, hasUserInterfacePlugin: Bool = false,
+                 supportsEnhancedMultitasking: Bool = false) {
+        self.family = family
+        self.runtimeVersion = runtimeVersion
+        self.supportsFeature = supportsFeature
+        self.controlsOrientation = controlsOrientation
+        self.hasFramebufferMask = hasFramebufferMask
+        self.screenCornerRadius = screenCornerRadius
+        self.screenPointsPerInch = screenPointsPerInch
+        self.hasUserInterfacePlugin = hasUserInterfacePlugin
+        self.supportsEnhancedMultitasking = supportsEnhancedMultitasking
+    }
 
     package var isPhoneOrPad: Bool { family == .iPhone || family == .iPad }
     /// Vision displays have no bezel.
@@ -321,53 +337,6 @@ package struct DeviceLocationPreset {
     }
 }
 
-/// A physical device orientation, named as `devicectl` names it.
-package enum DeviceOrientation: String, CaseIterable {
-    case portrait, landscapeRight, portraitUpsideDown, landscapeLeft, faceUp, faceDown
-
-    /// Display rotation for an upright view of this orientation. Flat orientations keep the previous angle.
-    package var displayAngle: Double? {
-        switch self {
-        case .portrait: 0
-        case .landscapeLeft: 90
-        case .portraitUpsideDown: 180
-        case .landscapeRight: -90
-        case .faceUp, .faceDown: nil
-        }
-    }
-}
-
-/// The device's orientation and the display angle that follows it.
-package struct OrientationReading: Equatable {
-    package var physical: DeviceOrientation
-    /// The angle of the last upright orientation, kept while the device is flat.
-    package var displayAngle: Double
-
-    /// Reads the JSON output of `devicectl device orientation get`.
-    package init(devicectlOutput data: Data) throws {
-        struct Output: Decodable {
-            struct Result: Decodable {
-                var deviceOrientation: String
-                var deviceOrientationNonFlat: String
-            }
-            var result: Result
-        }
-        let result = try JSONDecoder().decode(Output.self, from: data).result
-        try self.init(physical: result.deviceOrientation, nonFlat: result.deviceOrientationNonFlat)
-    }
-
-    package init(physical: String, nonFlat: String) throws {
-        guard let upright = DeviceOrientation(rawValue: nonFlat),
-              let angle = upright.displayAngle else {
-            throw SimulatorError.operation("Unsupported orientation: \(nonFlat)")
-        }
-        // Before an orientation is set, devicectl reports `unknown` for the
-        // physical orientation; the device is then upright.
-        self.physical = DeviceOrientation(rawValue: physical) ?? upright
-        displayAngle = angle
-    }
-}
-
 /// Debug ▸ Graphics Quality Override, as the guest's
 /// `com.apple.UIKit.ForceGraphicsQuality` state numbers it.
 package enum GraphicsQuality: Int {
@@ -406,9 +375,9 @@ package enum FallResolution: UInt64 {
 package final class DeviceSession {
     package let device: AvailableDevice
     package let capabilities: DeviceCapabilities
-    @ObservationIgnored package let primaryDisplay: any SimulatorDisplay
-    @ObservationIgnored private var appDisplay: (any SimulatorDisplay)?
-    package var display: any SimulatorDisplay { appDisplay ?? primaryDisplay }
+    @ObservationIgnored package let primaryDisplay: any DeviceSessionDisplay
+    @ObservationIgnored private var appDisplay: (any DeviceSessionDisplay)?
+    package var display: any DeviceSessionDisplay { appDisplay ?? primaryDisplay }
     @ObservationIgnored package var onDisplayWillChange: (() -> Void)?
     @ObservationIgnored package var onDisplayChange: (() -> Void)?
     /// Lets the presentation owner capture its geometry before applying a rotation synchronously.
@@ -429,6 +398,10 @@ package final class DeviceSession {
     package private(set) var appResizeEligibility = AppResizeEligibility.unavailable
     package private(set) var isStartingAppResize = false
     package private(set) var appResizeGeometry: AppResizeGeometry?
+    /// The smallest size the guest takes for the resizing app, while one is resizing.
+    package var appResizeMinimumSize: CGSize? { appResizeGeometry?.minimumSize }
+    /// The corner radius the guest draws the resizing app's scene with, while one is resizing.
+    package var appResizeCornerRadius: CGFloat? { appResizeGeometry?.cornerRadius }
     package private(set) var isResizingApp = false
     package var canResizeApp: Bool {
         canPerformToolOperation && recording == nil && recordingStart == nil && supportsAppResize
@@ -457,13 +430,13 @@ package final class DeviceSession {
     @ObservationIgnored private let openLog: (URL) async throws -> Void
     /// The Mac pasteboard that Get Pasteboard replaces and Send Pasteboard
     /// sends, or nil for the general pasteboard.
-    @ObservationIgnored private let hostPasteboard: NSPasteboard?
     /// Edit ▸ Automatically Sync Pasteboard, or nil when the session never
     /// synchronizes.
     @ObservationIgnored private let pasteboardSync: PasteboardSync?
     /// The device's CoreDevice pasteboard, which carries every transfer when present; otherwise the display's
     /// SimPasteboardPlus connection does.
-    @ObservationIgnored private let pasteboardTransport: (any PasteboardTransport)?
+    /// How far the device's optional services have come; the display does not wait for them.
+    package let optionalServices: DeviceOptionalServices
     /// The device's pasteboard connection, from the first transfer, or while
     /// synchronizing, until the device closes it or the session disconnects.
     @ObservationIgnored private var pasteboardConnection: (any SimulatorPasteboard)?
@@ -521,14 +494,13 @@ package final class DeviceSession {
 
     /// The pasteboard is untouched until a transfer or synchronization starts.
     /// `externalScreenTimeout` defaults to the host's wait for the primary screen.
-    package init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any SimulatorDisplay,
+    package init(device: AvailableDevice, capabilities: DeviceCapabilities, display: any DeviceSessionDisplay,
          tools: DeviceTools, model: DeviceModel? = nil, recordings: RecordingStore = RecordingStore(),
          recordingProcess: ((URL, DeviceTools.ScreenMask) -> Process)? = nil,
-         openLog: @escaping (URL) async throws -> Void = DeviceSession.openInConsole,
+         openLog: @escaping (URL) async throws -> Void = { _ in throw SimulatorError.unavailable("This host cannot show a log.") },
          preferences: any PreferenceStore = HostPreferences.defaults,
-         hostKeyboardLanguage: @escaping @MainActor () -> String? = HostKeyboard.language,
-         pasteboard: NSPasteboard? = nil, pasteboardSync: PasteboardSync? = nil,
-         pasteboardTransport: (any PasteboardTransport)? = nil,
+         hostKeyboardLanguage: @escaping @MainActor () -> String? = { nil },
+         pasteboardSync: PasteboardSync? = nil, optionalServices: DeviceOptionalServices = DeviceOptionalServices(),
          externalDisplayChanges: ExternalDisplayChanges = ExternalDisplayChanges(),
          externalScreenTimeout: Duration = .seconds(10),
          appResizeTransport: (@MainActor () async throws -> (any AppResizeTransport)?)? = nil) {
@@ -542,9 +514,8 @@ package final class DeviceSession {
         self.model = model
         self.preferences = preferences
         self.hostKeyboardLanguage = hostKeyboardLanguage
-        hostPasteboard = pasteboard
         self.pasteboardSync = pasteboardSync
-        self.pasteboardTransport = pasteboardTransport
+        self.optionalServices = optionalServices
         self.recordings = recordings
         let codec: DeviceTools.VideoCodec = capabilities.family == .vision ? .hevc : .h264
         if let recordingProcess { makeRecordingProcess = { url, mask, _ in recordingProcess(url, mask) } }
@@ -604,7 +575,7 @@ package final class DeviceSession {
         isStartingAppResize = true
         resizeStart = Task { [weak self, primaryDisplay] in
             var lease: (any AppResizeSession)?
-            var display: (any SimulatorDisplay)?
+            var display: (any DeviceSessionDisplay)?
             do {
                 let created = try await resizeTransport.start(size: size, cornerRadius: 0)
                 lease = created
@@ -1184,7 +1155,9 @@ package final class DeviceSession {
                 guard !isDisconnected else { break }
                 let state = { (name: String) in notifications.contains(name) ? reading.notifications[name] == 1 : nil }
                 changed = model.update(biometricEnrolled: state(Self.biometricEnrollment), showsStandBy: state(Self.standBy),
-                                       debugOptions: reading.debugOptions) || changed
+                                       debugOptions: Dictionary(uniqueKeysWithValues: reading.debugOptions.compactMap { option, isOn in
+                                           CADebugOption(rawValue: option).map { ($0, isOn) }
+                                       })) || changed
             } catch where error.isCancellation {
                 break
             } catch {
@@ -1241,14 +1214,6 @@ package final class DeviceSession {
             throw SimulatorError.operation("The device has no system log at \(log.path).")
         }
         try await openLog(log)
-    }
-
-    package static func openInConsole(_ log: URL) async throws {
-        guard let console = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
-            throw SimulatorError.unavailable("Console is not installed.")
-        }
-        _ = try await NSWorkspace.shared.open([log], withApplicationAt: console,
-                                              configuration: NSWorkspace.OpenConfiguration())
     }
 
     /// Writes the guest's memory-warning trigger file and reports write failures.
@@ -1410,7 +1375,7 @@ package final class DeviceSession {
     /// Sends changes received from another device without echoing this device's last pasteboard back.
     package func sendSynchronizedPasteboard() {
         guard let pasteboardConnection else { return }
-        guard (hostPasteboard ?? .general).changeCount != lastReceivedGeneration else {
+        guard display.hostPasteboardChangeCount != lastReceivedGeneration else {
             hostLog("The Mac pasteboard still holds the pasteboard of \(device.name); it is not sent back")
             return
         }
@@ -1444,7 +1409,6 @@ package final class DeviceSession {
 
     /// A connection that arrives after the session ended has no owner left, so it is let go here.
     private func connectPasteboard() async throws -> any SimulatorPasteboard {
-        let pasteboard = hostPasteboard ?? .general
         pasteboardConnectionNumber += 1
         let number = pasteboardConnectionNumber
         isPasteboardActive = false
@@ -1453,14 +1417,9 @@ package final class DeviceSession {
             self.handlePasteboard(event)
         }
         let connection: any SimulatorPasteboard
-        if let pasteboardTransport {
-            connection = NativePasteboardConnection(transport: pasteboardTransport, managing: pasteboard, sync: pasteboardSync,
-                                                    events: events)
-        } else {
-            do { connection = try await display.connectPasteboard(pasteboard, events: events) } catch {
-                closePasteboard()
-                throw error
-            }
+        do { connection = try await display.connectPasteboard(sync: pasteboardSync, events: events) } catch {
+            closePasteboard()
+            throw error
         }
         guard !isDisconnected else {
             connection.disconnect()
@@ -1619,6 +1578,10 @@ package final class DeviceSession {
             synchronizeAudioRoute(in: .input, failure: failure)
             synchronizeAudioRoute(in: .output, failure: failure)
         }
+    }
+
+    package func applyChosenAudioRoute(_ choice: AudioRouteChoice, failure: @escaping @MainActor (Error) -> Void) {
+        applyChosenAudioRoute(in: choice.scope, failure: failure)
     }
 
     /// An explicit app-menu command applies to every window and becomes that device's saved choice.
@@ -1818,7 +1781,7 @@ package final class DeviceSession {
     }
 
     /// A display of the external display for its window.
-    package func makeExternalDisplay() async throws -> any SimulatorDisplay {
+    package func makeExternalDisplay() async throws -> any DeviceSessionDisplay {
         guard let externalScreenConnection else { throw SimulatorError.unavailable("The external display is not connected.") }
         return try await externalScreenConnection.makeDisplay()
     }

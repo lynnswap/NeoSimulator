@@ -1,4 +1,5 @@
 import Foundation
+import NeoSimulatorDeviceIO
 
 public enum DeviceAppearance: String, CaseIterable, Sendable {
     case light, dark

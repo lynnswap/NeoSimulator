@@ -1,5 +1,6 @@
-import NeoSimulatorKit
 import AppKit
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 
 package struct RendererOwnerIdentity: Equatable, Sendable {
     package let processIdentifier: Int32
@@ -13,7 +14,7 @@ package struct RendererOwnerIdentity: Equatable, Sendable {
     @MainActor package static func current() throws -> Self {
         let application = NSRunningApplication.current
         guard let launchDate = application.launchDate else {
-            throw CLIError.unavailable("renderer-owner", "The manager's launch identity could not be read.")
+            throw HostOperationError.unavailable("renderer-owner", "The manager's launch identity could not be read.")
         }
         return Self(processIdentifier: application.processIdentifier, launchDate: launchDate)
     }

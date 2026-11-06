@@ -1,5 +1,6 @@
-import NeoSimulatorKit
 import Foundation
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
 
 package struct DeviceReport: Equatable, Sendable, Identifiable {
     package struct ID: Hashable, Sendable {

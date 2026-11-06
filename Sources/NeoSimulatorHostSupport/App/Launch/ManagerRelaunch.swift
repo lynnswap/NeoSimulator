@@ -1,7 +1,8 @@
-import NeoSimulatorDeviceIO
-import NeoSimulatorKit
 import AppKit
 import Darwin
+import NeoSimulatorDeviceIO
+import NeoSimulatorKit
+import NeoSimulatorUI
 import Synchronization
 
 /// The bundled helper waits for the old manager to exit before asking Launch Services to reopen it.
