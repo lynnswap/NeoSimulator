@@ -41,7 +41,7 @@ package final class CoreDeviceMediaStreamTransport: RemoteScreenTransport {
         self.input = input
         capabilityObservation = RemoteScreenInputCapabilityObservation(source: try await CoreDeviceInputCapabilitySource(remote: remote, dedicatedDisplay: true),
             read: { try input.capabilities() }, invalidateInputs: { input.discardInputs(for: $0) })
-        bindings = try await MediaStreamBindings(runtime: remote.runtime)
+        bindings = try await remote.runtime.prepare { try await MediaStreamBindings(runtime: $0) }
         displayGeometry = try await CoreDeviceDisplayGeometry(remote: remote, displayUniqueID: displayUniqueID)
         framebuffer.autoresizingMask = [.width, .height]
         // The native stream draws into its own layer; the framebuffer's layer applies the display geometry.

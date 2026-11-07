@@ -20,7 +20,7 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
             do {
                 try await load()
                 stage = .preparingBindings
-                try await prepare()
+                try await ABIRuntime.shared.prepare { _ in try await prepare() }
                 return Self(surface: surface, stage: stage, status: .prepared, detail: nil, unverified: unverified)
             } catch {
                 let unavailable: Bool

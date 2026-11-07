@@ -268,7 +268,7 @@ package final class CoreDeviceKeyboardTransport: NativeKeyboardTransport {
     private let createService: @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService
 
     package init(runtime: ABIRuntime, createService: @escaping @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService) async throws {
-        bindings = try await NativeKeyboardBindings(runtime: runtime)
+        bindings = try await runtime.prepare { try await NativeKeyboardBindings(runtime: $0) }
         self.createService = createService
     }
 

@@ -61,7 +61,7 @@ package final class CoreDeviceScreenInput {
         guard let displayUniqueID else { return }
         let reports: CoreDeviceDigitizerReports
         if let existing = digitizerReports { reports = existing }
-        else { reports = try await CoreDeviceDigitizerReports(runtime: remote.runtime) }
+        else { reports = try await remote.runtime.prepare { try await CoreDeviceDigitizerReports(runtime: $0) } }
         digitizerReports = reports
         let descriptor = try await CoreDeviceHIDService.touchscreenDescriptor(displayID: identifier, uniqueID: displayUniqueID,
                                                                              runtime: remote.runtime)
@@ -796,7 +796,7 @@ package final class CoreDeviceTrackpadTransport: NativeTrackpadTransport {
     private let createService: @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService
 
     package init(runtime: ABIRuntime, createService: @escaping @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService) async throws {
-        bindings = try await NativeTrackpadBindings(runtime: runtime)
+        bindings = try await runtime.prepare { try await NativeTrackpadBindings(runtime: $0) }
         self.runtime = runtime
         self.createService = createService
     }

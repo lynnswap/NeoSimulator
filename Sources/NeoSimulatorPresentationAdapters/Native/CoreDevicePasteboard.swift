@@ -189,7 +189,8 @@ package final class CoreDevicePasteboardTransport: PasteboardTransport {
 
     /// The pasteboard of a simulator whose CoreDevice record has said it has one.
     package static func make(remote: CoreDeviceRemoteScreenDevice) async throws -> CoreDevicePasteboardTransport {
-        try await CoreDevicePasteboardTransport(remote: remote, bindings: Bindings(runtime: remote.runtime))
+        let bindings = try await remote.runtime.prepare { try await Bindings(runtime: $0) }
+        return CoreDevicePasteboardTransport(remote: remote, bindings: bindings)
     }
 
     private init(remote: CoreDeviceRemoteScreenDevice, bindings: Bindings) {

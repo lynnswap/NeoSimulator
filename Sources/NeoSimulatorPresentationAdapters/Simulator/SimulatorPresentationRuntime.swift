@@ -59,9 +59,12 @@ package final class SimulatorPresentationRuntime {
         }
         try await PortableObservationTracking.prepare()
         let runtime = ABIRuntime.shared
-        display = try await SimulatorDisplayInterface(runtime: runtime)
-        input = try await SimulatorInputInterface(runtime: runtime)
-        pasteboard = try await SimulatorPasteboardInterface(runtime: runtime)
+        (display, input, pasteboard) = try await runtime.prepare { runtime in
+            let display = try await SimulatorDisplayInterface(runtime: runtime)
+            let input = try await SimulatorInputInterface(runtime: runtime)
+            let pasteboard = try await SimulatorPasteboardInterface(runtime: runtime)
+            return (display, input, pasteboard)
+        }
         try await validateLoadedImages()
     }
 
@@ -75,7 +78,9 @@ package final class SimulatorPresentationRuntime {
     /// The SimulatorKit members that move a digitizer's touches to a device's native touchscreen, prepared once for
     /// the process's SimulatorKit. A failure to prepare them stays for the process.
     package func touchInterface() async throws -> SimulatorTouchInterface {
-        let preparation = Self.touchPreparation ?? Task { try await SimulatorTouchInterface(runtime: .shared) }
+        let preparation = Self.touchPreparation ?? Task {
+            try await ABIRuntime.shared.prepare { try await SimulatorTouchInterface(runtime: $0) }
+        }
         Self.touchPreparation = preparation
         return try await CoreDeviceRuntime.preparedValue(of: preparation)
     }

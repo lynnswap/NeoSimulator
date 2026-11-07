@@ -52,7 +52,7 @@ package struct SimulatorAudioInterface {
     /// Loads CoreSimulator, which re-exports CoreSimDeviceIO, and binds its port.
     package static func load() async throws -> SimulatorAudioInterface {
         _ = try await CoreSimulatorInterface.load()
-        return try await SimulatorAudioInterface(runtime: .shared)
+        return try await ABIRuntime.shared.prepare { try await SimulatorAudioInterface(runtime: $0) }
     }
 
     /// Connects to the device's audio route port, which a booted device that

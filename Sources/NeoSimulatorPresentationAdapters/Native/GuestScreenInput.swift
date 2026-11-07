@@ -87,7 +87,7 @@ private final class GuestContactInput {
     init(guest: SimulatorGuestHID) async throws {
         connection = try await guest.connection(to: CoreDeviceHIDService.universalHIDFeature)
         codec = guest.codec
-        reports = try await CoreDeviceDigitizerReports(runtime: .shared)
+        reports = try await ABIRuntime.shared.prepare { try await CoreDeviceDigitizerReports(runtime: $0) }
         let idType = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.HIDServiceID")))
         digitizerID = try await unsafe idType.resolve(.swift(.staticGetter("mainTouchscreen",
             as: (() -> NativeSwiftValue).self, valueABIs: [idType: try .opaque(named: idType.name)]))).unsafeInvoke()
