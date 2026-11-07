@@ -38,7 +38,7 @@ public struct DeviceApplication: Equatable, Sendable, Identifiable {
     /// The application's bundle identifier.
     public var id: String { bundleIdentifier }
     /// The application's bundle identifier.
-    public let bundleIdentifier: String
+    public var bundleIdentifier: String
     /// The application's display name, or its bundle identifier when the device reports no name.
     public var name: String
     /// The application's version, if the device reports it.
@@ -72,15 +72,15 @@ public enum DeviceProfileKind: String, CaseIterable, Sendable {
 /// A profile installed on a device, as the device listed it.
 public struct DeviceProfile: Equatable, Sendable, Identifiable {
     /// The payload identifier for configuration profiles, or UUID for provisioning profiles.
-    public let identifier: String
+    public var identifier: String
     /// The kind of profile.
-    public let kind: DeviceProfileKind
+    public var kind: DeviceProfileKind
     /// A value that is unique across both kinds of profile.
     public var id: String { "\(kind.rawValue):\(identifier)" }
     /// The profile's name, or its identifier when the device reports no name.
     public var name: String
     /// The profile's UUID, if the device reports it.
-    public let uuid: String?
+    public var uuid: String?
     /// Whether the device reports that this profile cannot be removed.
     public var isRemovalDisallowed: Bool { metadata["removalDisallowed"]?.boolean == true }
     /// Metadata actually returned by devicectl. Installed configuration payload bodies and
