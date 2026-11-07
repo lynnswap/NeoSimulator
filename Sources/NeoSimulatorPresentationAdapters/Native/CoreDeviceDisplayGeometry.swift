@@ -191,11 +191,9 @@ package final class NativeDeviceCanvas {
     package var onSizeChange: (() -> Void)?
 
     package var inputView: NSView {
-        func find(in view: NSView) -> NSView? {
-            if NSStringFromClass(type(of: view)) == "CoreDevicePopDeviceKitExtension.RealityRendererHostView" { return view }
-            return view.subviews.lazy.compactMap { find(in: $0) }.first
+        hosting.inputView {
+            NSStringFromClass(type(of: $0)) == "CoreDevicePopDeviceKitExtension.RealityRendererHostView"
         }
-        return find(in: hosting) ?? hosting
     }
 
     package struct Bindings {
@@ -418,6 +416,18 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     package override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
     package required init(rootView: AnyView) { content = rootView; super.init(rootView: rootView) }
     package required init?(coder: NSCoder) { nil }
+    /// Focus can be requested immediately after attachment, before SwiftUI creates the replacement input views.
+    package func inputView(where matches: (NSView) -> Bool) -> NSView {
+        layoutSubtreeIfNeeded()
+        func find(in view: NSView) -> NSView? {
+            if matches(view) { return view }
+            for child in view.subviews {
+                if let input = find(in: child) { return input }
+            }
+            return nil
+        }
+        return find(in: self) ?? self
+    }
     package override func layout() {
         super.layout()
         projection?.invalidate()
@@ -439,11 +449,16 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
             }
         }
         projection?.invalidate()
-        // Sidebar navigation temporarily detaches the view. Keep its scene for the return to the same window;
-        // DeviceKit's screen-layer projection needs a new graph only when the hosting window changes.
-        guard let content, let window, hostingWindow !== window else { return }
+        // DeviceKit unregisters the Pop canvas's input surfaces when it leaves a window. A retained SwiftUI graph
+        // does not register them on return, so every new attachment needs fresh representable views.
+        guard let window else {
+            hostingWindow = nil
+            rootView = AnyView(EmptyView())
+            return
+        }
+        guard let content, hostingWindow !== window else { return }
         hostingWindow = window
-        rootView = AnyView(content.id(window.windowNumber))
+        rootView = AnyView(content.id(UUID()))
     }
 }
 
@@ -494,7 +509,9 @@ package final class NativeCanvasProjection {
             }
             if frameMargin == nil { loadFrameMargin() }
         }
-        guard let screen = hosting.window?.screen else { return }
+        // A rebuilding graph has no screen layers yet. Keep its last frame instead of briefly fitting the full
+        // rendering surface; the new layers will supply their geometry when they arrive.
+        guard !current.isEmpty, let screen = hosting.window?.screen else { return }
         // Keep the complete canvas while its bezel is unknown. Frameless displays need no artwork,
         // and point conversion is independent of either measurement.
         let controlMargin = Self.hoverControlMargin(in: hosting)

@@ -52,18 +52,19 @@ func noOtherHostIsDisplaying() -> Bool { HostConflictMonitor().conflictingHostNa
 
 @Suite(.serialized) @MainActor
 struct InputFocusTests {
-    @Test func nativeCanvasRetainsItsViewStateWhenReturningToTheSameWindow() throws {
+    @Test func nativeCanvasRecreatesInputSurfacesWhenReturningToAWindow() throws {
         final class Creations { var count = 0 }
-        final class Identity: ObservableObject {
-            init(_ creations: Creations) { creations.count += 1 }
+        final class InputView: NSView {
+            override var acceptsFirstResponder: Bool { true }
         }
-        struct Content: View {
-            @StateObject var identity: Identity
-            init(_ creations: Creations) { _identity = StateObject(wrappedValue: Identity(creations)) }
-            var body: some View {
-                let _ = identity
-                Color.clear.frame(width: 200, height: 300)
+        struct Content: NSViewRepresentable {
+            let creations: Creations
+            init(_ creations: Creations) { self.creations = creations }
+            func makeNSView(context: Context) -> NSView {
+                creations.count += 1
+                return InputView(frame: NSRect(x: 0, y: 0, width: 200, height: 300))
             }
+            func updateNSView(_ nsView: NSView, context: Context) {}
         }
         let creations = Creations()
         let host = NativeCanvasHostingView(rootView: AnyView(Content(creations)))
@@ -80,13 +81,17 @@ struct InputFocusTests {
         #expect(initial > 0)
         window.contentView = NSView()
         window.contentView = host
-        _ = host.fittingSize
-        host.layoutSubtreeIfNeeded()
-        #expect(creations.count == initial)
-        other.contentView = host
-        _ = host.fittingSize
-        host.layoutSubtreeIfNeeded()
+        // The controller focuses input immediately on reattachment, before another layout pass.
+        let input = host.inputView { $0 is InputView }
+        #expect(input is InputView)
+        #expect(window.makeFirstResponder(input) && window.firstResponder === input)
         #expect(creations.count > initial)
+        let returned = creations.count
+        other.contentView = host
+        let moved = host.inputView { $0 is InputView }
+        #expect(moved !== input && moved is InputView)
+        #expect(other.makeFirstResponder(moved) && other.firstResponder === moved)
+        #expect(creations.count > returned)
     }
 
     @Test func simulatorKeyboardKeepsCapturedReleasesWithTheirOriginalInput() throws {
