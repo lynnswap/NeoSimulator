@@ -291,7 +291,7 @@ package final class NativeDeviceCanvas {
             captureDisplay: captureDisplay, values: [base, activation, shown, hidden] + bindings.environmentValues)
     }
 
-    /// Reserve the installed artwork's bezel and button extents around each projected screen.
+    /// Reserve the installed artwork's bezel and physical buttons around each projected screen.
     /// Zero means no chrome is declared. Nil preserves the full canvas if declared artwork cannot be measured.
     private static func frameMargin(remote: CoreDeviceRemoteScreenDevice) async throws -> CGFloat? {
         let bindings = try await CoreDeviceDisplayGeometry.Bindings(runtime: remote.runtime)
@@ -497,7 +497,9 @@ package final class NativeCanvasProjection {
         guard let screen = hosting.window?.screen else { return }
         // Keep the complete canvas while its bezel is unknown. Frameless displays need no artwork,
         // and point conversion is independent of either measurement.
-        let viewport = Self.viewport(for: current, frameMargin: frameMargin, showsChrome: presentation.showsChrome)
+        let controlMargin = Self.hoverControlMargin(in: hosting)
+        let viewport = Self.viewport(for: current, frameMargin: frameMargin,
+            controlMargin: controlMargin, showsChrome: presentation.showsChrome)
         let pointScale = pointsPerInch.map { $0 / Self.hostDensity(on: screen) } ?? 1
         if let previous = presentation.viewport, let viewport,
            abs(viewport.minX - previous.minX) <= 0.25, abs(viewport.minY - previous.minY) <= 0.25,
@@ -526,7 +528,8 @@ package final class NativeCanvasProjection {
     }
 
     /// Coordinates are relative to the rendering surface's center, independent of SwiftUI's layout timing.
-    package static func viewport(for layers: [CALayer], frameMargin: CGFloat?, showsChrome: Bool = true) -> CGRect? {
+    package static func viewport(for layers: [CALayer], frameMargin: CGFloat?,
+                                 controlMargin: CGFloat = 0, showsChrome: Bool = true) -> CGRect? {
         guard let margin = showsChrome ? frameMargin : 0 else { return nil }
         var result = CGRect.null
         for layer in layers where !layer.isHidden {
@@ -537,7 +540,30 @@ package final class NativeCanvasProjection {
                   projected.width.isFinite, projected.height.isFinite else { continue }
             result = result.union(projected)
         }
-        return result.isNull ? nil : result
+        guard !result.isNull else { return nil }
+        let clearance = showsChrome ? controlMargin : 0
+        return result.insetBy(dx: -clearance, dy: -clearance)
+    }
+
+    private static func hoverControlMargin(in view: NSView) -> CGFloat {
+        if NSStringFromClass(type(of: view)) == "CoreDevicePopDeviceKitExtension.RealityRendererHostView" {
+            return hoverControlMargin(renderingHeight: view.bounds.height)
+        }
+        return view.subviews.map { hoverControlMargin(in: $0) }.max() ?? 0
+    }
+
+    /// The pop renderer sizes its icons against the full rendering surface, not the cropped screens.
+    /// Reserve its outward gap, reveal travel, occlusion clearance and hit radius even while hidden.
+    /// Reading animated icon bounds would resize the canvas on hover and miss uninitialized icons.
+    package static func hoverControlMargin(renderingHeight: CGFloat) -> CGFloat {
+        let diameter = renderingHeight * 0.013
+        let radius = diameter / 2
+        let gap = diameter * (0.4 + 0.15)
+        let revealTravel = diameter * 0.4
+        let occlusionClearance = radius * 2
+        let hitRadius = radius * 1.8
+        let revealHalo = diameter * 0.15
+        return radius + gap + revealTravel + occlusionClearance + hitRadius + revealHalo
     }
 
     private static func hostDensity(on screen: NSScreen?) -> CGFloat {
