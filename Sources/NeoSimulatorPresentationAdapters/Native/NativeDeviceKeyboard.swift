@@ -327,7 +327,7 @@ private final class CoreDeviceKeyboardService: NativeKeyboardService {
             self.service = service
             Self.logger.log("Created the guest keyboard service for \(self.source, privacy: .public): \(self.identity.description, privacy: .public)")
         }
-        for report in reports { try service.send(report) }
+        for report in reports { try service.send(report.value) }
     }
 
     func stop() async throws { try await service?.stop() }

@@ -260,9 +260,8 @@ package final class CoreDeviceScreenInput {
     }
 }
 
-/// Sends gestures through a guest HID service for each originating Mac trackpad.
-/// Pointer movement and the first gesture event position the service's hidden pointer.
-/// Events without a Mac HID origin, such as synthesized events, are ignored.
+/// Routes gestures to their Mac trackpad's guest service and senderless pointer movements to the
+/// shared touchscreen gesture service. The guest needs both services to target a scroll.
 @MainActor
 package final class NativeTrackpadGestures {
     /// A trackpad's guest service, with the observer that keeps that trackpad's gesture state.
@@ -270,7 +269,7 @@ package final class NativeTrackpadGestures {
 
     private let makeTransport: @MainActor () async throws -> any NativeTrackpadTransport
     private var transport: (any NativeTrackpadTransport)?
-    /// Guest services by the registry ID of the Mac HID service they carry.
+    /// Guest services by Mac sender ID; zero is the shared touchscreen gesture service.
     private var services: [UInt64: Service] = [:]
     /// Senders that are not Mac HID services, such as other processes' event sources.
     private var unknownSenders: Set<UInt64> = []
@@ -293,11 +292,10 @@ package final class NativeTrackpadGestures {
     }
 
     /// Sends a scroll or pinch step to its originating trackpad's service.
-    /// The first step positions the pointer using `coordinateTransform`, if supplied;
-    /// later steps retain that position.
+    /// The first step positions the shared pointer using `coordinateTransform`, if supplied.
     package func send(_ event: NSEvent, coordinateTransform: CGAffineTransform?, to service: Service) throws {
         // Panning, zooming, or turning the canvas moves the screen under a still pointer without a mouse movement, so a
-        // gesture first moves the trackpad's pointer to what the screen now shows under it.
+        // gesture first moves the shared pointer to what the screen now shows under it.
         if let coordinateTransform, let movement = try Self.pointerMovement(beginning: event) {
             try movePointer(movement, coordinateTransform: coordinateTransform, on: service)
         }
@@ -306,26 +304,31 @@ package final class NativeTrackpadGestures {
         guard !reports.isEmpty else {
             throw RemoteScreenError.unavailable("remote-gesture-report", "UniversalHIDKit did not translate the gesture.")
         }
-        for report in reports { try service.service.send(report) }
+        try send(reports)
     }
 
-    /// Moves the hidden pointer of the service of the Mac HID service that sent `event`, a mouse movement, to where
-    /// `coordinateTransform` maps the event's window location, so that the service's later gestures happen there.
+    /// Moves the hidden pointer to the displayed location, including senderless movements through the shared service.
     package func movePointer(_ event: NSEvent, coordinateTransform: CGAffineTransform) async throws {
-        // Device Hub moves a shared touchscreen gesture service's pointer for a movement that no Mac HID service sent;
-        // here such a movement reaches no service.
         guard let service = try await service(sending: event) else { return }
         try movePointer(event, coordinateTransform: coordinateTransform, on: service)
     }
 
-    /// Moves `service`'s hidden pointer, as `movePointer(_:coordinateTransform:)` does.
+    /// Translates a movement with the originating observer and routes it to the report's service.
     package func movePointer(_ event: NSEvent, coordinateTransform: CGAffineTransform, on service: Service) throws {
-        for report in try service.translator.reports(for: event, coordinateTransform: coordinateTransform) {
-            try service.service.send(report)
+        try send(service.translator.reports(for: event, coordinateTransform: coordinateTransform))
+    }
+
+    private func send(_ reports: [CoreDeviceEventReports.Report]) throws {
+        for report in reports {
+            guard let target = services[report.senderID] else {
+                throw RemoteScreenError.unavailable("remote-gesture-service", "The event report has no guest HID service.")
+            }
+            try target.service.send(report.value)
         }
     }
 
-    /// The service of the Mac HID service that sent `event`, created for its first event, or nil when no Mac HID service sent it.
+    /// Prepares the event's service and its shared pointer before any report is sent.
+    /// A senderless mouse movement uses only the shared service; a senderless gesture is ignored.
     package func service(sending event: NSEvent) async throws -> Service? {
         guard !isStopped else { throw RemoteScreenError.unavailable("remote-gesture-input", "The device's gesture input has stopped.") }
         let generation = self.generation
@@ -336,7 +339,15 @@ package final class NativeTrackpadGestures {
             self.transport = transport
         }
         let sender = try transport.sender(of: event)
-        guard sender != 0, !unknownSenders.contains(sender) else { return nil }
+        guard sender != 0 || event.type == .mouseMoved, !unknownSenders.contains(sender) else { return nil }
+        guard let service = try await prepareService(sender: sender, transport: transport, generation: generation) else { return nil }
+        if sender != 0 {
+            _ = try await prepareService(sender: 0, transport: transport, generation: generation)
+        }
+        return service
+    }
+
+    private func prepareService(sender: UInt64, transport: any NativeTrackpadTransport, generation: Int) async throws -> Service? {
         if let existing = services[sender] { return existing }
         guard let created = try await transport.connect(sender: sender) else {
             unknownSenders.insert(sender)
@@ -589,7 +600,8 @@ extension CoreDeviceScreenInput: NativeScreenInputTransport {}
 package protocol NativeTrackpadTransport: AnyObject {
     /// The registry ID of the Mac HID service that produced the event, or 0 for a synthesized event.
     func sender(of event: NSEvent) throws -> UInt64
-    /// Creates a guest service described by the Mac HID service `sender`, or returns nil when no such service exists.
+    /// Creates the shared touchscreen gesture service for zero, or the Mac HID service's guest service otherwise.
+    /// Returns nil when a nonzero sender has no Mac HID service.
     func connect(sender: UInt64) async throws -> NativeTrackpadGestures.Service?
 }
 
@@ -597,11 +609,13 @@ package protocol NativeTrackpadTransport: AnyObject {
 package final class CoreDeviceTrackpadTransport: NativeTrackpadTransport {
     private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Trackpad")
     private let bindings: NativeTrackpadBindings
+    private let runtime: ABIRuntime
     /// Creates the guest service that a CoreDevice `HIDServiceDescriptor` describes.
     private let createService: @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService
 
     package init(runtime: ABIRuntime, createService: @escaping @MainActor (NativeSwiftValue) async throws -> CoreDeviceHIDService) async throws {
         bindings = try await NativeTrackpadBindings(runtime: runtime)
+        self.runtime = runtime
         self.createService = createService
     }
 
@@ -612,6 +626,11 @@ package final class CoreDeviceTrackpadTransport: NativeTrackpadTransport {
     package func sender(of event: NSEvent) throws -> UInt64 { try bindings.lookup.sender(of: event) }
 
     package func connect(sender: UInt64) async throws -> NativeTrackpadGestures.Service? {
+        if sender == 0 {
+            let descriptor = try await CoreDeviceHIDService.touchscreenGestureDescriptor(runtime: runtime)
+            let translator = try bindings.makeTranslator()
+            return (try await createService(descriptor), translator)
+        }
         let source = "Mac HID service 0x\(String(sender, radix: 16))"
         guard let properties = try bindings.lookup.properties(ofHIDService: sender) else {
             Self.logger.error("The gestures of \(source, privacy: .public) reach no guest service: the Mac has no such HID service")

@@ -90,24 +90,30 @@ package struct CoreDeviceEventReports {
     package static let systemUniversalHIDURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHID.framework/Versions/A/UniversalHID")
     package static let universalHIDKitURL = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/UniversalHIDKit.framework/Versions/A/UniversalHIDKit")
 
+    package struct Report {
+        package let value: NativeSwiftValue
+        /// Zero denotes the shared touchscreen gesture service; other values identify Mac HID services.
+        package let senderID: UInt64
+    }
+
     /// An `EventObserver` with its own event state, such as the keys one keyboard holds.
     package struct Translator {
         fileprivate let observer: NativeSwiftValue
-        fileprivate let translate: (NativeSwiftValue, NSEvent) throws -> [NativeSwiftValue]
+        fileprivate let translate: (NativeSwiftValue, NSEvent) throws -> [Report]
         fileprivate let setCoordinateTransform: (NativeSwiftValue, CGAffineTransform) throws -> Void
 
-        package func reports(for event: NSEvent) throws -> [NativeSwiftValue] { try translate(observer, event) }
+        package func reports(for event: NSEvent) throws -> [Report] { try translate(observer, event) }
 
         /// The reports for an event at the location that `coordinateTransform` maps its window location to, as Device Hub
         /// sets the transform of its display's geometry before it translates an event.
-        package func reports(for event: NSEvent, coordinateTransform: CGAffineTransform) throws -> [NativeSwiftValue] {
+        package func reports(for event: NSEvent, coordinateTransform: CGAffineTransform) throws -> [Report] {
             try setCoordinateTransform(observer, coordinateTransform)
             return try translate(observer, event)
         }
     }
 
     private let makeObserver: () throws -> NativeSwiftValue
-    private let translate: (NativeSwiftValue, NSEvent) throws -> [NativeSwiftValue]
+    private let translate: (NativeSwiftValue, NSEvent) throws -> [Report]
     private let setCoordinateTransform: (NativeSwiftValue, CGAffineTransform) throws -> Void
 
     /// Translates the events of `eventType`, the name of a `UniversalHID.HIDEventType` member such as `keyboard`, or of
@@ -174,10 +180,10 @@ package struct CoreDeviceEventReports {
                 // Keep the report as a Swift value: projecting a runtime handle for each tuple element rediscovers
                 // its type and implementation image on every keyboard or pointer event.
                 return try result.withCopy { value in
-                    guard let (report, _) = value as? (Any, UInt64) else {
+                    guard let (report, senderID) = value as? (Any, UInt64) else {
                         throw RemoteScreenError.unavailable("native-event-report", "UniversalHIDKit returned an unexpected event report.")
                     }
-                    return try unsafe makeReport.unsafeInvoke(readData.unsafeInvoke(on: report))
+                    return Report(value: try unsafe makeReport.unsafeInvoke(readData.unsafeInvoke(on: report)), senderID: senderID)
                 }
             }
         }

@@ -88,12 +88,23 @@ package final class CoreDeviceHIDService {
 
     package static func touchscreenDescriptor(displayID: UInt32, uniqueID: String, runtime: ABIRuntime) async throws -> NativeSwiftValue {
         let serviceType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.HIDServiceType")))
-        let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
         let array = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type((displayID: UInt32, uniqueID: String?).self)])))
         let read = try await array.resolve(.swift(.getter("Swift.Array.subscript.getter : (Swift.Int) -> A",
             as: ((Int) -> NativeSwiftValue).self)))
         let payload = try unsafe read.unsafeInvoke(on: [(displayID: displayID, uniqueID: Optional(uniqueID))], 0)
         let screen = try await serviceType.makeEnumCase(named: "touchscreen", payload: payload)
+        return try await descriptor(for: screen, runtime: runtime)
+    }
+
+    package static func touchscreenGestureDescriptor(runtime: ABIRuntime) async throws -> NativeSwiftValue {
+        let serviceType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.HIDServiceType")))
+        let gesture = try await serviceType.makeEnumCase(named: "touchscreenGesture")
+        return try await descriptor(for: gesture, runtime: runtime)
+    }
+
+    private static func descriptor(for service: NativeSwiftValue, runtime: ABIRuntime) async throws -> NativeSwiftValue {
+        let serviceType = service.type
+        let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
         let serviceIDType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
         let abis: [NativeSwiftType: NativeType] = [serviceType: try .opaque(named: serviceType.name),
             descriptorType: try .opaque(named: descriptorType.name), serviceIDType: try .opaque(named: serviceIDType.name)]
@@ -103,9 +114,9 @@ package final class CoreDeviceHIDService {
             valueABIs: abis, receiverABI: abis[serviceType])))
         let setServiceID = try await descriptorType.resolve(.swift(.setter("serviceID", as: ((NativeSwiftValue) -> Void).self,
             valueABIs: abis, receiverABI: abis[descriptorType])))
-        let result = try unsafe descriptor.unsafeInvoke(on: screen)
+        let result = try unsafe descriptor.unsafeInvoke(on: service)
         // descriptor() supplies the service properties; its ID starts unassigned.
-        try unsafe setServiceID.unsafeInvoke(on: result, serviceID.unsafeInvoke(on: screen))
+        try unsafe setServiceID.unsafeInvoke(on: result, serviceID.unsafeInvoke(on: service))
         return result
     }
 
