@@ -55,19 +55,6 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Service Profile")!,
-                           target: self, action: #selector(addProfile))
-        remove.target = self
-        remove.action = #selector(removeProfile)
-        remove.hasDestructiveAction = true
-        for button in [add, remove] { button.isBordered = false }
-        let controls = NSStackView(views: [add, remove, NSView()])
-        controls.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        controls.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        let sidebar = NSStackView(views: [scroll, controls])
-        sidebar.orientation = .vertical
-        sidebar.alignment = .width
-        sidebar.spacing = 0
         let details = OpaqueSettingsPane()
         detailsController.view = details
         unavailable.sizingOptions = []
@@ -81,13 +68,13 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             unavailable.bottomAnchor.constraint(equalTo: details.bottomAnchor),
         ])
         let sidebarBackground = OpaqueSettingsPane()
-        sidebarBackground.addSubview(sidebar)
-        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        sidebarBackground.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            sidebar.topAnchor.constraint(equalTo: sidebarBackground.topAnchor),
-            sidebar.bottomAnchor.constraint(equalTo: sidebarBackground.bottomAnchor),
-            sidebar.leadingAnchor.constraint(equalTo: sidebarBackground.leadingAnchor),
-            sidebar.trailingAnchor.constraint(equalTo: sidebarBackground.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: sidebarBackground.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: sidebarBackground.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: sidebarBackground.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: sidebarBackground.trailingAnchor),
         ])
         let sidebarController = NSViewController()
         sidebarController.view = sidebarBackground
@@ -129,6 +116,24 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         defaultControls.frame.size = NSSize(width: 180, height: defaultControls.fittingSize.height)
         defaults.view = defaultControls
         splitViewItems[0].addTopAlignedAccessoryViewController(defaults)
+        let actions = NSSplitViewItemAccessoryViewController()
+        actions.preferredScrollEdgeEffectStyle = .hard
+        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Service Profile")!,
+                           target: self, action: #selector(addProfile))
+        remove.target = self
+        remove.action = #selector(removeProfile)
+        remove.hasDestructiveAction = true
+        for button in [add, remove] {
+            button.isBordered = false
+            button.symbolConfiguration = .init(pointSize: 14, weight: .regular)
+            button.imageScaling = .scaleNone
+            button.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        }
+        let controls = NSStackView(views: [add, remove, NSView()])
+        controls.frame.size = NSSize(width: 180, height: controls.fittingSize.height)
+        actions.view = controls
+        splitViewItems[0].addBottomAlignedAccessoryViewController(actions)
         let search = NSSplitViewItemAccessoryViewController()
         search.preferredScrollEdgeEffectStyle = .hard
         let searchControls = NSStackView(views: [searchField])
