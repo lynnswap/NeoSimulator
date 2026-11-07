@@ -1704,6 +1704,37 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func guestTrackpadAndMouseTouchesArriveThroughOneOrderedConnection() async throws {
+        let runtime = ABIRuntime.shared
+        let peers = GuestHIDPeerFixture()
+        let codec = try await GuestHIDCodec(runtime: runtime)
+        let wire = try UniversalHIDFixtureMessages(runtime: runtime)
+        peers.reply = { _, reply in try wire.create(reply, id: 7) }
+        let input = try await GuestScreenInput(guest: SimulatorGuestHID(codec: codec, connect: peers.connect), contactIdentities: true)
+        let down = NativeTouchContact(id: 2, point: CGPoint(x: 0.4, y: 0.3), isTouching: true)
+        var up = down
+        up.isTouching = false
+        try await input.send(.contacts([down]))
+        try await input.send(.contacts([up]))
+        let point = CGPoint(x: 0.5, y: 0.8)
+        try await input.send(.touch(point, nil, .began, .bottom))
+        try await input.stop()
+
+        let universalHID = CoreDeviceScreenInput.universalHIDFeature
+        let received = await peers.messages(to: universalHID, count: 7)
+        #expect(peers.lookUps == [universalHID, CoreDeviceScreenInput.features[.button]!])
+        let idType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
+        let id = try await unsafe idType.resolve(.swift(.staticGetter("mainTouchscreen", as: (() -> NativeSwiftValue).self,
+            valueABIs: [idType: try .opaque(named: idType.name)]))).unsafeInvoke()
+        let reports = try await CoreDeviceDigitizerReports(runtime: runtime)
+        let frames = try [reports.make(contacts: [down]), reports.make(contacts: [up]),
+                          reports.make(point: point, second: nil, phase: .began, edge: .bottom),
+                          reports.make(point: point, second: nil, phase: .ended, edge: .bottom)]
+        let expected = try frames.map { try codec.message(.request, to: universalHID, payload: codec.send($0, to: id)) }
+        #expect(zip(received.dropFirst().prefix(4), expected).allSatisfy { xpc_equal($0, $1) })
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func guestButtonsConnectToTheirServiceAtAPressAndConnectAgainWithoutResendingAfterTheConnectionEnds() async throws {
         let runtime = ABIRuntime.shared
         let peers = GuestHIDPeerFixture()

@@ -3,31 +3,42 @@ import Foundation
 import NeoSimulatorDeviceIO
 
 /// Sends integrated-screen touches and buttons through guest HID services.
-/// Explicit contact identities use the built-in digitizer; mouse touches and buttons use Indigo events.
+/// When explicit contact identities are needed, mouse and trackpad touches share the built-in digitizer connection.
 @MainActor
 package final class GuestScreenInput: NativeScreenInputTransport {
-    private let digitizer: GuestHIDConnection
+    private enum Digitizer {
+        case indigo(GuestHIDConnection)
+        case contacts(GuestContactInput)
+    }
+    private let digitizer: Digitizer
     private let buttons: GuestHIDConnection
     private let codec: GuestHIDCodec
-    private let contactInput: GuestContactInput?
     private var pressed = RemoteScreenPressedInputs()
 
     package init(guest: SimulatorGuestHID, contactIdentities: Bool = false) async throws {
-        digitizer = try await guest.connection(to: CoreDeviceScreenInput.features[.digitizer]!)
+        if contactIdentities {
+            digitizer = .contacts(try await GuestContactInput(guest: guest))
+        } else {
+            digitizer = .indigo(try await guest.connection(to: CoreDeviceScreenInput.features[.digitizer]!))
+        }
         buttons = try await guest.connection(to: CoreDeviceScreenInput.features[.button]!)
         codec = guest.codec
-        contactInput = contactIdentities ? try await GuestContactInput(guest: guest) : nil
     }
 
     package func send(_ input: RemoteScreenInput) async throws {
         switch input {
         case .touch(let point, let second, let phase, let edge):
-            try digitizer.post(.digitizerEvent, codec.digitizerEvent(at: point, second: second, phase: phase, edge: edge))
+            switch digitizer {
+            case .indigo(let connection):
+                try connection.post(.digitizerEvent, codec.digitizerEvent(at: point, second: second, phase: phase, edge: edge))
+            case .contacts(let input):
+                try await input.send(point: point, second: second, phase: phase, edge: edge)
+            }
         case .contacts(let contacts):
-            guard let contactInput else {
+            guard case .contacts(let input) = digitizer else {
                 throw DeviceIOError.unavailable("guest-contact-input", "This connection has no contact identity input.")
             }
-            try await contactInput.send(contacts)
+            try await input.send(contacts)
         case .button(let page, let usage, let state):
             try buttons.postButton(usagePage: page, usage: usage, state: state)
         case .key, .pointer, .pointerButton, .trackpad, .gesturePointer:
@@ -52,9 +63,13 @@ package final class GuestScreenInput: NativeScreenInputTransport {
         for button in pressed.buttons.sorted(by: { ($0.page, $0.usage) < ($1.page, $1.usage) }) {
             do { try await send(.button(button.page, button.usage, .up)) } catch { failures.append(error.localizedDescription) }
         }
-        do { try await digitizer.flush() } catch { failures.append(error.localizedDescription) }
+        do {
+            switch digitizer {
+            case .indigo(let connection): try await connection.flush()
+            case .contacts(let input): try await input.stop()
+            }
+        } catch { failures.append(error.localizedDescription) }
         do { try await buttons.flush() } catch { failures.append(error.localizedDescription) }
-        do { try await contactInput?.stop() } catch { failures.append(error.localizedDescription) }
         if !failures.isEmpty { throw DeviceIOError.io("remote-input-release", failures.joined(separator: "\n")) }
     }
 }
@@ -79,11 +94,19 @@ private final class GuestContactInput {
         activationDescriptor = try await CoreDeviceHIDService.touchscreenGestureDescriptor(runtime: .shared)
     }
 
-    func send(_ updates: [NativeTouchContact]) async throws {
+    func send(point: CGPoint, second: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge) async throws {
+        try await post(reports.make(point: point, second: second, phase: phase, edge: edge))
+    }
+
+    func send(_ contacts: [NativeTouchContact]) async throws {
+        try await post(reports.make(contacts: contacts))
+    }
+
+    private func post(_ report: NativeSwiftValue) async throws {
         // Creating a service activates the session's built-in digitizer. A newly created touchscreen service is
         // external input on iOS 26 iPhone, so the contact reports must target mainTouchscreen itself.
         if activation == nil { activation = try await connection.createService(activationDescriptor) }
-        try connection.post(.request, codec.send(reports.make(contacts: updates), to: digitizerID))
+        try connection.post(.request, codec.send(report, to: digitizerID))
     }
 
     func stop() async throws {
