@@ -17,14 +17,14 @@ final class ServiceProfile: Identifiable, BackgroundServiceEditing {
     private(set) var serviceState: SimulatorBackgroundServices?
     var issue: String?
     @ObservationIgnored fileprivate weak var store: ServiceProfileStore?
-    var canEdit: Bool { store != nil && id != Self.default.id }
+    var canEdit: Bool { store != nil && id != Self.allServices.id }
     @ObservationIgnored lazy var categories = SimulatorBackgroundServiceCategory.all.map {
         BackgroundServiceCategoryModel($0, source: self)
     }
 
-    nonisolated static let defaultID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-    static let `default` = ServiceProfile(record: Record(
-        id: defaultID, name: "Default", configuration: ServiceConfiguration()))
+    nonisolated static let allServicesID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    static let allServices = ServiceProfile(record: Record(
+        id: allServicesID, name: String(localized: "All Services", bundle: #bundle), configuration: ServiceConfiguration()))
 
     fileprivate var record: Record { Record(id: id, name: name, configuration: configuration) }
 
@@ -54,11 +54,9 @@ final class ServiceProfile: Identifiable, BackgroundServiceEditing {
 
 /// Which profile a device takes at each boot.
 enum ServiceProfileSelection: Codable, Hashable, Sendable {
-    /// The common default, whichever it is then. Nothing applies while it is off.
+    /// The app-wide default profile, whichever it is at the next boot.
     case inheritDefault
     case profile(UUID)
-    /// Nothing is written automatically, including the device's overrides.
-    case doNotApply
 }
 
 /// A device's choice and its explicit per-service changes, which apply above whatever the choice resolves to.
@@ -67,25 +65,34 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
     var overrides: [String: Bool]
 
     private enum LegacyCodingKeys: String, CodingKey { case profileID, pendingApplication }
+    private enum StoredSelection: Decodable {
+        case inheritDefault, profile(UUID), doNotApply
+
+        var selection: ServiceProfileSelection {
+            switch self {
+            case .inheritDefault, .doNotApply: .inheritDefault
+            case .profile(let id): .profile(id)
+            }
+        }
+    }
 
     init(selection: ServiceProfileSelection = .inheritDefault, overrides: [String: Bool] = [:]) {
         self.selection = selection
         self.overrides = overrides
     }
 
-    /// Default also represented devices without a choice. A pending application distinguishes an explicit Default
-    /// request; other Default bindings inherit, so a device the user only toggled does not gain an automatic profile.
-    /// These are persistent startup choices; upgrading leaves already-running devices unchanged.
+    /// Existing opt-outs become inherited selections without losing per-service overrides.
+    /// Legacy all-services requests remain explicit; unnamed choices inherit the app default.
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         overrides = try values.decode([String: Bool].self, forKey: .overrides)
-        if let selection = try values.decodeIfPresent(ServiceProfileSelection.self, forKey: .selection) {
-            self.selection = selection
+        if let selection = try values.decodeIfPresent(StoredSelection.self, forKey: .selection) {
+            self.selection = selection.selection
         } else {
             let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
             let profileID = try legacy.decode(UUID.self, forKey: .profileID)
             let pending = try legacy.decodeIfPresent(Bool.self, forKey: .pendingApplication) ?? false
-            selection = profileID == ServiceProfile.defaultID && !pending ? .inheritDefault : .profile(profileID)
+            selection = profileID == ServiceProfile.allServicesID && !pending ? .inheritDefault : .profile(profileID)
         }
     }
 }
@@ -95,7 +102,11 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
 final class ServiceProfileStore {
     private struct State: Codable, Equatable {
         var profiles: [ServiceProfile.Record] = []
-        var commonProfileID: UUID?
+        var defaultProfileID: UUID? = ServiceProfile.allServicesID
+        private enum CodingKeys: String, CodingKey {
+            case profiles, devices
+            case defaultProfileID = "commonProfileID"
+        }
         var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
     }
 
@@ -112,10 +123,10 @@ final class ServiceProfileStore {
 
     static let defaultsKey = "BackgroundServiceProfiles"
     private(set) var profiles: [ServiceProfile] = []
-    /// What devices that inherit take at each boot. Nil means that nothing applies to them.
-    private(set) var commonProfileID: UUID?
+    /// What devices that inherit take at each boot.
+    private(set) var defaultProfileID = ServiceProfile.allServicesID
     private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
-    private var state: State { State(profiles: profiles.map(\.record), commonProfileID: commonProfileID, devices: devices) }
+    private var state: State { State(profiles: profiles.map(\.record), defaultProfileID: defaultProfileID, devices: devices) }
     private(set) var issue: String?
     let fileURL: URL
     @ObservationIgnored private let legacyDefaults: UserDefaults?
@@ -133,25 +144,25 @@ final class ServiceProfileStore {
         reload()
     }
 
-    var availableProfiles: [ServiceProfile] { [.default] + profiles }
-    func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.default.id ? .default : profiles.first { $0.id == id } }
+    var availableProfiles: [ServiceProfile] { [.allServices] + profiles }
+    func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.allServices.id ? .allServices : profiles.first { $0.id == id } }
     func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { devices[device] }
-    var commonProfile: ServiceProfile? { commonProfileID.flatMap(profile) }
+    var defaultProfile: ServiceProfile { profile(defaultProfileID) ?? .allServices }
     func selection(for device: DeviceInventoryID) -> ServiceProfileSelection { devices[device]?.selection ?? .inheritDefault }
 
     /// The profile that applies to the device now, if any.
     func resolvedProfile(for device: DeviceInventoryID) -> ServiceProfile? {
         switch selection(for: device) {
-        case .inheritDefault: commonProfile
+        case .inheritDefault: defaultProfile
         case .profile(let id): profile(id)
-        case .doNotApply: nil
         }
     }
 
     /// What applying to the device writes now: the latest definition of its profile, with its overrides.
-    /// Nil means nothing is written, and the overrides stay for a later choice.
+    /// A failed store read or missing profile cannot supply a configuration.
     func configuration(for device: DeviceInventoryID) -> ServiceConfiguration? {
-        resolvedProfile(for: device)?.configuration.applying(devices[device]?.overrides ?? [:])
+        guard loadFailure == nil else { return nil }
+        return resolvedProfile(for: device)?.configuration.applying(devices[device]?.overrides ?? [:])
     }
 
     func reload() {
@@ -183,7 +194,7 @@ final class ServiceProfileStore {
         if let name { updated.profiles[index].name = try validName(name) }
         updated.profiles[index].configuration = configuration
         if let device {
-            let inherits = selection(for: device) == .inheritDefault && commonProfileID == id
+            let inherits = selection(for: device) == .inheritDefault && defaultProfileID == id
             updated.devices[device] = DeviceServiceProfile(selection: inherits ? .inheritDefault : .profile(id))
         }
         try save(updated)
@@ -206,7 +217,7 @@ final class ServiceProfileStore {
     func delete(_ id: UUID) throws {
         var updated = state
         updated.profiles.removeAll { $0.id == id }
-        if updated.commonProfileID == id { updated.commonProfileID = nil }
+        if updated.defaultProfileID == id { updated.defaultProfileID = ServiceProfile.allServicesID }
         // Removing the association does not change the simulator's services.
         for (device, binding) in updated.devices where binding.selection == .profile(id) {
             updated.devices[device]?.selection = .inheritDefault
@@ -214,10 +225,10 @@ final class ServiceProfileStore {
         try save(updated)
     }
 
-    func setCommonProfile(_ id: UUID?) throws {
-        if let id, profile(id) == nil { throw Failure.missingProfile }
+    func setDefaultProfile(_ id: UUID) throws {
+        if profile(id) == nil { throw Failure.missingProfile }
         var updated = state
-        updated.commonProfileID = id
+        updated.defaultProfileID = id
         try save(updated)
     }
 
@@ -292,7 +303,8 @@ final class ServiceProfileStore {
             return profile
         }
         if profiles.map(\.id) != updated.map(\.id) { profiles = updated }
-        if commonProfileID != loaded.commonProfileID { commonProfileID = loaded.commonProfileID }
+        let defaultID = loaded.defaultProfileID ?? ServiceProfile.allServicesID
+        if defaultProfileID != defaultID { defaultProfileID = defaultID }
         if devices != loaded.devices { devices = loaded.devices }
     }
 }

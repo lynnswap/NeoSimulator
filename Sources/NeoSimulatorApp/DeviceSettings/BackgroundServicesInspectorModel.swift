@@ -53,24 +53,27 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         set { if !newValue { actionIssue = nil } }
     }
     var selectedProfile: ServiceProfile {
-        selection.device.flatMap { profiles.resolvedProfile(for: $0.id) } ?? .default
+        selection.device.flatMap { profiles.resolvedProfile(for: $0.id) } ?? .allServices
     }
     struct ProfileChoice: Equatable {
         let id: ServiceProfileSelection
         let title: String
     }
-    var profileChoices: [ProfileChoice] {
-        let selected = selectedProfileSelection
-        let modified = hasProfileChanges
-        let common = profiles.commonProfile.map { String(localized: "Use Common Default (\($0.name))", bundle: #bundle) }
-            ?? String(localized: "Use Common Default (Off)", bundle: #bundle)
-        let choices = [ProfileChoice(id: .inheritDefault, title: common)] + profiles.availableProfiles.map {
-            ProfileChoice(id: .profile($0.id), title: $0.name)
-        } + [ProfileChoice(id: .doNotApply, title: String(localized: "Do Not Apply Automatically", bundle: #bundle))]
-        return choices.map {
-            ProfileChoice(id: $0.id, title: $0.id == selected && modified
-                ? String(localized: "\($0.title) (Modified)", bundle: #bundle) : $0.title)
+    var defaultProfileChoice: ProfileChoice {
+        profileChoice(.inheritDefault, title: String(localized: "Use Default: \(profiles.defaultProfile.name)", bundle: #bundle))
+    }
+    var savedProfileChoices: [ProfileChoice] {
+        profiles.profiles.map { profileChoice(.profile($0.id), title: $0.name) }
+    }
+    var selectedProfileTitle: String {
+        switch selectedProfileSelection {
+        case .inheritDefault: defaultProfileChoice.title
+        case .profile: profileChoice(selectedProfileSelection, title: selectedProfile.name).title
         }
+    }
+    private func profileChoice(_ selection: ServiceProfileSelection, title: String) -> ProfileChoice {
+        ProfileChoice(id: selection, title: selection == selectedProfileSelection && hasProfileChanges
+            ? String(localized: "\(title) (Modified)", bundle: #bundle) : title)
     }
 
     var selectedProfileSelection: ServiceProfileSelection {
@@ -95,12 +98,12 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         return profiles.binding(for: device.id)?.overrides.isEmpty == false || profiles.resolvedProfile(for: device.id) != nil
     }
 
-    func customizeProfile() { showProfileSettings(selectedProfile.id) }
+    func openProfileSettings() { showProfileSettings(selectedProfile.id) }
 
     func saveProfile() {
         guard canSaveProfile, let device = selection.device, let configuration = services?.configuration else { return }
         let profile = selectedProfile
-        if profile.id == ServiceProfile.default.id {
+        if profile.id == ServiceProfile.allServices.id {
             let editor = ServiceProfileEditorModel(name: "", configuration: configuration)
             editor.save = { [profiles, deviceID = device.id] editor in
                 try profiles.create(name: editor.name, configuration: editor.configuration, assigningTo: deviceID)

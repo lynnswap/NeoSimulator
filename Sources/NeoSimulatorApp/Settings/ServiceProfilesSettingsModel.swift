@@ -6,19 +6,19 @@ import Observation
 @MainActor @Observable
 final class ServiceProfilesSettingsModel {
     let store: ServiceProfileStore
-    var selectedProfileID: UUID? = ServiceProfile.default.id
+    var selectedProfileID: UUID? = ServiceProfile.allServices.id
     var editingProfileID: UUID?
     var deleting: ServiceProfile?
     var issue: String?
 
     init(store: ServiceProfileStore) { self.store = store }
 
-    var selectedProfile: ServiceProfile { selectedProfileID.flatMap(store.profile) ?? .default }
-    var canDelete: Bool { selectedProfile.id != ServiceProfile.default.id }
-    var commonProfileID: UUID? {
-        get { store.commonProfileID }
+    var selectedProfile: ServiceProfile { selectedProfileID.flatMap(store.profile) ?? .allServices }
+    var canDelete: Bool { selectedProfile.id != ServiceProfile.allServices.id }
+    var defaultProfileID: UUID {
+        get { store.defaultProfileID }
         set {
-            do { try store.setCommonProfile(newValue) }
+            do { try store.setDefaultProfile(newValue) }
             catch { issue = error.localizedDescription }
         }
     }
@@ -56,7 +56,7 @@ final class ServiceProfilesSettingsModel {
         guard let deleting else { return }
         do {
             try store.delete(deleting.id)
-            if selectedProfileID == deleting.id { selectedProfileID = ServiceProfile.default.id }
+            if selectedProfileID == deleting.id { selectedProfileID = ServiceProfile.allServices.id }
         } catch { issue = error.localizedDescription }
         self.deleting = nil
     }

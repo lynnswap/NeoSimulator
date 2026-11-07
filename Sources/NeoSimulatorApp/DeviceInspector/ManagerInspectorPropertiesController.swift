@@ -89,7 +89,7 @@ final class ManagerInspectorPropertiesController: NSViewController, NSOutlineVie
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         let property = item as! Property
         let id = tableColumn!.identifier
-        let label = outlineView.makeView(withIdentifier: id, owner: self) as? NSTextField ?? NSTextField(labelWithString: "")
+        let label = outlineView.makeView(withIdentifier: id, owner: self) as? NSTextField ?? LiteralTextField(labelWithString: "")
         label.identifier = id
         label.font = .systemFont(ofSize: 11)
         label.isSelectable = true

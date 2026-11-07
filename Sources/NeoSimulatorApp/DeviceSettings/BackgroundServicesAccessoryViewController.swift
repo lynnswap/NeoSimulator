@@ -52,22 +52,25 @@ private struct BackgroundServicesProfileForm: View {
     var body: some View {
         Form {
             Section {
-                Picker(selection: Binding<ServiceProfileSelection?>(
-                    get: { model.selectedProfileSelection },
-                    set: { selection in
-                        if let selection { model.selectedProfileSelection = selection }
-                        else { model.customizeProfile() }
+                LabeledContent {
+                    Menu {
+                        profileChoice(model.defaultProfileChoice)
+                        if !model.savedProfileChoices.isEmpty {
+                            Divider()
+                            ForEach(model.savedProfileChoices, id: \.id) { choice in
+                                profileChoice(choice)
+                            }
+                        }
+                        Divider()
+                        Button(action: model.openProfileSettings) {
+                            Text("Open Settings…", bundle: #bundle)
+                        }
+                    } label: {
+                        Text(model.selectedProfileTitle)
                     }
-                )) {
-                    ForEach(model.profileChoices, id: \.id) { choice in
-                        Text(choice.title).tag(Optional(choice.id))
-                    }
-                    Divider()
-                    Text("Custom…", bundle: #bundle).tag(ServiceProfileSelection?.none)
                 } label: {
                     Text("Startup Profile", bundle: #bundle)
                 }
-                .pickerStyle(.menu)
                 .help(Text("Applies at each simulator start while NeoSimulator is open.", bundle: #bundle))
                 .disabled(model.holdsChanges || model.profiles.issue != nil)
                 HStack {
@@ -88,6 +91,17 @@ private struct BackgroundServicesProfileForm: View {
             Button("OK") { model.actionIssue = nil }
         } message: {
             Text(model.actionIssue ?? "")
+        }
+    }
+
+    private func profileChoice(_ choice: BackgroundServicesInspectorModel.ProfileChoice) -> some View {
+        Toggle(isOn: Binding(
+            get: { model.selectedProfileSelection == choice.id },
+            set: { selected in
+                if selected { model.selectedProfileSelection = choice.id }
+            }
+        )) {
+            Text(choice.title)
         }
     }
 }

@@ -7,7 +7,7 @@ import ObservationBridge
 final class ServiceProfileEditorController: NSViewController, NSTextFieldDelegate {
     let model: ServiceProfileEditorModel
     var onClose: (() -> Void)?
-    private let nameField = NSTextField()
+    private let nameField = LiteralTextField()
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private var observation: PortableObservationTracking.Token?
 

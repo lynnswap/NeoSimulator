@@ -332,18 +332,18 @@ management actions other than **Force Shut Down** are unavailable. Start a
 simulator to change its background services; physical devices and virtual
 machines do not offer them.
 
-Choose a **Common Default** in **Settings → Service Profiles** to apply a profile
-at each simulator start or restart. Each simulator's **Startup Profile** can
-follow that common default, use a specific profile, or turn off automatic
-application. The built-in **Default** profile enables all managed services.
-Common defaults start with automatic application turned off.
+Choose the **Default Profile** in **Settings → Service Profiles**. It starts as
+**All Services**, the built-in preset that enables all managed services. Each
+simulator's **Startup Profile** menu offers **Use Default: <profile name>** to follow
+that choice, or a saved profile to use independently. **Open Settings…** opens the
+shared profile editor without changing the selection.
 
 Individual service switches are saved as overrides. They stay in effect when
 the profile changes; **Revert** clears them. **Save** updates the selected named
-profile, or asks for a name when using the built-in Default profile.
+profile, or asks for a name when using the built-in All Services profile.
 Startup-profile selections and overrides survive simulator erases.
 
-Changing the common default or editing a profile takes effect at the next
+Changing the default profile or editing a profile takes effect at the next
 simulator start. Selecting a simulator's Startup Profile also applies it
 immediately when that simulator is running. Automatic application works while
 NeoSimulator is open, including starts from Xcode. Opening NeoSimulator leaves
