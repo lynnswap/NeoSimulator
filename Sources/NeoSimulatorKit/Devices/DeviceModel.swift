@@ -104,8 +104,8 @@ public final class DeviceModel: Identifiable {
     @ObservationIgnored private var writes: [UUID: Task<Void, any Error>] = [:]
     @ObservationIgnored private var unstartedWrites: Set<UUID> = []
     @ObservationIgnored private var lastWrite: Task<Void, Never>?
-    /// When the device had booted according to the last screen that connected to it.
-    @ObservationIgnored private var connectedBoot: Date?
+    /// A screen can announce a start before CoreSimulator replaces the preceding boot's date.
+    @ObservationIgnored private var pendingBoot: (previousDate: Date, observedAt: Date)?
 
     package init(inventory: InventoryDevice, source: any DeviceStateSource, registry: DeviceRegistry? = nil, readsStopped: Bool = false) {
         id = inventory.id
@@ -178,21 +178,29 @@ public final class DeviceModel: Identifiable {
         assign(\.canInspectBackgroundServices, device.canInspectBackgroundServices)
         backgroundServices.deviceChanged()
         inspection.deviceChanged()
-        if Self.answersDiffer(previous, device) { deviceRestarted() } else { inspection.scheduleReads() }
+        var answersDiffer = Self.answersDiffer(previous, device)
+        if case .simulator(let old) = previous, case .simulator(let new) = device {
+            if !device.canInspectSettings { pendingBoot = nil }
+            else if !previous.canInspectSettings, let date = old.lastBootDate, new.lastBootDate == date {
+                pendingBoot = (date, .now)
+            }
+            if let pendingBoot, let date = new.lastBootDate, date != pendingBoot.previousDate {
+                if date > pendingBoot.observedAt { answersDiffer = true }
+                self.pendingBoot = nil
+            } else if let oldDate = old.lastBootDate, let newDate = new.lastBootDate, oldDate != newDate {
+                answersDiffer = true
+            }
+        }
+        if answersDiffer { deviceRestarted() } else { inspection.scheduleReads() }
     }
 
     /// Updates running state and boot time from a screen connection.
     /// Other fields remain inventory-owned; the next inventory read also takes over these fields.
     package func observeConnection(to device: AvailableDevice, lastBootDate: Date?) {
         guard case .simulator(let known) = inventory else { return }
-        let bootChanged = lastBootDate != nil && connectedBoot != nil && lastBootDate != connectedBoot
-        connectedBoot = lastBootDate ?? connectedBoot
-        if (known.state == "Booted") != device.isBooted {
-            let state = SimulatorHostDevice(presenting: device, ownerXcodeURL: nil).state
-            update(.simulator(known.inventoryCopy(ownerXcodeURL: known.ownerXcodeURL, state: state)), sources: sources)
-        } else if bootChanged {
-            deviceRestarted()
-        }
+        let state = SimulatorHostDevice(presenting: device, ownerXcodeURL: nil).state
+        update(.simulator(known.inventoryCopy(ownerXcodeURL: known.ownerXcodeURL, state: state,
+                                             lastBootDate: lastBootDate)), sources: sources)
     }
 
     private static func answersDiffer(_ first: InventoryDevice, _ second: InventoryDevice) -> Bool {

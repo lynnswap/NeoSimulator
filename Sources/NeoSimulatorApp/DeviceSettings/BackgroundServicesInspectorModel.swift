@@ -53,30 +53,36 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         set { if !newValue { actionIssue = nil } }
     }
     var selectedProfile: ServiceProfile {
-        guard let device = selection.device, let binding = profiles.binding(for: device.id) else { return .default }
-        return profiles.profile(binding.profileID) ?? .default
+        selection.device.flatMap { profiles.resolvedProfile(for: $0.id) } ?? .default
     }
     struct ProfileChoice: Equatable {
-        let id: UUID
+        let id: ServiceProfileSelection
         let title: String
     }
     var profileChoices: [ProfileChoice] {
-        let selected = selectedProfile.id
+        let selected = selectedProfileSelection
         let modified = hasProfileChanges
-        return profiles.availableProfiles.map {
-            ProfileChoice(id: $0.id, title: $0.id == selected && modified ? "\($0.name) (Modified)" : $0.name)
+        let common = profiles.commonProfile.map { String(localized: "Use Common Default (\($0.name))", bundle: #bundle) }
+            ?? String(localized: "Use Common Default (Off)", bundle: #bundle)
+        let choices = [ProfileChoice(id: .inheritDefault, title: common)] + profiles.availableProfiles.map {
+            ProfileChoice(id: .profile($0.id), title: $0.name)
+        } + [ProfileChoice(id: .doNotApply, title: String(localized: "Do Not Apply Automatically", bundle: #bundle))]
+        return choices.map {
+            ProfileChoice(id: $0.id, title: $0.id == selected && modified
+                ? String(localized: "\($0.title) (Modified)", bundle: #bundle) : $0.title)
         }
     }
 
-    var selectedProfileID: UUID {
-        get { selectedProfile.id }
+    var selectedProfileSelection: ServiceProfileSelection {
+        get { selection.device.map { profiles.selection(for: $0.id) } ?? .inheritDefault }
         set {
             guard let device = selection.device else { return }
             manager.selectServiceProfile(newValue, for: device.id)
         }
     }
     var hasProfileChanges: Bool {
-        let current = services?.configuration ?? selection.device.flatMap { profiles.binding(for: $0.id)?.configuration } ?? ServiceConfiguration()
+        if let device = selection.device, profiles.binding(for: device.id)?.overrides.isEmpty == false { return true }
+        let current = services?.configuration ?? selection.device.flatMap { profiles.configuration(for: $0.id) } ?? ServiceConfiguration()
         let required = serviceState?.platformRequiredLabels ?? []
         return current.disabledLabels.subtracting(required) != selectedProfile.configuration.disabledLabels.subtracting(required)
     }
@@ -84,8 +90,12 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         !holdsChanges && selection.device?.canInspectBackgroundServices == true && serviceState != nil
             && issue == nil && profiles.issue == nil && hasProfileChanges
     }
+    var canRevertProfile: Bool {
+        guard !holdsChanges, hasProfileChanges, let device = selection.device else { return false }
+        return profiles.binding(for: device.id)?.overrides.isEmpty == false || profiles.resolvedProfile(for: device.id) != nil
+    }
 
-    func customizeProfile() { showProfileSettings(selectedProfileID) }
+    func customizeProfile() { showProfileSettings(selectedProfile.id) }
 
     func saveProfile() {
         guard canSaveProfile, let device = selection.device, let configuration = services?.configuration else { return }

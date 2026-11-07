@@ -70,6 +70,10 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         sidebar.spacing = 0
         let details = OpaqueSettingsPane()
         detailsController.view = details
+        let defaults = NSHostingView(rootView: CommonServiceProfileForm(model: model))
+        defaults.sizingOptions = [.intrinsicContentSize]
+        defaults.translatesAutoresizingMaskIntoConstraints = false
+        details.addSubview(defaults)
         let search = NSStackView(views: [searchField])
         search.orientation = .horizontal
         search.distribution = .fill
@@ -79,7 +83,10 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         listContainer.translatesAutoresizingMaskIntoConstraints = false
         details.addSubview(listContainer)
         NSLayoutConstraint.activate([
-            search.topAnchor.constraint(equalTo: details.topAnchor),
+            defaults.topAnchor.constraint(equalTo: details.topAnchor),
+            defaults.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            defaults.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            search.topAnchor.constraint(equalTo: defaults.bottomAnchor),
             search.leadingAnchor.constraint(equalTo: details.leadingAnchor),
             search.trailingAnchor.constraint(equalTo: details.trailingAnchor),
             listContainer.topAnchor.constraint(equalTo: search.bottomAnchor),
@@ -270,7 +277,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         guard profile.id != ServiceProfile.default.id, let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "Delete Service Profile?"
-        alert.informativeText = "The simulators keep their current services. Only the profile and its assignments are removed."
+        alert.informativeText = "The simulators keep their current services. Devices using this profile will follow the common default at their next start."
         alert.addButton(withTitle: "Delete").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -285,6 +292,29 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
                 model.issue = nil
             }
         }
+    }
+}
+
+private struct CommonServiceProfileForm: View {
+    @Bindable var model: ServiceProfilesSettingsModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker(selection: $model.commonProfileID) {
+                Text("Do Not Apply Automatically", bundle: #bundle).tag(UUID?.none)
+                ForEach(model.store.availableProfiles, id: \.id) { profile in
+                    Text(profile.name).tag(Optional(profile.id))
+                }
+            } label: {
+                Text("Common Default", bundle: #bundle)
+            }
+            Text("Used at the next start by simulators that follow the common default.", bundle: #bundle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .disabled(model.store.issue != nil)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
     }
 }
 

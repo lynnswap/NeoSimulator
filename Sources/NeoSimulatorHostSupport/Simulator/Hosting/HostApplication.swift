@@ -262,11 +262,17 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
                                 else { continuation.resume() }
                             }
                         }
-                    } catch { result["error"] = error.localizedDescription }
+                    } catch {
+                        result["error"] = error.localizedDescription
+                        result["didStartSimulator"] = error is DeviceRestartedWithFailure
+                    }
                 } else if isHeadless, engine.ownedDeviceIdentifiers.contains(identifier) {
                     result["handled"] = true
                     do { try await engine.restartHeadlessDevice(identifier, erasing: action == "erase-device") }
-                    catch { result["error"] = error.localizedDescription }
+                    catch {
+                        result["error"] = error.localizedDescription
+                        result["didStartSimulator"] = error is DeviceRestartedWithFailure
+                    }
                 }
                 DistributedNotificationCenter.default().postNotificationName(
                     Notification.Name("dev.lynnswap.NeoSimulator.RendererManaged"), object: requestIdentifier,

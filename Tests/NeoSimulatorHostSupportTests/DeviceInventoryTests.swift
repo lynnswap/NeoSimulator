@@ -293,6 +293,43 @@ struct DeviceInventoryTests {
         #expect(catalogXcodeURL("unavailable", "/testing") == nil)
     }
 
+    @Test(arguments: [false, true])
+    func simulatorBootIdentitySurvivesInventoryJoinsAndReadFailures(fails: Bool) async throws {
+        let xcode = URL(fileURLWithPath: "/Applications/Xcode.app")
+        let boot = Date(timeIntervalSinceReferenceDate: 400)
+        let snapshot = try await SimulatorInventoryReader(installations: [xcode], testingDeviceSetPath: nil,
+            readBootDates: { _, _ in
+                if fails { throw DeviceIOError.io("boot-identity", "unavailable") }
+                return ["ready": boot, "unavailable": boot]
+            }, readCatalog: { _, _ in Self.simulatorJSON }).read()
+        let joined = try await DeviceInventoryReader(readSimulators: { snapshot },
+            readCoreDevices: { Data(#"{"result":{"devices":[]}}"#.utf8) }).read()
+        let device = try #require(joined.devices.first { $0.id == .simulator(udid: "ready", deviceSetPath: nil) })
+        guard case .simulator(let simulator) = device else { Issue.record("Expected a simulator"); return }
+        #expect(simulator.lastBootDate == (fails ? nil : boot))
+        #expect(simulator.inventoryCopy(ownerXcodeURL: xcode).lastBootDate == simulator.lastBootDate)
+        if case .simulator(let stopped) = joined.devices.first(where: { $0.id == .simulator(udid: "unavailable", deviceSetPath: nil) }) {
+            #expect(stopped.lastBootDate == nil)
+        }
+        #expect(joined.devices.count == 3)
+        #expect(joined.issues.count == (fails ? 1 : 0))
+        #expect(!joined.retains([.simulators(xcodeURL: xcode, deviceSetPath: nil)]))
+    }
+
+    @Test func aLaterCatalogSuppliesTheBootDateWithoutReplacingTheChosenDevice() async throws {
+        let first = URL(fileURLWithPath: "/Applications/First.app")
+        let second = URL(fileURLWithPath: "/Applications/Second.app")
+        let boot = Date(timeIntervalSinceReferenceDate: 400)
+        let snapshot = try await SimulatorInventoryReader(installations: [first, second], testingDeviceSetPath: nil,
+            readBootDates: { xcode, _ in
+                if xcode == first { throw DeviceIOError.io("boot-identity", "unavailable") }
+                return ["ready": boot]
+            }, readCatalog: { _, _ in Self.simulatorJSON }).read()
+        let item = try #require(snapshot.devices.first { $0.id == .simulator(udid: "ready", deviceSetPath: nil) })
+        guard case .simulator(let device) = item else { Issue.record("Expected a simulator"); return }
+        #expect(device.catalogXcodeURL == first && device.lastBootDate == boot)
+    }
+
     private static func simulator(_ identifier: String, path: String? = nil) -> SimulatorHostDevice {
         SimulatorHostDevice(identifier: identifier, name: "Simulator Name", descriptiveName: "Simulator Name — iOS 27.0",
             runtimeIdentifier: "runtime", runtimeName: "iOS 27.0", productFamily: "iPhone", state: "Booted",

@@ -84,9 +84,17 @@ AppKit controllers retain observable models. `ObservationBridge` updates control
 and `DeviceBrowserState` saves pane visibility, inspector tabs, and device selection.
 `DeviceModel` owns device state; selection and inspector models own presentation.
 
-`ServiceProfileStore` owns profiles and device overrides. Settings edit the selected
-profile directly. Saving a modified Default profile asks for a name, includes accepted
-changes still being applied, and does not apply the profile to other devices.
+`ServiceProfileStore` owns profile definitions, the common default, and each device's
+selection and overrides. A device resolves its profile by reference, so a later boot
+uses the latest definition. Settings edit the selected profile directly. Saving a
+modified Default profile asks for a name and includes accepted changes still being
+applied. Profile edits do not change running devices.
+
+`SimulatorManagerModel` observes inventory boot transitions and CoreSimulator boot
+dates, then submits automatic profile changes to each device's existing service queue.
+Initial running devices are left alone, and a failed automatic change is reported
+once rather than retried by every inventory refresh. This behavior belongs to the
+manager and store, independent of inspector visibility.
 
 Service profiles and device assignments are stored together in
 `Application Support/<app bundle identifier>/ServiceProfiles.json`. Writes are

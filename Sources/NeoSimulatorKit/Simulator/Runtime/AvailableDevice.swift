@@ -40,6 +40,7 @@ package struct AvailableDevice: Identifiable {
     package let productFamily: Int
     package let deviceTypeName: String
     package var state: UInt
+    package let lastBootDate: Date?
     package var id: String { identifier }
     package var isBooted: Bool { state == 3 }
     /// The SF Symbol of the device's product family.
@@ -64,7 +65,7 @@ package struct AvailableDevice: Identifiable {
     }
 
     package init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String,
-         runtimeName: String, productFamily: Int, deviceTypeName: String, state: UInt, deviceSetPath: String? = nil) {
+         runtimeName: String, productFamily: Int, deviceTypeName: String, state: UInt, deviceSetPath: String? = nil, lastBootDate: Date? = nil) {
         self.identifier = identifier
         self.deviceSetPath = deviceSetPath
         self.name = name
@@ -74,5 +75,6 @@ package struct AvailableDevice: Identifiable {
         self.productFamily = productFamily
         self.deviceTypeName = deviceTypeName
         self.state = state
+        self.lastBootDate = lastBootDate
     }
 }

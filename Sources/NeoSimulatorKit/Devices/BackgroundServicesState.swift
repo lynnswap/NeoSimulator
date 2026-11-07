@@ -70,9 +70,7 @@ public final class BackgroundServicesState {
         try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }
     }
 
-    /// `prepare` runs at the change's turn, and throwing from it stops the change with nothing sent.
-    package func accept(_ change: Change, after hold: Task<Void, Never>? = nil,
-                        prepare: (@MainActor () throws -> Void)? = nil) throws -> DeviceWrite {
+    package func accept(_ change: Change, after hold: Task<Void, Never>? = nil) throws -> DeviceWrite {
         guard let owner else { throw CancellationError() }
         try owner.checkAcceptsChanges()
         let edit = PendingChange(change: change)
@@ -82,7 +80,6 @@ public final class BackgroundServicesState {
         updateServices()
         return owner.enqueueWrite(after: hold) { [weak self] in
             guard let self else { throw CancellationError() }
-            try prepare?()
             try await self.run(change)
         } settle: { [weak self] result in
             self?.settle(edit, result)

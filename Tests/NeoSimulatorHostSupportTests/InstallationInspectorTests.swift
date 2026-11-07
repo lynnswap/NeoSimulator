@@ -752,6 +752,22 @@ struct XcodeConnectionsTests {
         #expect(requests == 2)
     }
 
+    @MainActor @Test func rendererFailurePreservesACompletedBoot() async throws {
+        let center = NotificationCenter()
+        let target = DeviceInventoryID.simulator(udid: "device-id", deviceSetPath: nil)
+        let renderer = RendererRegistration(processIdentifier: 1, applicationPath: "/Renderer.app", xcodePath: "/Xcode.app",
+                                            sessionIdentifier: "owner-session", deviceIdentifiers: [target])
+        let waiter = RendererDeviceRequestWaiter(acknowledgements: center, scheduleTimeout: { _, _ in {} }) { info, _ in
+            center.post(name: Notification.Name("dev.lynnswap.NeoSimulator.RendererManaged"),
+                object: info["requestIdentifier"], userInfo: ["udid": "device-id", "error": "Erase failed",
+                                                            "didStartSimulator": true])
+        }
+        let failure = try await #require(throws: DeviceRestartedWithFailure.self) {
+            try await waiter.restart(target, in: renderer, erasing: true)
+        }
+        #expect(failure.localizedDescription == "Erase failed")
+    }
+
     @Test func usesNewestRunPerDeviceAndRecognizesReusedPID() async throws {
         let tracker = XcodeConnectionTracker()
         let older = connection(pid: 1, start: 10)
