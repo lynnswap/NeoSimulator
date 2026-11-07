@@ -18,7 +18,6 @@ final class DeviceScreenViewController: NSViewController {
     /// The screen in `liveScreenContainer`, until the pane shows the preview again.
     private var displayedScreen: DeviceScreen?
     private var displayedScreenObservation: PortableObservationTracking.Token?
-    private var activityObservation: PortableObservationTracking.Token?
     /// The displayed screen while it is still open; a closed or replaced screen no longer counts as live.
     var liveScreen: DeviceScreen? {
         guard let displayedScreen, screens.screen(for: displayedScreen.id) === displayedScreen else { return nil }
@@ -35,13 +34,6 @@ final class DeviceScreenViewController: NSViewController {
     private let viewScreen = NSButton(title: "View Screen", target: nil, action: nil)
     private var previewTask: Task<Void, Never>?
     private var previewArtwork: DeviceArtworkModel?
-    private let deviceFooter = NSStackView()
-    private let activityStack = NSStackView()
-    private let cancelOpening = NSButton(title: "Cancel Opening Screens", target: nil, action: nil)
-    /// The footer's distance from the pane's safe area, and the space it leaves above itself.
-    private static let footerInset: CGFloat = 8, footerSpacing: CGFloat = 12
-    private let activity = NSTextField(labelWithString: "")
-    private let progress = NSProgressIndicator()
     /// The latest accepted move; each move starts after the one accepted before it.
     private var screenMove: Task<Void, any Error>?
     private var screenMoveGeneration = 0
@@ -64,7 +56,7 @@ final class DeviceScreenViewController: NSViewController {
         liveView.isHidden = true
         liveView.clipsToBounds = true
         view.addSubview(liveView)
-        // Presentations may draw behind the toolbar, bottom accessory and footer; each keeps its content in the safe area.
+        // Presentations may draw behind the toolbar and bottom accessory; each keeps its content in the safe area.
         NSLayoutConstraint.activate([
             liveView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             liveView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -95,31 +87,6 @@ final class DeviceScreenViewController: NSViewController {
         previewStack.setCustomSpacing(20, after: deviceRuntime)
         previewStack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(previewStack)
-        progress.style = .spinning
-        progress.controlSize = .small
-        progress.isDisplayedWhenStopped = false
-        activity.font = .systemFont(ofSize: 12)
-        activity.textColor = .secondaryLabelColor
-        activity.lineBreakMode = .byTruncatingTail
-        activityStack.addArrangedSubview(progress)
-        activityStack.addArrangedSubview(activity)
-        cancelOpening.controlSize = .small
-        cancelOpening.bezelStyle = .rounded
-        cancelOpening.target = self
-        cancelOpening.action = #selector(cancelPendingScreenOpens(_:))
-        cancelOpening.isHidden = true
-        activityStack.addArrangedSubview(cancelOpening)
-        activityStack.orientation = .horizontal
-        activityStack.alignment = .centerY
-        activityStack.spacing = 7
-        activityStack.isHidden = true
-        deviceFooter.orientation = .vertical
-        deviceFooter.alignment = .centerX
-        deviceFooter.spacing = 8
-        deviceFooter.translatesAutoresizingMaskIntoConstraints = false
-        deviceFooter.addArrangedSubview(activityStack)
-        deviceFooter.isHidden = true
-        view.addSubview(deviceFooter)
         NSLayoutConstraint.activate([
             deviceImage.widthAnchor.constraint(equalToConstant: 192),
             deviceImage.heightAnchor.constraint(equalToConstant: 192),
@@ -130,41 +97,7 @@ final class DeviceScreenViewController: NSViewController {
             previewStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
             deviceName.widthAnchor.constraint(lessThanOrEqualTo: previewStack.widthAnchor),
             deviceRuntime.widthAnchor.constraint(lessThanOrEqualTo: previewStack.widthAnchor),
-            deviceFooter.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            deviceFooter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -Self.footerInset),
-            deviceFooter.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            deviceFooter.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
         ])
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        observeActivity()
-    }
-
-    private func observeActivity() {
-        activityObservation = withPortableContinuousObservation { [weak self] _ in self?.updateActivity() }
-    }
-
-    private func updateActivity() {
-        activity.stringValue = model.isBusy ? model.activity : (model.backgroundIssue ?? "")
-        activity.toolTip = activity.stringValue
-        activity.isHidden = activity.stringValue.isEmpty
-        progress.isHidden = !model.isBusy
-        if model.isBusy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        cancelOpening.isHidden = model.openingDeviceIDs.isEmpty
-        activityStack.isHidden = activity.isHidden && progress.isHidden && cancelOpening.isHidden
-        updateDeviceFooter()
-    }
-
-    private func updateDeviceFooter() {
-        deviceFooter.isHidden = activityStack.isHidden
-        // A live screen keeps drawing behind the footer; the footer only narrows the area it fits within.
-        let liveView = liveScreenContainer.view
-        var insets = liveView.additionalSafeAreaInsets
-        insets.bottom = deviceFooter.isHidden ? 0
-            : Self.footerInset + deviceFooter.fittingSize.height + Self.footerSpacing
-        liveView.additionalSafeAreaInsets = insets
     }
 
     func updatePreview(for device: InventoryDevice, details: String, artwork: DeviceArtworkModel, canViewScreen: Bool) {
@@ -231,7 +164,6 @@ final class DeviceScreenViewController: NSViewController {
         liveScreenContainer.view.isHidden = true
         previewStack.isHidden = false
         onLiveScreenChange?()
-        updateDeviceFooter()
     }
 
     /// Fits the accessory to the screen's updated controls, and shows the preview once the screen closes.
@@ -363,5 +295,4 @@ final class DeviceScreenViewController: NSViewController {
 
     @objc private func requestScreen(_ sender: Any?) { onViewScreen?() }
 
-    @objc private func cancelPendingScreenOpens(_ sender: Any?) { model.cancelPendingOpens() }
 }

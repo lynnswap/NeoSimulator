@@ -45,13 +45,13 @@ package final class SimulatorGuestSettings {
     private static let colorFilterMinimumVersion: UInt32 = 27 << 16
 
     package static func colorFilter(runtimeVersion: UInt32,
-                                   read: () async throws -> DeviceInspectorValue) async throws -> SimulatorDeviceSettings {
+                                   read: () async throws -> DeviceInspectorValue?) async throws -> SimulatorDeviceSettings {
         var settings = SimulatorDeviceSettings()
         guard runtimeVersion >= colorFilterMinimumVersion else {
             settings.colorFilterRequiredOSVersion = 27
             return settings
         }
-        let filter = try await read()["colorFilter"]
+        let filter = try await read()?["colorFilter"]
         if filter?["enabled"]?.boolean == false { settings.colorFilter = SimulatorColorFilter.none }
         else if let name = filter?["filterType"]?["name"]?.string { settings.colorFilter = SimulatorColorFilter(rawValue: name.lowercased()) }
         settings.colorFilterIntensity = filter?["intensity"]?.numeric
@@ -73,8 +73,8 @@ package final class SimulatorGuestSettings {
                 if !Task.isCancelled { failures.append("\(name): \(error.localizedDescription)") }
             }
         }
-        func get(_ declaration: String) async throws -> DeviceInspectorValue {
-            try await service(device: device).get(declaration)
+        func get(_ declaration: String) async throws -> DeviceInspectorValue? {
+            try await service(device: device).getIfSupported(declaration, runtimeVersion: device.runtimeVersion)
         }
         switch group {
         case .textSize:
@@ -88,10 +88,11 @@ package final class SimulatorGuestSettings {
             }, set: { $0.contentSize = $1 })
         case .accessibility:
             await capture("look and feel", {
-                try await get("GetDeviceLookAndFeelActionDeclaration")["lookAndFeel"]?["name"]?.string
+                try await get("GetDeviceLookAndFeelActionDeclaration")?["lookAndFeel"]?["name"]?.string
             }, set: { $0.lookAndFeel = $1 })
             await capture("supported looks and feels", {
-                let values = try await get("GetSupportedLooksAndFeelsActionDeclaration")["looksAndFeels"]?.array ?? []
+                guard let values = try await get("GetSupportedLooksAndFeelsActionDeclaration")?["looksAndFeels"]?.array,
+                      !values.isEmpty else { return [SimulatorLookAndFeel]() }
                 var supported: [SimulatorLookAndFeel] = []
                 for choice in SimulatorLookAndFeel.allCases {
                     let native = try await service(device: device).namedValue("DeviceLookAndFeel", member: choice.nativeMember)
@@ -100,7 +101,7 @@ package final class SimulatorGuestSettings {
                 return supported
             }, set: { $0.supportedLooksAndFeels = $1 })
             await capture("Liquid Glass", {
-                try await get("GetLiquidGlassConfigurationActionDeclaration")["configuration"]?["opacity"]?.numeric
+                try await get("GetLiquidGlassConfigurationActionDeclaration")?["configuration"]?["opacity"]?.numeric
             }, set: { $0.liquidGlassOpacity = $1 })
             await capture("color filter", {
                 try await Self.colorFilter(runtimeVersion: device.runtimeVersion) {
@@ -112,17 +113,17 @@ package final class SimulatorGuestSettings {
                 settings.colorFilterRequiredOSVersion = filter.colorFilterRequiredOSVersion
             })
             await capture("Reduce Motion", {
-                try await get("GetReduceMotionActionDeclaration")["reduceMotion"]?["enabled"]?.boolean
+                try await get("GetReduceMotionActionDeclaration")?["reduceMotion"]?["enabled"]?.boolean
             }, set: { $0.reduceMotion = $1 })
             await capture("Show Borders", {
-                try await get("GetShowBordersActionDeclaration")["showBorders"]?["enabled"]?.boolean
+                try await get("GetShowBordersActionDeclaration")?["showBorders"]?["enabled"]?.boolean
             }, set: { $0.showBorders = $1 })
             await capture("Reduce Transparency", {
-                try await get("GetReduceTransparencyActionDeclaration")["reduceTransparency"]?["enabled"]?.boolean
+                try await get("GetReduceTransparencyActionDeclaration")?["reduceTransparency"]?["enabled"]?.boolean
             }, set: { $0.reduceTransparency = $1 })
         case .voiceOver:
             await capture("VoiceOver", {
-                try await get("GetVoiceOverActionDeclaration")["voiceOverConfiguration"]?["enabled"]?.boolean
+                try await get("GetVoiceOverActionDeclaration")?["voiceOverConfiguration"]?["enabled"]?.boolean
             }, set: { $0.voiceOver = $1 })
         case .audio:
             await capture("volume", {

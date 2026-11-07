@@ -183,6 +183,7 @@ struct SidebarDeviceArtwork: View {
     let model: DeviceArtworkModel
     let isActive: Bool
     let isEmphasized: Bool
+    var showsSymbol = true
     @Environment(\.colorScheme) private var colorScheme
 
     private var background: AnyShapeStyle {
@@ -216,19 +217,22 @@ struct SidebarDeviceArtwork: View {
                         lineWidth: 1)
                 }
             if let symbol = model.symbol {
-                if let resource = symbol.resource {
-                    resource.palette(primary: outline, secondary: fill)
-                        .frame(width: 32 * 0.66, height: 32 * 0.66)
-                } else {
-                    Image(systemName: symbol.name)
-                        .symbolRenderingMode(.palette)
-                        .resizable()
-                        .symbolVariant(.none)
-                        .foregroundStyle(outline, fill)
-                        .fontWeight(.thin)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 32 * 0.66, height: 32 * 0.66)
+                Group {
+                    if let resource = symbol.resource {
+                        resource.palette(primary: outline, secondary: fill)
+                            .frame(width: 32 * 0.66, height: 32 * 0.66)
+                    } else {
+                        Image(systemName: symbol.name)
+                            .symbolRenderingMode(.palette)
+                            .resizable()
+                            .symbolVariant(.none)
+                            .foregroundStyle(outline, fill)
+                            .fontWeight(.thin)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 32 * 0.66, height: 32 * 0.66)
+                    }
                 }
+                .opacity(showsSymbol ? 1 : 0)
             }
         }
         .frame(width: 32, height: 32)

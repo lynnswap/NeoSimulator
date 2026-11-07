@@ -221,7 +221,7 @@ package final class CoreDeviceSimulatorRecordSource: CoreDeviceRecordSource {
 
     package func followInventory(_ changed: @escaping @MainActor () -> Void) async throws {
         try await inventory.initialize()
-        try await inventory.follow(onChange: changed)
+        try await inventory.follow(onReady: changed, onChange: changed)
     }
 
     package func follow(_ record: CoreDeviceRemoteScreenDevice, _ changed: @escaping @MainActor () -> Void) async throws {

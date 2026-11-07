@@ -4,6 +4,8 @@ import NeoSimulatorDeviceIO
 /// Reports changes to connected devices so the caller can reload its inventory.
 @MainActor
 package final class DeviceInventoryObservation {
+    /// Fires after the change stream is subscribed, before its initial inventory refresh.
+    package var onReady: (() -> Void)?
     package var onChange: (() -> Void)?
     package var onError: ((any Error) -> Void)?
 
@@ -30,22 +32,34 @@ package final class DeviceInventoryObservation {
         if let startTask { try await startTask.value; return }
         guard observationTask == nil else { return }
         let task = Task { [self] in
-            let wasDelayed = try await self.initializeSource()
+            try await self.initializeSource()
             try Task.checkCancellation()
             guard !self.stopping else { throw CancellationError() }
+            let (ready, readiness) = AsyncThrowingStream<Void, any Error>.makeStream()
             self.observationTask = Task { [weak self, source = self.source] in
+                var subscribed = false
+                defer { readiness.finish() }
                 do {
-                    try await source.follow { [weak self] in
+                    try await source.follow(onReady: { [weak self] in
+                        guard let self, !self.stopping, !Task.isCancelled else { return }
+                        subscribed = true
+                        self.onReady?()
+                        // Cover changes between the earlier inventory read and subscribing.
+                        self.onChange?()
+                        readiness.yield(())
+                        readiness.finish()
+                    }, onChange: { [weak self] in
                         guard let self, !self.stopping, !Task.isCancelled else { return }
                         self.onChange?()
-                    }
+                    })
                 } catch {
                     guard let self, !self.stopping, !Task.isCancelled else { return }
-                    self.onError?(error)
+                    if subscribed { self.onError?(error) }
+                    else { readiness.finish(throwing: error) }
                 }
             }
-            // What changed while the service was not answering was not observed.
-            if wasDelayed { self.onChange?() }
+            for try await _ in ready { break }
+            try Task.checkCancellation()
         }
         startTask = task
         defer { startTask = nil }
@@ -53,16 +67,14 @@ package final class DeviceInventoryObservation {
     }
 
     /// Reports an initialization timeout and rejoins the shared task so observation can start
-    /// when it finishes. Returns whether the timeout occurred.
-    private func initializeSource() async throws -> Bool {
-        var wasDelayed = false
+    /// when it finishes.
+    private func initializeSource() async throws {
         while true {
             do {
                 try await source.initialize()
-                return wasDelayed
+                return
             } catch let failure as DeviceOperationFailure {
                 guard case .noAnswer = failure, !stopping else { throw failure }
-                wasDelayed = true
                 onError?(failure)
             }
         }

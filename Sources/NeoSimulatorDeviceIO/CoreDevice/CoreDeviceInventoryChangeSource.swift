@@ -4,7 +4,7 @@ import Foundation
 @MainActor
 package protocol DeviceInventoryChangeSource {
     func initialize() async throws
-    func follow(onChange: @escaping @MainActor () -> Void) async throws
+    func follow(onReady: @escaping @MainActor () -> Void, onChange: @escaping @MainActor () -> Void) async throws
 }
 
 @MainActor
@@ -40,7 +40,7 @@ package final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
         self.bindings = bindings
     }
 
-    package func follow(onChange: @escaping @MainActor () -> Void) async throws {
+    package func follow(onReady: @escaping @MainActor () -> Void, onChange: @escaping @MainActor () -> Void) async throws {
         guard let bindings else {
             throw DeviceIOError.unavailable("device-inventory-observation", "Device observation has not been initialized.")
         }
@@ -49,11 +49,12 @@ package final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
         guard let sequence = try owner.withCopy({ $0 as? any AsyncSequence }) else {
             throw DeviceIOError.unavailable("device-inventory-observation", "Connected-device changes could not be observed.")
         }
-        try await follow(sequence, onChange: onChange)
+        try await follow(sequence, onReady: onReady, onChange: onChange)
     }
 
-    private func follow<S: AsyncSequence>(_ sequence: S, onChange: @MainActor () -> Void) async throws {
+    private func follow<S: AsyncSequence>(_ sequence: S, onReady: @MainActor () -> Void, onChange: @MainActor () -> Void) async throws {
         var iterator = sequence.makeAsyncIterator()
+        onReady()
         while try await iterator.next(isolation: #isolation) != nil {
             try Task.checkCancellation()
             onChange()

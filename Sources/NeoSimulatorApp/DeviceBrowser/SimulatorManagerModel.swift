@@ -147,6 +147,10 @@ final class SimulatorManagerModel {
     /// The devices that queued work concerns, including one whose screen is only attaching.
     private(set) var queuedDeviceIDs: Set<DeviceInventoryID> = []
     private(set) var activity = ""
+    var globalActivity: String? { runningOperation?.activity }
+    var progressingDeviceIDs: Set<DeviceInventoryID> {
+        managingDeviceIDs.union(openingDeviceIDs).union(queuedDeviceIDs)
+    }
     private(set) var backgroundIssue: String?
     /// What is known of each device, which this process's screens also use.
     let registry: DeviceRegistry
@@ -163,11 +167,12 @@ final class SimulatorManagerModel {
     @ObservationIgnored var onDeviceOpenRequested: ((DeviceInventoryID) -> Void)?
     @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
     @ObservationIgnored var requestHostPreferenceAccess: (() async throws -> Void)?
+    @ObservationIgnored var retryDeviceObservation: (@MainActor () async -> Void)?
     @ObservationIgnored var beforeStoppingScreens: (() async throws -> Void)?
     @ObservationIgnored var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
     @ObservationIgnored var beforeManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
     @ObservationIgnored var afterManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
-    @ObservationIgnored private var refreshing = false
+    private(set) var isRefreshingInventory = false
     @ObservationIgnored private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var statusRefreshTask: Task<Void, Never>?
     private var statusIssue: (any Error)?
@@ -222,7 +227,7 @@ final class SimulatorManagerModel {
     }
     @ObservationIgnored private var activeDeviceOperations: [DeviceInventoryID: ActiveDeviceOperation] = [:]
     @ObservationIgnored private var pendingOperations: [PendingOperation] = []
-    @ObservationIgnored private var runningOperation: PendingOperation?
+    private var runningOperation: PendingOperation?
     @ObservationIgnored private var operationsChanged: CheckedContinuation<Void, Never>?
 
     func cancelOpening(_ identifier: DeviceInventoryID) {
@@ -629,19 +634,28 @@ final class SimulatorManagerModel {
 
     func refresh() async {
         guard !stopping else { return }
-        if isBusy || refreshing {
+        if isBusy || isRefreshingInventory {
             inventoryRefreshRequested = true
             return
         }
         await refreshCatalog()
     }
 
+    func retryInventory() async {
+        guard !stopping else { return }
+        if observationIssue != nil || activeStateIssue != nil {
+            async let recovery: Void? = retryDeviceObservation?()
+            await refresh()
+            _ = await recovery
+        } else { await refresh() }
+    }
+
     private func refreshCatalog() async {
-        if refreshing { await withCheckedContinuation { refreshWaiters.append($0) } }
-        else { refreshing = true }
+        if isRefreshingInventory { await withCheckedContinuation { refreshWaiters.append($0) } }
+        else { isRefreshingInventory = true }
         defer {
             if refreshWaiters.isEmpty {
-                refreshing = false
+                isRefreshingInventory = false
                 applyStartupServiceProfiles()
             }
             else { refreshWaiters.removeFirst().resume() }
@@ -727,7 +741,7 @@ final class SimulatorManagerModel {
     }
 
     func synchronizeConnections() async {
-        guard !stopping, !synchronizing, !refreshing, !isBusy else { return }
+        guard !stopping, !synchronizing, !isRefreshingInventory, !isBusy else { return }
         synchronizing = true
         defer { synchronizing = false }
         do {

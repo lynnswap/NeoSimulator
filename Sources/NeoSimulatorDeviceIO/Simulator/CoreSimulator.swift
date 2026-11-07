@@ -8,8 +8,9 @@ import XPC
 
 /// Prepared CoreSimulator messages, callable only on device or device-set workers because
 /// they block on native queues and services. NSError outputs and Objective-C exceptions
-/// become Swift errors.
-package struct CoreSimulatorInterface: @unchecked Sendable {
+/// become Swift errors. Sharing this immutable table avoids copying its prepared bindings
+/// into each call's stack frame on the smaller device workers.
+package final class CoreSimulatorInterface: @unchecked Sendable {
     /// Loads CoreSimulator and prepares its messages, which neither selects nor loads a UI toolkit.
     package static func load() async throws -> CoreSimulatorInterface {
         try await CoreDeviceRuntime.loading("simulator-runtime") { try await NativeFrameworks.loadCoreSimulator() }
@@ -56,6 +57,7 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
     fileprivate let runtimeVersion: NativeObjCMethod<UInt32>
     fileprivate let productFamily: NativeObjCMethod<Int32>
     fileprivate let deviceTypeName: NativeObjCMethod<String?>
+    fileprivate let chromeIdentifier: NativeObjCMethod<String?>
     fileprivate let framebufferMaskURL: NativeObjCMethod<NSURL?>
     fileprivate let deviceTypeCapabilities: NativeObjCMethod<NSDictionary?>
     fileprivate let deviceTypeIdentifier: NativeObjCMethod<String?>
@@ -175,6 +177,8 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
         deviceTypeName = try await runtime.resolve(
             .objc(.method("name", as: (() -> String?).self)),
             on: simDeviceType)
+        chromeIdentifier = try await runtime.resolve(
+            .objc(.method("chromeIdentifier", as: (() -> String?).self)), on: simDeviceType)
         framebufferMaskURL = try await runtime.resolve(
             .objc(.method("framebufferMaskURL", as: (() -> NSURL?).self)),
             on: simDeviceType)
@@ -435,7 +439,9 @@ package struct SimulatorDeviceRecord: Sendable {
     package let productFamily: Int
     package let deviceTypeName: String
     package let deviceTypeIdentifier: String
-    package let hasFramebufferMask: Bool
+    package let chromeIdentifier: String?
+    package let framebufferMaskURL: URL?
+    package var hasFramebufferMask: Bool { framebufferMaskURL != nil }
     package let screenCornerRadius: Double
     package let supportsEnhancedMultitasking: Bool
     package let screenPointsPerInch: Double?
@@ -459,7 +465,8 @@ package struct SimulatorDeviceRecord: Sendable {
         productFamily = Int(try deviceType.map { try unsafe interface.productFamily.unsafeInvoke(on: $0) } ?? 0)
         deviceTypeName = try deviceType.flatMap { try unsafe interface.deviceTypeName.unsafeInvoke(on: $0) } ?? ""
         deviceTypeIdentifier = try deviceType.flatMap { try unsafe interface.deviceTypeIdentifier.unsafeInvoke(on: $0) } ?? ""
-        hasFramebufferMask = try deviceType.flatMap { try unsafe interface.framebufferMaskURL.unsafeInvoke(on: $0) } != nil
+        chromeIdentifier = try deviceType.flatMap { try unsafe interface.chromeIdentifier.unsafeInvoke(on: $0) }
+        framebufferMaskURL = try deviceType.flatMap { try unsafe interface.framebufferMaskURL.unsafeInvoke(on: $0) }.map { $0 as URL }
         let capabilities = try deviceType.flatMap { try unsafe interface.deviceTypeCapabilities.unsafeInvoke(on: $0) }
         let deviceCapabilities = capabilities?["capabilities"] as? NSDictionary
         screenCornerRadius = (deviceCapabilities?["DeviceCornerRadius"] as? NSNumber)?.doubleValue ?? 0
@@ -487,7 +494,8 @@ package struct SimulatorDeviceRecord: Sendable {
         productFamily = 1
         deviceTypeName = ""
         deviceTypeIdentifier = ""
-        hasFramebufferMask = false
+        chromeIdentifier = nil
+        framebufferMaskURL = nil
         screenCornerRadius = 0
         supportsEnhancedMultitasking = false
         screenPointsPerInch = nil
@@ -499,8 +507,8 @@ package struct SimulatorDeviceRecord: Sendable {
 
 /// A device's shared CoreSimulator connection and cached state.
 ///
-/// The set creates it lazily and updates its values after each read. The client survives
-/// window closure and reboot. Deletion or connection invalidation ends it: old requests
+/// The set creates it lazily and updates its values after each read. Persistent clients survive
+/// window closure and reboot; temporary clients last for their leases. Deletion or connection invalidation ends it: old requests
 /// fail unsent, and the next lookup opens a new client.
 /// It retains its context and set while held, because SimDevice references its set weakly.
 @MainActor
@@ -509,6 +517,8 @@ package final class SimulatorDevice {
     /// The underlying SimDevice of the device's own context, for a display that binds to it.
     package var handle: SimDeviceHandle { SimDeviceHandle(unchecked: object) }
     let object: AnyObject
+    /// The already-open context supplied to SimulatorKit's chrome view.
+    package let serviceContext: AnyObject
     package var identifier: String { record.identifier }
     package var name: String { record.name }
     /// Runtime, build, and type description shown while Option is held.
@@ -519,6 +529,7 @@ package final class SimulatorDevice {
     package var productFamily: Int { record.productFamily }
     package var deviceTypeName: String { record.deviceTypeName }
     package var deviceTypeIdentifier: String { record.deviceTypeIdentifier }
+    package var chromeIdentifier: String? { record.chromeIdentifier }
     package var hasFramebufferMask: Bool { record.hasFramebufferMask }
     /// DeviceCornerRadius in points; zero for a square screen.
     package var screenCornerRadius: Double { record.screenCornerRadius }
@@ -544,6 +555,7 @@ package final class SimulatorDevice {
     fileprivate init(_ opened: NativeDeviceClient.OpenedDevice, client: NativeDeviceClient, interface: CoreSimulatorInterface) {
         record = opened.record
         object = opened.object
+        serviceContext = opened.context
         logPath = opened.logPath
         memoryWarningFilePath = opened.memoryWarningFilePath
         dataPath = opened.dataPath
@@ -836,6 +848,8 @@ package final class SimulatorDeviceSet {
         let native: NativeDeviceClient
         var device: SimulatorDevice?
         var opening: SharedTask<SimulatorDevice?>?
+        var persistent = false
+        var temporaryUsers = 0
     }
 
     private init(interface: CoreSimulatorInterface, address: DeviceSetAddress, listing: [String]?) {
@@ -883,9 +897,42 @@ package final class SimulatorDeviceSet {
     /// Concurrent callers share the opening. Failure permits retry on the same worker,
     /// preventing overlapping openings or native requests.
     package func client(withIdentifier identifier: String) async throws -> SimulatorDevice? {
+        try await client(withIdentifier: identifier, persistent: true)
+    }
+
+    /// Shares an existing client without keeping a connection after the last temporary consumer leaves.
+    package func leaseClient(withIdentifier identifier: String) async throws -> SimulatorDeviceLease? {
+        let key = identifier.uppercased()
+        var cached = clients[key] ?? DeviceClient(native: makeClient(key))
+        cached.temporaryUsers += 1
+        clients[key] = cached
+        let native = cached.native
+        do {
+            guard let device = try await client(withIdentifier: key, persistent: false) else {
+                releaseTemporaryClient(key, native: native)
+                return nil
+            }
+            return SimulatorDeviceLease(device: device) { [weak self] in self?.releaseTemporaryClient(key, native: native) }
+        } catch {
+            releaseTemporaryClient(key, native: native)
+            throw error
+        }
+    }
+
+    private func releaseTemporaryClient(_ key: String, native: NativeDeviceClient) {
+        guard var cached = clients[key], cached.native === native else { return }
+        cached.temporaryUsers -= 1
+        if cached.temporaryUsers == 0, !cached.persistent {
+            clients[key] = nil
+            if cached.device == nil { native.release() }
+        } else { clients[key] = cached }
+    }
+
+    private func client(withIdentifier identifier: String, persistent: Bool) async throws -> SimulatorDevice? {
         let key = identifier.uppercased()
         var client = clients[key] ?? DeviceClient(native: makeClient(key))
-        if let device = client.device { return device }
+        client.persistent = client.persistent || persistent
+        if let device = client.device { clients[key] = client; return device }
         let opening = client.opening ?? open(client.native, key)
         client.opening = opening
         clients[key] = client
@@ -957,6 +1004,19 @@ package final class SimulatorDeviceSet {
             if let record = listed[key] { client.device?.update(record) } else { client.device?.removeFromSet() }
         }
     }
+}
+
+@MainActor
+package final class SimulatorDeviceLease {
+    package let device: SimulatorDevice
+    private let release: () -> Void
+
+    fileprivate init(device: SimulatorDevice, release: @escaping () -> Void) {
+        self.device = device
+        self.release = release
+    }
+
+    isolated deinit { release() }
 }
 
 /// CoreSimulator's context and set. Only the worker of the set's channel touches this.
@@ -1111,6 +1171,7 @@ private func allocate(_ type: AnyClass) -> AnyObject? {
 private final class NativeDeviceClient: @unchecked Sendable {
     struct OpenedDevice: @unchecked Sendable {
         let object: AnyObject
+        let context: AnyObject
         let record: SimulatorDeviceRecord
         // These come from the set, so they are read while the device still has it.
         let logPath: String?
@@ -1148,7 +1209,7 @@ private final class NativeDeviceClient: @unchecked Sendable {
     /// Opens once, and what a call opened after its caller stopped waiting stays for the next. Answers nil, with nothing
     /// left open, if the set does not hold the device.
     func open() throws -> OpenedDevice? {
-        if let opened { return try read(opened.device, toolPath: opened.toolPath) }
+        if let opened { return try read(opened.device, context: opened.context, toolPath: opened.toolPath) }
         // A request that was waiting when this client ended belongs to no one who could release what it opened.
         guard !isReleased else { throw DeviceIOError.unavailable("simulator-runtime", "The device's connection to CoreSimulator ended while it opened.") }
         guard let uuid = NSUUID(uuidString: identifier) else { return nil }
@@ -1175,7 +1236,7 @@ private final class NativeDeviceClient: @unchecked Sendable {
             try watchForDeletion(uuid, in: object)
             let toolPath = address.path == nil ? nil : try unsafe interface.setPath.unsafeInvoke(on: object) ?? address.path
             guard let device = try unsafe interface.devicesByUDID.unsafeInvoke(on: object)[uuid],
-                  let read = try read(device as AnyObject, toolPath: toolPath) else {
+                  let read = try read(device as AnyObject, context: context, toolPath: toolPath) else {
                 discard(context, set: object)
                 return nil
             }
@@ -1207,9 +1268,9 @@ private final class NativeDeviceClient: @unchecked Sendable {
         }
     }
 
-    private func read(_ device: AnyObject, toolPath: String?) throws -> OpenedDevice? {
+    private func read(_ device: AnyObject, context: AnyObject, toolPath: String?) throws -> OpenedDevice? {
         try SimulatorDeviceRecord(device, deviceSetPath: toolPath, interface: interface).map {
-            OpenedDevice(object: device, record: $0, logPath: try unsafe interface.logPath.unsafeInvoke(on: device),
+            OpenedDevice(object: device, context: context, record: $0, logPath: try unsafe interface.logPath.unsafeInvoke(on: device),
                          memoryWarningFilePath: try unsafe interface.memoryWarningFilePath.unsafeInvoke(on: device),
                          dataPath: try unsafe interface.dataPath.unsafeInvoke(on: device))
         }

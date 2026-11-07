@@ -16,8 +16,20 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let menus: MenuController
     private let splitController = NSSplitViewController()
     private let table = NSOutlineView()
+    private let sidebarScroll = NSScrollView()
+    private let sidebarStatus = NSHostingView(rootView: SidebarStatusView(content: .empty))
+    private let sidebarIssue = NSTextField(wrappingLabelWithString: "")
+    private let sidebarIssueStack = NSStackView()
+    private let sidebarActivityStack = NSStackView()
+    private let sidebarActivity = NSTextField(labelWithString: "")
+    private let sidebarProgress = NSProgressIndicator()
+    private let sidebarIssueAccessory = NSSplitViewItemAccessoryViewController()
+    private var sidebarStateObservation: PortableObservationTracking.Token?
+    private var shownSidebarContent: SidebarStatusView.Content?
     private let search = NSSearchField()
     private let artworkCache = DeviceArtworkCache()
+    private let thumbnails = DeviceThumbnailStore()
+    private var thumbnailRefreshScheduled = false
     private(set) lazy var deviceScreenViewController: DeviceScreenViewController = {
         let pane = DeviceScreenViewController(model: model, screens: screens)
         pane.onViewScreen = { [weak self] in self?.openSelectedDevice(nil) }
@@ -76,7 +88,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var displayedActiveStates = DeviceActiveStates()
     private var groups: [DeviceGroup] = []
     private var groupsByID: [String: DeviceGroup] = [:]
-    private var displayedManagingIDs: Set<DeviceInventoryID> = []
+    private var displayedProgressIDs: Set<DeviceInventoryID> = []
     private(set) var selectedIdentifiers: Set<DeviceInventoryID> {
         get { presentationState.selectedDeviceIDs.intersection(model.inventory.map(\.id)) }
         set { presentationState.selectedDeviceIDs = newValue }
@@ -173,6 +185,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         window.tabbingMode = .disallowed
         window.toolbarStyle = .unified
         super.init(window: window)
+        thumbnails.onChange = { [weak self] in self?.refreshThumbnail(for: $0) }
         buildSidebar()
         buildDevicePane()
         buildInspector()
@@ -190,6 +203,12 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 Task { @MainActor [weak self] in self?.updateLiveScreenToolbar() }
             })
         }
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
+                     NSWindow.didDeminiaturizeNotification, NSWindow.willCloseNotification] {
+            windowCommandObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.scheduleThumbnailRefresh() }
+            })
+        }
         toolbarAppearanceObservation = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.updateToolbarAppearance() }
         }
@@ -197,6 +216,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.updateSidebarToolbarItems()
+                self.scheduleThumbnailRefresh()
             }
         }
         inspectorObservation = splitController.splitViewItems[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
@@ -217,6 +237,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         observeInventory()
         observeManagement()
         observeScreens()
+        sidebarStateObservation = withPortableContinuousObservation { [weak self] _ in self?.updateSidebarStatus() }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -241,6 +262,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         updateSelection()
         if selectionIdentifier != previousIdentifier { selectedDeviceChanged(selectionIdentifier) }
         updateFilterItem()
+        scheduleThumbnailRefresh()
+        updateSidebarStatus()
     }
 
     private func observeInventory() {
@@ -253,7 +276,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func observeManagement() {
-        displayedManagingIDs = model.managingDeviceIDs
+        displayedProgressIDs = model.progressingDeviceIDs
         managementObservation = withPortableContinuousObservation { [weak self, model] event in
             _ = model.managingDeviceIDs
             _ = model.isBusy
@@ -263,8 +286,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             guard event.kind != .initial else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let changed = self.displayedManagingIDs.symmetricDifference(self.model.managingDeviceIDs)
-                self.displayedManagingIDs = self.model.managingDeviceIDs
+                let progressIDs = self.model.progressingDeviceIDs
+                let changed = self.displayedProgressIDs.symmetricDifference(progressIDs)
+                self.displayedProgressIDs = progressIDs
                 for identifier in changed {
                     if let row = self.rowsByID[identifier] { self.table.reloadItem(row) }
                 }
@@ -428,7 +452,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         let controller = NSViewController()
         search.placeholderString = "Search Devices"
         search.delegate = self
-        let scroll = NSScrollView()
+        let scroll = sidebarScroll
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -451,7 +475,24 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         deviceMenu.autoenablesItems = false
         table.menu = deviceMenu
         scroll.documentView = table
-        controller.view = scroll
+        scroll.contentView.postsBoundsChangedNotifications = true
+        windowCommandObservers.append(NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleThumbnailRefresh() }
+        })
+        controller.view = NSView()
+        sidebarStatus.sizingOptions = []
+        for child in [scroll, sidebarStatus] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            controller.view.addSubview(child)
+            NSLayoutConstraint.activate([
+                child.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor),
+                child.topAnchor.constraint(equalTo: controller.view.topAnchor),
+                child.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor),
+            ])
+        }
         let sidebar = NSSplitViewItem(sidebarWithViewController: controller)
         sidebar.minimumThickness = 260
         sidebar.maximumThickness = 360
@@ -466,7 +507,67 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         searchContainer.frame.size = NSSize(width: 260, height: search.fittingSize.height + 20)
         searchAccessory.view = searchContainer
         sidebar.addTopAlignedAccessoryViewController(searchAccessory)
+        sidebarIssue.font = .systemFont(ofSize: 11)
+        sidebarIssue.textColor = .secondaryLabelColor
+        sidebarIssue.maximumNumberOfLines = 3
+        sidebarIssue.lineBreakMode = .byTruncatingTail
+        let retry = NSButton(title: String(localized: "Try Again", bundle: #bundle),
+                             target: self, action: #selector(retryInventory(_:)))
+        retry.controlSize = .small
+        sidebarIssueStack.orientation = .vertical
+        sidebarIssueStack.alignment = .leading
+        sidebarIssueStack.spacing = 6
+        sidebarIssueStack.addArrangedSubview(sidebarIssue)
+        sidebarIssueStack.addArrangedSubview(retry)
+        sidebarProgress.style = .spinning
+        sidebarProgress.controlSize = .small
+        sidebarActivity.font = .systemFont(ofSize: 11)
+        sidebarActivity.textColor = .secondaryLabelColor
+        sidebarActivity.lineBreakMode = .byTruncatingTail
+        sidebarActivityStack.spacing = 6
+        sidebarActivityStack.addArrangedSubview(sidebarProgress)
+        sidebarActivityStack.addArrangedSubview(sidebarActivity)
+        let feedback = NSStackView(views: [sidebarActivityStack, sidebarIssueStack])
+        feedback.orientation = .vertical
+        feedback.alignment = .leading
+        feedback.spacing = 8
+        feedback.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        sidebarIssue.widthAnchor.constraint(equalTo: feedback.widthAnchor, constant: -24).isActive = true
+        sidebarActivityStack.widthAnchor.constraint(equalTo: feedback.widthAnchor, constant: -24).isActive = true
+        feedback.frame.size = NSSize(width: 260, height: 80)
+        sidebarIssueAccessory.view = feedback
+        sidebarIssueAccessory.automaticallyAppliesContentInsets = false
+        sidebarIssueAccessory.isHidden = true
+        sidebar.addBottomAlignedAccessoryViewController(sidebarIssueAccessory)
         splitController.addSplitViewItem(sidebar)
+    }
+
+    private func updateSidebarStatus() {
+        let issue = model.backgroundIssue
+        let hasInventory = !model.inventory.isEmpty
+        let content: SidebarStatusView.Content
+        if !hasInventory, model.isRefreshingInventory || model.isBusy { content = .loading }
+        else if !hasInventory, let issue { content = .failure(issue) }
+        else if !hasInventory { content = .empty }
+        else { content = .noMatches(search.stringValue) }
+        if shownSidebarContent != content {
+            shownSidebarContent = content
+            sidebarStatus.rootView = SidebarStatusView(content: content, retry: { [weak self] in self?.retryInventory(nil) })
+        }
+        sidebarStatus.isHidden = !rows.isEmpty
+        sidebarScroll.isHidden = rows.isEmpty
+        sidebarIssue.stringValue = issue ?? ""
+        sidebarIssue.toolTip = issue
+        sidebarIssueStack.isHidden = issue == nil
+        let activity = model.globalActivity
+        sidebarActivity.stringValue = activity ?? ""
+        sidebarActivityStack.isHidden = activity == nil
+        if hasInventory, activity != nil { sidebarProgress.startAnimation(nil) } else { sidebarProgress.stopAnimation(nil) }
+        sidebarIssueAccessory.isHidden = !hasInventory || (issue == nil && activity == nil)
+    }
+
+    @objc private func retryInventory(_ sender: Any?) {
+        Task { [model] in await model.retryInventory() }
     }
 
     private func buildDevicePane() {
@@ -625,11 +726,62 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         cell.setLabels(name: device.name, subtitle: device.kind == .simulator ? "Simulator" : (modelName(of: device) ?? ""))
         cell.version.stringValue = version(of: device)
         cell.setArtwork(artwork(for: device), isActive: shouldRenderAsActive(device))
-        let managing = model.managingDeviceIDs.contains(device.id)
+        cell.setThumbnail(thumbnails.frame(for: device.id), image: thumbnails.image(for: device.id))
+        let managing = model.progressingDeviceIDs.contains(device.id)
         cell.progress.isHidden = !managing
         if managing { cell.progress.startAnimation(nil) } else { cell.progress.stopAnimation(nil) }
         cell.setAccessibilityLabel("\(device.name), \(device.operatingSystem ?? kindTitle(device)), \(DeviceBrowserPresentation.isAvailable(device) ? "Available" : "Unavailable")")
         return cell
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, didAdd rowView: NSTableRowView, forRow row: Int) {
+        scheduleThumbnailRefresh()
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, didRemove rowView: NSTableRowView, forRow row: Int) {
+        // A reused row must not carry a fading image of its previous device.
+        (rowView.view(atColumn: 0) as? SimulatorSidebarCellView)?.setThumbnail(nil, image: nil, animated: false)
+        scheduleThumbnailRefresh()
+    }
+
+    private func scheduleThumbnailRefresh() {
+        guard !thumbnailRefreshScheduled else { return }
+        thumbnailRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.thumbnailRefreshScheduled = false
+            self.updateThumbnails()
+        }
+    }
+
+    private func updateThumbnails() {
+        let booted = model.inventory.compactMap { device -> SimulatorHostDevice? in
+            guard case .simulator(let simulator) = device, simulator.state == "Booted" else { return nil }
+            return simulator
+        }
+        var visible: [SimulatorHostDevice] = []
+        let range = table.rows(in: table.visibleRect)
+        if window?.isVisible == true, window?.occlusionState.contains(.visible) == true,
+           !splitController.splitViewItems[0].isCollapsed, range.location != NSNotFound {
+            for index in range.location..<NSMaxRange(range) {
+                guard let row = table.item(atRow: index) as? DeviceRow,
+                      case .simulator(let device) = devicesByID[row.id], device.state == "Booted" else { continue }
+                visible.append(device)
+            }
+        }
+        thumbnails.update(visible: visible, booted: booted)
+        if range.location != NSNotFound {
+            for index in range.location..<NSMaxRange(range) {
+                if let row = table.item(atRow: index) as? DeviceRow { refreshThumbnail(for: row.id) }
+            }
+        }
+    }
+
+    private func refreshThumbnail(for identifier: DeviceInventoryID) {
+        guard let row = rowsByID[identifier] else { return }
+        let index = table.row(forItem: row)
+        guard index >= 0, let cell = table.view(atColumn: 0, row: index, makeIfNecessary: false) as? SimulatorSidebarCellView else { return }
+        cell.setThumbnail(thumbnails.frame(for: identifier), image: thumbnails.image(for: identifier))
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -657,6 +809,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
 
     private func updateSelection() {
+        scheduleThumbnailRefresh()
         let selections = selectedDevices
         let selectedDevice = selections.count == 1 ? selections.first : nil
         window?.title = selectedDevice?.name ?? "NeoSimulator"
