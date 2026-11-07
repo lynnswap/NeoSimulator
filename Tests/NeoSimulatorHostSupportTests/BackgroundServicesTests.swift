@@ -121,7 +121,11 @@ struct BackgroundServicesTests {
     }
 
     @Test func categoryStateCountsServicesKeptForAnotherFullyEnabledCategory() throws {
-        let icloud = try category("icloud"), store = try category("store"), health = try category("health")
+        var icloud = try category("icloud")
+        icloud.name = "Localized iCloud"
+        let store = try category("store"), health = try category("health")
+        let enabled = SimulatorBackgroundServices(disabled: [], loaded: [], productFamily: "iPhone")
+        #expect(enabled.labelsKeptEnabled(disabling: [icloud], named: []) == Self.sharedWithStore)
         let icloudOnly = Set(icloud.services.map(\.label)).subtracting(Self.sharedWithStore)
         let slimICloud = SimulatorBackgroundServices(disabled: icloudOnly, loaded: [], productFamily: "iPhone")
         #expect(slimICloud.state(of: icloud) == .disabled)

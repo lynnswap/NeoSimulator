@@ -6,17 +6,17 @@ public struct SimulatorDeviceSnapshot: Identifiable, Sendable {
     /// The identifier to pass to operations on this simulator.
     public let id: SimulatorDeviceIdentifier
     /// The simulator's name.
-    public let name: String
+    public var name: String
     /// The display name of the simulator's runtime.
-    public let runtimeName: String
+    public var runtimeName: String
     /// CoreSimulator's identifier for the simulator's runtime.
-    public let runtimeIdentifier: String
+    public var runtimeIdentifier: String
     /// The name of the simulator's device type.
-    public let modelName: String
+    public var modelName: String
     /// The simulator's product family.
-    public let family: SimulatorDeviceFamily
+    public var family: SimulatorDeviceFamily
     /// The simulator's state when this snapshot was read. Call ``SimulatorContext/devices()`` for a newer reading.
-    public let state: SimulatorDeviceState
+    public var state: SimulatorDeviceState
 
     package init(_ device: AvailableDevice) {
         id = device.identity

@@ -65,7 +65,7 @@ public struct SimulatorAudioDevice: Sendable, Equatable {
     /// ``DeviceSettingChange/audioOutputDevice(_:)``.
     public let identifier: String
     /// The route's display name.
-    public let name: String
+    public var name: String
 
     /// Creates an audio-device description.
     /// - Parameters:
@@ -80,9 +80,9 @@ public struct SimulatorAudioDevice: Sendable, Equatable {
 /// A recorded route that a device can simulate.
 public struct SimulatorLocationScenario: Sendable, Equatable {
     /// The name to pass to ``DeviceSettingChange/locationScenario(_:)``.
-    public let name: String
+    public var name: String
     /// The route's display name.
-    public let displayName: String
+    public var displayName: String
 
     /// Creates a recorded location-scenario description.
     /// - Parameters:
@@ -99,11 +99,11 @@ public struct SimulatorDisplayZoomMode: Sendable, Equatable, Codable {
     /// The value to pass to ``DeviceSettingChange/displayZoom(_:)``.
     public let rawMode: UInt64
     /// The guest's localized name for this mode.
-    public let nativeName: String
+    public var nativeName: String
     /// The width that the guest reports for this mode.
-    public let width: Double
+    public var width: Double
     /// The height that the guest reports for this mode.
-    public let height: Double
+    public var height: Double
 }
 
 /// The device's saved desired location. External live changes may differ.

@@ -13,24 +13,24 @@ public struct DeviceReport: Equatable, Sendable, Identifiable {
     /// Values reported by the source, without inferring a crash or hang from an .ips suffix.
     public struct FileType: Equatable, Sendable {
         /// The extension of the report's path, which is empty if it has none.
-        public let fileExtension: String
+        public var fileExtension: String
         /// The file's recorded log type, if the source reports it.
-        public let recordedLogType: String?
+        public var recordedLogType: String?
         /// The file's bug type, if the source reports it.
-        public let bugType: String?
+        public var bugType: String?
     }
     /// File properties reported by the source. An optional value is `nil` when the source does not report it.
     public struct Resources: Equatable, Sendable {
         /// Whether the entry is a directory.
-        public let isDirectory: Bool
+        public var isDirectory: Bool
         /// Whether the entry is hidden.
-        public let isHidden: Bool?
+        public var isHidden: Bool?
         /// Whether the entry is readable.
-        public let isReadable: Bool?
+        public var isReadable: Bool?
         /// Whether the entry is a symbolic link.
-        public let isSymbolicLink: Bool?
+        public var isSymbolicLink: Bool?
         /// Whether the entry is writable.
-        public let isWritable: Bool?
+        public var isWritable: Bool?
     }
     /// The report's identity.
     public var id: ID { ID(deviceID: deviceID, relativePath: relativePath) }
@@ -39,15 +39,15 @@ public struct DeviceReport: Equatable, Sendable, Identifiable {
     /// The report's path within the device's crash log domain.
     public let relativePath: String
     /// The report's file name.
-    public let name: String
+    public var name: String
     /// The report's size in bytes, if the source reports it.
-    public let size: Int64?
+    public var size: Int64?
     /// When the report last changed, if the source reports it.
-    public let modificationDate: Date?
+    public var modificationDate: Date?
     /// The report's file type.
-    public let type: FileType
+    public var type: FileType
     /// The report's file properties.
-    public let resources: Resources
+    public var resources: Resources
     package let metadata: [String: DeviceInspectorValue]
 }
 
