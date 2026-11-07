@@ -1494,6 +1494,18 @@ struct RemoteDeviceScreenTests {
         #expect(ended.count == 1)
         #expect(gestures.events(for: try trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0xA, location: .zero), transform: transform).isEmpty)
 
+        let edgeTransform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
+                                              tx: 0.25 - location.x / 400, ty: 0.05 + location.y / 600)
+        let edgeScroll = gestures.events(for: try trackpadScroll(.began, delta: -90, sender: 0xA, location: .zero), transform: edgeTransform)
+        // Crossing the edge on the first movement must not release a stationary touch as a tap.
+        #expect(edgeScroll.count == 2)
+        guard case let .touch(edgeStart, nil, .began, _) = try #require(edgeScroll.first),
+              case let .touch(edgeMoved, nil, .moved, _) = try #require(edgeScroll.last) else {
+            Issue.record("A scroll at the edge must drag without tapping"); return
+        }
+        #expect(edgeMoved != edgeStart)
+        #expect(gestures.end().count == 1)
+
         let pinch = gestures.events(for: try trackpadPinch(.began, magnification: 0.2, sender: 0xA, location: .zero), transform: transform)
         guard case let .touch(first, second?, .began, _) = try #require(pinch.first),
               case let .touch(spreadFirst, spreadSecond?, .moved, _) = try #require(pinch.last) else {

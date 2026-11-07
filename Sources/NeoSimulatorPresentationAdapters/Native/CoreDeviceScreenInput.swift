@@ -469,18 +469,20 @@ package struct NativeTrackpadTouches {
                     gesture = .scroll(anchor: anchor, point: point, pending: pending, active: false)
                     return result
                 }
-                result.append(Self.touch(point, phase: .began))
-                active = true
             }
             let origin = CGPoint.zero.applying(transform)
             let delta = CGPoint(x: pending.dx, y: pending.dy).applying(transform)
             var next = CGPoint(x: point.x + delta.x - origin.x, y: point.y + delta.y - origin.y)
-            if !CGRect(x: 0, y: 0, width: 1, height: 1).contains(next) {
+            if active, !CGRect(x: 0, y: 0, width: 1, height: 1).contains(next) {
                 // A long scroll may exceed one screen. Restart over the original target, never over an unrelated view at the screen center.
                 result.append(Self.touch(point, phase: .ended))
                 point = anchor
-                result.append(Self.touch(point, phase: .began))
+                active = false
                 next = CGPoint(x: point.x + delta.x - origin.x, y: point.y + delta.y - origin.y)
+            }
+            if !active {
+                result.append(Self.touch(point, phase: .began))
+                active = true
             }
             next = Self.bounded(next)
             result.append(Self.touch(next, phase: .moved))
