@@ -313,7 +313,7 @@ package actor SimulatorHostController {
         if let xcodeURL {
             candidates = [try await resolveXcode(xcodeURL)]
         } else {
-            if let selected = try await XcodeInstallationInspector(runner: reads).selectedXcodeIfUsable() { candidates.append(selected) }
+            if let selected = try await XcodeInstallationInspector(reads: reads).selectedXcodeIfUsable() { candidates.append(selected) }
             candidates.append(contentsOf: try await availableXcodes())
         }
         var seen = Set<URL>()
@@ -830,17 +830,17 @@ package actor SimulatorHostController {
 
     nonisolated private func sameURL(_ lhs: URL, _ rhs: URL) -> Bool { lhs.resolvingSymlinksInPath().standardizedFileURL.path == rhs.resolvingSymlinksInPath().standardizedFileURL.path }
     nonisolated private func makeInspector() -> InstallationInspector {
-        InstallationInspector(runner: reads, rendererApplicationURL: rendererApplicationURL)
+        InstallationInspector(runner: reads, xcodes: XcodeInstallationInspector(reads: reads), rendererApplicationURL: rendererApplicationURL)
     }
     @concurrent
     private func availableXcodes() async throws -> [XcodeInstallation] {
-        try await XcodeInstallationInspector(runner: reads).discoverXcodes()
+        try await XcodeInstallationInspector(reads: reads).discoverXcodes()
     }
 
     @concurrent
     private func resolveXcode(_ url: URL?) async throws -> XcodeInstallation {
         if let url { return try XcodeInstallationInspector().xcode(at: url) }
-        if let selected = try await XcodeInstallationInspector(runner: reads).selectedXcodeIfUsable() { return selected }
+        if let selected = try await XcodeInstallationInspector(reads: reads).selectedXcodeIfUsable() { return selected }
         return try await availableXcodes()[0]
     }
 
@@ -922,9 +922,9 @@ package actor SimulatorHostController {
 
     @concurrent
     private func readManagementCatalog(xcodeURL: URL, path: String?) async throws -> [SimulatorHostDevice] {
-        let output = try await reads.run(.simctl(xcodeURL: xcodeURL, arguments: ["list", "--json"], deviceSetPath: path, policy: .cancellable))
-        guard output.terminationStatus == 0 else { throw HostOperationError.io("simulator-management", output.stderrText) }
-        return try SimulatorDeviceCatalog.decode(output.stdout, deviceSetPath: path, includeUnavailable: true)
+        try await reads.read {
+            try await SimulatorDeviceCatalog.read(xcodeURL: xcodeURL, deviceSetPath: path, includeUnavailable: true)
+        }
     }
 
     private func resolveDevice(deviceID: DeviceInventoryID, preferredURL: URL?,
@@ -960,7 +960,7 @@ package actor SimulatorHostController {
     private func deviceXcodeCandidates(source: URL?) async throws -> [XcodeInstallation] {
         var candidates: [XcodeInstallation] = []
         if let source, let installation = try? XcodeInstallationInspector().xcode(at: source) { candidates.append(installation) }
-        if let selected = try await XcodeInstallationInspector(runner: reads).selectedXcodeIfUsable() { candidates.append(selected) }
+        if let selected = try await XcodeInstallationInspector(reads: reads).selectedXcodeIfUsable() { candidates.append(selected) }
         candidates.append(contentsOf: try await availableXcodes())
         return candidates
     }
@@ -1082,7 +1082,7 @@ package actor SimulatorHostController {
         continuation.resume(throwing: CancellationError())
         admitOperations()
     }
-    /// For a change. A catalog read goes through ``readSimctlList(xcode:deviceSetPath:)`` instead.
+    /// For a change. A catalog read goes through ``readSimulatorCatalog(xcode:deviceSetPath:)`` instead.
     @concurrent
     private func runSimctl(xcode: XcodeInstallation, arguments: [String], deviceSetPath: String? = nil) async throws -> Data {
         let output = try await SystemCommandRunner().run(.simctl(xcodeURL: xcode.applicationURL, arguments: arguments, deviceSetPath: deviceSetPath, policy: .uninterrupted))
@@ -1091,10 +1091,10 @@ package actor SimulatorHostController {
     }
 
     @concurrent
-    private func readSimctlList(xcode: XcodeInstallation, deviceSetPath: String? = nil) async throws -> Data {
-        let output = try await reads.run(.simctl(xcodeURL: xcode.applicationURL, arguments: ["list", "--json"], deviceSetPath: deviceSetPath, policy: .cancellable))
-        guard output.terminationStatus == 0 else { throw HostOperationError.io("simctl", output.stderrText) }
-        return output.stdout
+    private func readSimulatorCatalog(xcode: XcodeInstallation, deviceSetPath: String? = nil) async throws -> [SimulatorHostDevice] {
+        try await reads.read {
+            try await SimulatorDeviceCatalog.read(xcodeURL: xcode.applicationURL, deviceSetPath: deviceSetPath)
+        }
     }
 
     private struct CatalogResult: Sendable {
@@ -1113,14 +1113,13 @@ package actor SimulatorHostController {
 
     @concurrent
     private func readDeviceCatalog(xcode: XcodeInstallation) async throws -> CatalogResult {
-        let output = try await readSimctlList(xcode: xcode)
-        let devices = try SimulatorDeviceCatalog.decode(output)
+        let devices = try await readSimulatorCatalog(xcode: xcode)
         guard let path = SimulatorDeviceSets.testingPath(), FileManager.default.fileExists(atPath: path) else {
             return CatalogResult(devices: devices)
         }
         var diagnostic: String?
         let combined = try await SimulatorDeviceCatalog.appendingTestingDevices(to: devices, readTesting: {
-            try SimulatorDeviceCatalog.decode(await self.readSimctlList(xcode: xcode, deviceSetPath: path), deviceSetPath: path)
+            try await self.readSimulatorCatalog(xcode: xcode, deviceSetPath: path)
         }, onFailure: { error in
             diagnostic = "\(path): \(error.localizedDescription)"
         })

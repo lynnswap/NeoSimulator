@@ -163,14 +163,14 @@ package enum LiveDeviceInventory {
     @concurrent
     package static func xcodeURL(for simulator: SimulatorHostDevice, preferring preferred: URL?, using reads: CommandReads) async throws -> URL {
         if let preferred { return preferred }
-        let installations = try await XcodeInstallationInspector(runner: reads).discoverXcodes()
+        let installations = try await XcodeInstallationInspector(reads: reads).discoverXcodes()
         var failures: [any Error] = []
         for installation in installations {
             do {
-                let result = try await reads.run(.simctl(xcodeURL: installation.applicationURL,
-                    arguments: ["list", "--json"], deviceSetPath: simulator.deviceSetPath, policy: .cancellable))
-                guard result.terminationStatus == 0 else { throw DeviceInspectorError.commandFailed(status: result.terminationStatus, stdout: result.stdoutText, stderr: result.stderrText) }
-                let devices = try SimulatorDeviceCatalog.decode(result.stdout, deviceSetPath: simulator.deviceSetPath, includeUnavailable: true)
+                let devices = try await reads.read {
+                    try await SimulatorDeviceCatalog.read(xcodeURL: installation.applicationURL,
+                        deviceSetPath: simulator.deviceSetPath, includeUnavailable: true)
+                }
                 if devices.contains(where: { $0.identifier == simulator.identifier && $0.isAvailable }) { return installation.applicationURL }
             } catch is CancellationError { throw CancellationError() }
             catch { failures.append(error) }
@@ -182,23 +182,26 @@ package enum LiveDeviceInventory {
     @concurrent
     private static func readSimulators(using reads: CommandReads) async throws -> DeviceInventorySnapshot {
         let installations: [XcodeInstallation]
-        do { installations = try await XcodeInstallationInspector(runner: reads).discoverXcodes() }
+        do { installations = try await XcodeInstallationInspector(reads: reads).discoverXcodes() }
         catch is CancellationError { throw CancellationError() }
         catch { return DeviceInventorySnapshot(devices: [], issues: [.init(source: .simulators(xcodeURL: nil, deviceSetPath: nil), error: error)]) }
         let testingPath = SimulatorDeviceSets.testingPath().flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
         return try await SimulatorInventoryReader(
             installations: installations.map(\.applicationURL), testingDeviceSetPath: testingPath,
             readBootDates: { xcode, path in
-                let set = try await SimulatorDeviceSet.load(xcodeURL: xcode, path: path)
-                let devices = try await set.refresh()
-                return Dictionary(devices.compactMap { device in
-                    device.lastBootDate.map { (device.identifier, $0) }
-                }, uniquingKeysWith: { first, _ in first })
+                try await reads.read {
+                    let set = try await SimulatorDeviceSet.load(xcodeURL: xcode, path: path)
+                    let devices = try await set.refresh()
+                    return Dictionary(devices.compactMap { device in
+                        device.lastBootDate.map { (device.identifier, $0) }
+                    }, uniquingKeysWith: { first, _ in first })
+                }
             },
             readCatalog: { xcode, path in
-                let output = try await reads.run(.simctl(xcodeURL: xcode, arguments: ["list", "--json"], deviceSetPath: path, policy: .cancellable))
-                guard output.terminationStatus == 0 else { throw DeviceDomainError.io("simulator-inventory", output.stderrText.isEmpty ? output.stdoutText : output.stderrText) }
-                return output.stdout
+                try await reads.read {
+                    try await SimulatorDeviceCatalog.read(xcodeURL: xcode, deviceSetPath: path,
+                        includeUnavailable: true, catalogXcodeURL: xcode)
+                }
             }
         ).read()
     }
@@ -236,7 +239,7 @@ package struct SimulatorInventoryReader {
     package var installations: [URL]
     package var testingDeviceSetPath: String?
     package var readBootDates: ((URL, String?) async throws -> [String: Date])? = nil
-    package var readCatalog: (URL, String?) async throws -> Data
+    package var readCatalog: (URL, String?) async throws -> [SimulatorHostDevice]
 
     package nonisolated(nonsending) func read() async throws -> DeviceInventorySnapshot {
         var devices: [InventoryDevice] = []
@@ -247,8 +250,7 @@ package struct SimulatorInventoryReader {
             let paths: [String?] = testingDeviceSetPath.map { [nil, $0] } ?? [nil]
             for path in paths {
                 do {
-                    let catalog = try await SimulatorDeviceCatalog.decode(readCatalog(xcode, path), deviceSetPath: path,
-                                                                          includeUnavailable: true, catalogXcodeURL: xcode)
+                    let catalog = try await readCatalog(xcode, path)
                     var bootDates: [String: Date] = [:]
                     if catalog.contains(where: { $0.state == "Booted" }), let readBootDates {
                         do { bootDates = try await readBootDates(xcode, path) }
@@ -529,6 +531,37 @@ package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
 }
 
 package enum SimulatorDeviceCatalog {
+    @concurrent
+    package static func read(xcodeURL: URL, deviceSetPath: String? = nil, includeUnavailable: Bool = false,
+                             catalogXcodeURL: URL? = nil) async throws -> [SimulatorHostDevice] {
+        let set = try await SimulatorDeviceSet.load(xcodeURL: xcodeURL, path: deviceSetPath)
+        return devices(in: try await set.inventory(), deviceSetPath: deviceSetPath,
+                       includeUnavailable: includeUnavailable, catalogXcodeURL: catalogXcodeURL)
+    }
+
+    package static func devices(in snapshot: SimulatorInventorySnapshot, deviceSetPath: String? = nil,
+                                includeUnavailable: Bool = false, catalogXcodeURL: URL? = nil) -> [SimulatorHostDevice] {
+        let supportedFamilies: Set<String> = ["iPhone", "iPad", "Apple TV", "Apple Watch", "Apple Vision"]
+        return snapshot.devices.compactMap { device in
+            let supported = supportedFamilies.contains(device.productFamily)
+            guard includeUnavailable || (device.isAvailable && supported) else { return nil }
+            let pairs = snapshot.pairs.filter { $0.watch == device.identifier || $0.phone == device.identifier }
+            return SimulatorHostDevice(identifier: device.identifier, name: device.name,
+                descriptiveName: "\(device.name) — \(device.runtimeName)",
+                runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName,
+                productFamily: supported ? device.productFamily : "", state: device.state,
+                catalogXcodeURL: device.isAvailable ? catalogXcodeURL : nil, deviceSetPath: deviceSetPath,
+                modelIdentifier: supported ? device.modelIdentifier : nil, deviceTypeIdentifier: device.deviceTypeIdentifier,
+                isAvailable: device.isAvailable, lastUsedAt: device.lastUsedAt,
+                createdAt: device.dataPath.flatMap { path in
+                    try? URL(filePath: path).deletingLastPathComponent().resourceValues(forKeys: [.creationDateKey]).creationDate
+                }, pairIdentifiers: Set(pairs.map(\.identifier)),
+                activePairedDeviceID: pairs.first(where: \.isActive).map {
+                    .simulator(udid: $0.watch == device.identifier ? $0.phone : $0.watch, deviceSetPath: deviceSetPath)
+                })
+        }.sorted(by: orderedBefore)
+    }
+
     private struct Catalog: Decodable {
         struct Runtime: Decodable {
             let identifier: String
@@ -622,12 +655,14 @@ package enum SimulatorDeviceCatalog {
                     }
                 )
             }
-        }.sorted {
-            let order = $0.runtimeName.compare($1.runtimeName, options: .numeric)
-            return order == .orderedSame
-                ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
-                : order == .orderedDescending
-        }
+        }.sorted(by: orderedBefore)
+    }
+
+    private static func orderedBefore(_ lhs: SimulatorHostDevice, _ rhs: SimulatorHostDevice) -> Bool {
+        let order = lhs.runtimeName.compare(rhs.runtimeName, options: .numeric)
+        return order == .orderedSame
+            ? lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            : order == .orderedDescending
     }
 }
 

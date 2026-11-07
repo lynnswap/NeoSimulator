@@ -146,6 +146,29 @@ struct SystemCommandRunnerTests {
         #expect(FileManager.default.fileExists(atPath: marker.path))
     }
 
+    @Test func stoppingServiceReadsDiscardsTheirResultAndRefusesNewReadsUntilResumed() async throws {
+        let reads = CommandReads()
+        let started = AsyncStream<Void>.makeStream()
+        let finish = AsyncStream<Void>.makeStream()
+        let reading = Task {
+            try await reads.read {
+                started.continuation.yield()
+                for await _ in finish.stream {}
+                return 42
+            }
+        }
+        var events = started.stream.makeAsyncIterator()
+        _ = await events.next()
+        reads.stop()
+        finish.continuation.finish()
+        await #expect(throws: CancellationError.self) { try await reading.value }
+        await #expect(throws: CancellationError.self) { try await reads.read { 7 } }
+        #expect(!Task.isCancelled)
+        reads.resume()
+        #expect(try await reads.read { 7 } == 7)
+        started.continuation.finish()
+    }
+
     @Test func cancellingACallerStopsOnlyItsOwnRead() async throws {
         let scope = try CommandScope()
         let held = try HeldChildren(in: scope.directory)

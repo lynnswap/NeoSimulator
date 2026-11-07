@@ -59,6 +59,7 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
     fileprivate let framebufferMaskURL: NativeObjCMethod<NSURL?>
     fileprivate let deviceTypeCapabilities: NativeObjCMethod<NSDictionary?>
     fileprivate let deviceTypeIdentifier: NativeObjCMethod<String?>
+    fileprivate let inventory: InventoryMessages
     fileprivate let mainScreenDPI: NativeObjCMethod<CGSize>
     fileprivate let mainScreenScale: NativeObjCMethod<Float>
     fileprivate let userInterfaceIdentifier: NativeObjCMethod<String?>
@@ -183,6 +184,8 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
         deviceTypeIdentifier = try await runtime.resolve(
             .objc(.method("identifier", as: (() -> String?).self)),
             on: simDeviceType)
+        inventory = try await InventoryMessages(runtime: runtime, device: device, deviceType: simDeviceType,
+            pair: try requireClass("SimDevicePair"))
         mainScreenDPI = try await runtime.resolve(
             .objc(.method("mainScreenDPI", as: (() -> CGSize).self)),
             on: simDeviceType)
@@ -197,6 +200,31 @@ package struct CoreSimulatorInterface: @unchecked Sendable {
             .objc(.method("testPossiblePairingWithDeviceTypeA:RuntimeA:DeviceTypeB:RuntimeB:error:",
                 as: ((AnyObject, AnyObject, AnyObject, AnyObject) throws -> Void).self)),
             on: devicePairClass, classMethod: true)
+    }
+}
+
+private struct InventoryMessages: @unchecked Sendable {
+    let available: NativeObjCMethod<Bool>
+    let state: NativeObjCMethod<String?>
+    let lastUsedAt: NativeObjCMethod<NSDate?>
+    let productFamily: NativeObjCMethod<String?>
+    let modelIdentifier: NativeObjCMethod<String?>
+    let pairIdentifier: NativeObjCMethod<NSUUID?>
+    let watch: NativeObjCMethod<AnyObject?>
+    let phone: NativeObjCMethod<AnyObject?>
+    let active: NativeObjCMethod<Bool>
+
+    @MainActor
+    init(runtime: ABIRuntime, device: AnyClass, deviceType: AnyClass, pair: AnyClass) async throws {
+        available = try await runtime.resolve(.objc(.method("available", as: (() -> Bool).self)), on: device)
+        state = try await runtime.resolve(.objc(.method("stateString", as: (() -> String?).self)), on: device)
+        lastUsedAt = try await runtime.resolve(.objc(.method("lastUsedAt", as: (() -> NSDate?).self)), on: device)
+        productFamily = try await runtime.resolve(.objc(.method("productFamily", as: (() -> String?).self)), on: deviceType)
+        modelIdentifier = try await runtime.resolve(.objc(.method("modelIdentifier", as: (() -> String?).self)), on: deviceType)
+        pairIdentifier = try await runtime.resolve(.objc(.method("UUID", as: (() -> NSUUID?).self)), on: pair)
+        watch = try await runtime.resolve(.objc(.method("gizmo", as: (() -> AnyObject?).self)), on: pair)
+        phone = try await runtime.resolve(.objc(.method("companion", as: (() -> AnyObject?).self)), on: pair)
+        active = try await runtime.resolve(.objc(.method("active", as: (() -> Bool).self)), on: pair)
     }
 }
 
@@ -372,6 +400,31 @@ package struct GuestStateReading: Equatable, Sendable {
 
 /// A device snapshot captured on its worker. These values provide no guest access;
 /// use ``SimulatorDeviceSet/client(withIdentifier:)`` for a ``SimulatorDevice``.
+/// Inventory includes unavailable devices, unlike the display clients' available-device list.
+package struct SimulatorInventorySnapshot: Sendable {
+    package struct Device: Sendable {
+        package let identifier: String
+        package let name: String
+        package let runtimeIdentifier: String
+        package let runtimeName: String
+        package let productFamily: String
+        package let state: String
+        package let modelIdentifier: String?
+        package let deviceTypeIdentifier: String?
+        package let isAvailable: Bool
+        package let lastUsedAt: Date?
+        package let dataPath: String?
+    }
+    package struct Pair: Sendable {
+        package let identifier: String
+        package let watch: String
+        package let phone: String
+        package let isActive: Bool
+    }
+    package let devices: [Device]
+    package let pairs: [Pair]
+}
+
 package struct SimulatorDeviceRecord: Sendable {
     package let identifier: String
     package let name: String
@@ -806,6 +859,12 @@ package final class SimulatorDeviceSet {
         return devices
     }
 
+    package func inventory() async throws -> SimulatorInventorySnapshot {
+        try await channel.read("read the simulator inventory", limit: DeviceOperationLimit.deviceSet) { [native] in
+            try native.readInventory()
+        }
+    }
+
     /// The set's path, resolved by CoreSimulator.
     package func resolvedPath() async throws -> String {
         try await channel.read("open the device set", limit: DeviceOperationLimit.deviceSet) { [native] in
@@ -942,6 +1001,41 @@ private final class NativeDeviceSet: @unchecked Sendable {
         return try unsafe interface.availableDevices.unsafeInvoke(on: opened.object).compactMap {
             try SimulatorDeviceRecord($0, deviceSetPath: opened.toolPath, interface: interface)
         }
+    }
+
+    func readInventory() throws -> SimulatorInventorySnapshot {
+        let opened = try open(), messages = interface.inventory
+        let devices = try unsafe interface.devicesByUDID.unsafeInvoke(on: opened.object).allValues.compactMap { object -> SimulatorInventorySnapshot.Device? in
+            let object = object as AnyObject
+            guard let identifier = try unsafe interface.identifier.unsafeInvoke(on: object)?.uuidString else { return nil }
+            let runtimeID = try unsafe interface.deviceRuntimeIdentifier.unsafeInvoke(on: object) ?? ""
+            let runtime = try unsafe interface.deviceRuntime.unsafeInvoke(on: object)
+            let type = try unsafe interface.deviceType.unsafeInvoke(on: object)
+            let runtimeAvailable = try runtime.map { try unsafe interface.runtimeAvailable.unsafeInvoke(on: $0) } ?? false
+            return try SimulatorInventorySnapshot.Device(
+                identifier: identifier,
+                name: unsafe interface.name.unsafeInvoke(on: object) ?? "iOS Simulator",
+                runtimeIdentifier: runtimeID,
+                runtimeName: runtime.flatMap { try unsafe interface.runtimeName.unsafeInvoke(on: $0) } ?? runtimeID,
+                productFamily: type.flatMap { try unsafe messages.productFamily.unsafeInvoke(on: $0) } ?? "",
+                state: unsafe messages.state.unsafeInvoke(on: object) ?? "Unknown",
+                modelIdentifier: type.flatMap { try unsafe messages.modelIdentifier.unsafeInvoke(on: $0) },
+                deviceTypeIdentifier: type.flatMap { try unsafe interface.deviceTypeIdentifier.unsafeInvoke(on: $0) },
+                isAvailable: runtimeAvailable && (unsafe messages.available.unsafeInvoke(on: object)),
+                lastUsedAt: unsafe messages.lastUsedAt.unsafeInvoke(on: object).map { $0 as Date },
+                dataPath: unsafe interface.dataPath.unsafeInvoke(on: object))
+        }
+        let pairs = try unsafe interface.devicePairsByUUID.unsafeInvoke(on: opened.object).allValues.compactMap { object -> SimulatorInventorySnapshot.Pair? in
+            let object = object as AnyObject
+            guard let identifier = try unsafe messages.pairIdentifier.unsafeInvoke(on: object)?.uuidString,
+                  let watch = try unsafe messages.watch.unsafeInvoke(on: object),
+                  let phone = try unsafe messages.phone.unsafeInvoke(on: object),
+                  let watchID = try unsafe interface.identifier.unsafeInvoke(on: watch)?.uuidString,
+                  let phoneID = try unsafe interface.identifier.unsafeInvoke(on: phone)?.uuidString else { return nil }
+            return try SimulatorInventorySnapshot.Pair(identifier: identifier, watch: watchID, phone: phoneID,
+                                                        isActive: unsafe messages.active.unsafeInvoke(on: object))
+        }
+        return SimulatorInventorySnapshot(devices: devices, pairs: pairs)
     }
 
     func readCatalog() throws -> SimulatorCatalog.Snapshot {

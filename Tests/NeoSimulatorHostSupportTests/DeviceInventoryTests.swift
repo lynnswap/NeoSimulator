@@ -8,6 +8,31 @@ import Testing
 
 @Suite
 struct DeviceInventoryTests {
+    @Test func nativeInventoryKeepsUnavailableDevicesAndPairIdentityInTheirOwnSet() throws {
+        func record(_ id: String, family: String, available: Bool) -> SimulatorInventorySnapshot.Device {
+            .init(identifier: id, name: id, runtimeIdentifier: "runtime", runtimeName: "OS",
+                  productFamily: family, state: "Shutdown", modelIdentifier: "model", deviceTypeIdentifier: "type",
+                  isAvailable: available, lastUsedAt: Date(timeIntervalSinceReferenceDate: 10), dataPath: nil)
+        }
+        let snapshot = SimulatorInventorySnapshot(devices: [
+            record("phone", family: "iPhone", available: true),
+            record("watch", family: "Apple Watch", available: false),
+            record("unsupported", family: "Other", available: true),
+        ], pairs: [.init(identifier: "pair", watch: "watch", phone: "phone", isActive: true)])
+        let xcode = URL(fileURLWithPath: "/Applications/Xcode.app")
+        let available = SimulatorDeviceCatalog.devices(in: snapshot, deviceSetPath: "/testing", catalogXcodeURL: xcode)
+        #expect(available.map(\.identifier) == ["phone"])
+        let phone = try #require(available.first)
+        #expect(phone.activePairedDeviceID == .simulator(udid: "watch", deviceSetPath: "/testing"))
+        #expect(phone.pairIdentifiers == ["pair"] && phone.catalogXcodeURL == xcode)
+        #expect(phone.modelIdentifier == "model" && phone.lastUsedAt == Date(timeIntervalSinceReferenceDate: 10))
+        let all = SimulatorDeviceCatalog.devices(in: snapshot, includeUnavailable: true, catalogXcodeURL: xcode)
+        let watch = try #require(all.first { $0.identifier == "watch" })
+        #expect(!watch.isAvailable && watch.catalogXcodeURL == nil)
+        #expect(watch.activePairedDeviceID == .simulator(udid: "phone", deviceSetPath: nil))
+        #expect(all.first { $0.identifier == "unsupported" }?.productFamily == "")
+    }
+
     @Test func everySpellingOfASimulatorIsTheSameIdentity() throws {
         let canonical = DeviceInventoryID.simulator(udid: "ABC-DEF", deviceSetPath: "/tmp/Fixture")
         let device = InventoryDevice.simulator(SimulatorHostDevice(identifier: "abc-def", name: "Fixture", descriptiveName: "Fixture",
@@ -217,8 +242,9 @@ struct DeviceInventoryTests {
         let simulator = Self.simulator("simulator-udid")
         let reader = DeviceInventoryReader(readSimulators: {
             if holdsCoreDevice { return DeviceInventorySnapshot(devices: [.simulator(simulator)], issues: []) }
-            return try await SimulatorInventoryReader(installations: [URL(fileURLWithPath: "/Applications/Xcode.app")], testingDeviceSetPath: nil) { _, _ in
-                try await reads.run(command).stdout
+            return try await SimulatorInventoryReader(installations: [URL(fileURLWithPath: "/Applications/Xcode.app")], testingDeviceSetPath: nil) { xcode, path in
+                try await SimulatorDeviceCatalog.decode(reads.run(command).stdout, deviceSetPath: path,
+                                                       includeUnavailable: true, catalogXcodeURL: xcode)
             }.read()
         }, readCoreDevices: {
             holdsCoreDevice ? try await reads.run(command).stdout : Self.coreDeviceJSON
@@ -252,13 +278,13 @@ struct DeviceInventoryTests {
     }
 
     @Test func cancellingTheSelectedXcodeReadEndsDiscoveryInsteadOfSkippingThatXcode() async throws {
-        struct CancelledRunner: CommandRunning {
-            nonisolated(nonsending) func run(_ command: SystemCommand) async throws -> CommandOutput { throw CancellationError() }
-        }
-        let inspector = XcodeInstallationInspector(runner: CancelledRunner(), environment: [:])
+        let inspector = XcodeInstallationInspector(environment: [:], readSelection: { throw CancellationError() })
         await #expect(throws: CancellationError.self) { _ = try await inspector.selectedXcodeIfUsable() }
         await #expect(throws: CancellationError.self) { _ = try await inspector.discoverXcodes() }
-        #expect(try await XcodeInstallationInspector(runner: FakeSystemCommandRunner(), environment: [:]).selectedXcodeIfUsable() == nil)
+        let missing = XcodeInstallationInspector(environment: [:], readSelection: {
+            throw DeviceIOError.unavailable("selected-xcode", "No selection")
+        })
+        #expect(try await missing.selectedXcodeIfUsable() == nil)
     }
 
     @Test func testingCatalogFailurePreservesNormalDevicesAndReportsItsExactSource() async throws {
@@ -267,11 +293,12 @@ struct DeviceInventoryTests {
         let snapshot = try await SimulatorInventoryReader(installations: [newer, older], testingDeviceSetPath: "/testing") { xcode, path in
             if xcode == newer, path != nil { throw DeviceIOError.io("testing-inventory", "fixture testing set unavailable") }
             if xcode == older, path == nil {
-                return Data(String(decoding: Self.simulatorJSON, as: UTF8.self).replacingOccurrences(
+                return try SimulatorDeviceCatalog.decode(Data(String(decoding: Self.simulatorJSON, as: UTF8.self).replacingOccurrences(
                     of: "\"name\":\"Unavailable\",\"state\":\"Shutdown\",\"isAvailable\":false",
-                    with: "\"name\":\"Unavailable\",\"state\":\"Shutdown\",\"isAvailable\":true").utf8)
+                    with: "\"name\":\"Unavailable\",\"state\":\"Shutdown\",\"isAvailable\":true").utf8),
+                    deviceSetPath: path, includeUnavailable: true, catalogXcodeURL: xcode)
             }
-            return Self.simulatorJSON
+            return try SimulatorDeviceCatalog.decode(Self.simulatorJSON, deviceSetPath: path, includeUnavailable: true, catalogXcodeURL: xcode)
         }.read()
         #expect(snapshot.devices.count == 6)
         #expect(Set(snapshot.devices.map(\.id)).count == 6)
@@ -301,7 +328,9 @@ struct DeviceInventoryTests {
             readBootDates: { _, _ in
                 if fails { throw DeviceIOError.io("boot-identity", "unavailable") }
                 return ["ready": boot, "unavailable": boot]
-            }, readCatalog: { _, _ in Self.simulatorJSON }).read()
+            }, readCatalog: { xcode, path in
+                try SimulatorDeviceCatalog.decode(Self.simulatorJSON, deviceSetPath: path, includeUnavailable: true, catalogXcodeURL: xcode)
+            }).read()
         let joined = try await DeviceInventoryReader(readSimulators: { snapshot },
             readCoreDevices: { Data(#"{"result":{"devices":[]}}"#.utf8) }).read()
         let device = try #require(joined.devices.first { $0.id == .simulator(udid: "ready", deviceSetPath: nil) })
@@ -324,7 +353,9 @@ struct DeviceInventoryTests {
             readBootDates: { xcode, _ in
                 if xcode == first { throw DeviceIOError.io("boot-identity", "unavailable") }
                 return ["ready": boot]
-            }, readCatalog: { _, _ in Self.simulatorJSON }).read()
+            }, readCatalog: { xcode, path in
+                try SimulatorDeviceCatalog.decode(Self.simulatorJSON, deviceSetPath: path, includeUnavailable: true, catalogXcodeURL: xcode)
+            }).read()
         let item = try #require(snapshot.devices.first { $0.id == .simulator(udid: "ready", deviceSetPath: nil) })
         guard case .simulator(let device) = item else { Issue.record("Expected a simulator"); return }
         #expect(device.catalogXcodeURL == first && device.lastBootDate == boot)

@@ -21,6 +21,7 @@ package struct InstallationInspector {
         runner: any CommandRunning,
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        xcodes: XcodeInstallationInspector? = nil,
         rendererApplicationURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/NeoSimulatorRenderer.app", isDirectory: true),
         coreSimulatorFrameworkURL: URL = URL(
             fileURLWithPath: DeviceToolPaths.coreSimulatorFramework,
@@ -34,7 +35,7 @@ package struct InstallationInspector {
     ) {
         self.runner = runner
         self.fileManager = fileManager
-        xcodes = XcodeInstallationInspector(runner: runner, environment: environment)
+        self.xcodes = xcodes ?? XcodeInstallationInspector(environment: environment)
         self.rendererApplicationURL = rendererApplicationURL
         self.coreSimulatorFrameworkURL = coreSimulatorFrameworkURL.standardizedFileURL
         self.coreDeviceFrameworkURL = coreDeviceFrameworkURL.standardizedFileURL

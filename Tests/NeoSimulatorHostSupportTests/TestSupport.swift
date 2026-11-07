@@ -37,7 +37,6 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
     }
 
     var domains: [String: [String: Any]] = [:]
-    var selectedDeveloperDirectory: URL?
     var failMutationNumbers: Set<Int> = []
     var failPreferenceReadNumber: Int?
     var failFirstPreferenceReadAfterMutationCount: Int?
@@ -57,29 +56,21 @@ final class FakeSystemCommandRunner: CommandRunning, PreferenceDomainAccessing {
         calls.append(call)
         beforeRun?(call)
 
-        switch executable.path {
-        case "/usr/bin/xcode-select":
-            guard arguments == ["-p"], let selectedDeveloperDirectory else {
-                return failure("no selected developer directory")
-            }
-            return success("\(selectedDeveloperDirectory.path)\n")
-        default:
-            guard executable.lastPathComponent == "NeoSimulator",
-                  arguments.count == 3,
-                  arguments[0] == "--validate-runtime",
-                  arguments[1] == "--xcode"
-            else {
-                throw HostOperationError.software(
-                    "unexpected-test-command",
-                    "unexpected command: \(executable.path) \(arguments)"
-                )
-            }
-            return CommandOutput(
-                terminationStatus: neoHostRuntimeValidationStatus,
-                stdout: Data(neoHostRuntimeValidationOutput.utf8),
-                stderr: Data(neoHostRuntimeValidationError.utf8)
+        guard executable.lastPathComponent == "NeoSimulator",
+              arguments.count == 3,
+              arguments[0] == "--validate-runtime",
+              arguments[1] == "--xcode"
+        else {
+            throw HostOperationError.software(
+                "unexpected-test-command",
+                "unexpected command: \(executable.path) \(arguments)"
             )
         }
+        return CommandOutput(
+            terminationStatus: neoHostRuntimeValidationStatus,
+            stdout: Data(neoHostRuntimeValidationOutput.utf8),
+            stderr: Data(neoHostRuntimeValidationError.utf8)
+        )
     }
 
     nonisolated(nonsending) func readDomain(_ domain: String, keys: [String]) async throws -> [String: Any] {
@@ -602,7 +593,6 @@ struct ControllerFixture {
             runner.neoHostRuntimeValidationError =
                 "injected private runtime validation failure"
         }
-        runner.selectedDeveloperDirectory = installations.developerDirectoryURL
         runner.setStoredValue(
             initialState.xcodeSession.booleanValue,
             for: ToolConstants.xcodePreference
