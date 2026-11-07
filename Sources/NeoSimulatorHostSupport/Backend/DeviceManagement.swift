@@ -47,20 +47,22 @@ package struct DeviceManagementResult: Sendable {
     package let completedSteps: [String]
     package let createdDeviceID: DeviceInventoryID?
     package let error: (any Error)?
+    /// A confirmed boot remains useful even if erasing or reconnecting the display reports a failure.
+    package var didStartSimulator = false
 
     package func recordingDisplayCleanup(_ outcome: Result<Void, any Error>,
                                         completedStep: String = "Display disconnected") -> Self {
         switch outcome {
         case .success:
             return Self(deviceID: deviceID, completedSteps: completedSteps + [completedStep],
-                        createdDeviceID: createdDeviceID, error: error)
+                        createdDeviceID: createdDeviceID, error: error, didStartSimulator: didStartSimulator)
         case .failure(let cleanup):
             let previous = error as? DeviceManagementCleanupError
             let operationError: (any Error)? = if let previous { previous.operationError } else { error }
             let combined = DeviceManagementCleanupError(operationError: operationError,
                 cleanupErrors: (previous?.cleanupErrors ?? []) + [cleanup])
             return Self(deviceID: deviceID, completedSteps: completedSteps,
-                        createdDeviceID: createdDeviceID, error: combined)
+                        createdDeviceID: createdDeviceID, error: combined, didStartSimulator: didStartSimulator)
         }
     }
 }
@@ -385,6 +387,7 @@ package struct DeviceManagementBackend: Sendable {
                          preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementResult {
         var completed: [String] = []
         var created: DeviceInventoryID?
+        var didStartSimulator = false
         do {
             try Task.checkCancellation()
             switch target {
@@ -402,13 +405,17 @@ package struct DeviceManagementBackend: Sendable {
                     try Task.checkCancellation()
                     let output = try await runSimctl(resolved.xcodeURL, arguments, device.deviceSetPath)
                     completed.append(step)
+                    if arguments.first == "boot" { didStartSimulator = true }
                     return output
                 }
                 let usesRestart: Bool = action == .restart || (action == .erase && device.state == "Booted")
                 var handledByRenderer = false
                 if usesRestart, let renderer = resolved.renderer {
                     handledByRenderer = try await restart(renderer, device.inventoryID, action == .erase)
-                    if handledByRenderer { completed.append(action == .erase ? "Erased and restarted" : "Restarted") }
+                    if handledByRenderer {
+                        didStartSimulator = true
+                        completed.append(action == .erase ? "Erased and restarted" : "Restarted")
+                    }
                 }
                 if !handledByRenderer {
                     if needsCleanup, let renderer = resolved.renderer {
@@ -494,9 +501,11 @@ package struct DeviceManagementBackend: Sendable {
                 }
                 completed.append(step)
             }
-            return DeviceManagementResult(deviceID: target.id, completedSteps: completed, createdDeviceID: created, error: nil)
+            return DeviceManagementResult(deviceID: target.id, completedSteps: completed, createdDeviceID: created,
+                                          error: nil, didStartSimulator: didStartSimulator)
         } catch {
-            return DeviceManagementResult(deviceID: target.id, completedSteps: completed, createdDeviceID: created, error: error)
+            return DeviceManagementResult(deviceID: target.id, completedSteps: completed, createdDeviceID: created,
+                                          error: error, didStartSimulator: didStartSimulator || error is DeviceRestartedWithFailure)
         }
     }
 
@@ -648,7 +657,7 @@ actor SimulatorShutdownTransaction {
             let result = results[index]
             results[index] = DeviceManagementResult(deviceID: result.deviceID,
                 completedSteps: result.completedSteps + preparation.completedSteps,
-                createdDeviceID: result.createdDeviceID, error: result.error)
+                createdDeviceID: result.createdDeviceID, error: result.error, didStartSimulator: result.didStartSimulator)
             if case .failure(let error) = preparation.context {
                 results[index] = results[index].recordingDisplayCleanup(.failure(error))
             }

@@ -415,7 +415,7 @@ package final class SimulatorScreenHost {
         AvailableDevice(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
                         runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName,
                         productFamily: device.productFamily, deviceTypeName: device.deviceTypeName,
-                        state: device.state, deviceSetPath: device.deviceSetPath)
+                        state: device.state, deviceSetPath: device.deviceSetPath, lastBootDate: device.lastBootDate)
     }
 
     package func didSelectDevice(_ identifier: SimulatorDeviceIdentifier) {

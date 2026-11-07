@@ -35,6 +35,13 @@ package struct DeviceRestartInterruption: LocalizedError {
     package let errorDescription: String?
 }
 
+/// A failed restart operation that nevertheless completed its boot.
+package struct DeviceRestartedWithFailure: LocalizedError {
+    package let underlyingError: any Error
+    package var errorDescription: String? { underlyingError.localizedDescription }
+    package init(underlyingError: any Error) { self.underlyingError = underlyingError }
+}
+
 @MainActor
 package final class DeviceTools {
     package static let simctl = DeviceToolPaths.simctl
@@ -173,7 +180,9 @@ package final class DeviceTools {
             }
             throw failure("booting", completed: completed, error)
         }
-        if let eraseFailure { throw failure("erasing", completed: ["shut down", "booted again"], eraseFailure) }
+        if let eraseFailure {
+            throw DeviceRestartedWithFailure(underlyingError: failure("erasing", completed: ["shut down", "booted again"], eraseFailure))
+        }
     }
 
     package func installApplication(at url: URL) async throws {

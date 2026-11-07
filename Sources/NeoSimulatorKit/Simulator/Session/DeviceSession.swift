@@ -281,7 +281,8 @@ extension SimulatorHostDevice {
         }
         self.init(identifier: device.identifier, name: device.name, descriptiveName: device.descriptiveName,
                   runtimeIdentifier: device.runtimeIdentifier, runtimeName: device.runtimeName, productFamily: family,
-                  state: device.isBooted ? "Booted" : "Shutdown", ownerXcodeURL: ownerXcodeURL, deviceSetPath: device.deviceSetPath)
+                  state: device.isBooted ? "Booted" : "Shutdown", ownerXcodeURL: ownerXcodeURL,
+                  deviceSetPath: device.deviceSetPath, lastBootDate: device.lastBootDate)
     }
 }
 

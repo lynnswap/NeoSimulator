@@ -79,6 +79,7 @@ package struct DeviceInventoryIssue: Sendable {
         case simulators(xcodeURL: URL?, deviceSetPath: String?)
         case coreDevice
         case rendererOwnership
+        case simulatorBootDates(xcodeURL: URL, deviceSetPath: String?)
     }
 
     package let source: Source
@@ -118,7 +119,7 @@ package struct DeviceInventorySnapshot: Sendable {
                 sources.contains { if case .simulators = $0 { true } else { false } }
             case .simulators, .coreDevice:
                 sources.contains(issue.source)
-            case .rendererOwnership:
+            case .rendererOwnership, .simulatorBootDates:
                 false
             }
         }
@@ -187,6 +188,13 @@ package enum LiveDeviceInventory {
         let testingPath = SimulatorDeviceSets.testingPath().flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
         return try await SimulatorInventoryReader(
             installations: installations.map(\.applicationURL), testingDeviceSetPath: testingPath,
+            readBootDates: { xcode, path in
+                let set = try await SimulatorDeviceSet.load(xcodeURL: xcode, path: path)
+                let devices = try await set.refresh()
+                return Dictionary(devices.compactMap { device in
+                    device.lastBootDate.map { (device.identifier, $0) }
+                }, uniquingKeysWith: { first, _ in first })
+            },
             readCatalog: { xcode, path in
                 let output = try await reads.run(.simctl(xcodeURL: xcode, arguments: ["list", "--json"], deviceSetPath: path, policy: .cancellable))
                 guard output.terminationStatus == 0 else { throw DeviceDomainError.io("simulator-inventory", output.stderrText.isEmpty ? output.stdoutText : output.stderrText) }
@@ -227,6 +235,7 @@ package struct DeviceInventoryReader: Sendable {
 package struct SimulatorInventoryReader {
     package var installations: [URL]
     package var testingDeviceSetPath: String?
+    package var readBootDates: ((URL, String?) async throws -> [String: Date])? = nil
     package var readCatalog: (URL, String?) async throws -> Data
 
     package nonisolated(nonsending) func read() async throws -> DeviceInventorySnapshot {
@@ -238,12 +247,26 @@ package struct SimulatorInventoryReader {
             let paths: [String?] = testingDeviceSetPath.map { [nil, $0] } ?? [nil]
             for path in paths {
                 do {
-                    for device in try await SimulatorDeviceCatalog.decode(readCatalog(xcode, path), deviceSetPath: path,
-                                                                    includeUnavailable: true, catalogXcodeURL: xcode) {
+                    let catalog = try await SimulatorDeviceCatalog.decode(readCatalog(xcode, path), deviceSetPath: path,
+                                                                          includeUnavailable: true, catalogXcodeURL: xcode)
+                    var bootDates: [String: Date] = [:]
+                    if catalog.contains(where: { $0.state == "Booted" }), let readBootDates {
+                        do { bootDates = try await readBootDates(xcode, path) }
+                        catch is CancellationError { throw CancellationError() }
+                        catch { issues.append(.init(source: .simulatorBootDates(xcodeURL: xcode, deviceSetPath: path), error: error)) }
+                    }
+                    for record in catalog {
+                        let device = record.inventoryCopy(ownerXcodeURL: record.ownerXcodeURL,
+                                                          lastBootDate: record.state == "Booted" ? bootDates[record.identifier] : nil)
                         let item = InventoryDevice.simulator(device)
                         sources[item.id, default: []].insert(.simulators(xcodeURL: xcode, deviceSetPath: path))
                         if let position = positions[item.id] {
                             if !devices[position].isAvailable && item.isAvailable { devices[position] = item }
+                            else if case .simulator(let previous) = devices[position], previous.state == "Booted",
+                                    previous.lastBootDate == nil, let date = device.lastBootDate {
+                                devices[position] = .simulator(previous.inventoryCopy(ownerXcodeURL: previous.ownerXcodeURL,
+                                                                                     lastBootDate: date))
+                            }
                         } else {
                             positions[item.id] = devices.count
                             devices.append(item)
@@ -258,12 +281,12 @@ package struct SimulatorInventoryReader {
 }
 
 extension SimulatorHostDevice {
-    package func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil, coreDevice: CoreDeviceDevice? = nil, state: String? = nil) -> Self {
+    package func inventoryCopy(ownerXcodeURL: URL?, capabilities: Set<String>? = nil, coreDevice: CoreDeviceDevice? = nil, state: String? = nil, lastBootDate: Date? = nil) -> Self {
         Self(identifier: identifier, name: name, descriptiveName: descriptiveName, runtimeIdentifier: runtimeIdentifier,
              runtimeName: runtimeName, productFamily: productFamily, state: state ?? self.state, ownerXcodeURL: ownerXcodeURL,
              catalogXcodeURL: catalogXcodeURL, deviceSetPath: deviceSetPath, modelIdentifier: modelIdentifier, deviceTypeIdentifier: deviceTypeIdentifier,
              isAvailable: isAvailable,
-             lastUsedAt: lastUsedAt, createdAt: createdAt, capabilities: capabilities ?? coreDevice?.capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
+             lastUsedAt: lastUsedAt, lastBootDate: lastBootDate ?? self.lastBootDate, createdAt: createdAt, capabilities: capabilities ?? coreDevice?.capabilities ?? self.capabilities, pairIdentifiers: pairIdentifiers,
              activePairedDeviceID: activePairedDeviceID, coreDevice: coreDevice ?? self.coreDevice)
     }
 }
@@ -425,6 +448,8 @@ package struct SimulatorHostDevice: Sendable, Equatable {
     package let deviceTypeIdentifier: String?
     package let isAvailable: Bool
     package let lastUsedAt: Date?
+    /// CoreSimulator's boot identity, independent of the last time the device was used.
+    package let lastBootDate: Date?
     /// Creation date of the simulator's device directory, when available.
     package let createdAt: Date?
     package let capabilities: Set<String>
@@ -434,7 +459,7 @@ package struct SimulatorHostDevice: Sendable, Equatable {
     /// CoreDevice's matching default-set record, including host connection information.
     package let coreDevice: CoreDeviceDevice?
 
-    package init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, catalogXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, createdAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
+    package init(identifier: String, name: String, descriptiveName: String, runtimeIdentifier: String, runtimeName: String, productFamily: String, state: String, ownerXcodeURL: URL? = nil, catalogXcodeURL: URL? = nil, deviceSetPath: String? = nil, modelIdentifier: String? = nil, deviceTypeIdentifier: String? = nil, isAvailable: Bool = true, lastUsedAt: Date? = nil, lastBootDate: Date? = nil, createdAt: Date? = nil, capabilities: Set<String> = [], pairIdentifiers: Set<String> = [], activePairedDeviceID: DeviceInventoryID? = nil, coreDevice: CoreDeviceDevice? = nil) {
         self.identifier = identifier
         self.name = name
         self.descriptiveName = descriptiveName
@@ -449,6 +474,7 @@ package struct SimulatorHostDevice: Sendable, Equatable {
         self.deviceTypeIdentifier = deviceTypeIdentifier
         self.isAvailable = isAvailable
         self.lastUsedAt = lastUsedAt
+        self.lastBootDate = lastBootDate
         self.createdAt = createdAt
         self.capabilities = capabilities
         self.pairIdentifiers = pairIdentifiers

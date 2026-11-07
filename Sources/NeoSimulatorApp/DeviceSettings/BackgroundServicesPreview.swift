@@ -90,7 +90,7 @@ final class BackgroundServicesPreviewController: NSViewController {
                 try store.record([.category("widgets"), .category("siri"), .category("search")], enabled: false,
                                  for: source.device.id, productFamily: "iPhone")
             } else if scenario != .defaultProfile {
-                try store.assign(lightweight.id, to: source.device.id, pending: scenario == .stopped)
+                try store.assign(.profile(lightweight.id), to: source.device.id)
             }
             if scenario == .overrides {
                 try store.record([.service("com.apple.searchd")], enabled: true,
