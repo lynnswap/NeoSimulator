@@ -59,6 +59,12 @@ struct NativeDeviceCanvasTests {
         // The recorder uses AppKit's upward Y axis.
         #expect(abs(local.x - 150) < 0.5 && abs(local.y - 100) < 0.5)
 
+        // A detached/rebuilding DeviceKit graph temporarily has no native screen layers.
+        let projection = NativeCanvasProjection(hosting: hosting, presentation: presentation,
+                                                pointsPerInch: nil, frameMargin: { 0 })
+        projection.update()
+        #expect(presentation.viewport == viewport && presentation.pointScale == 2)
+
         screen.isHidden = true
         inactive.isHidden = false
         inactive.bounds = CGRect(x: 0, y: 0, width: 600, height: 400)
