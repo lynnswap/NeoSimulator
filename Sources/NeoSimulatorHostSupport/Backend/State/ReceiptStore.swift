@@ -197,11 +197,24 @@ package struct ReceiptStore {
         try Task.checkCancellation()
         let descriptor = try openLock(createIfNeeded: createIfNeeded)
         do {
-            while try !tryLock(descriptor) {
-                try await Task.sleep(for: .milliseconds(20))
+            if try tryLock(descriptor) { try Task.checkCancellation(); return descriptor }
+            let watched = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+            guard watched >= 0 else {
+                throw HostOperationError.io("operation-lock", "could not observe \(lockURL.path): \(String(cString: strerror(errno)))")
             }
-            try Task.checkCancellation()
-            return descriptor
+            let (unlocks, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: watched, eventMask: .funlock, queue: .global())
+            source.setEventHandler { continuation.yield(()) }
+            // The holder can unlock between our first attempt and the kernel's registration.
+            source.setRegistrationHandler { continuation.yield(()) }
+            source.setCancelHandler { Darwin.close(watched) }
+            source.activate()
+            defer { source.cancel(); continuation.finish() }
+            for await _ in unlocks {
+                try Task.checkCancellation()
+                if try tryLock(descriptor) { try Task.checkCancellation(); return descriptor }
+            }
+            throw CancellationError()
         } catch {
             Darwin.close(descriptor)
             throw error

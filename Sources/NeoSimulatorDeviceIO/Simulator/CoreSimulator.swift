@@ -999,6 +999,26 @@ package final class SimulatorDeviceSet {
         }) { [native] in try native.observe(handler) }
     }
 
+    /// Subscribes before reading so a state transition cannot fall between the check and the wait.
+    package func waitForDevice(_ identifier: String, until predicate: (SimulatorDeviceRecord) -> Bool,
+                               deadline: ContinuousClock.Instant) async throws -> SimulatorDeviceRecord? {
+        let (changes, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let token = try await observe { continuation.yield(()) }
+        let timeout = Task {
+            do { try await Task.sleep(until: deadline) } catch { return }
+            continuation.finish()
+        }
+        defer { timeout.cancel(); continuation.finish(); _ = stopObserving(token) }
+        continuation.yield(())
+        for await _ in changes {
+            try Task.checkCancellation()
+            guard let device = try await refresh().first(where: { $0.identifier == identifier }) else { return nil }
+            if predicate(device) { return device }
+        }
+        try Task.checkCancellation()
+        throw DeviceIOError.unavailable("simulator-state-timeout", "The simulator did not finish changing state before the operation deadline.")
+    }
+
     /// Removes a registration once no call holds the worker. The task ends when it has, for whoever has to report it.
     package func stopObserving(_ token: UInt64) -> Task<Void, Never> {
         let (removal, finished) = AsyncStream.makeStream(of: Never.self)
@@ -1086,7 +1106,6 @@ private final class NativeDeviceSet: @unchecked Sendable {
             let runtimeID = try unsafe interface.deviceRuntimeIdentifier.unsafeInvoke(on: object) ?? ""
             let runtime = try unsafe interface.deviceRuntime.unsafeInvoke(on: object)
             let type = try unsafe interface.deviceType.unsafeInvoke(on: object)
-            let runtimeAvailable = try runtime.map { try unsafe interface.runtimeAvailable.unsafeInvoke(on: $0) } ?? false
             return try SimulatorInventorySnapshot.Device(
                 identifier: identifier,
                 name: unsafe interface.name.unsafeInvoke(on: object) ?? "iOS Simulator",
@@ -1096,7 +1115,8 @@ private final class NativeDeviceSet: @unchecked Sendable {
                 state: unsafe messages.state.unsafeInvoke(on: object) ?? "Unknown",
                 modelIdentifier: type.flatMap { try unsafe messages.modelIdentifier.unsafeInvoke(on: $0) },
                 deviceTypeIdentifier: type.flatMap { try unsafe interface.deviceTypeIdentifier.unsafeInvoke(on: $0) },
-                isAvailable: runtimeAvailable && (unsafe messages.available.unsafeInvoke(on: object)),
+                // SimDevice.available already validates its runtime, including the required files.
+                isAvailable: unsafe messages.available.unsafeInvoke(on: object),
                 lastUsedAt: unsafe messages.lastUsedAt.unsafeInvoke(on: object).map { $0 as Date },
                 dataPath: unsafe interface.dataPath.unsafeInvoke(on: object))
         }

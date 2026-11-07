@@ -14,6 +14,38 @@ import IOSurface
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func connectionObservationRecoveryPreservesOtherObservationFailures() {
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.registry.stopReading()
+        model.inventoryObservationFailed(ManagerModelSource.Failure.unavailable)
+        model.processObservationFailed(ManagerModelSource.Failure.unavailable)
+        model.processObservationRecovered()
+        #expect(model.backgroundIssue?.contains("Live device updates are unavailable") == true)
+        model.inventoryObservationRecovered()
+        #expect(model.backgroundIssue == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func connectionChangesWaitForAnInFlightInventoryRead(retry: Bool) async throws {
+        let source = ManagerModelSource(devices: [])
+        if retry { await source.failNextSynchronization() }
+        let model = SimulatorManagerModel(source: source)
+        model.registry.stopReading()
+        await source.holdInventoryReads()
+        var events = source.events.makeAsyncIterator()
+        let refresh = Task { await model.refresh() }
+        #expect(await events.next() == .inventory)
+        await model.synchronizeConnections()
+        #expect(await source.synchronizationRequests == 0)
+        await source.completeInventoryRead()
+        await refresh.value
+        #expect(await events.next() == .synchronize)
+        if retry {
+            while await events.next() != .synchronize {}
+        }
+        #expect(await source.synchronizationRequests == (retry ? 2 : 1))
+    }
+
     @Test func inventoryLoadingAndFailuresStayInTheSidebar() async throws {
         _ = NSApplication.shared
         let source = ManagerModelSource(devices: [])
@@ -5988,7 +6020,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     func endSession() { sessionEvents.append("end") }
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, quit, manage(DeviceManagementAction, [DeviceInventoryID]), readServices(DeviceInventoryID), changeServices(DeviceInventoryID) }
+    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, synchronize, quit, manage(DeviceManagementAction, [DeviceInventoryID]), readServices(DeviceInventoryID), changeServices(DeviceInventoryID) }
     struct ServiceChange: Equatable, Sendable {
         let targets: [SimulatorBackgroundServiceTarget]
         let enabled: Bool
@@ -6302,7 +6334,15 @@ actor ManagerModelSource: SimulatorManagerSource {
         return [inspectorReads.remove(at: index).finished]
     }
     func restore(force: Bool) throws { throw Failure.unavailable }
-    func synchronizeXcodeConnections() -> Bool { false }
+    private(set) var synchronizationRequests = 0
+    private var failsSynchronization = false
+    func failNextSynchronization() { failsSynchronization = true }
+    func synchronizeXcodeConnections() throws -> Bool {
+        synchronizationRequests += 1
+        continuation.yield(.synchronize)
+        if failsSynchronization { failsSynchronization = false; throw HostOperationError.temporary("connection", "Try again") }
+        return false
+    }
     func testingDeviceVisibilityDidChange() {}
 }
 

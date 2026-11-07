@@ -292,7 +292,8 @@ package struct WorkspaceClient: Sendable {
                         "requested \(expected.path), but LaunchServices opened \(observed.path)"
                     )
                 }
-                try await waitForNeoHostStartup(resultURL: startupResultURL, isTerminated: { application.isTerminated })
+                try await waitForNeoHostStartup(resultURL: startupResultURL, processIdentifier: application.processIdentifier,
+                                                isTerminated: { application.isTerminated })
                 try Task.checkCancellation()
                 return observed
             } catch let launchError {
@@ -530,12 +531,32 @@ package struct WorkspaceClient: Sendable {
 
     @MainActor package static func waitForNeoHostStartup(
         resultURL: URL,
+        processIdentifier: pid_t? = nil,
         isTerminated: () -> Bool
     ) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(10))
-
-        while clock.now < deadline {
+        let descriptor = open(resultURL.deletingLastPathComponent().path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            throw HostOperationError.io("neo-host-startup-result", "Could not observe the NeoSimulator startup result: \(String(cString: strerror(errno)))")
+        }
+        let (events, continuation) = AsyncThrowingStream<Void, any Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let files = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor,
+            eventMask: [.write, .rename, .delete], queue: .main)
+        files.setEventHandler { continuation.yield(()) }
+        files.setRegistrationHandler { continuation.yield(()) }
+        files.setCancelHandler { close(descriptor) }
+        files.activate()
+        let process = processIdentifier.map { DispatchSource.makeProcessSource(identifier: $0, eventMask: .exit, queue: .main) }
+        process?.setEventHandler { continuation.yield(()) }
+        process?.activate()
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            continuation.finish(throwing: HostOperationError.temporary(
+                "neo-host-startup-timeout", "NeoSimulator did not finish startup within 10 seconds"))
+        }
+        defer { files.cancel(); process?.cancel(); timeout.cancel(); continuation.finish() }
+        continuation.yield(())
+        for try await _ in events {
+            try Task.checkCancellation()
             if FileManager.default.fileExists(atPath: resultURL.path) {
                 let data: Data
                 do { data = try Data(contentsOf: resultURL) }
@@ -562,13 +583,8 @@ package struct WorkspaceClient: Sendable {
             guard !isTerminated() else {
                 throw HostOperationError.temporary("neo-host-startup", "NeoSimulator exited before startup completed")
             }
-            try await Task.sleep(for: .milliseconds(50))
         }
-
-        throw HostOperationError.temporary(
-            "neo-host-startup-timeout",
-            "NeoSimulator did not finish startup within 10 seconds"
-        )
+        try Task.checkCancellation()
     }
 
     @MainActor private static func normalized(_ url: URL) -> URL {

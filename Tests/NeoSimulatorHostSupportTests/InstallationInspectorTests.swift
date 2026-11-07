@@ -2,12 +2,43 @@
 @testable import NeoSimulatorKit
 @testable import NeoSimulatorHostSupport
 import Foundation
+import Darwin
 import Synchronization
 import Testing
 
 
 @Suite
 struct InstallationInspectorTests {
+    @Test(arguments: [false, true])
+    func xcodeMetadataFollowsReplacedAndRemovedPropertyLists(symbolicLinks: Bool) throws {
+        let fixture = try InstallationFixture()
+        let inspector = makeInspector(fixture).xcodes
+        if symbolicLinks {
+            for name in ["Info.plist", "version.plist"] {
+                let url = fixture.targetXcodeURL.appendingPathComponent("Contents/\(name)")
+                let target = fixture.directory.url.appendingPathComponent(name)
+                try FileManager.default.moveItem(at: url, to: target)
+                try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+            }
+        }
+        let initial = try inspector.xcode(at: fixture.targetXcodeURL)
+        func replace(_ path: String, key: String, value: String) throws {
+            let url = fixture.targetXcodeURL.appendingPathComponent(path).resolvingSymlinksInPath()
+            let date = try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]
+            var plist = try inspector.propertyList(at: url)
+            plist[key] = value
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: url, options: .atomic)
+            if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path) }
+        }
+        try replace("Contents/Info.plist", key: "CFBundleShortVersionString", value: "28.0")
+        #expect(try inspector.xcode(at: fixture.targetXcodeURL).version == ToolVersion("28.0"))
+        try replace("Contents/version.plist", key: "ProductBuildVersion", value: "28A1000x")
+        let updated = try inspector.xcode(at: fixture.targetXcodeURL)
+        #expect(updated.buildVersion == "28A1000x" && updated != initial)
+        try FileManager.default.removeItem(at: fixture.targetXcodeURL.appendingPathComponent("Contents/Info.plist").resolvingSymlinksInPath())
+        #expect(throws: DeviceIOError.self) { try inspector.xcode(at: fixture.targetXcodeURL) }
+    }
+
     @Test func UIFrameworksUseSelectedXcodeUnlessExplicitlyOverridden() async throws {
         let selected = try InstallationFixture(targetVersion: "27.1")
         let alternate = try InstallationFixture(targetVersion: "27.2")
@@ -991,6 +1022,104 @@ struct XcodeConnectionsTests {
         }
         #expect(try await !tracker.synchronize(observations: [], runningDeviceIdentifiers: [.simulator(udid: "clone", deviceSetPath: clone.deviceSetPath)]) { _ in Issue.record("A hidden testing device must not be attached.") })
         #expect(!tracker.hasPendingConnection(forDevice: clone.deviceID))
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func failedProcessObservationRecoversWithoutAnotherEvent() async throws {
+        let attempts = Mutex(0)
+        let observation = SimulatorProcessObservation(rootProcessIdentifiers: {
+            let attempt = attempts.withLock { $0 += 1; return $0 }
+            if attempt == 1 { throw HostOperationError.temporary("process-list", "Try again") }
+            return []
+        })
+        let (recovered, continuation) = AsyncStream<Void>.makeStream()
+        var ready = false
+        observation.onReady = { ready = true }
+        observation.onChange = { continuation.yield(()); continuation.finish() }
+        observation.start()
+        defer { observation.stop(); continuation.finish() }
+        for await _ in recovered { break }
+        #expect(attempts.withLock { $0 } == 2)
+        #expect(ready)
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func helperProcessExitDoesNotRefreshSimulatorConnections() async throws {
+        let process = Process()
+        let input = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "read trigger; /usr/bin/true"]
+        process.standardInput = input
+        try process.run()
+        defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
+        let pid = process.processIdentifier
+        let observation = SimulatorProcessObservation(rootProcessIdentifiers: { [pid] })
+        let (changes, continuation) = AsyncStream<Void>.makeStream()
+        var refreshes = 0
+        observation.onChange = { refreshes += 1; continuation.yield(()) }
+        observation.start()
+        defer { observation.stop(); continuation.finish() }
+        var iterator = changes.makeAsyncIterator()
+        await iterator.next()
+        try input.fileHandleForWriting.write(contentsOf: Data("exit\n".utf8))
+        process.waitUntilExit()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(refreshes == 1)
+        observation.refresh()
+        await iterator.next()
+        #expect(refreshes == 2)
+    }
+
+    @Test @MainActor func processNotificationsFindLaunchedAndExitedSimulatorApplications() async throws {
+        let directory = try TemporaryTestDirectory()
+        let identifier = UUID().uuidString
+        let executable = directory.url.appendingPathComponent(
+            "CoreSimulator/Devices/\(identifier)/data/Containers/Bundle/Application/Test/App.app/App")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: executable)
+        let signing = Process()
+        signing.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        signing.arguments = ["--force", "--sign", "-", executable.path]
+        try signing.run()
+        signing.waitUntilExit()
+        try #require(signing.terminationStatus == 0)
+        let process = Process()
+        let input = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "read trigger; /bin/sh -c '\"$1\" 30 & wait' child \"$1\" & wait", "probe", executable.path]
+        process.standardInput = input
+        process.environment = ["SIMULATOR_UDID": identifier,
+                               "GPUTOOLS_XCODE_DEVELOPER_PATH": "/Applications/Xcode.app/Contents/Developer"]
+        try process.run()
+        defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
+        let pid = process.processIdentifier
+        let observation = SimulatorProcessObservation(rootProcessIdentifiers: { [pid] })
+        let (events, continuation) = AsyncThrowingStream<[XcodeSimulatorConnection], any Error>.makeStream()
+        observation.onChange = {
+            do { continuation.yield(try SimulatorProcessConnections.read().filter { $0.deviceIdentifier == identifier }) }
+            catch { continuation.finish(throwing: error) }
+        }
+        observation.onError = { continuation.finish(throwing: $0) }
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            continuation.finish(throwing: CocoaError(.fileReadUnknown))
+        }
+        defer { observation.stop(); timeout.cancel(); continuation.finish() }
+        observation.start()
+        var iterator = events.makeAsyncIterator()
+        #expect(try await iterator.next()?.isEmpty == true)
+        try input.fileHandleForWriting.write(contentsOf: Data("launch\n".utf8))
+        var launched: XcodeSimulatorConnection?
+        while let connections = try await iterator.next() {
+            if let connection = connections.first { launched = connection; break }
+        }
+        let connection = try #require(launched)
+        #expect(connection.deviceIdentifier == identifier)
+        #expect(connection.xcodeURL.path == "/Applications/Xcode.app")
+        kill(connection.event.processIdentifier, SIGTERM)
+        var exited = false
+        while let connections = try await iterator.next() {
+            if connections.isEmpty { exited = true; break }
+        }
+        #expect(exited)
     }
 
     @Test func launchEnvironmentRequiresMatchingDeviceAndUnambiguousXcodeFootprint() {

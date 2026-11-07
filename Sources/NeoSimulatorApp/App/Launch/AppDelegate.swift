@@ -34,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launchURLs: [URL] = []
     private var rendererDevicesObserver: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
-    private var connectionTimer: Timer?
+    private let processObservation = SimulatorProcessObservation()
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
     private var observationRetryTask: Task<Void, Never>?
@@ -126,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] notification in
             let testingVisibilityChanged = notification.userInfo?["testingVisibilityChanged"] as? Bool == true
             Task { @MainActor in
+                self?.processObservation.refresh()
                 await self?.model.rendererDevicesDidChange(testingVisibilityChanged: testingVisibilityChanged)
             }
         }
@@ -135,18 +136,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   ["dev.lynnswap.NeoSimulator", "com.apple.dt.Xcode", "com.apple.dt.Devices"].contains(app.bundleIdentifier ?? "") else { return }
             Task { @MainActor in
+                self?.processObservation.refresh()
                 if app == NSRunningApplication.current { self?.model.revalidateDevices() }
                 await self?.model.refresh()
             }
         }
         startManager()
         startInventoryObservation()
-        connectionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, !self.quitting else { return }
-                await self.model.synchronizeConnections()
-            }
+        processObservation.onChange = { [weak self] in
+            guard let self, !self.quitting else { return }
+            Task { await self.model.synchronizeConnections() }
         }
+        processObservation.onError = { [weak self] in self?.model.processObservationFailed($0) }
+        processObservation.onReady = { [weak self] in self?.model.processObservationRecovered() }
     }
 
     /// Completes access setup before starting the session or opening restored screens.
@@ -163,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.hasStarted = true
                 self.showDevices(nil)
                 self.model.start()
+                self.processObservation.start()
                 let urls = self.launchURLs
                 self.launchURLs.removeAll()
                 if !urls.isEmpty { self.application(NSApp, open: urls) }
@@ -205,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 observation.onChange = { [weak self] in
                     // Preserve source-event order before the asynchronous inventory read.
                     self?.model.inventoryObservationRecovered()
+                    self?.processObservation.refresh()
                     Task { await self?.model.inventoryDidChange() }
                 }
                 observation.onError = { [weak self] error in
@@ -229,10 +233,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await inventoryObservation?.stop()
             await starting?.value
             await activeStateObservation?.stop()
+            processObservation.stop()
             inventoryObservation = nil
             activeStateObservation = nil
             guard !quitting, !Task.isCancelled else { return }
             startInventoryObservation()
+            if hasStarted { processObservation.start() }
             await inventoryObservationTask?.value
         }
         observationRetryTask = task
@@ -283,6 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 inventoryObservation = nil
                 await activeStateObservation?.stop()
                 activeStateObservation = nil
+                processObservation.stop()
                 await screens.waitForRemoteHostCleanup()
                 try await stopScreens()
                 try await model.quitRenderer(keepingDevicesRunning: quitKeepingDevicesRunning) {
@@ -302,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 restartsAfterQuitting = false
                 model.resumeAfterCancelledQuit()
                 screens.resumeAfterCancelledQuit()
+                if hasStarted { processObservation.start() }
                 mainWindow?.resumeInspectorAfterCancelledQuit()
                 startInventoryObservation()
                 _ = TerminationAccount.shared.take()

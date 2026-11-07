@@ -178,9 +178,13 @@ final class SimulatorManagerModel {
     private var statusIssue: (any Error)?
     private var observationIssue: String?
     private var activeStateIssue: String?
+    private var processObservationIssue: String?
     private var inventoryIssues: [DeviceInventoryIssue] = []
     var isRemoteInventoryComplete: Bool { !inventoryIssues.contains { $0.source == .coreDevice } }
     @ObservationIgnored private var synchronizing = false
+    @ObservationIgnored private var synchronizationRequested = false
+    @ObservationIgnored private var connectionRetry: Task<Void, Never>?
+    @ObservationIgnored private var connectionRetryDelay: Duration = .seconds(1)
     @ObservationIgnored private var inventoryRefreshRequested = false
     @ObservationIgnored private var stopping = false
     /// The wait for accepted work that the first step of a quit starts and later steps join, until the quit is cancelled.
@@ -643,7 +647,7 @@ final class SimulatorManagerModel {
 
     func retryInventory() async {
         guard !stopping else { return }
-        if observationIssue != nil || activeStateIssue != nil {
+        if observationIssue != nil || activeStateIssue != nil || processObservationIssue != nil {
             async let recovery: Void? = retryDeviceObservation?()
             await refresh()
             _ = await recovery
@@ -657,6 +661,7 @@ final class SimulatorManagerModel {
             if refreshWaiters.isEmpty {
                 isRefreshingInventory = false
                 applyStartupServiceProfiles()
+                resumeConnectionSynchronization()
             }
             else { refreshWaiters.removeFirst().resume() }
         }
@@ -695,10 +700,12 @@ final class SimulatorManagerModel {
     }
 
     private func updateInventoryIssue() {
-        if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil, activeStateIssue == nil { backgroundIssue = nil }
+        if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil, activeStateIssue == nil,
+           processObservationIssue == nil { backgroundIssue = nil }
         else {
+            let observations = [observationIssue, processObservationIssue].compactMap { $0 }
             reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue,
-                                                     observationIssue: observationIssue, activeStateIssue: activeStateIssue))
+                observationIssue: observations.isEmpty ? nil : observations.joined(separator: "\n"), activeStateIssue: activeStateIssue))
         }
     }
 
@@ -722,6 +729,19 @@ final class SimulatorManagerModel {
 
     }
 
+    func processObservationFailed(_ error: any Error) {
+        guard !stopping else { return }
+        NSLog("NeoSimulator automatic connections: %@", String(describing: error))
+        processObservationIssue = "Automatic simulator connections are temporarily unavailable."
+        updateInventoryIssue()
+    }
+
+    func processObservationRecovered() {
+        guard !stopping, processObservationIssue != nil else { return }
+        processObservationIssue = nil
+        updateInventoryIssue()
+    }
+
     // Unlike the inventory callbacks, these also apply while quitting. The observation reports only changes, so a
     // value dropped during a quit that is then cancelled would not arrive again.
     func activeStatesDidChange(_ states: DeviceActiveStates) {
@@ -741,17 +761,46 @@ final class SimulatorManagerModel {
     }
 
     func synchronizeConnections() async {
-        guard !stopping, !synchronizing, !isRefreshingInventory, !isBusy else { return }
+        guard !stopping else { return }
+        connectionRetry?.cancel()
+        connectionRetry = nil
+        synchronizationRequested = true
+        guard !synchronizing, !isRefreshingInventory, !isBusy else { return }
         synchronizing = true
         defer { synchronizing = false }
-        do {
-            if try await controller.synchronizeXcodeConnections() { await refresh() }
-        } catch is CancellationError {
-        } catch {
-            await refresh()
-            reportBackgroundError(error)
+        repeat {
+            synchronizationRequested = false
+            do {
+                if try await controller.synchronizeXcodeConnections() { await refresh() }
+                connectionRetryDelay = .seconds(1)
+                connectionRetry?.cancel()
+                connectionRetry = nil
+            } catch is CancellationError {
+            } catch {
+                await refresh()
+                reportBackgroundError(error)
+                retryConnectionSynchronization(after: error)
+            }
+        } while synchronizationRequested && !stopping && !isBusy && !isRefreshingInventory
+    }
 
+    private func retryConnectionSynchronization(after error: any Error) {
+        if let failure = error as? SimulatorHostFailure,
+           failure.kind == .preferencesChanged || failure.kind == .unavailableXcode { return }
+        guard !stopping, connectionRetry == nil else { return }
+        let delay = connectionRetryDelay
+        connectionRetryDelay = min(delay * 2, .seconds(30))
+        connectionRetry = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self else { return }
+            self.connectionRetry = nil
+            await self.synchronizeConnections()
         }
+    }
+
+    private func resumeConnectionSynchronization() {
+        guard synchronizationRequested, !synchronizing, !stopping, !isBusy, !isRefreshingInventory else { return }
+        Task { await self.synchronizeConnections() }
     }
 
     func rendererDevicesDidChange(testingVisibilityChanged: Bool) async {
@@ -884,6 +933,9 @@ final class SimulatorManagerModel {
 
     func prepareForQuit() async throws {
         stopping = true
+        if connectionRetry != nil { synchronizationRequested = true }
+        connectionRetry?.cancel()
+        connectionRetry = nil
         let openings = activeDeviceOperations.values.filter { $0.request != nil }.compactMap(\.task)
         cancelPendingOpens()
         registry.stopReading()
@@ -976,6 +1028,7 @@ final class SimulatorManagerModel {
         uninterruptedCommands.resumeAfterCancelledQuit()
         registry.resumeReading()
         applyStartupServiceProfiles()
+        resumeConnectionSynchronization()
         if inventoryRefreshRequested { Task { await refresh() } }
     }
 
@@ -1072,6 +1125,7 @@ final class SimulatorManagerModel {
 
     private func publishQueueState() {
         isBusy = !activeDeviceOperations.isEmpty || runningOperation != nil || !pendingOperations.isEmpty
+        resumeConnectionSynchronization()
         holdsAllEdits = runningOperation != nil || pendingOperations.contains { $0.deviceID == nil }
         heldEditDeviceIDs = Set(pendingOperations.filter { !attachesOnAdmission($0) }.compactMap(\.deviceID))
             .union(activeDeviceOperations.filter { !$0.value.attaches }.keys)

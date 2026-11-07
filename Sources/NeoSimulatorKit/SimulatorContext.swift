@@ -520,15 +520,11 @@ public final class SimulatorContext {
                 try await tools.boot()
             }
             let deadline = ContinuousClock.now + .seconds(120)
-            while true {
-                try Task.checkCancellation()
-                let state = try await self.device(id).state
-                if state == 3 { return SimulatorBootOutcome.booted }
-                guard state == 2, ContinuousClock.now < deadline else {
-                    throw SimulatorError.operation("The simulator did not finish starting.")
-                }
-                try await Task.sleep(for: .milliseconds(100))
+            let state = try await self.engine.waitForDevice(id, until: { $0.state != 2 }, deadline: deadline)?.state
+            guard state == 3 else {
+                throw SimulatorError.operation("The simulator did not finish starting.")
             }
+            return SimulatorBootOutcome.booted
         }
         boots[id] = task
         return try await CoreDeviceRuntime.preparedValue(of: task)
@@ -614,11 +610,8 @@ public final class SimulatorContext {
                         try await tools.shutdown()
                     }
                     let deadline = ContinuousClock.now + .seconds(120)
-                    while try await self.device(id).state != 1 {
-                        guard ContinuousClock.now < deadline else {
-                            throw SimulatorError.operation("The simulator did not finish shutting down.")
-                        }
-                        try await Task.sleep(for: .milliseconds(100))
+                    guard try await self.engine.waitForDevice(id, until: { $0.state == 1 }, deadline: deadline) != nil else {
+                        throw SimulatorError.operation("The selected simulator is no longer available.")
                     }
                     reason = .deviceStopped
                 } else {

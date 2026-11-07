@@ -3507,6 +3507,41 @@ struct InputFocusTests {
         #expect(refreshes == 1)
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func nativeDeviceStateWaitUsesNotificationsAndCancels() async throws {
+        let runtime = try await makeRuntime()
+        let set = runtime.io.openDeviceSet()
+        guard let device = try await set.refresh().first else { return }
+        let interface = runtime.io.coreSimulator
+        let context = try unsafe interface.sharedContext.unsafeInvoke(on: interface.serviceClass as AnyObject,
+            runtime.xcodeURL.appendingPathComponent("Contents/Developer").path)
+        let nativeSet = try unsafe interface.defaultDeviceSet.unsafeInvoke(on: context)
+        let send = try await ABIRuntime.shared.resolve(.objc(.method("sendNotification:", as: ((NSDictionary) -> Void).self)),
+                                                      on: try #require(NSClassFromString("SimDeviceSet")))
+        let (reads, ready) = AsyncStream<Void>.makeStream()
+        defer { ready.finish() }
+        var changed = false
+        let waiting = Task {
+            try await set.waitForDevice(device.identifier, until: { _ in ready.yield(()); return changed },
+                                        deadline: .now + .seconds(10))
+        }
+        defer { waiting.cancel() }
+        var iterator = reads.makeAsyncIterator()
+        await iterator.next()
+        changed = true
+        try unsafe send.unsafeInvoke(on: nativeSet, ["notification": "device_state"] as NSDictionary)
+        #expect(try await waiting.value?.identifier == device.identifier)
+        await iterator.next()
+
+        let cancelled = Task {
+            try await set.waitForDevice(device.identifier, until: { _ in ready.yield(()); return false },
+                                        deadline: .now + .seconds(10))
+        }
+        await iterator.next()
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+    }
+
     /// Only reads. Every message here is one the real set's workers send, against whatever devices this Mac has.
     @Test(.timeLimit(.minutes(1)))
     func nativeDeviceSetCapturesItsDevicesAndCatalogOnItsWorker() async throws {
@@ -3686,6 +3721,37 @@ struct InputFocusTests {
         release.signal()
         try await holding.value
         #expect(try await !reading.value.contains { $0.identity == device })
+        try await host.stop()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func hidingTestingDevicesEndsTheirStateWaitsWithoutADeviceEvent() async throws {
+        let (host, device, _, cleanUp) = try await makeHostWithListedTestingDevice()
+        defer { cleanUp() }
+        let (reads, continuation) = AsyncStream<Void>.makeStream()
+        defer { continuation.finish() }
+        let waiting = Task {
+            try await host.waitForDevice(device, until: { _ in continuation.yield(()); return false },
+                                         deadline: .now + .seconds(30))
+        }
+        defer { waiting.cancel() }
+        var iterator = reads.makeAsyncIterator()
+        await iterator.next()
+        host.toggleShowTestingDevices()
+        #expect(try await waiting.value == nil)
+        try await host.stop()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func stateWaitReportsDeadlineExpiration() async throws {
+        let (host, device, _, cleanUp) = try await makeHostWithListedTestingDevice()
+        defer { cleanUp() }
+        do {
+            _ = try await host.waitForDevice(device, until: { _ in false }, deadline: .now + .milliseconds(20))
+            Issue.record("The state wait did not time out")
+        } catch let error as DeviceIOError {
+            #expect(error.identifier == "simulator-state-timeout")
+        }
         try await host.stop()
     }
 
