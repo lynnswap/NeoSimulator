@@ -652,11 +652,13 @@ package final class RendererDeviceRequestWaiter {
                         DeviceInventoryID.simulator(udid: $0, deviceSetPath: notification.userInfo?["deviceSetPath"] as? String)
                     }
                     let failure = notification.userInfo?["error"] as? String
+                    let didStartSimulator = notification.userInfo?["didStartSimulator"] as? Bool ?? false
                     let handled = notification.userInfo?["handled"] as? Bool ?? true
                     Task { @MainActor in
                         guard acknowledged == deviceID else { return }
                         if let failure {
-                            self?.finish(.failure(HostOperationError.temporary("renderer-device-request", failure)))
+                            let error = HostOperationError.temporary("renderer-device-request", failure)
+                            self?.finish(.failure(didStartSimulator ? DeviceRestartedWithFailure(underlyingError: error) : error))
                         } else {
                             self?.handled = handled
                             self?.finish(self?.cancelledOpen == true ? .failure(CancellationError()) : .success(()))

@@ -15,6 +15,13 @@ final class ServiceProfilesSettingsModel {
 
     var selectedProfile: ServiceProfile { selectedProfileID.flatMap(store.profile) ?? .default }
     var canDelete: Bool { selectedProfile.id != ServiceProfile.default.id }
+    var commonProfileID: UUID? {
+        get { store.commonProfileID }
+        set {
+            do { try store.setCommonProfile(newValue) }
+            catch { issue = error.localizedDescription }
+        }
+    }
 
     func create() { create(configuration: ServiceConfiguration()) }
     func duplicate(_ profile: ServiceProfile) { create(configuration: profile.configuration) }

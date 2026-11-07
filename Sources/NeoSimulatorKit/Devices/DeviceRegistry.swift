@@ -105,7 +105,8 @@ public final class DeviceRegistry {
             coreDevice = record
         }
         return .simulator(new.inventoryCopy(ownerXcodeURL: owner, capabilities: capabilities, coreDevice: coreDevice,
-                                            state: keepingState ? old.state : nil))
+                                            state: keepingState ? old.state : nil,
+                                            lastBootDate: keepingState ? old.lastBootDate : new.lastBootDate ?? old.lastBootDate))
     }
 
     private func makeModel(_ device: InventoryDevice, channel: SimulatorDeviceChannel? = nil) -> DeviceModel {

@@ -322,8 +322,7 @@ displays, see <doc:InputAndPeripherals>.
 The inspector's **Background Services** tab turns off a running simulator's
 background services, such as Spotlight indexing, iCloud sync, and Siri,
 without restarting it. Each category says what stops working while it is
-off; expand it to switch its services one at a time. The change stays in effect
-when the simulator restarts or is erased, until you turn the services back on.
+off; expand it to switch its services one at a time.
 
 Services the system needs are marked **Always On**. After a change, the
 inspector lists services it kept on because another enabled category uses them
@@ -332,3 +331,20 @@ start again until the next boot. While a change runs, the simulator's
 management actions other than **Force Shut Down** are unavailable. Start a
 simulator to change its background services; physical devices and virtual
 machines do not offer them.
+
+Choose a **Common Default** in **Settings → Service Profiles** to apply a profile
+at each simulator start or restart. Each simulator's **Startup Profile** can
+follow that common default, use a specific profile, or turn off automatic
+application. The built-in **Default** profile enables all managed services.
+Common defaults start with automatic application turned off.
+
+Individual service switches are saved as overrides. They stay in effect when
+the profile changes; **Revert** clears them. **Save** updates the selected named
+profile, or asks for a name when using the built-in Default profile.
+Startup-profile selections and overrides survive simulator erases.
+
+Changing the common default or editing a profile takes effect at the next
+simulator start. Selecting a simulator's Startup Profile also applies it
+immediately when that simulator is running. Automatic application works while
+NeoSimulator is open, including starts from Xcode. Opening NeoSimulator leaves
+already-running simulators unchanged.

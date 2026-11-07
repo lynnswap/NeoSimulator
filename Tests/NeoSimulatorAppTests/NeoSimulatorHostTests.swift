@@ -6845,13 +6845,15 @@ struct InputFocusTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: simctl.path)
         let tools = try DeviceTools(identifier: "test-device", xcodeURL: URL(fileURLWithPath: "/Applications/Xcode.app"),
                                     simctl: simctl)
-        func run(erasing: Bool, failing stage: String) async -> (calls: [String], error: String?) {
+        func run(erasing: Bool, failing stage: String) async -> (calls: [String], error: String?, didStart: Bool) {
             try? FileManager.default.removeItem(at: log)
             try? stage.write(to: fail, atomically: true, encoding: .utf8)
             var message: String?
-            do { try await tools.restart(erasing: erasing) } catch { message = error.localizedDescription }
+            var didStart = false
+            do { try await tools.restart(erasing: erasing); didStart = true }
+            catch { message = error.localizedDescription; didStart = error is DeviceRestartedWithFailure }
             let calls = (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
-            return (calls, message)
+            return (calls, message, didStart)
         }
         #expect(await run(erasing: false, failing: "").calls == ["shutdown", "boot"])
         #expect(await run(erasing: true, failing: "").calls == ["shutdown", "erase", "boot"])
@@ -6859,10 +6861,12 @@ struct InputFocusTests {
         #expect(shutdown.calls == ["shutdown"])
         #expect(shutdown.error?.hasPrefix("Erase All Content and Settings failed while shutting down") == true)
         let erase = await run(erasing: true, failing: "erase")
+        #expect(erase.didStart)
         #expect(erase.calls == ["shutdown", "erase", "boot"])
         #expect(erase.error?.contains("while erasing") == true)
         #expect(erase.error?.hasSuffix("The device was shut down and booted again.") == true)
         let boot = await run(erasing: false, failing: "boot")
+        #expect(!boot.didStart)
         #expect(boot.calls == ["shutdown", "boot"])
         #expect(boot.error?.hasPrefix("Restart failed while booting") == true)
         #expect(boot.error?.hasSuffix("The device was shut down.") == true)

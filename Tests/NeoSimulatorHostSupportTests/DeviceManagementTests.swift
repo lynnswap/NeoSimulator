@@ -740,10 +740,21 @@ struct DeviceManagementTests {
         let report = await fixture.backend.manage(.restart, devices: [.simulator(Self.simulator("A", state: "Booted", path: "/testing"))])
         let result = try #require(report.results.first)
         #expect(result.error != nil)
+        #expect(!result.didStartSimulator)
         #expect(result.completedSteps == ["Display disconnected", "Shut down"])
         #expect(!(await fixture.displayConnected))
         #expect(await fixture.attachRequests == 0)
         #expect(await fixture.commands.allSatisfy { $0.path == "/testing" })
+    }
+
+    @Test func aDisplayReopenFailurePreservesTheCompletedBoot() async throws {
+        let fixture = ManagementFixture(hasRenderer: true, restartHasWindow: false)
+        var backend = fixture.backend
+        backend.attach = { _, _ in throw HostOperationError.io("attach", "Display failed") }
+        let report = await backend.manage(.restart, devices: [.simulator(Self.simulator("A", state: "Booted"))])
+        let result = try #require(report.results.first)
+        #expect(result.error != nil && result.didStartSimulator)
+        #expect(result.recordingDisplayCleanup(.success(())).didStartSimulator)
     }
 
     @Test func watchPairingUsesBothDevicesAndUnpairingUsesThePairUUID() async throws {

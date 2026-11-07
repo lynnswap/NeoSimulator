@@ -52,10 +52,10 @@ private struct BackgroundServicesProfileForm: View {
     var body: some View {
         Form {
             Section {
-                Picker("Profile", selection: Binding<UUID?>(
-                    get: { model.selectedProfileID },
-                    set: { id in
-                        if let id { model.selectedProfileID = id }
+                Picker(selection: Binding<ServiceProfileSelection?>(
+                    get: { model.selectedProfileSelection },
+                    set: { selection in
+                        if let selection { model.selectedProfileSelection = selection }
                         else { model.customizeProfile() }
                     }
                 )) {
@@ -63,13 +63,16 @@ private struct BackgroundServicesProfileForm: View {
                         Text(choice.title).tag(Optional(choice.id))
                     }
                     Divider()
-                    Text("Custom…").tag(UUID?.none)
+                    Text("Custom…", bundle: #bundle).tag(ServiceProfileSelection?.none)
+                } label: {
+                    Text("Startup Profile", bundle: #bundle)
                 }
                 .pickerStyle(.menu)
+                .help(Text("Applies at each simulator start while NeoSimulator is open.", bundle: #bundle))
                 .disabled(model.holdsChanges || model.profiles.issue != nil)
                 HStack {
                     Button("Revert", action: model.revertProfile)
-                        .disabled(model.holdsChanges || !model.hasProfileChanges)
+                        .disabled(!model.canRevertProfile)
                     Spacer()
                     Button("Save", action: model.saveProfile)
                         .buttonStyle(.borderedProminent)

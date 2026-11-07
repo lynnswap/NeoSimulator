@@ -22,9 +22,9 @@ final class ServiceProfile: Identifiable, BackgroundServiceEditing {
         BackgroundServiceCategoryModel($0, source: self)
     }
 
+    nonisolated static let defaultID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     static let `default` = ServiceProfile(record: Record(
-        id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
-        name: "Default", configuration: ServiceConfiguration()))
+        id: defaultID, name: "Default", configuration: ServiceConfiguration()))
 
     fileprivate var record: Record { Record(id: id, name: name, configuration: configuration) }
 
@@ -52,25 +52,41 @@ final class ServiceProfile: Identifiable, BackgroundServiceEditing {
     }
 }
 
+/// Which profile a device takes at each boot.
+enum ServiceProfileSelection: Codable, Hashable, Sendable {
+    /// The common default, whichever it is then. Nothing applies while it is off.
+    case inheritDefault
+    case profile(UUID)
+    /// Nothing is written automatically, including the device's overrides.
+    case doNotApply
+}
+
+/// A device's choice and its explicit per-service changes, which apply above whatever the choice resolves to.
 struct DeviceServiceProfile: Codable, Equatable, Sendable {
-    let profileID: UUID
-    var base: ServiceConfiguration
+    var selection: ServiceProfileSelection
     var overrides: [String: Bool]
-    var requestID: UUID
-    var pendingApplication: Bool
 
-    var configuration: ServiceConfiguration { base.applying(overrides) }
+    private enum LegacyCodingKeys: String, CodingKey { case profileID, pendingApplication }
 
-    @MainActor init(profile: ServiceProfile, overrides: [String: Bool] = [:], pending: Bool) {
-        self.init(profileID: profile.id, base: profile.configuration, overrides: overrides, pending: pending)
+    init(selection: ServiceProfileSelection = .inheritDefault, overrides: [String: Bool] = [:]) {
+        self.selection = selection
+        self.overrides = overrides
     }
 
-    init(profileID: UUID, base: ServiceConfiguration, overrides: [String: Bool] = [:], pending: Bool) {
-        self.profileID = profileID
-        self.base = base
-        self.overrides = overrides
-        requestID = UUID()
-        pendingApplication = pending
+    /// Default also represented devices without a choice. A pending application distinguishes an explicit Default
+    /// request; other Default bindings inherit, so a device the user only toggled does not gain an automatic profile.
+    /// These are persistent startup choices; upgrading leaves already-running devices unchanged.
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        overrides = try values.decode([String: Bool].self, forKey: .overrides)
+        if let selection = try values.decodeIfPresent(ServiceProfileSelection.self, forKey: .selection) {
+            self.selection = selection
+        } else {
+            let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+            let profileID = try legacy.decode(UUID.self, forKey: .profileID)
+            let pending = try legacy.decodeIfPresent(Bool.self, forKey: .pendingApplication) ?? false
+            selection = profileID == ServiceProfile.defaultID && !pending ? .inheritDefault : .profile(profileID)
+        }
     }
 }
 
@@ -79,6 +95,7 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
 final class ServiceProfileStore {
     private struct State: Codable, Equatable {
         var profiles: [ServiceProfile.Record] = []
+        var commonProfileID: UUID?
         var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
     }
 
@@ -95,8 +112,10 @@ final class ServiceProfileStore {
 
     static let defaultsKey = "BackgroundServiceProfiles"
     private(set) var profiles: [ServiceProfile] = []
+    /// What devices that inherit take at each boot. Nil means that nothing applies to them.
+    private(set) var commonProfileID: UUID?
     private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
-    private var state: State { State(profiles: profiles.map(\.record), devices: devices) }
+    private var state: State { State(profiles: profiles.map(\.record), commonProfileID: commonProfileID, devices: devices) }
     private(set) var issue: String?
     let fileURL: URL
     @ObservationIgnored private let legacyDefaults: UserDefaults?
@@ -117,6 +136,23 @@ final class ServiceProfileStore {
     var availableProfiles: [ServiceProfile] { [.default] + profiles }
     func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.default.id ? .default : profiles.first { $0.id == id } }
     func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { devices[device] }
+    var commonProfile: ServiceProfile? { commonProfileID.flatMap(profile) }
+    func selection(for device: DeviceInventoryID) -> ServiceProfileSelection { devices[device]?.selection ?? .inheritDefault }
+
+    /// The profile that applies to the device now, if any.
+    func resolvedProfile(for device: DeviceInventoryID) -> ServiceProfile? {
+        switch selection(for: device) {
+        case .inheritDefault: commonProfile
+        case .profile(let id): profile(id)
+        case .doNotApply: nil
+        }
+    }
+
+    /// What applying to the device writes now: the latest definition of its profile, with its overrides.
+    /// Nil means nothing is written, and the overrides stay for a later choice.
+    func configuration(for device: DeviceInventoryID) -> ServiceConfiguration? {
+        resolvedProfile(for: device)?.configuration.applying(devices[device]?.overrides ?? [:])
+    }
 
     func reload() {
         do {
@@ -135,7 +171,7 @@ final class ServiceProfileStore {
         let profile = ServiceProfile(record: .init(id: UUID(), name: try validName(name), configuration: configuration))
         var updated = state
         updated.profiles.append(profile.record)
-        if let device { updated.devices[device] = DeviceServiceProfile(profile: profile, pending: false) }
+        if let device { updated.devices[device] = DeviceServiceProfile(selection: .profile(profile.id)) }
         try save(updated, adding: profile)
         return profile
     }
@@ -146,7 +182,10 @@ final class ServiceProfileStore {
         var updated = state
         if let name { updated.profiles[index].name = try validName(name) }
         updated.profiles[index].configuration = configuration
-        if let device { updated.devices[device] = DeviceServiceProfile(profileID: id, base: configuration, pending: false) }
+        if let device {
+            let inherits = selection(for: device) == .inheritDefault && commonProfileID == id
+            updated.devices[device] = DeviceServiceProfile(selection: inherits ? .inheritDefault : .profile(id))
+        }
         try save(updated)
     }
 
@@ -167,18 +206,27 @@ final class ServiceProfileStore {
     func delete(_ id: UUID) throws {
         var updated = state
         updated.profiles.removeAll { $0.id == id }
+        if updated.commonProfileID == id { updated.commonProfileID = nil }
         // Removing the association does not change the simulator's services.
-        updated.devices = updated.devices.filter { $0.value.profileID != id }
+        for (device, binding) in updated.devices where binding.selection == .profile(id) {
+            updated.devices[device]?.selection = .inheritDefault
+        }
+        try save(updated)
+    }
+
+    func setCommonProfile(_ id: UUID?) throws {
+        if let id, profile(id) == nil { throw Failure.missingProfile }
+        var updated = state
+        updated.commonProfileID = id
         try save(updated)
     }
 
     @discardableResult
-    func assign(_ profileID: UUID, to device: DeviceInventoryID, pending: Bool,
+    func assign(_ selection: ServiceProfileSelection, to device: DeviceInventoryID,
                 preservingOverrides: Bool = true) throws -> DeviceServiceProfile {
-        guard let profile = profile(profileID) else { throw Failure.missingProfile }
+        if case .profile(let id) = selection, profile(id) == nil { throw Failure.missingProfile }
         var updated = state
-        let overrides = !preservingOverrides || profileID == ServiceProfile.default.id ? [:] : updated.devices[device]?.overrides ?? [:]
-        let binding = DeviceServiceProfile(profile: profile, overrides: overrides, pending: pending)
+        let binding = DeviceServiceProfile(selection: selection, overrides: preservingOverrides ? updated.devices[device]?.overrides ?? [:] : [:])
         updated.devices[device] = binding
         try save(updated)
         return binding
@@ -192,26 +240,13 @@ final class ServiceProfileStore {
 
     func record(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for device: DeviceInventoryID,
                 productFamily: String, currentConfiguration: ServiceConfiguration? = nil) throws {
-        var binding = state.devices[device] ?? DeviceServiceProfile(profile: .default, pending: false)
-        var configuration = currentConfiguration ?? binding.configuration
+        var configuration = currentConfiguration ?? self.configuration(for: device)
+            ?? ServiceConfiguration().applying(devices[device]?.overrides ?? [:])
         let affected = configuration.set(targets, enabled: enabled, productFamily: productFamily)
-        for label in affected {
-            let enabled = !configuration.disabledLabels.contains(label)
-            if enabled == !binding.base.disabledLabels.contains(label) { binding.overrides.removeValue(forKey: label) }
-            else { binding.overrides[label] = enabled }
-        }
-        guard binding != state.devices[device] else { return }
-        binding.requestID = UUID()
+        guard !affected.isEmpty else { return }
         var updated = state
-        updated.devices[device] = binding
-        try save(updated)
-    }
-
-    func beginApplication(for device: DeviceInventoryID, requestID: UUID) throws {
-        guard var binding = state.devices[device], binding.requestID == requestID, binding.pendingApplication else { return }
-        binding.pendingApplication = false
-        var updated = state
-        updated.devices[device] = binding
+        // A change stays explicit even if it matches the profile now, because the profile can change later.
+        for label in affected { updated.devices[device, default: DeviceServiceProfile()].overrides[label] = enabled }
         try save(updated)
     }
 
@@ -257,6 +292,7 @@ final class ServiceProfileStore {
             return profile
         }
         if profiles.map(\.id) != updated.map(\.id) { profiles = updated }
+        if commonProfileID != loaded.commonProfileID { commonProfileID = loaded.commonProfileID }
         if devices != loaded.devices { devices = loaded.devices }
     }
 }

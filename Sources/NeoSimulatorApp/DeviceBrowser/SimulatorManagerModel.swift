@@ -152,6 +152,7 @@ final class SimulatorManagerModel {
     let registry: DeviceRegistry
     let selection = ManagerSelection()
     let serviceProfiles: ServiceProfileStore
+    @ObservationIgnored private var bootTracker = SimulatorBootTracker()
     private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored private var postureStops: [DeviceInventoryID: Task<Void, Never>] = [:]
@@ -519,7 +520,7 @@ final class SimulatorManagerModel {
             defer {
                 self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
-                self.applyPendingServiceProfiles()
+                self.applyStartupServiceProfiles()
             }
             do {
                 let preparesOwnedShutdown = action == .shutdown && targets.allSatisfy {
@@ -553,7 +554,10 @@ final class SimulatorManagerModel {
                     }
                 }
                 if action == .restart || action == .erase {
-                    for result in report.results where result.error == nil { self.registry.device(for: result.deviceID)?.deviceRestarted() }
+                    for result in report.results where result.didStartSimulator {
+                        self.registry.device(for: result.deviceID)?.deviceRestarted()
+                        self.bootTracker.noteBoot(of: result.deviceID)
+                    }
                 }
                 var presentationError: (any Error)?
                 do { try await self.afterManagingSimulators?(action, targets) }
@@ -588,6 +592,7 @@ final class SimulatorManagerModel {
             defer {
                 self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
+                self.applyStartupServiceProfiles()
             }
             do {
                 try await device.inspection.change(affecting: groups, prepare: {
@@ -637,7 +642,7 @@ final class SimulatorManagerModel {
         defer {
             if refreshWaiters.isEmpty {
                 refreshing = false
-                applyPendingServiceProfiles()
+                applyStartupServiceProfiles()
             }
             else { refreshWaiters.removeFirst().resume() }
         }
@@ -650,6 +655,7 @@ final class SimulatorManagerModel {
                 inventoryRefreshRequested = true
                 return
             }
+            bootTracker.observe(inventory)
             reconcileDevicePostures()
             inventoryIssues = registry.inventoryIssues
             updateInventoryIssue()
@@ -785,44 +791,41 @@ final class SimulatorManagerModel {
         !stopping && !holdsAllEdits && !heldEditDeviceIDs.contains(identifier) && !managingDeviceIDs.contains(identifier)
     }
 
-    func selectServiceProfile(_ profileID: UUID, for identifier: DeviceInventoryID) {
+    func selectServiceProfile(_ selection: ServiceProfileSelection, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier),
               let device = inventory.first(where: { $0.id == identifier }), case .simulator = device else { return }
         do {
-            let binding = try serviceProfiles.assign(profileID, to: identifier, pending: !device.canInspectBackgroundServices)
-            if device.canInspectBackgroundServices { enqueueServiceConfiguration(binding, for: device) }
+            try serviceProfiles.assign(selection, to: identifier)
+            enqueueServiceConfiguration(for: device)
         } catch { onError?(error) }
     }
 
     func revertServiceProfile(for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier),
               let device = inventory.first(where: { $0.id == identifier }) else { return }
-        let profileID = serviceProfiles.binding(for: identifier)?.profileID ?? ServiceProfile.default.id
         do {
-            let binding = try serviceProfiles.assign(profileID, to: identifier,
-                pending: !device.canInspectBackgroundServices, preservingOverrides: false)
-            if device.canInspectBackgroundServices { enqueueServiceConfiguration(binding, for: device) }
+            try serviceProfiles.assign(serviceProfiles.selection(for: identifier), to: identifier, preservingOverrides: false)
+            enqueueServiceConfiguration(for: device)
         } catch { onError?(error) }
     }
 
-    private func enqueueServiceConfiguration(_ binding: DeviceServiceProfile, for device: InventoryDevice) {
-        guard let model = registry.device(for: device.id) else { return }
+    /// Queues what the device's choice resolves to now. A stopped device takes it at its next boot instead.
+    private func enqueueServiceConfiguration(for device: InventoryDevice) {
+        guard device.canInspectBackgroundServices, let configuration = serviceProfiles.configuration(for: device.id),
+              let model = registry.device(for: device.id) else { return }
         do {
-            let write = try model.backgroundServices.accept(.configuration(binding.configuration),
-                after: hold(of: device.id, waitsForAttach: false)) {
-                try self.serviceProfiles.beginApplication(for: device.id, requestID: binding.requestID)
-            }
+            let write = try model.backgroundServices.accept(.configuration(configuration),
+                                                            after: hold(of: device.id, waitsForAttach: false))
             track(write, activity: "Applying service profile…", on: device.id)
         } catch { onError?(error) }
     }
 
-    private func applyPendingServiceProfiles() {
+    /// Queues a profile for each observed boot, once. A management action must end first, because the device's queue does
+    /// not wait for it. Whatever becomes of the write is reported from there, and only a later boot or choice writes again.
+    private func applyStartupServiceProfiles() {
         guard !stopping else { return }
-        for device in inventory where device.canInspectBackgroundServices && !managingDeviceIDs.contains(device.id)
-            && registry.device(for: device.id)?.backgroundServices.isChanging != true {
-            if let binding = serviceProfiles.binding(for: device.id), binding.pendingApplication {
-                enqueueServiceConfiguration(binding, for: device)
-            }
+        for device in inventory where device.canInspectBackgroundServices && !managingDeviceIDs.contains(device.id) {
+            if bootTracker.unappliedBoots.remove(device.id) != nil { enqueueServiceConfiguration(for: device) }
         }
     }
 
@@ -958,6 +961,7 @@ final class SimulatorManagerModel {
         quitPreparation = nil
         uninterruptedCommands.resumeAfterCancelledQuit()
         registry.resumeReading()
+        applyStartupServiceProfiles()
         if inventoryRefreshRequested { Task { await refresh() } }
     }
 
@@ -1085,6 +1089,67 @@ final class SimulatorManagerModel {
 
 }
 
+/// Finds the simulator boots that successive inventories show, whether or not NeoSimulator started them.
+private struct SimulatorBootTracker {
+    private struct Observed {
+        var isRunning: Bool
+        /// Last reported date, retained while waiting for the new boot's date.
+        var bootDate: Date?
+        var bootAwaitingDateObservedAt: Date?
+    }
+
+    private var observed: [DeviceInventoryID: Observed] = [:]
+    /// Capture before inventory I/O so boots during the first read still belong to this observation.
+    private let observationStartedAt = Date()
+    /// Boots that no profile has been queued for. A device that stopped again keeps its entry until it next boots, which
+    /// asks for the same one application.
+    var unappliedBoots: Set<DeviceInventoryID> = []
+
+    /// A device that an incomplete inventory retains keeps its last values here, so it shows no boot.
+    mutating func observe(_ inventory: [InventoryDevice]) {
+        var current: [DeviceInventoryID: Observed] = [:]
+        for item in inventory {
+            guard case .simulator(let device) = item else { continue }
+            let isRunning = item.canInspectBackgroundServices
+            let date = device.lastBootDate
+            guard let previous = observed[item.id] else {
+                // An unknown running device can be an old device from a recovered source. Wait for a boot date or a
+                // stopped state; a restart that NeoSimulator ran already supplies its own evidence.
+                if isRunning, date == nil, !unappliedBoots.contains(item.id) { continue }
+                if isRunning, let date, date >= observationStartedAt { unappliedBoots.insert(item.id) }
+                current[item.id] = Observed(isRunning: isRunning, bootDate: date)
+                continue
+            }
+            let started = isRunning && !previous.isRunning
+            var next = Observed(isRunning: isRunning, bootDate: date ?? previous.bootDate,
+                                bootAwaitingDateObservedAt: previous.bootAwaitingDateObservedAt)
+            if !isRunning { next.bootAwaitingDateObservedAt = nil }
+            else if started {
+                unappliedBoots.insert(item.id)
+                next.bootAwaitingDateObservedAt = date == nil || date == previous.bootDate ? .now : nil
+            } else if let observedAt = previous.bootAwaitingDateObservedAt {
+                // A delayed date cannot be newer than the boot observation it identifies.
+                if let date, date != previous.bootDate {
+                    if date > observedAt { unappliedBoots.insert(item.id) }
+                    next.bootAwaitingDateObservedAt = nil
+                }
+            } else if let date, let known = previous.bootDate, date != known {
+                unappliedBoots.insert(item.id)
+            }
+            current[item.id] = next
+        }
+        observed = current
+        unappliedBoots.formIntersection(current.keys)
+    }
+
+    /// Counts a restart or erase that NeoSimulator ran, which an inventory may show no difference for.
+    /// An inventory may already have recorded that boot while management held its application.
+    mutating func noteBoot(of identifier: DeviceInventoryID) {
+        guard identifier.isSimulator, unappliedBoots.insert(identifier).inserted else { return }
+        observed[identifier, default: Observed(isRunning: true, bootDate: nil)].bootAwaitingDateObservedAt = .now
+    }
+}
+
 private extension DeviceSettingChange {
     /// A connecting screen restores the device's saved audio routes and location, and Display Zoom changes the
     /// framebuffer and relaunches the guest's interface, so these writes wait for a screen that is attaching.
@@ -1108,6 +1173,7 @@ private struct InventoryReadError: LocalizedError {
             let source: String = switch issue.source {
             case .coreDevice: "Devices"
             case .rendererOwnership: "Open Screens"
+            case .simulatorBootDates(let xcode, _): "\(xcode.deletingPathExtension().lastPathComponent) boot times"
             case .simulators(let xcode, _): xcode?.deletingPathExtension().lastPathComponent ?? "Simulators"
             }
             return "\(source): \(issue.error.localizedDescription)"
