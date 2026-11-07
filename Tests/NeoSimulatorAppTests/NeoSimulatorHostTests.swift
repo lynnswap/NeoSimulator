@@ -4497,6 +4497,8 @@ struct InputFocusTests {
         canvas.addSubview(display)
         let framebuffer = NSView(frame: NSRect(x: 20, y: 30, width: 120, height: 200))
         display.addSubview(framebuffer)
+        #expect(NativeDeviceTrackpad.contentScale(of: framebuffer, renderScale: 1) == 2)
+        #expect(NativeDeviceTrackpad.contentScale(of: framebuffer, renderScale: 2) == 4)
         display.addSubview(NSView(frame: display.bounds))
         // A bar above the canvas covers the framebuffer's lower edge.
         content.addSubview(NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 140)))
@@ -10821,8 +10823,8 @@ struct InputFocusTests {
 
     private func inputPlan(_ family: DeviceCapabilities.Family, _ features: Set<String>, plugin: Bool = false,
                            deviceType: String = "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
-                           defaultSet: Bool = true) -> NativeInputPlan {
-        NativeInputPlan(capabilities: DeviceCapabilities(family: family, runtimeVersion: 0x1B_00_00,
+                           defaultSet: Bool = true, runtimeVersion: UInt32 = 0x1B_00_00) -> NativeInputPlan {
+        NativeInputPlan(capabilities: DeviceCapabilities(family: family, runtimeVersion: runtimeVersion,
                                                          supportsFeature: { features.contains($0) },
                                                          hasUserInterfacePlugin: plugin),
                         deviceTypeIdentifier: deviceType, isInDefaultSet: defaultSet)
@@ -10831,8 +10833,10 @@ struct InputFocusTests {
     @Test func inputRoutesFollowWhatTheDeviceIs() {
         let keyboard = DeviceCapabilities.keyboard
         // A phone or pad reaches the guest that owns its screen, in any device set.
-        #expect(inputPlan(.iPhone, [keyboard]) == .guest)
-        #expect(inputPlan(.iPad, [keyboard], defaultSet: false) == .guest)
+        #expect(inputPlan(.iPhone, [keyboard]) == .guest(touchscreenGestures: false))
+        #expect(inputPlan(.iPad, [keyboard], defaultSet: false) == .guest(touchscreenGestures: false))
+        #expect(inputPlan(.iPhone, [keyboard], runtimeVersion: 0x1A_00_00) == .guest(touchscreenGestures: true))
+        #expect(inputPlan(.iPad, [keyboard], runtimeVersion: 0x1A_00_00) == .guest(touchscreenGestures: false))
         // An independent canvas is the screen of a Duo in the default set; elsewhere CoreDevice cannot reach it.
         #expect(inputPlan(.iPhone, [keyboard], deviceType: NativeInputPlan.duoDeviceType) == .canvas)
         #expect(inputPlan(.iPhone, [keyboard], deviceType: NativeInputPlan.duoDeviceType, defaultSet: false) == .simulatorKit)

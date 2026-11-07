@@ -124,7 +124,9 @@ package final class SimulatorConnection: SimulatorDisplay {
         var touches: NativeDigitizerTouches?
         if let route = services.touchRoute {
             touches = try await NativeDigitizerTouches(digitizer: digitizerView, interface: route.interface) {
-                [input = route.input] touch in
+                [weak self, input = route.input] touch in
+                // A mouse press takes over from any trackpad gesture before starting its own touch.
+                if touch.phase == .began { self?.trackpad?.endGestures() }
                 input.sendTouch(at: touch.point, secondPoint: touch.secondPoint, phase: touch.phase, edge: touch.edge)
             }
         }
@@ -137,7 +139,11 @@ package final class SimulatorConnection: SimulatorDisplay {
         var input: NativeTrackpadInput?
         if let trackpad = services.trackpad {
             let framebuffer = try unsafe runtime.display.renderableView.unsafeInvoke(on: view)
-            input = NativeTrackpadInput(display: view, framebuffer: framebuffer, send: trackpad.handle,
+            input = NativeTrackpadInput(display: view, framebuffer: framebuffer, send: { [weak self, weak trackpad, weak framebuffer] event, transform in
+                guard let self, let framebuffer else { return }
+                trackpad?.handle(event, coordinateTransform: transform,
+                                 renderScale: NativeDeviceTrackpad.contentScale(of: framebuffer, renderScale: renderScale))
+            },
                                         endGestures: trackpad.endGestures)
         }
         try touches?.install()

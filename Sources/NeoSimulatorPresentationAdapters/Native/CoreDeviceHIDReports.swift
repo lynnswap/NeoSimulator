@@ -8,7 +8,7 @@ import NeoSimulatorKit
 @MainActor
 package struct CoreDeviceDigitizerReports {
     let abis: [NativeSwiftType: NativeType]
-    private let build: (CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge) throws -> NativeSwiftValue
+    private let build: ([NativeTouchContact], RemoteDeviceTouchEdge) throws -> NativeSwiftValue
 
     package init(runtime: ABIRuntime) async throws {
         try await CoreDeviceHIDService.loadUniversalHID()
@@ -55,21 +55,20 @@ package struct CoreDeviceDigitizerReports {
             edgeMethods[edge] = try await digitizerType.resolve(.swift(.method("setContactSwipe\(suffix)(_:atIndex:)",
                 as: ((Bool, Int) -> Void).self, valueABIs: abis, receiverABI: receiver, receiver: .mutating)))
         }
-        build = { point, second, phase, edge in
+        build = { contacts, edge in
             let initial = try unsafe makeReport.unsafeInvoke(bits, reportID.unsafeInvoke())
             let report = try unsafe makeDigitizer.unsafeInvoke(initial)
             try unsafe maxContacts.unsafeInvoke(on: report, 2)
-            let points = [point] + (second.map { [$0] } ?? [])
-            try unsafe contactCount.unsafeInvoke(on: report, UInt8(points.count))
-            for (index, point) in points.enumerated() {
+            try unsafe contactCount.unsafeInvoke(on: report, UInt8(contacts.count))
+            for (index, value) in contacts.enumerated() {
                 let contact = try unsafe makeContact.unsafeInvoke()
-                try unsafe contactIndex.unsafeInvoke(on: contact, index + 1)
-                try unsafe x.unsafeInvoke(on: contact, Double(point.x))
-                try unsafe y.unsafeInvoke(on: contact, Double(point.y))
-                try unsafe touch.unsafeInvoke(on: contact, phase != .ended)
-                try unsafe range.unsafeInvoke(on: contact, phase != .ended)
+                try unsafe contactIndex.unsafeInvoke(on: contact, Int(value.id))
+                try unsafe x.unsafeInvoke(on: contact, Double(value.point.x))
+                try unsafe y.unsafeInvoke(on: contact, Double(value.point.y))
+                try unsafe touch.unsafeInvoke(on: contact, value.isTouching)
+                try unsafe range.unsafeInvoke(on: contact, value.isTouching)
                 try unsafe setContact.unsafeInvoke(on: report, contact, index)
-                try unsafe identity.unsafeInvoke(on: report, UInt8(index + 1), index)
+                try unsafe identity.unsafeInvoke(on: report, value.id, index)
                 if let method = edgeMethods[edge.rawValue] { try unsafe method.unsafeInvoke(on: report, true, index) }
             }
             let result = try unsafe readReport.unsafeInvoke(on: report)
@@ -78,7 +77,12 @@ package struct CoreDeviceDigitizerReports {
     }
 
     package func make(point: CGPoint, second: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge) throws -> NativeSwiftValue {
-        try build(point, second, phase, edge)
+        let points = [point] + (second.map { [$0] } ?? [])
+        return try build(points.enumerated().map { NativeTouchContact(id: UInt8($0.offset + 1), point: $0.element, isTouching: phase != .ended) }, edge)
+    }
+
+    package func make(contacts: [NativeTouchContact], edge: RemoteDeviceTouchEdge = .none) throws -> NativeSwiftValue {
+        try build(contacts, edge)
     }
 }
 
