@@ -8,7 +8,7 @@ package enum NativeInputPlan: Equatable, Sendable {
     /// DeviceKit's own view takes the screen's input. A device that needs it has no other screen.
     case canvas
     /// The Mach services that the device itself looks up, for a device in any set.
-    case guest
+    case guest(touchscreenGestures: Bool)
     /// CoreDevice's services, which list only the default device set.
     case coreDevice(keyboard: Bool, trackpad: Bool, touches: Bool)
     case simulatorKit
@@ -30,7 +30,8 @@ package enum NativeInputPlan: Equatable, Sendable {
             self = .canvas
         } else if !isDuo, hasKeyboard, takesTrackpad, takesTouches {
             // CoreDevice may omit a default-set simulator too. Reach the guest that owns the screen.
-            self = .guest
+            // Older iPhone UIKit does not consistently deliver indirect scroll/pinch reports.
+            self = .guest(touchscreenGestures: capabilities.family == .iPhone && capabilities.runtimeVersion < 0x1B_00_00)
         } else if !isInDefaultSet {
             self = .simulatorKit
         } else if capabilities.isPhoneOrPad, hasPressure {
@@ -323,7 +324,7 @@ package final class SimulatorScreenRouter {
         }
         // Only the guest's route reaches the device through its channel.
         var healthChanges: (@MainActor () -> AsyncStream<DeviceChannelHealth>)?
-        if plan == .guest { healthChanges = { device.channel.healthChanges() } }
+        if case .guest = plan { healthChanges = { device.channel.healthChanges() } }
         let activation = NativeInputActivation(services: services, connect: connect, activate: activate, healthChanges: healthChanges)
         connection.inputActivation = activation
         activation.start()
@@ -338,14 +339,15 @@ package final class SimulatorScreenRouter {
         switch plan {
         case .canvas, .simulatorKit:
             return nil
-        case .guest:
+        case .guest(let touchscreenGestures):
             // They reach the guest's HID services through the Mach services that the device itself looks up, so they stay
             // with the device's own set.
             let interface = try await runtime.touchInterface()
             let guest = try await SimulatorGuestHID(lookUp: device.lookUp)
             connected.keyboard = try await NativeDeviceKeyboard.connect(guest: guest)
-            connected.trackpad = try await NativeDeviceTrackpad.connect(guest: guest)
-            connected.touchRoute = NativeTouchRoute(input: try await NativeDeviceScreenInput.connect(guest: guest), interface: interface)
+            let touchscreen = try await NativeDeviceScreenInput.connect(guest: guest)
+            connected.touchRoute = NativeTouchRoute(input: touchscreen, interface: interface)
+            connected.trackpad = try await NativeDeviceTrackpad.connect(guest: guest, touchscreen: touchscreenGestures ? touchscreen : nil)
         case .coreDevice(let keyboard, let trackpad, let touches):
             // Without the native touchscreen the guest would lose SimulatorKit's touches to the other input.
             var features = [CoreDeviceScreenInput.universalHIDFeature]

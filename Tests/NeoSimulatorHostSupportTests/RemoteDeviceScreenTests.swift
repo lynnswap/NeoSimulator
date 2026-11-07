@@ -1474,6 +1474,79 @@ struct RemoteDeviceScreenTests {
         }
     }
 
+    @Test func trackpadTouchGesturesPanPinchAndReleaseWithoutReplayingMomentum() throws {
+        var gestures = NativeTrackpadTouches()
+        let initial = try trackpadScroll(.began, delta: -30, sender: 0xA, location: .zero)
+        let location = initial.locationInWindow
+        let transform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
+                                          tx: 0.25 - location.x / 400, ty: 0.65 + location.y / 600)
+        #expect(gestures.events(for: try trackpadScroll(.began, delta: -1, sender: 0xA, location: .zero), transform: transform).isEmpty)
+        #expect(gestures.events(for: try trackpadScroll(.ended, sender: 0xA, location: .zero), transform: transform).isEmpty)
+        let scroll = gestures.events(for: initial, transform: transform)
+        guard case let .touch(start, nil, .began, _) = try #require(scroll.first),
+              case let .touch(moved, nil, .moved, _) = try #require(scroll.last) else {
+            Issue.record("A scroll must drag one finger"); return
+        }
+        #expect(moved.y < start.y)
+        let longScroll = gestures.events(for: try trackpadScroll(.changed, delta: -600, sender: 0xA, location: .zero), transform: transform)
+        for case let .touch(point, _, .began, _) in longScroll { #expect(point == start) }
+        let ended = gestures.events(for: try trackpadScroll(.ended, sender: 0xA, location: .zero), transform: transform)
+        #expect(ended.count == 1)
+        #expect(gestures.events(for: try trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0xA, location: .zero), transform: transform).isEmpty)
+
+        let pinch = gestures.events(for: try trackpadPinch(.began, magnification: 0.2, sender: 0xA, location: .zero), transform: transform)
+        guard case let .touch(first, second?, .began, _) = try #require(pinch.first),
+              case let .touch(spreadFirst, spreadSecond?, .moved, _) = try #require(pinch.last) else {
+            Issue.record("A pinch must move two fingers"); return
+        }
+        #expect(abs(spreadSecond.x - spreadFirst.x) > abs(second.x - first.x))
+        let extended = gestures.events(for: try trackpadPinch(.changed, magnification: 20, sender: 0xA, location: .zero), transform: transform)
+        let reversed = gestures.events(for: try trackpadPinch(.changed, magnification: -0.1, sender: 0xA, location: .zero), transform: transform)
+        guard case let .touch(wideFirst, wideSecond?, _, _) = try #require(extended.last),
+              case let .touch(narrowFirst, narrowSecond?, _, _) = try #require(reversed.last) else {
+            Issue.record("A pinch must retain both contacts"); return
+        }
+        #expect(abs(narrowSecond.x - narrowFirst.x) < abs(wideSecond.x - wideFirst.x))
+        guard case .touch(_, _?, .ended, _) = try #require(gestures.end().first) else {
+            Issue.record("Losing focus must release both fingers"); return
+        }
+        #expect(gestures.end().isEmpty)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aTrackpadTouchRouteReleasesAcceptedTouchesBeforeRemovingServices() async throws {
+        let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
+        let screen = ScreenFixtureTransport()
+        let touchscreen = NativeDeviceScreenInput(input: screen)
+        let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport }, touchscreen: touchscreen)
+        let sending = ScreenFixtureGate()
+        screen.holdingSend = sending
+        let transform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600, tx: 0.5, ty: 0.5)
+        // Touch conversion also works for AppKit gesture steps without a physical HID sender.
+        trackpad.handle(try trackpadScroll(.began, delta: -30, sender: nil, location: .zero), coordinateTransform: transform)
+        await sending.wait()
+        let stopping = Task { try await trackpad.stop() }
+        sending.resume()
+        try await stopping.value
+        #expect(screen.deliveries == ["touch began", "touch moved", "touch ended"])
+        #expect(screen.pressed.touch == nil)
+        #expect(transport.services.allSatisfy { $0.removes == 1 && $0.sent.isEmpty })
+        try await touchscreen.stop()
+    }
+
+    @Test func touchscreenRejectsGestureTouchesWhileMouseIsDown() async throws {
+        let screen = ScreenFixtureTransport()
+        let touchscreen = NativeDeviceScreenInput(input: screen)
+        touchscreen.sendTouch(at: CGPoint(x: 0.4, y: 0.6), secondPoint: nil, phase: .began, edge: .none)
+        touchscreen.sendTouch(at: CGPoint(x: 0.3, y: 0.5), secondPoint: CGPoint(x: 0.7, y: 0.5),
+                              phase: .began, edge: .none, source: .trackpad)
+        touchscreen.sendTouch(at: CGPoint(x: 0.3, y: 0.5), secondPoint: CGPoint(x: 0.7, y: 0.5),
+                              phase: .ended, edge: .none, source: .trackpad)
+        await touchscreen.waitForPendingInput()
+        #expect(screen.deliveries == ["touch began"] && touchscreen.hasPointerTouch)
+        touchscreen.sendTouch(at: CGPoint(x: 0.4, y: 0.6), secondPoint: nil, phase: .ended, edge: .none)
+        try await touchscreen.stop()
+    }
+
     @Test func nativeTrackpadSendsEventsInOrderAndDropsThoseOfEndedGestures() async throws {
         let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
         let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
@@ -2856,20 +2929,22 @@ private enum TrackpadPinchPhase: Int64 { case began = 1, changed = 2, ended = 4,
 /// AppKit makes a trackpad's magnify event from a zoom gesture, IOHIDEvent type 8, with its phase and magnification.
 /// UniversalHIDKit reads the event's sender, the registry ID of the Mac HID service that sent it, from CGEvent field 87;
 /// a synthesized event leaves it 0.
-private func trackpadPinch(_ phase: TrackpadPinchPhase, magnification: Double = 0, sender: UInt64?) throws -> NSEvent {
+private func trackpadPinch(_ phase: TrackpadPinchPhase, magnification: Double = 0, sender: UInt64?, location: CGPoint? = nil) throws -> NSEvent {
     let event = try #require(CGEvent(source: nil))
     event.type = try #require(CGEventType(rawValue: 29))
     event.setIntegerValueField(try #require(CGEventField(rawValue: 110)), value: 8)
     event.setIntegerValueField(try #require(CGEventField(rawValue: 132)), value: phase.rawValue)
     event.setDoubleValueField(try #require(CGEventField(rawValue: 113)), value: magnification)
     if let sender { event.setIntegerValueField(try #require(CGEventField(rawValue: 87)), value: Int64(sender)) }
+    if let location { event.location = location }
     return try #require(NSEvent(cgEvent: event))
 }
 
 /// A trackpad's two-finger scroll step, or with no phases a mouse wheel's, whose sender UniversalHIDKit reads as it does a pinch's.
 private func trackpadScroll(_ phase: CGScrollPhase?, momentum: CGMomentumScrollPhase = .none, units: CGScrollEventUnit = .pixel,
-                            delta: Int32 = 0, sender: UInt64?) throws -> NSEvent {
+                            delta: Int32 = 0, sender: UInt64?, location: CGPoint? = nil) throws -> NSEvent {
     let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: units, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0))
+    if let location { event.location = location }
     event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
     event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
     if let sender { event.setIntegerValueField(try #require(CGEventField(rawValue: 87)), value: Int64(sender)) }

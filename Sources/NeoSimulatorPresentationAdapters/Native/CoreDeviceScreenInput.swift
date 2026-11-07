@@ -332,12 +332,7 @@ package final class NativeTrackpadGestures {
     package func service(sending event: NSEvent) async throws -> Service? {
         guard !isStopped else { throw RemoteScreenError.unavailable("remote-gesture-input", "The device's gesture input has stopped.") }
         let generation = self.generation
-        let transport: any NativeTrackpadTransport
-        if let prepared = self.transport { transport = prepared } else {
-            transport = try await makeTransport()
-            try checkPreparation(since: generation)
-            self.transport = transport
-        }
+        let transport = try await preparedTransport(since: generation)
         let sender = try transport.sender(of: event)
         guard sender != 0 || event.type == .mouseMoved, !unknownSenders.contains(sender) else { return nil }
         guard let service = try await prepareService(sender: sender, transport: transport, generation: generation) else { return nil }
@@ -345,6 +340,22 @@ package final class NativeTrackpadGestures {
             _ = try await prepareService(sender: 0, transport: transport, generation: generation)
         }
         return service
+    }
+
+    /// Activates the guest's native input session before a legacy iPhone receives touchscreen gestures.
+    package func prepareTouchscreen() async throws {
+        guard !isStopped else { throw RemoteScreenError.unavailable("remote-gesture-input", "The device's gesture input has stopped.") }
+        let generation = self.generation
+        let transport = try await preparedTransport(since: generation)
+        _ = try await prepareService(sender: 0, transport: transport, generation: generation)
+    }
+
+    private func preparedTransport(since generation: Int) async throws -> any NativeTrackpadTransport {
+        if let transport { return transport }
+        let transport = try await makeTransport()
+        try checkPreparation(since: generation)
+        self.transport = transport
+        return transport
     }
 
     private func prepareService(sender: UInt64, transport: any NativeTrackpadTransport, generation: Int) async throws -> Service? {
@@ -419,14 +430,133 @@ package final class NativeTrackpadGestures {
     }
 }
 
-/// Routes simulator scrolling and pinches through guest UniversalHID services carrying
-/// the Mac trackpad's properties. Uses CoreDevice for default-set simulators or equivalent
-/// guest requests for other sets. SimulatorKit drops these events unless a crown or dial uses them.
+/// Converts trackpad gestures to touches for iPhone runtimes without indirect gesture delivery.
+/// Coordinates are in the same normalized screen space as mouse touches.
+package struct NativeTrackpadTouches {
+    private enum Gesture {
+        case scroll(anchor: CGPoint, point: CGPoint, pending: CGVector, active: Bool)
+        case pinch(center: CGPoint, offset: CGVector)
+    }
+    private var gesture: Gesture?
+
+    package mutating func events(for event: NSEvent, transform: CGAffineTransform) -> [RemoteScreenInput] {
+        switch event.type {
+        case .scrollWheel:
+            // UIKit decelerates the touch pan after its end; replaying AppKit momentum would apply inertia twice.
+            guard event.momentumPhase.isEmpty else { return [] }
+            if !event.phase.isDisjoint(with: [.ended, .cancelled]) { return end() }
+            guard event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 else { return [] }
+            var result: [RemoteScreenInput] = []
+            let anchor: CGPoint
+            var point: CGPoint
+            var pending: CGVector
+            var active: Bool
+            if case let .scroll(oldAnchor, oldPoint, oldPending, oldActive) = gesture, !event.phase.contains(.began) {
+                anchor = oldAnchor
+                (point, pending, active) = (oldPoint, oldPending, oldActive)
+            } else {
+                result += end()
+                anchor = Self.bounded(event.locationInWindow.applying(transform), inset: 0.05)
+                point = anchor
+                pending = .zero
+                active = false
+            }
+            pending.dx += event.scrollingDeltaX
+            pending.dy -= event.scrollingDeltaY
+            if !active {
+                // A short gesture over a control must not become an unintended tap.
+                guard hypot(pending.dx, pending.dy) >= 8 else {
+                    gesture = .scroll(anchor: anchor, point: point, pending: pending, active: false)
+                    return result
+                }
+                result.append(Self.touch(point, phase: .began))
+                active = true
+            }
+            let origin = CGPoint.zero.applying(transform)
+            let delta = CGPoint(x: pending.dx, y: pending.dy).applying(transform)
+            var next = CGPoint(x: point.x + delta.x - origin.x, y: point.y + delta.y - origin.y)
+            if !CGRect(x: 0, y: 0, width: 1, height: 1).contains(next) {
+                // A long scroll may exceed one screen. Restart over the original target, never over an unrelated view at the screen center.
+                result.append(Self.touch(point, phase: .ended))
+                point = anchor
+                result.append(Self.touch(point, phase: .began))
+                next = CGPoint(x: point.x + delta.x - origin.x, y: point.y + delta.y - origin.y)
+            }
+            next = Self.bounded(next)
+            result.append(Self.touch(next, phase: .moved))
+            gesture = .scroll(anchor: anchor, point: next, pending: .zero, active: active)
+            if event.phase.isEmpty { result += end() }
+            return result
+        case .magnify:
+            if !event.phase.isDisjoint(with: [.ended, .cancelled]) { return end() }
+            var result: [RemoteScreenInput] = []
+            let center: CGPoint
+            var offset: CGVector
+            if case let .pinch(oldCenter, oldOffset) = gesture, !event.phase.contains(.began) {
+                center = oldCenter
+                offset = oldOffset
+            } else {
+                result += end()
+                let location = event.locationInWindow.applying(transform)
+                let other = CGPoint(x: event.locationInWindow.x + 50, y: event.locationInWindow.y).applying(transform)
+                let span = CGVector(dx: other.x - location.x, dy: other.y - location.y)
+                let scale = min(1, 0.2 / max(abs(span.dx), abs(span.dy)))
+                offset = CGVector(dx: span.dx * scale, dy: span.dy * scale)
+                let marginX = abs(offset.dx) + 0.05
+                let marginY = abs(offset.dy) + 0.05
+                center = CGPoint(x: min(1 - marginX, max(marginX, location.x)),
+                                 y: min(1 - marginY, max(marginY, location.y)))
+                result.append(Self.pinch(center, offset: offset, phase: .began))
+            }
+            let factor = max(0.01, 1 + event.magnification)
+            offset = Self.bounded(CGVector(dx: offset.dx * factor, dy: offset.dy * factor), around: center)
+            result.append(Self.pinch(center, offset: offset, phase: .moved))
+            gesture = .pinch(center: center, offset: offset)
+            return result
+        default:
+            return []
+        }
+    }
+
+    package mutating func end() -> [RemoteScreenInput] {
+        defer { gesture = nil }
+        switch gesture {
+        case let .scroll(_, point, _, active): return active ? [Self.touch(point, phase: .ended)] : []
+        case let .pinch(center, offset): return [Self.pinch(center, offset: offset, phase: .ended)]
+        case nil: return []
+        }
+    }
+
+    private static func bounded(_ point: CGPoint, inset: CGFloat = 0) -> CGPoint {
+        CGPoint(x: min(1 - inset, max(inset, point.x)), y: min(1 - inset, max(inset, point.y)))
+    }
+
+    private static func bounded(_ offset: CGVector, around center: CGPoint) -> CGVector {
+        let horizontal = offset.dx == 0 ? 1 : min(center.x, 1 - center.x) / abs(offset.dx)
+        let vertical = offset.dy == 0 ? 1 : min(center.y, 1 - center.y) / abs(offset.dy)
+        let scale = min(1, horizontal, vertical)
+        return CGVector(dx: offset.dx * scale, dy: offset.dy * scale)
+    }
+
+    private static func touch(_ point: CGPoint, phase: RemoteDeviceTouchPhase) -> RemoteScreenInput {
+        .touch(point, nil, phase, .none)
+    }
+
+    private static func pinch(_ center: CGPoint, offset: CGVector, phase: RemoteDeviceTouchPhase) -> RemoteScreenInput {
+        .touch(bounded(CGPoint(x: center.x - offset.dx, y: center.y - offset.dy)),
+               bounded(CGPoint(x: center.x + offset.dx, y: center.y + offset.dy)), phase, .none)
+    }
+}
+
+/// Routes simulator scrolling and pinches through guest HID services. The normal route carries the Mac trackpad's
+/// properties; iPhone runtimes without indirect gesture delivery use the primary touchscreen instead.
 @MainActor
 package final class NativeDeviceTrackpad {
     /// Receives failures of events that were already accepted, such as a trackpad service that could not be created.
     package var onFailure: (any Error) -> Void = { _ in }
     private let gestures: NativeTrackpadGestures
+    private let touchscreen: NativeDeviceScreenInput?
+    private var touchGestures = NativeTrackpadTouches()
     private var lastOperation: Task<Void, Never>?
     /// Changes when the screen's gestures end, so that an event queued or prepared before then is not sent.
     private var generation = 0
@@ -442,14 +572,15 @@ package final class NativeDeviceTrackpad {
 
     /// Connects to the guest's UniversalHID service of a simulator in any device set. A trackpad's guest service is
     /// created with its first event over the screen; connecting sends the guest nothing.
-    package static func connect(guest: SimulatorGuestHID) async throws -> NativeDeviceTrackpad {
+    package static func connect(guest: SimulatorGuestHID, touchscreen: NativeDeviceScreenInput? = nil) async throws -> NativeDeviceTrackpad {
         let connection = try await guest.connection(to: CoreDeviceScreenInput.universalHIDFeature)
         let transport = try await CoreDeviceTrackpadTransport(runtime: .shared) { try await connection.createService($0) }
-        return NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport })
+        return NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport }, touchscreen: touchscreen)
     }
 
-    package init(gestures: NativeTrackpadGestures) {
+    package init(gestures: NativeTrackpadGestures, touchscreen: NativeDeviceScreenInput? = nil) {
         self.gestures = gestures
+        self.touchscreen = touchscreen
     }
 
     /// Maps window locations to the unit coordinates of `view`'s bounds from its top-left corner, the pointer coordinates
@@ -464,19 +595,26 @@ package final class NativeDeviceTrackpad {
 
     /// Forwards a scroll, a pinch step, or a mouse movement, in the order of the calls. `coordinateTransform` maps the
     /// event's window location to the screen's pointer coordinates; a mouse movement, and a scroll or pinch that begins,
-    /// move its trackpad's pointer there. The gesture's later steps stay where it began.
+    /// move its trackpad's pointer there. The touchscreen route turns scrolling into a drag and pinching into two touches.
     package func handle(_ event: NSEvent, coordinateTransform: CGAffineTransform) {
         guard !isStopped, [.scrollWheel, .magnify, .mouseMoved].contains(event.type) else { return }
+        if touchscreen != nil, event.type == .mouseMoved { return }
         let token = generation
         enqueue { [weak self, gestures] in
             guard let self, generation == token else { return }
             do {
                 // A trackpad's first event waits for its service; one whose gestures end meanwhile is not sent.
-                guard let service = try await gestures.service(sending: event), generation == token else { return }
-                if event.type == .mouseMoved {
-                    try gestures.movePointer(event, coordinateTransform: coordinateTransform, on: service)
+                if let touchscreen, event.type != .scrollWheel || !event.phase.isEmpty || !event.momentumPhase.isEmpty {
+                    try await gestures.prepareTouchscreen()
+                    guard generation == token, !touchscreen.hasPointerTouch else { return }
+                    send(touchGestures.events(for: event, transform: coordinateTransform), to: touchscreen)
                 } else {
-                    try gestures.send(event, coordinateTransform: coordinateTransform, to: service)
+                    guard let service = try await gestures.service(sending: event), generation == token else { return }
+                    if event.type == .mouseMoved {
+                        try gestures.movePointer(event, coordinateTransform: coordinateTransform, on: service)
+                    } else {
+                        try gestures.send(event, coordinateTransform: coordinateTransform, to: service)
+                    }
                 }
             } catch {
                 guard generation == token else { return }
@@ -491,6 +629,7 @@ package final class NativeDeviceTrackpad {
     /// Events that have not been sent are dropped; the services remain for later gestures.
     package func endGestures() {
         generation += 1
+        if let touchscreen { send(touchGestures.end(), to: touchscreen) }
         do { try gestures.resetGestures() } catch { onFailure(error) }
     }
 
@@ -498,7 +637,17 @@ package final class NativeDeviceTrackpad {
     /// A service that could not be removed is retried by the next stop.
     package func stop() async throws {
         isStopped = true
+        if let touchscreen {
+            endGestures()
+            await touchscreen.waitForPendingInput()
+        }
         try await enqueue { [gestures] in try await gestures.stop() }.value
+    }
+
+    private func send(_ events: [RemoteScreenInput], to touchscreen: NativeDeviceScreenInput) {
+        for case let .touch(point, second, phase, edge) in events {
+            touchscreen.sendTouch(at: point, secondPoint: second, phase: phase, edge: edge, source: .trackpad)
+        }
     }
 
     @discardableResult
@@ -523,6 +672,10 @@ package final class NativeDeviceScreenInput {
     private let input: any NativeScreenInputTransport
     private var lastOperation: Task<Void, Never>?
     private var isStopped = false
+    package enum TouchSource { case pointer, trackpad }
+    private var touchSource: TouchSource?
+    package var hasPointerTouch: Bool { touchSource == .pointer }
+
 
     /// Connects through a simulator's CoreDevice record, which has said it has touchscreen and button services.
     package static func connect(remote: CoreDeviceRemoteScreenDevice) async throws -> NativeDeviceScreenInput {
@@ -544,12 +697,18 @@ package final class NativeDeviceScreenInput {
 
     /// Sends a touch at `point`, and `secondPoint` for a second finger, in unit coordinates from the top-left corner
     /// of the screen in its own orientation. A touch whose input has stopped is dropped.
-    package func sendTouch(at point: CGPoint, secondPoint: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge) {
-        guard !isStopped else { return }
+    package func sendTouch(at point: CGPoint, secondPoint: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge,
+                           source: TouchSource = .pointer) {
+        guard !isStopped, source != .trackpad || !hasPointerTouch else { return }
+        if phase == .began { touchSource = source }
+        if phase == .ended, touchSource == source { touchSource = nil }
         enqueue { [weak self, input] in
             do { try await input.send(.touch(point, secondPoint, phase, edge)) } catch { self?.onFailure(error) }
         }
     }
+
+    /// Waits for accepted touches before their owner removes the guest HID services.
+    package func waitForPendingInput() async { await lastOperation?.value }
 
     /// Sends a button's HID usage after the input accepted before it. `completion` receives the result; a thrown
     /// error means the input has stopped and nothing was sent.
