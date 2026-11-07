@@ -461,30 +461,28 @@ package struct NativeTrackpadTouches {
                 pending = .zero
                 active = false
             }
-            pending.dx += event.scrollingDeltaX
-            pending.dy -= event.scrollingDeltaY
-            if !active {
-                // A short gesture over a control must not become an unintended tap.
-                guard hypot(pending.dx, pending.dy) >= 8 else {
-                    gesture = .scroll(anchor: anchor, point: point, pending: pending, active: false)
-                    return result
-                }
-            }
             let origin = CGPoint.zero.applying(transform)
-            let delta = CGPoint(x: pending.dx, y: pending.dy).applying(transform)
-            var next = CGPoint(x: point.x + delta.x - origin.x, y: point.y + delta.y - origin.y)
+            let delta = CGPoint(x: event.scrollingDeltaX, y: -event.scrollingDeltaY).applying(transform)
+            pending.dx += delta.x - origin.x
+            pending.dy += delta.y - origin.y
+            var next = CGPoint(x: point.x + pending.dx, y: point.y + pending.dy)
             if active, !CGRect(x: 0, y: 0, width: 1, height: 1).contains(next) {
                 // A long scroll may exceed one screen. Restart over the original target, never over an unrelated view at the screen center.
                 result.append(Self.touch(point, phase: .ended))
                 point = anchor
                 active = false
-                next = CGPoint(x: point.x + delta.x - origin.x, y: point.y + delta.y - origin.y)
+                next = CGPoint(x: point.x + pending.dx, y: point.y + pending.dy)
             }
+            next = Self.bounded(next)
             if !active {
+                // Apply the same screen-relative slop to every drag segment, so zooming in cannot turn a short scroll into a tap.
+                guard hypot(next.x - point.x, next.y - point.y) >= 0.04 else {
+                    gesture = .scroll(anchor: anchor, point: point, pending: pending, active: false)
+                    return result
+                }
                 result.append(Self.touch(point, phase: .began))
                 active = true
             }
-            next = Self.bounded(next)
             result.append(Self.touch(next, phase: .moved))
             gesture = .scroll(anchor: anchor, point: next, pending: .zero, active: active)
             if event.phase.isEmpty { result += end() }
@@ -503,11 +501,10 @@ package struct NativeTrackpadTouches {
                 let other = CGPoint(x: event.locationInWindow.x + 50, y: event.locationInWindow.y).applying(transform)
                 let span = CGVector(dx: other.x - location.x, dy: other.y - location.y)
                 let scale = min(1, 0.2 / max(abs(span.dx), abs(span.dy)))
-                offset = CGVector(dx: span.dx * scale, dy: span.dy * scale)
-                let marginX = abs(offset.dx) + 0.05
-                let marginY = abs(offset.dy) + 0.05
-                center = CGPoint(x: min(1 - marginX, max(marginX, location.x)),
-                                 y: min(1 - marginY, max(marginY, location.y)))
+                center = Self.bounded(location, inset: 0.01)
+                let available = Self.bounded(CGVector(dx: span.dx * scale, dy: span.dy * scale), around: center)
+                // Leave room to spread both fingers even when the pointer is near a screen edge.
+                offset = CGVector(dx: available.dx / 2, dy: available.dy / 2)
                 result.append(Self.pinch(center, offset: offset, phase: .began))
             }
             let factor = max(0.01, 1 + event.magnification)

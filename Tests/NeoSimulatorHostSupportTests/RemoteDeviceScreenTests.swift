@@ -1490,9 +1490,19 @@ struct RemoteDeviceScreenTests {
         #expect(moved.y < start.y)
         let longScroll = gestures.events(for: try trackpadScroll(.changed, delta: -600, sender: 0xA, location: .zero), transform: transform)
         for case let .touch(point, _, .began, _) in longScroll { #expect(point == start) }
+        let shortRestart = gestures.events(for: try trackpadScroll(.changed, delta: -1, sender: 0xA, location: .zero), transform: transform)
+        #expect(shortRestart.count == 1)
+        guard case .touch(_, nil, .ended, _) = try #require(shortRestart.first) else {
+            Issue.record("An edge restart must wait for enough movement"); return
+        }
         let ended = gestures.events(for: try trackpadScroll(.ended, sender: 0xA, location: .zero), transform: transform)
-        #expect(ended.count == 1)
+        #expect(ended.isEmpty)
         #expect(gestures.events(for: try trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0xA, location: .zero), transform: transform).isEmpty)
+
+        let zoomed = CGAffineTransform(a: 1 / 3200, b: 0, c: 0, d: -1 / 4800,
+                                       tx: 0.25 - location.x / 3200, ty: 0.65 + location.y / 4800)
+        #expect(gestures.events(for: initial, transform: zoomed).isEmpty)
+        #expect(gestures.end().isEmpty)
 
         let edgeTransform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
                                               tx: 0.25 - location.x / 400, ty: 0.05 + location.y / 600)
@@ -1523,6 +1533,16 @@ struct RemoteDeviceScreenTests {
             Issue.record("Losing focus must release both fingers"); return
         }
         #expect(gestures.end().isEmpty)
+
+        let edgePinchTransform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
+                                                   tx: 0.03 - location.x / 400, ty: 0.65 + location.y / 600)
+        let edgePinch = gestures.events(for: try trackpadPinch(.began, magnification: 0.2, sender: 0xA, location: .zero), transform: edgePinchTransform)
+        guard case let .touch(edgeFirst, edgeSecond?, .began, _) = try #require(edgePinch.first),
+              case let .touch(edgeSpreadFirst, edgeSpreadSecond?, .moved, _) = try #require(edgePinch.last) else {
+            Issue.record("An edge pinch must retain its target"); return
+        }
+        #expect(abs((edgeFirst.x + edgeSecond.x) / 2 - 0.03) < 0.0001)
+        #expect(edgeSpreadSecond.x - edgeSpreadFirst.x > edgeSecond.x - edgeFirst.x)
     }
 
     @Test(.timeLimit(.minutes(1))) func aTrackpadTouchRouteReleasesAcceptedTouchesBeforeRemovingServices() async throws {
