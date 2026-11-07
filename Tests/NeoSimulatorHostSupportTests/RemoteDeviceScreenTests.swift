@@ -1520,6 +1520,9 @@ struct RemoteDeviceScreenTests {
         let before = try #require(pinch.first)
         let after = try #require(pinch.last)
         #expect(before.count == 2 && after.count == 2)
+        // Ending an earlier scroll cannot release the pinch that took over its contacts.
+        #expect(gestures.events(for: try trackpadScroll(.changed, delta: -30, sender: 0xA), transform: transform).isEmpty)
+        #expect(gestures.events(for: try trackpadScroll(.ended, sender: 0xA), transform: transform).isEmpty)
         #expect(after[1].point.x - after[0].point.x > before[1].point.x - before[0].point.x)
         let extended = try #require(gestures.events(for: try trackpadPinch(.changed, magnification: 20, sender: 0xA, location: .zero), transform: transform).last)
         let reversed = try #require(gestures.events(for: try trackpadPinch(.changed, magnification: -0.1, sender: 0xA, location: .zero), transform: transform).last)
@@ -1527,6 +1530,9 @@ struct RemoteDeviceScreenTests {
         let releases = try #require(gestures.end().first)
         #expect(releases.count == 2 && releases.allSatisfy { !$0.isTouching })
         #expect(gestures.end().isEmpty)
+        _ = gestures.events(for: initial, transform: transform)
+        #expect(gestures.events(for: try trackpadPinch(.ended, sender: 0xA), transform: transform).isEmpty)
+        #expect(!gestures.end().isEmpty)
     }
 
     @Test(.timeLimit(.minutes(1))) func aTrackpadStopWaitsForAcceptedContactsToBeReleased() async throws {

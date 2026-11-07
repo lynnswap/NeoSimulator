@@ -434,7 +434,11 @@ package struct NativeTrackpadTouches {
         switch event.type {
         case .scrollWheel:
             guard event.momentumPhase.isEmpty else { return [] }
-            if !event.phase.isDisjoint(with: [.ended, .cancelled]) { return end() }
+            if !event.phase.isDisjoint(with: [.ended, .cancelled]) {
+                guard case .scroll = gesture else { return [] }
+                return end()
+            }
+            if case .pinch = gesture, !event.phase.contains(.began) { return [] }
             guard event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 else { return [] }
             var result: [[NativeTouchContact]] = []
             let anchor: CGPoint
@@ -498,7 +502,11 @@ package struct NativeTrackpadTouches {
             gesture = .scroll(anchor: anchor, point: point, id: id, pending: .zero, active: active)
             return result
         case .magnify:
-            if !event.phase.isDisjoint(with: [.ended, .cancelled]) { return end() }
+            if !event.phase.isDisjoint(with: [.ended, .cancelled]) {
+                guard case .pinch = gesture else { return [] }
+                return end()
+            }
+            if case .scroll = gesture, !event.phase.contains(.began) { return [] }
             var result: [[NativeTouchContact]] = []
             let center: CGPoint
             var offset: CGVector
