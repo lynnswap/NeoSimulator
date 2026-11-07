@@ -1298,6 +1298,8 @@ struct RemoteDeviceScreenTests {
         let service = try GuestPointerService(descriptor)
         #expect(service.serviceID == 0x1234 && service.isPointer && service.hidesPointer == true)
         #expect(service.routesPastShellPolicy == true)
+        let shared = try GuestPointerService(await CoreDeviceHIDService.touchscreenGestureDescriptor(runtime: runtime))
+        #expect(shared.serviceID != service.serviceID && shared.isPointer)
         // A synthesized pinch has no sender, so it reaches no trackpad's service.
         #expect(try bindings.lookup.sender(of: trackpadPinch(.began, sender: nil)) == 0)
 
@@ -1331,9 +1333,9 @@ struct RemoteDeviceScreenTests {
         let transform = turn.concatenating(CGAffineTransform(translationX: target.x - moved.x, y: target.y - moved.y))
         let movements = try translator.reports(for: movement, coordinateTransform: transform)
         let placed = try #require(movements.first)
-        let movementIDs = try movements.map { try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: $0)) }
+        let movementIDs = try movements.map { try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: $0.value)) }
         #expect(try unsafe movementIDs == [rawID.unsafeInvoke(on: pointerID.unsafeInvoke())], "Report IDs \(movementIDs)")
-        let position = try unsafe makePointer.unsafeInvoke(placed)
+        let position = try unsafe makePointer.unsafeInvoke(placed.value)
         #expect(abs(try unsafe pointerX.unsafeInvoke(on: position) - target.x) < 0.001)
         #expect(abs(try unsafe pointerY.unsafeInvoke(on: position) - target.y) < 0.001)
 
@@ -1356,9 +1358,9 @@ struct RemoteDeviceScreenTests {
             let reports = try translator.reports(for: pinch)
             // Each step reaches the device as one scale report in CoreDevice's own UniversalHID module.
             let value = try #require(reports.first)
-            #expect(reports.count == 1 && value.type == report.type)
-            #expect(try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: value)) == rawID.unsafeInvoke(on: scaleID.unsafeInvoke()))
-            let scaled = try unsafe makeScale.unsafeInvoke(value)
+            #expect(reports.count == 1 && value.value.type == report.type)
+            #expect(try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: value.value)) == rawID.unsafeInvoke(on: scaleID.unsafeInvoke()))
+            let scaled = try unsafe makeScale.unsafeInvoke(value.value)
             #expect(abs(try unsafe z.unsafeInvoke(on: scaled) - magnification) < 0.001, "\(name) \(magnification)")
             #expect(try unsafe rawPhase.unsafeInvoke(on: readPhase.unsafeInvoke(on: scaled)) == expected(name), "\(name)")
         }
@@ -1379,27 +1381,30 @@ struct RemoteDeviceScreenTests {
     @Test func eachMacTrackpadsPinchesReachTheServiceThatCarriesThatTrackpad() async throws {
         let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
         let gestures = NativeTrackpadGestures { transport }
-        // Each trackpad's first event creates its service: a mouse movement moves the service's hidden pointer, and the
-        // trackpad's pinches happen there. A synthesized event, and one whose sender is not a Mac HID service, reach no
-        // service, and no trackpad is made up for them.
+        // Each trackpad keeps its gesture state, while senderless pointer movements share the touchscreen service.
+        // A synthetic pinch and an unknown Mac sender still cannot create a trackpad.
         let onScreen = CGAffineTransform(scaleX: 1 / 2000, y: 1 / 2000)
         try await gestures.movePointer(mouseMovement(sender: 0xA), coordinateTransform: onScreen)
         for pinch in try [trackpadPinch(.began, sender: 0xA), trackpadPinch(.changed, magnification: 0.2, sender: 0xA),
                           trackpadPinch(.began, sender: 0xB), trackpadPinch(.ended, sender: 0xA), trackpadPinch(.began, sender: nil),
                           trackpadPinch(.began, sender: 0x99), trackpadPinch(.changed, magnification: 0.2, sender: 0x99)] {
-            try await gestures.send(pinch)
+            try await gestures.send(pinch, coordinateTransform: onScreen)
         }
         try await gestures.movePointer(mouseMovement(sender: nil), coordinateTransform: onScreen)
         try await gestures.movePointer(mouseMovement(sender: 0x99), coordinateTransform: onScreen)
-        #expect(transport.services.map(\.sender) == [0xA, 0xB] && transport.services.map(\.reports) == [4, 1])
-        #expect(transport.lookups == [0xA, 0xB, 0x99])
+        #expect(transport.services.map(\.sender) == [0xA, 0, 0xB] && transport.services.map(\.reports) == [4, 3, 1])
+        #expect(transport.lookups == [0xA, 0, 0xB, 0x99])
+        let pointers = try GuestPointerReports(runtime: .shared)
+        let shared = try #require(transport.services.first { $0.sender == 0 })
+        #expect(try shared.sent.allSatisfy { try pointers.placement($0) != nil })
+        #expect(try transport.services.first { $0.sender == 0xB }?.sent.allSatisfy { try pointers.placement($0) == nil } == true)
         // Releasing input resets every service, so the pinch that one trackpad holds after another's ended also ends.
         try gestures.resetGestures()
-        #expect(transport.services.map(\.resets) == [1, 1])
+        #expect(transport.services.map(\.resets) == [1, 1, 1])
         // The device invalidates the services with its gesture capability, so the trackpad's next pinch creates another.
         gestures.discardServices()
         try await gestures.send(trackpadPinch(.began, sender: 0xA))
-        #expect(transport.services.map(\.sender) == [0xA, 0xB, 0xA] && transport.services.map(\.reports) == [4, 1, 1])
+        #expect(transport.services.map(\.sender) == [0xA, 0, 0xB, 0xA, 0] && transport.services.map(\.reports) == [4, 3, 1, 1, 0])
         try await gestures.stop()
         #expect(transport.services.last?.removes == 1)
     }
@@ -1428,7 +1433,7 @@ struct RemoteDeviceScreenTests {
         await #expect(throws: RemoteScreenError.self) { try await invalidated.value }
         transport.connecting = nil
         try await gestures.send(trackpadPinch(.began, sender: 0xA))
-        #expect(transport.services.map(\.reports) == [0, 1])
+        #expect(transport.services.map(\.reports) == [0, 1, 0])
 
         // Stopping removes the services. The pinch that creates one meanwhile removes it, and a removal that fails is
         // retried by the next stop; after stopping, pinches create no service.
@@ -1442,8 +1447,8 @@ struct RemoteDeviceScreenTests {
         await #expect(throws: RemoteScreenError.self) { try await created.value }
         try await gestures.stop()
         await #expect(throws: RemoteScreenError.self) { try await gestures.send(trackpadPinch(.began, sender: 0xA)) }
-        #expect(transport.services.map(\.sender) == [0xA, 0xA, 0xB] && transport.services.map(\.reports) == [0, 1, 0])
-        #expect(transport.services.dropFirst().map(\.removes) == [2, 1])
+        #expect(transport.services.map(\.sender) == [0xA, 0xA, 0, 0xB] && transport.services.map(\.reports) == [0, 1, 0, 0])
+        #expect(transport.services.dropFirst().map(\.removes) == [2, 1, 1])
     }
 
     @Test func trackpadScrollsBecomeScrollReportsLikeTheirPinches() async throws {
@@ -1464,7 +1469,7 @@ struct RemoteDeviceScreenTests {
                           trackpadScroll(.ended, sender: 0x1234), trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0x1234),
                           trackpadScroll(nil, momentum: .end, sender: 0x1234), trackpadScroll(nil, units: .line, delta: -3, sender: 0x1234)] {
             #expect(try bindings.lookup.sender(of: event) == 0x1234)
-            let ids = try translator.reports(for: event).map { try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: $0)) }
+            let ids = try translator.reports(for: event).map { try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: $0.value)) }
             #expect(ids == [scrollID], "phase \(event.phase.rawValue), momentum \(event.momentumPhase.rawValue)")
         }
     }
@@ -1493,10 +1498,10 @@ struct RemoteDeviceScreenTests {
         transport.connecting = ending
         trackpad.handle(try trackpadScroll(.began, delta: -10, sender: 0xB), coordinateTransform: onScreen)
         await ending.wait()
-        #expect(transport.services.map(\.reports) == [5])
+        #expect(transport.services.map(\.reports) == [3, 2])
         trackpad.handle(try trackpadPinch(.changed, magnification: 0.2, sender: 0xA), coordinateTransform: onScreen)
         trackpad.endGestures()
-        #expect(transport.services.map(\.resets) == [1])
+        #expect(transport.services.map(\.resets) == [1, 1])
         transport.connecting = nil
         ending.resume()
         trackpad.handle(try trackpadScroll(.began, delta: -10, sender: 0xB), coordinateTransform: onScreen)
@@ -1509,9 +1514,9 @@ struct RemoteDeviceScreenTests {
         // Stopping removes the services after the events before it; later events reach none.
         try await trackpad.stop()
         trackpad.handle(try trackpadPinch(.began, sender: 0xA), coordinateTransform: onScreen)
-        #expect(transport.lookups == [0xA, 0xB] && transport.services.map(\.sender) == [0xA, 0xB])
-        #expect(transport.services.map(\.reports) == [5, 2] && failures == ["fixture stream failed"])
-        #expect(transport.services.map(\.resets) == [3, 2] && transport.services.map(\.removes) == [1, 1])
+        #expect(transport.lookups == [0xA, 0, 0xB] && transport.services.map(\.sender) == [0xA, 0, 0xB])
+        #expect(transport.services.map(\.reports) == [3, 4, 1] && failures == ["fixture stream failed"])
+        #expect(transport.services.map(\.resets) == [3, 3, 2] && transport.services.map(\.removes) == [1, 1, 1])
     }
 
     @Test func nativeScreenInputSendsAcceptedTouchesAndButtonsInOrderBeforeItStops() async throws {
@@ -1659,7 +1664,7 @@ struct RemoteDeviceScreenTests {
         _ = try translator.reports(for: keys[0])
         var requests: [NativeSwiftValue] = []
         for _ in 0..<2 { requests.append(try await wire.createService(bindings.mainKeyboardDescriptor())) }
-        requests += try translator.reports(for: keys[1]).map { try wire.send($0, to: 7) }
+        requests += try translator.reports(for: keys[1]).map { try wire.send($0.value, to: 7) }
         requests += try [wire.request("resetGestureState", service: 7), wire.request("removeService", service: 7)]
         let expected = try requests.map { try codec.message(.request, to: universalHID, payload: $0) }
         let messages = await peers.messages(to: universalHID, count: expected.count)
@@ -2004,9 +2009,10 @@ struct RemoteDeviceScreenTests {
             trackpad.handle(event, coordinateTransform: transform)
         }
         try await trackpad.stop()
-        let placements = try #require(transport.services.first).sent.dropFirst().map(placement)
-        #expect(placements == [CGPoint(x: 0.3, y: 0.8), nil, nil, nil, CGPoint(x: 0.6, y: 0.2), nil, nil, CGPoint(x: 0.5, y: 0.4), nil],
-                "Failures \(failures)")
+        let placements = try #require(transport.services.first { $0.sender == 0 }).sent.map(placement)
+        #expect(placements == [CGPoint(x: 0.3, y: 0.8), CGPoint(x: 0.6, y: 0.2), CGPoint(x: 0.5, y: 0.4)])
+        let gestures = try #require(transport.services.first { $0.sender == 0xA }).sent.dropFirst().map(placement)
+        #expect(gestures == Array(repeating: nil, count: 6) && failures.isEmpty)
     }
 
     @Test func remotePinchesBeginWhereTheScreenNowShowsTheStillPointer() async throws {
@@ -2036,8 +2042,10 @@ struct RemoteDeviceScreenTests {
         transport.inputCapabilities.insert(.pointer)
         try await session.sendTrackpadGesture(trackpadPinch(.began, sender: 0xA))
         try await session.stop()
-        let placements = try #require(trackpads.services.first).sent.dropFirst().map(placement)
-        #expect(placements == [CGPoint(x: 0.6, y: 0.2), nil, nil, nil, nil])
+        let placements = try #require(trackpads.services.first { $0.sender == 0 }).sent.map(placement)
+        #expect(placements == [CGPoint(x: 0.6, y: 0.2)])
+        let gestures = try #require(trackpads.services.first { $0.sender == 0xA }).sent.dropFirst().map(placement)
+        #expect(gestures == Array(repeating: nil, count: 4))
     }
 
     @Test func failedHIDServiceRemovalKeepsTheOwnedServiceForCleanupRetry() async throws {
@@ -2087,8 +2095,8 @@ struct RemoteDeviceScreenTests {
                 context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(kVK_JIS_Eisu)))
             #expect(try bindings.lookup.sender(of: event) == 0)
             let values = try translator.reports(for: event)
-            #expect(values.count == 1 && values.allSatisfy { $0.type == report.type })
-            return try values.map { try unsafe readData.unsafeInvoke(on: $0) }
+            #expect(values.count == 1 && values.allSatisfy { $0.value.type == report.type })
+            return try values.map { try unsafe readData.unsafeInvoke(on: $0.value) }
         }
         #expect(reports[0] != reports[1])
     }
@@ -2178,7 +2186,7 @@ struct RemoteDeviceScreenTests {
             receiverABI: report.abi)))
         let translation = {
             let translator = try bindings.makeTranslator()
-            return { (event: NSEvent) throws -> [Data] in try translator.reports(for: event).map { try unsafe readData.unsafeInvoke(on: $0) } }
+            return { (event: NSEvent) throws -> [Data] in try translator.reports(for: event).map { try unsafe readData.unsafeInvoke(on: $0.value) } }
         }
         let transport = KeyboardFixtureTransport()
         transport.makeTranslation = translation
@@ -2242,7 +2250,7 @@ struct RemoteDeviceScreenTests {
             receiverABI: report.abi)))
         let translation = {
             let translator = try bindings.makeTranslator()
-            return { (event: NSEvent) throws -> [Data] in try translator.reports(for: event).map { try unsafe readData.unsafeInvoke(on: $0) } }
+            return { (event: NSEvent) throws -> [Data] in try translator.reports(for: event).map { try unsafe readData.unsafeInvoke(on: $0.value) } }
         }
         let transport = KeyboardFixtureTransport()
         transport.makeTranslation = translation
@@ -2556,8 +2564,8 @@ private final class TrackpadFixtureTransport: NativeTrackpadTransport {
 
     func connect(sender: UInt64) async throws -> NativeTrackpadGestures.Service? {
         lookups.append(sender)
-        guard macSenders.contains(sender) else { return nil }
-        await connecting?.hold()
+        guard sender == 0 || macSenders.contains(sender) else { return nil }
+        if sender != 0 { await connecting?.hold() }
         let record = Service(sender: sender)
         services.append(record)
         let service = CoreDeviceHIDService(send: { report in
