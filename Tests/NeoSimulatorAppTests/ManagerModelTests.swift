@@ -4185,6 +4185,17 @@ struct ManagerModelTests {
         #expect(controller.model.selectedProfile === second)
         drag.draggingSource = nil
         #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above).isEmpty)
+
+        try store.update(first.id, name: ServiceProfile.allServices.name, configuration: first.configuration)
+        try store.update(third.id, name: ServiceProfile.allServices.name, configuration: third.configuration)
+        try await wait(timeout: .seconds(5)) {
+            defaultMenu.itemArray.compactMap { $0.representedObject as? UUID } == store.availableProfiles.map(\.id)
+                && defaultMenu.itemTitles == store.availableProfiles.map(\.name)
+        }
+        let choice = try #require(defaultMenu.itemArray.first { $0.representedObject as? UUID == first.id })
+        defaultMenu.select(choice)
+        #expect(NSApp.sendAction(try #require(defaultMenu.action), to: defaultMenu.target, from: defaultMenu))
+        #expect(store.defaultProfile === first)
     }
 
     @Test func serviceProfilesKeepDeviceOverridesAcrossSwitchesAndRelaunch() throws {

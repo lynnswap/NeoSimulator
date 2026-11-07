@@ -149,11 +149,13 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         }
         if defaultProfileMenu.itemArray.map(\.title) != updated.map(\.name)
             || defaultProfileMenu.itemArray.compactMap({ $0.representedObject as? UUID }) != updated.map(\.id) {
-            defaultProfileMenu.removeAllItems()
+            let menu = NSMenu()
             for profile in updated {
-                defaultProfileMenu.addItem(withTitle: profile.name)
-                defaultProfileMenu.lastItem?.representedObject = profile.id
+                let item = NSMenuItem(title: profile.name, action: nil, keyEquivalent: "")
+                item.representedObject = profile.id
+                menu.addItem(item)
             }
+            defaultProfileMenu.menu = menu
         }
         if let index = updated.firstIndex(where: { $0.id == model.defaultProfileID }) {
             defaultProfileMenu.selectItem(at: index)
