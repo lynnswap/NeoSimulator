@@ -439,7 +439,7 @@ package struct NativeTrackpadTouches {
     }
     private var gesture: Gesture?
 
-    package mutating func events(for event: NSEvent, transform: CGAffineTransform) -> [RemoteScreenInput] {
+    package mutating func events(for event: NSEvent, transform: CGAffineTransform, renderScale: CGFloat = 1) -> [RemoteScreenInput] {
         switch event.type {
         case .scrollWheel:
             // UIKit decelerates the touch pan after its end; replaying AppKit momentum would apply inertia twice.
@@ -456,15 +456,17 @@ package struct NativeTrackpadTouches {
                 (point, pending, active) = (oldPoint, oldPending, oldActive)
             } else {
                 result += end()
-                anchor = Self.bounded(event.locationInWindow.applying(transform), inset: 0.05)
+                anchor = Self.bounded(event.locationInWindow.applying(transform))
                 point = anchor
                 pending = .zero
                 active = false
             }
-            let origin = CGPoint.zero.applying(transform)
-            let delta = CGPoint(x: event.scrollingDeltaX, y: -event.scrollingDeltaY).applying(transform)
-            pending.dx += delta.x - origin.x
-            pending.dy += delta.y - origin.y
+            // Relative scrolling is in unzoomed content points; zoom affects pointer placement, not scroll sensitivity.
+            let motion = CGAffineTransform(a: transform.a * renderScale, b: transform.b * renderScale,
+                                           c: transform.c * renderScale, d: transform.d * renderScale, tx: 0, ty: 0)
+            let delta = CGPoint(x: event.scrollingDeltaX, y: -event.scrollingDeltaY).applying(motion)
+            pending.dx += delta.x
+            pending.dy += delta.y
             var next = CGPoint(x: point.x + pending.dx, y: point.y + pending.dy)
             if active, !CGRect(x: 0, y: 0, width: 1, height: 1).contains(next) {
                 // A long scroll may exceed one screen. Restart over the original target, never over an unrelated view at the screen center.
@@ -475,8 +477,9 @@ package struct NativeTrackpadTouches {
             }
             next = Self.bounded(next)
             if !active {
-                // Apply the same screen-relative slop to every drag segment, so zooming in cannot turn a short scroll into a tap.
-                guard hypot(next.x - point.x, next.y - point.y) >= 0.04 else {
+                // Every segment needs enough actual touch movement to be a drag, including a segment limited by an edge.
+                let movement = CGPoint(x: next.x - point.x, y: next.y - point.y).applying(motion.inverted())
+                guard hypot(movement.x, movement.y) >= 12 else {
                     gesture = .scroll(anchor: anchor, point: point, pending: pending, active: false)
                     return result
                 }
@@ -595,7 +598,7 @@ package final class NativeDeviceTrackpad {
     /// Forwards a scroll, a pinch step, or a mouse movement, in the order of the calls. `coordinateTransform` maps the
     /// event's window location to the screen's pointer coordinates; a mouse movement, and a scroll or pinch that begins,
     /// move its trackpad's pointer there. The touchscreen route turns scrolling into a drag and pinching into two touches.
-    package func handle(_ event: NSEvent, coordinateTransform: CGAffineTransform) {
+    package func handle(_ event: NSEvent, coordinateTransform: CGAffineTransform, renderScale: CGFloat = 1) {
         guard !isStopped, [.scrollWheel, .magnify, .mouseMoved].contains(event.type) else { return }
         if touchscreen != nil, event.type == .mouseMoved { return }
         let token = generation
@@ -606,7 +609,7 @@ package final class NativeDeviceTrackpad {
                 if let touchscreen, event.type != .scrollWheel || !event.phase.isEmpty || !event.momentumPhase.isEmpty {
                     try await gestures.prepareTouchscreen()
                     guard generation == token, !touchscreen.hasPointerTouch else { return }
-                    send(touchGestures.events(for: event, transform: coordinateTransform), to: touchscreen)
+                    send(touchGestures.events(for: event, transform: coordinateTransform, renderScale: renderScale), to: touchscreen)
                 } else {
                     guard let service = try await gestures.service(sending: event), generation == token else { return }
                     if event.type == .mouseMoved {

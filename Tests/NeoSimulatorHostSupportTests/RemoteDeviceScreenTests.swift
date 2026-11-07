@@ -1501,11 +1501,15 @@ struct RemoteDeviceScreenTests {
 
         let zoomed = CGAffineTransform(a: 1 / 3200, b: 0, c: 0, d: -1 / 4800,
                                        tx: 0.25 - location.x / 3200, ty: 0.65 + location.y / 4800)
-        #expect(gestures.events(for: initial, transform: zoomed).isEmpty)
-        #expect(gestures.end().isEmpty)
+        let zoomedScroll = gestures.events(for: initial, transform: zoomed, renderScale: 8)
+        guard case let .touch(zoomedMoved, _, .moved, _) = try #require(zoomedScroll.last) else {
+            Issue.record("Zooming must not discard a content scroll"); return
+        }
+        #expect(abs(zoomedMoved.y - moved.y) < 0.0001)
+        #expect(gestures.end().count == 1)
 
         let edgeTransform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
-                                              tx: 0.25 - location.x / 400, ty: 0.05 + location.y / 600)
+                                              tx: 0.01 - location.x / 400, ty: 0.05 + location.y / 600)
         let edgeScroll = gestures.events(for: try trackpadScroll(.began, delta: -90, sender: 0xA, location: .zero), transform: edgeTransform)
         // Crossing the edge on the first movement must not release a stationary touch as a tap.
         #expect(edgeScroll.count == 2)
@@ -1513,6 +1517,7 @@ struct RemoteDeviceScreenTests {
               case let .touch(edgeMoved, nil, .moved, _) = try #require(edgeScroll.last) else {
             Issue.record("A scroll at the edge must drag without tapping"); return
         }
+        #expect(abs(edgeStart.x - 0.01) < 0.0001)
         #expect(edgeMoved != edgeStart)
         #expect(gestures.end().count == 1)
 
@@ -1552,10 +1557,14 @@ struct RemoteDeviceScreenTests {
         let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport }, touchscreen: touchscreen)
         let sending = ScreenFixtureGate()
         screen.holdingSend = sending
-        let transform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600, tx: 0.5, ty: 0.5)
+        let event = try trackpadScroll(.began, delta: -30, sender: nil, location: .zero)
+        let location = event.locationInWindow
+        let transform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
+                                          tx: 0.5 - location.x / 400, ty: 0.5 + location.y / 600)
         // Touch conversion also works for AppKit gesture steps without a physical HID sender.
-        trackpad.handle(try trackpadScroll(.began, delta: -30, sender: nil, location: .zero), coordinateTransform: transform)
-        await sending.wait()
+        trackpad.handle(event, coordinateTransform: transform)
+        defer { sending.resume() }
+        try await sending.wait(timeout: .seconds(15))
         let stopping = Task { try await trackpad.stop() }
         sending.resume()
         try await stopping.value
@@ -3256,6 +3265,15 @@ private final class ScreenFixtureGate {
         }
     }
     func wait() async { if !entered { await withCheckedContinuation { entering = $0 } } }
+    func wait(timeout: Duration) async throws {
+        let deadline = Task {
+            try await Task.sleep(for: timeout)
+            entering?.resume(); entering = nil
+        }
+        defer { deadline.cancel() }
+        await wait()
+        try #require(entered, "The input operation did not reach the fixture before the deadline")
+    }
     func resume() { release?.resume(); release = nil }
 }
 
