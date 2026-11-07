@@ -556,7 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installMenu() {
         let main = NSMenu()
         let app = addSubmenu("NeoSimulator", to: main)
-        addItem("About NeoSimulator", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), to: app, target: NSApp)
+        addItem("About NeoSimulator", action: #selector(NSApplication.orderFrontNeoSimulatorAboutPanel(_:)), to: app, target: NSApp)
         app.addItem(.separator())
         addItem("Settings…", action: #selector(showSettings(_:)), key: ",", to: app)
         app.addItem(.separator())

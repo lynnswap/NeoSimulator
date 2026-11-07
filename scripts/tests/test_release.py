@@ -161,7 +161,8 @@ for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSim
     (bundle / "Contents/MacOS").mkdir(parents=True)
     (bundle / "Contents/MacOS" / name).write_bytes(b"fixture")
     build_number = next(value.split("=", 1)[1] for value in args if value.startswith("CURRENT_PROJECT_VERSION="))
-    (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": name, "CFBundleVersion": build_number}))
+    marketing_version = next(value.split("=", 1)[1] for value in args if value.startswith("MARKETING_VERSION="))
+    (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": name, "CFBundleVersion": build_number, "CFBundleShortVersionString": marketing_version}))
 helper = app / "Contents/Resources/NeoSimulatorGuestSettings"
 helper.parent.mkdir(parents=True)
 # The fake segedit extracts the whole helper as its linked entitlements section.
@@ -188,6 +189,7 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
         identity = "Developer ID Application: Fixture Identity (ABCDEFGHIJ)"
         cases = [
             ("build-release.sh", ["--version", "v1.2.3"], None, "-", None),
+            ("build-release.sh", ["--version", "v1.2.3-rc.1", "--build-number", "17"], None, "-", None),
             ("build-local.sh", ["--signing-identity", identity], "ignored-environment-identity", identity, None),
             ("build-release.sh", ["--version", "v1.2.3"], "A" * 40, "A" * 40, None),
             ("build-local.sh", ["--build-number", "17"], None, "-", False),
@@ -207,8 +209,10 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
                 for line in result.stdout.splitlines():
                     if line.startswith("  open "):
                         self.assertEqual(line, f"  open '{staged_app}'")
-                info = plistlib.loads((staged_app / "Contents/Info.plist").read_bytes())
-                self.assertEqual(info["CFBundleVersion"], "17" if "--build-number" in arguments else "1")
+                for bundle in [staged_app, staged_app / "Contents/Applications/NeoSimulatorRenderer.app"]:
+                    info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
+                    self.assertEqual(info["CFBundleVersion"], "17" if "--build-number" in arguments else "1")
+                    self.assertEqual(info["CFBundleShortVersionString"], "1.2.3" if script == "build-release.sh" else "0.0.0")
                 calls = [json.loads(line) for line in log.read_text().splitlines()]
                 signing = [call for call in calls if "--sign" in call]
                 self.assertEqual(len(signing), 3)

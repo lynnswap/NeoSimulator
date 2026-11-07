@@ -37,7 +37,7 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
     package func install() {
         let main = NSMenu()
         let app = menu("NeoSimulator", in: main)
-        item("About NeoSimulator", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), in: app, target: NSApp)
+        item("About NeoSimulator", action: #selector(NSApplication.orderFrontNeoSimulatorAboutPanel(_:)), in: app, target: NSApp)
         app.addItem(.separator())
         item("Settings…", action: #selector(showManagerSettings(_:)), key: ",", in: app)
         app.addItem(.separator())
@@ -548,5 +548,13 @@ package final class EditMenu: NSMenu {
         }
         // Copy Screen's Control-Command-C is not an editing shortcut.
         return (!simulatorHasFocus || event.modifierFlags.contains(.control)) && super.performKeyEquivalent(with: event)
+    }
+}
+
+
+extension NSApplication {
+    @objc package func orderFrontNeoSimulatorAboutPanel(_ sender: Any?) {
+        // Licenses stay in Settings; an explicit empty value suppresses AppKit's automatic Credits.rtf lookup.
+        orderFrontStandardAboutPanel(options: [.credits: NSAttributedString(string: "")])
     }
 }
