@@ -156,17 +156,17 @@ package enum CoreDeviceRuntime {
         try await loading("coredevice-runtime") {
             try await NativeFrameworks.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice")
         }
-        let runtime = ABIRuntime.shared
-        let service = try await runtime.resolve(.swift(.type("CoreDevice.CoreDeviceService")))
-        let sharedConnection = try await service.resolve(.swift(.staticGetter("sharedConnection", as: (() -> NativeSwiftValue).self)))
-        let connection = try unsafe sharedConnection.unsafeInvoke()
-        let visibility = try await runtime.resolve(.swift(.type("CoreDevice.DeviceVisibilityClass")))
-        let classes = try ["default", "simulators"].map { try visibility.makeEnumCase(named: $0) }
-        let type = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
-        let make = try await type.resolve(.swift(.initializer("init(serviceConnection:allowedDeviceVisibilityClasses:)",
-            as: ((NativeSwiftValue, [NativeSwiftValue]) -> NativeSwiftValue).self)))
-        let manager = try unsafe make.unsafeInvoke(connection, classes)
-        return manager
+        return try await ABIRuntime.shared.prepare { runtime in
+            let service = try await runtime.resolve(.swift(.type("CoreDevice.CoreDeviceService")))
+            let sharedConnection = try await service.resolve(.swift(.staticGetter("sharedConnection", as: (() -> NativeSwiftValue).self)))
+            let connection = try unsafe sharedConnection.unsafeInvoke()
+            let visibility = try await runtime.resolve(.swift(.type("CoreDevice.DeviceVisibilityClass")))
+            let classes = try ["default", "simulators"].map { try visibility.makeEnumCase(named: $0) }
+            let type = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
+            let make = try await type.resolve(.swift(.initializer("init(serviceConnection:allowedDeviceVisibilityClasses:)",
+                as: ((NativeSwiftValue, [NativeSwiftValue]) -> NativeSwiftValue).self)))
+            return try unsafe make.unsafeInvoke(connection, classes)
+        }
     }
 }
 
@@ -182,22 +182,27 @@ package final class CoreDeviceRemoteScreenDevice: CoreDeviceFeatureRecord {
     package init(identifier: String) async throws {
         let manager = try await CoreDeviceRuntime.deviceManagerIncludingSimulators()
         let runtime = ABIRuntime.shared
-        let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
         try await CoreDeviceRuntime.initializeDeviceManager()
         try Task.checkCancellation()
         guard let uuid = UUID(uuidString: identifier) else {
             throw DeviceIOError.configuration("coredevice-identifier", "The selected CoreDevice identifier is not a UUID.")
         }
-        let devices = try await managerType.resolve(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
-        guard let object = try unsafe devices.unsafeInvoke(on: manager)[uuid] else {
-            throw DeviceIOError.unavailable("remote-screen-device", "The selected device is no longer available.")
+        let (object, type, supportsFeature) = try await runtime.prepare { runtime in
+            let managerType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceManager")))
+            let devices = try await managerType.resolve(.swift(.getter("devices", as: (() -> [UUID: NativeSwiftValue]).self)))
+            guard let object = try unsafe devices.unsafeInvoke(on: manager)[uuid] else {
+                throw DeviceIOError.unavailable("remote-screen-device", "The selected device is no longer available.")
+            }
+            let type = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
+            let supportsFeature = try await type.resolve(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
+            return (object, type, supportsFeature)
         }
         self.identifier = identifier
         self.runtime = runtime
         self.manager = manager
         self.object = object
-        type = try await runtime.resolve(.swift(.type("CoreDevice.RemoteDevice")))
-        supportsFeature = try await type.resolve(.swift(.method("supportsFeature(identifiedBy:)", as: ((String) -> Bool).self)))
+        self.type = type
+        self.supportsFeature = supportsFeature
     }
 
     package func supports(_ feature: String) throws -> Bool {

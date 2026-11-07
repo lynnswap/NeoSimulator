@@ -30,7 +30,7 @@ package final class CoreDeviceManagementClient {
         let client: CoreDeviceManagementClient
         if let current { client = current }
         else {
-            client = try await CoreDeviceManagementClient()
+            client = try await ABIRuntime.shared.prepare { _ in try await CoreDeviceManagementClient() }
             current = client
         }
         try await client.run(operation, identifier: identifier)

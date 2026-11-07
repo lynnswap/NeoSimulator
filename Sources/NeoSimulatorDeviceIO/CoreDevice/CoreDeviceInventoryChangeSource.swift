@@ -33,7 +33,7 @@ package final class CoreDeviceInventoryChangeSource: DeviceInventoryChangeSource
 
     private var bindings: Bindings?
     package func initialize() async throws {
-        let bindings = try await Bindings()
+        let bindings = try await ABIRuntime.shared.prepare { _ in try await Bindings() }
         try Task.checkCancellation()
         try await CoreDeviceRuntime.initializeDeviceManager()
         try Task.checkCancellation()
