@@ -11,9 +11,9 @@ public final class BackgroundServicesState {
     /// Differences between the requested and resulting service states.
     public struct Outcome: Equatable, Sendable {
         /// Services kept on because another enabled category or the platform needs them.
-        public let stillEnabledLabels: [String]
+        public var stillEnabledLabels: [String]
         /// Services enabled again that start at the simulator's next boot.
-        public let notStartedLabels: [String]
+        public var notStartedLabels: [String]
 
         package init(stillEnabledLabels: [String], notStartedLabels: [String]) {
             self.stillEnabledLabels = stillEnabledLabels

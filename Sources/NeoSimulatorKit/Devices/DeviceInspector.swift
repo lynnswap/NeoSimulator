@@ -40,24 +40,24 @@ public struct DeviceApplication: Equatable, Sendable, Identifiable {
     /// The application's bundle identifier.
     public let bundleIdentifier: String
     /// The application's display name, or its bundle identifier when the device reports no name.
-    public let name: String
+    public var name: String
     /// The application's version, if the device reports it.
-    public let version: String?
+    public var version: String?
     /// The application's build number, if the device reports it.
-    public let build: String?
+    public var build: String?
     /// A path on the destination device, not necessarily a Mac file URL.
-    public let bundlePath: String?
+    public var bundlePath: String?
     /// The path of the application's data container on the device, if the device reports it.
-    public let dataContainerPath: String?
+    public var dataContainerPath: String?
     /// The paths of the application's group containers on the device, keyed by group identifier.
-    public let groupContainerPaths: [String: String]
+    public var groupContainerPaths: [String: String]
     /// Whether the application's data container can be accessed. Without an answer from the device, this says whether
     /// the device reported a container path.
-    public let isContainerAccessible: Bool
+    public var isContainerAccessible: Bool
     /// Whether a developer built the application, if the device reports it.
-    public let isDeveloperApplication: Bool?
+    public var isDeveloperApplication: Bool?
     /// Whether the application can be removed, if the device reports it.
-    public let isRemovable: Bool?
+    public var isRemovable: Bool?
     package let metadata: [String: DeviceInspectorValue]
 }
 
@@ -78,7 +78,7 @@ public struct DeviceProfile: Equatable, Sendable, Identifiable {
     /// A value that is unique across both kinds of profile.
     public var id: String { "\(kind.rawValue):\(identifier)" }
     /// The profile's name, or its identifier when the device reports no name.
-    public let name: String
+    public var name: String
     /// The profile's UUID, if the device reports it.
     public let uuid: String?
     /// Whether the device reports that this profile cannot be removed.

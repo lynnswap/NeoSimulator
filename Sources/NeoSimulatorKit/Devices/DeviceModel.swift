@@ -6,7 +6,7 @@ import Synchronization
 /// The parts of a device's state that are read independently.
 public struct DeviceStateGroups: OptionSet, Sendable {
     /// The bit values of the groups in this set.
-    public let rawValue: Int
+    public var rawValue: Int
 
     /// Creates a set of groups from their bit values.
     public init(rawValue: Int) { self.rawValue = rawValue }

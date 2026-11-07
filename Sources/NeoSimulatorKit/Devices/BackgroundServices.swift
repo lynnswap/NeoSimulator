@@ -7,7 +7,7 @@ public struct SimulatorBackgroundService: Sendable, Hashable, Identifiable {
     /// The service's launchd label.
     public let label: String
     /// What the service does, in one short sentence.
-    public let summary: String
+    public var summary: String
     /// The service's launchd label.
     public var id: String { label }
 
@@ -27,7 +27,7 @@ public struct SimulatorRequiredBackgroundService: Sendable, Hashable, Identifiab
     /// The service's launchd label.
     public let label: String
     /// Why simulators need the service.
-    public let reason: String
+    public var reason: String
     /// The service's launchd label.
     public var id: String { label }
 
@@ -49,15 +49,15 @@ public struct SimulatorBackgroundServiceCategory: Sendable, Hashable, Identifiab
     /// The identifier to pass to ``SimulatorBackgroundServiceTarget/category(_:)``.
     public let id: String
     /// The category's display name.
-    public let name: String
+    public var name: String
     /// What the category's services provide.
-    public let summary: String
+    public var summary: String
     /// What stops working while the category is disabled.
-    public let consequence: String
+    public var consequence: String
     /// The services that disabling this category stops.
-    public let services: [SimulatorBackgroundService]
+    public var services: [SimulatorBackgroundService]
     /// Services related to this category that stay enabled because simulators need them.
-    public let requiredServices: [SimulatorRequiredBackgroundService]
+    public var requiredServices: [SimulatorRequiredBackgroundService]
 
     /// Creates a category of related services.
     /// - Parameters:
@@ -99,11 +99,11 @@ public enum SimulatorBackgroundServiceTarget: Sendable, Hashable {
 /// A booted simulator's managed background services, as its launchd reports them.
 public struct SimulatorBackgroundServices: Sendable, Equatable {
     /// Managed labels that have a disable override.
-    public let disabledLabels: Set<String>
+    public var disabledLabels: Set<String>
     /// Managed labels loaded in the current boot session.
-    public let loadedLabels: Set<String>
+    public var loadedLabels: Set<String>
     /// Labels this simulator's platform keeps enabled although a category lists them.
-    public let platformRequiredLabels: Set<String>
+    public var platformRequiredLabels: Set<String>
 
     /// Creates a service-state snapshot, retaining the labels managed by this Kit.
     /// - Parameters:
@@ -159,8 +159,9 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
     public func labelsKeptEnabled(disabling categories: [SimulatorBackgroundServiceCategory],
                                                     named: [String]) -> Set<String> {
         let covered = Set(categories.flatMap { $0.services.map(\.label) }).subtracting(named)
+        let disabledCategoryIDs = Set(categories.map(\.id))
         var kept = Set<String>()
-        for category in SimulatorBackgroundServiceCategory.all where !categories.contains(category) && isFullyEnabled(category) {
+        for category in SimulatorBackgroundServiceCategory.all where !disabledCategoryIDs.contains(category.id) && isFullyEnabled(category) {
             kept.formUnion(category.services.map(\.label).filter(covered.contains))
         }
         return kept
