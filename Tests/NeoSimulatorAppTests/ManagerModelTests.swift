@@ -10,9 +10,211 @@ import Observation
 import SwiftUI
 import Synchronization
 import Testing
+import IOSurface
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func inventoryLoadingAndFailuresStayInTheSidebar() async throws {
+        _ = NSApplication.shared
+        let source = ManagerModelSource(devices: [])
+        await source.holdInventoryReads()
+        defer { Task { await source.completeInventoryRead() } }
+        var events = source.events.makeAsyncIterator()
+        let model = SimulatorManagerModel(source: source)
+        model.registry.stopReading()
+        let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+                                                 menus: MenuController(application: nil))
+        controller.window?.setFrameAutosaveName("")
+        defer { controller.window?.close() }
+        let split = try #require(controller.window?.contentViewController as? NSSplitViewController)
+        let sidebar = try #require(split.splitViewItems.first)
+        let status = try #require(inspectorViews(sidebar.viewController.view)
+            .compactMap { $0 as? NSHostingView<SidebarStatusView> }.first)
+        let startup = AsyncStream<Void>.makeStream()
+        defer { startup.continuation.finish() }
+        model.requestHostPreferenceAccess = {
+            var permission = startup.stream.makeAsyncIterator()
+            _ = await permission.next()
+        }
+        model.start()
+        try await wait { status.rootView.content == .loading && !status.isHidden }
+        #expect(!model.isRefreshingInventory)
+        startup.continuation.finish()
+        #expect(await events.next() == .inventory)
+        try await wait { status.rootView.content == .loading && !status.isHidden }
+        await source.completeInventoryRead()
+        try await wait { !model.isBusy && status.rootView.content == .empty }
+        model.inventoryObservationFailed(ManagerModelSource.Failure.unavailable)
+        try await wait {
+            if case .failure = status.rootView.content { return true }
+            return false
+        }
+        let issue = try #require(model.backgroundIssue)
+        #expect(!inspectorViews(controller.deviceScreenViewController.view)
+            .compactMap { $0 as? NSTextField }.contains { $0.stringValue == issue })
+        await source.setDevices([simulator()])
+        await model.refresh()
+        try await wait { status.isHidden }
+        let banner = try #require(sidebar.bottomAlignedAccessoryViewControllers.first)
+        #expect(!banner.isHidden)
+        #expect(inspectorViews(banner.view).compactMap { $0 as? NSTextField }.contains { $0.stringValue == issue })
+        var retried = false
+        let recovered = AsyncStream<Void>.makeStream()
+        defer { recovered.continuation.finish() }
+        model.retryDeviceObservation = {
+            retried = true
+            var recovery = recovered.stream.makeAsyncIterator()
+            _ = await recovery.next()
+            model.inventoryObservationRecovered()
+        }
+        let retry = try #require(inspectorViews(banner.view).compactMap { $0 as? NSButton }.first)
+        await source.holdInventoryReads()
+        retry.performClick(nil)
+        #expect(await events.next() == .inventory)
+        await source.completeInventoryRead()
+        try await wait { retried }
+        #expect(!banner.isHidden)
+        recovered.continuation.finish()
+        try await wait { retried && banner.isHidden }
+        let switching = AsyncStream<Void>.makeStream()
+        defer { switching.continuation.finish() }
+        model.requestHostPreferenceAccess = {
+            var permission = switching.stream.makeAsyncIterator()
+            _ = await permission.next()
+        }
+        model.select(.deviceHub)
+        try await wait {
+            !banner.isHidden && inspectorViews(banner.view).compactMap { $0 as? NSProgressIndicator }
+                .contains { !$0.isHidden }
+        }
+        switching.continuation.finish()
+        try await wait { !model.isBusy && banner.isHidden }
+    }
+
+    @Test func aThumbnailWaitsForTheBootedSimulatorsScreenAdapter() async throws {
+        let adapter = NSObject()
+        var reads = 0
+        var waits = 0
+        let connected = try await SimulatorScreenThumbnail.waitForAdapter(read: {
+            reads += 1
+            return reads < 3 ? nil : adapter
+        }, wait: { waits += 1 })
+        #expect(connected === adapter)
+        #expect(waits == 2)
+        await #expect(throws: CancellationError.self) {
+            _ = try await SimulatorScreenThumbnail.waitForAdapter(read: { nil }, wait: { throw CancellationError() })
+        }
+    }
+
+    @Test func thumbnailsReleaseLiveSurfacesAndKeepOnlyFrozenImagesOffscreen() async throws {
+        let device = SimulatorHostDevice(identifier: "thumbnail", name: "Phone", descriptiveName: "Phone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
+        let identifier = InventoryDevice.simulator(device).id
+        let source = ThumbnailTestSource()
+        var receive: ((DeviceThumbnailFrame?) -> Void)?
+        let store = DeviceThumbnailStore { _, frame, _ in receive = frame; return source }
+        store.update(visible: [device], booted: [device])
+        try await wait { receive != nil }
+        let surface = try #require(IOSurface(properties: [.width: 128, .height: 256, .bytesPerElement: 4,
+                                                          .pixelFormat: 0x42475241]))
+        receive?(DeviceThumbnailFrame(surface: surface))
+        #expect(store.frame(for: identifier)?.surface === surface)
+        store.update(visible: [], booted: [device])
+        #expect(source.stops == 1)
+        #expect(store.frame(for: identifier) == nil)
+        try await wait { store.image(for: identifier) != nil }
+        let image = try #require(store.image(for: identifier))
+        #expect(image.width == 48 && image.height == 96)
+        // A queued callback from the stopped subscription cannot replace the frozen image.
+        receive?(DeviceThumbnailFrame(surface: surface))
+        #expect(store.frame(for: identifier) == nil)
+        #expect(store.image(for: identifier) === image)
+        store.update(visible: [], booted: [])
+        #expect(store.image(for: identifier) == nil)
+    }
+
+    @Test func visibleThumbnailsRecoverFromConnectionAndStreamFailures() async throws {
+        let device = SimulatorHostDevice(identifier: "thumbnail-retry", name: "Phone", descriptiveName: "Phone",
+            runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
+        let identifier = InventoryDevice.simulator(device).id
+        var attempts = 0
+        var sources: [Int: ThumbnailTestSource] = [:]
+        var receive: [Int: (DeviceThumbnailFrame?) -> Void] = [:]
+        var fail: [Int: (any Error) -> Void] = [:]
+        let store = DeviceThumbnailStore(connect: { _, frame, failure in
+            attempts += 1
+            if attempts == 1 { throw SimulatorError.unavailable("Screen is still starting") }
+            let source = ThumbnailTestSource()
+            sources[attempts] = source
+            receive[attempts] = frame
+            fail[attempts] = failure
+            return source
+        }, waitToRetry: { _ in await Task.yield() })
+        store.update(visible: [device], booted: [device])
+        try await wait { sources[2] != nil }
+        fail[2]?(SimulatorError.unavailable("Screen connection ended"))
+        try await wait { sources[3] != nil }
+        #expect(sources[2]?.stops == 1)
+        let surface = try #require(IOSurface(properties: [.width: 16, .height: 16, .bytesPerElement: 4,
+                                                          .pixelFormat: 0x42475241]))
+        receive[3]?(DeviceThumbnailFrame(surface: surface))
+        receive[2]?(nil)
+        #expect(store.frame(for: identifier)?.surface === surface)
+        store.update(visible: [], booted: [device])
+        fail[3]?(SimulatorError.unavailable("Late callback"))
+        await Task.yield()
+        #expect(attempts == 3 && sources[3]?.stops == 1)
+    }
+
+    @Test func frozenThumbnailsKeepTheDeviceBezelAndRotation() async throws {
+        let context = try #require(CGContext(data: nil, width: 12, height: 24, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(NSColor.red.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 12, height: 24))
+        let bezel = try #require(context.makeImage())
+        let chrome = DeviceThumbnailChrome(image: bezel, mask: nil, size: CGSize(width: 120, height: 240),
+            displayRect: CGRect(x: 20, y: 40, width: 80, height: 160), cornerRadius: 0)
+        let surface = try #require(IOSurface(properties: [.width: 80, .height: 160, .bytesPerElement: 4,
+                                                         .pixelFormat: 0x42475241]))
+        IOSurfaceLock(surface, [], nil)
+        try #require(IOSurfaceGetBaseAddress(surface)).initializeMemory(as: UInt8.self, repeating: 255,
+                                                                       count: IOSurfaceGetAllocSize(surface))
+        IOSurfaceUnlock(surface, [], nil)
+        let image = try await DeviceThumbnailFrame(surface: surface, rotation: .pi / 2, chrome: chrome).snapshot()
+        #expect(image.width == 96 && image.height == 48)
+        let pixels = NSBitmapImageRep(cgImage: image)
+        let edge = try #require(pixels.colorAt(x: 2, y: 2)?.usingColorSpace(.deviceRGB))
+        let center = try #require(pixels.colorAt(x: 48, y: 24)?.usingColorSpace(.deviceRGB))
+        #expect(edge.redComponent > 0.9 && edge.greenComponent < 0.1)
+        #expect(center.redComponent > 0.9 && center.greenComponent > 0.9)
+    }
+
+    @Test func thumbnailsReuseVisibleSubscriptionsAndStopOffscreenDevices() async throws {
+        let devices = ["A", "B"].map { name in
+            SimulatorHostDevice(identifier: name, name: name, descriptiveName: name, runtimeIdentifier: "runtime",
+                                runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
+        }
+        var sources: [String: ThumbnailTestSource] = [:]
+        let thumbnails = DeviceThumbnailStore { device, _, _ in
+            let source = ThumbnailTestSource()
+            sources[device.identifier] = source
+            return source
+        }
+        thumbnails.update(visible: devices, booted: devices)
+        try await wait(timeout: .seconds(5)) { sources.count == 2 }
+        let first = try #require(sources["A"])
+        let second = try #require(sources["B"])
+        thumbnails.update(visible: devices.reversed(), booted: devices)
+        await Task.yield()
+        #expect(sources["A"] === first && sources["B"] === second)
+        #expect(first.stops == 0 && second.stops == 0)
+        thumbnails.update(visible: [devices[0]], booted: devices)
+        #expect(first.stops == 0 && second.stops == 1)
+        thumbnails.update(visible: [], booted: devices)
+        #expect(first.stops == 1 && second.stops == 1)
+    }
+
     @Test func aHostTakeoverRetainsItsContextsAndReportsEveryCleanupFailureTogether() throws {
         var reports: [any Error] = []
         let takeovers = HostTakeovers<NSObject> { reports.append($0) }
@@ -2864,9 +3066,16 @@ struct ManagerModelTests {
         window.update()
         let content = try #require(window.window?.contentView)
         let start = try #require(inspectorViews(content).compactMap { $0 as? NSButton }.first { $0.title == "Start" })
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        func selectedProgressIsHidden() -> Bool? {
+            (outline.view(atColumn: 0, row: outline.selectedRow, makeIfNecessary: true) as? SimulatorSidebarCellView)?.progress.isHidden
+        }
+        #expect(selectedProgressIsHidden() == true)
+        #expect(inspectorViews(window.deviceScreenViewController.view).compactMap { $0 as? NSProgressIndicator }.isEmpty)
         try #require(start.isEnabled)
         start.performClick(nil)
         #expect(await events.next() == .open(stopped.id))
+        try await wait { selectedProgressIsHidden() == false }
         #expect(await source.lastOpenBootIfNeeded == true)
         manager.cancelOpening(running.id)
         #expect(source.cancelledOpenIDs == [running.id])
@@ -2875,6 +3084,7 @@ struct ManagerModelTests {
         #expect(manager.openingDeviceIDs == [running.id])
         await source.completeOpen(for: running.id)
         try await wait { !manager.isBusy }
+        try await wait { selectedProgressIsHidden() == true }
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
@@ -5738,6 +5948,11 @@ struct ManagerModelTests {
     private func settings(appearance: DeviceAppearance, contentSize: DeviceContentSize? = nil) -> SimulatorDeviceSettings {
         SimulatorDeviceSettings(appearance: appearance, contentSize: contentSize)
     }
+}
+
+@MainActor private final class ThumbnailTestSource: DeviceThumbnailSource {
+    var stops = 0
+    func stop() { stops += 1 }
 }
 
 private struct ServiceChangeSource: DeviceStateSource {

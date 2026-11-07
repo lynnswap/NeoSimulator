@@ -25,11 +25,11 @@ import Testing
                 source.events.yield(event)
             }
         }
-        #expect(changes == 2)
+        #expect(changes == 3)
         await observation.stop()
         #expect(source.finished)
         source.events.yield(true)
-        #expect(changes == 2)
+        #expect(changes == 3)
         await observation.stop()
     }
 
@@ -37,7 +37,10 @@ import Testing
         let source = TestInventoryChanges()
         let observation = DeviceInventoryObservation(source: source)
         let failure = InventoryStreamFailure.disconnected("service interrupted")
+        var ready = false
+        observation.onReady = { ready = true }
         try await observation.start()
+        #expect(ready)
         let received: any Error = await withCheckedContinuation { continuation in
             observation.onError = { continuation.resume(returning: $0) }
             source.events.finish(throwing: failure)
@@ -45,6 +48,27 @@ import Testing
         #expect(received as? InventoryStreamFailure == failure)
         await observation.stop()
         #expect(source.finished)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func subscribingRefreshesTheInventoryAfterTheObservationGap() async throws {
+        let source = TestInventoryChanges()
+        let (began, signal) = AsyncStream<Void>.makeStream()
+        let (released, release) = AsyncStream<Void>.makeStream()
+        source.beforeSubscribe = {
+            signal.yield(())
+            for await _ in released {}
+        }
+        let observation = DeviceInventoryObservation(source: source)
+        var changes = 0
+        observation.onChange = { changes += 1 }
+        let starting = Task { try await observation.start() }
+        var waiting = began.makeAsyncIterator()
+        await waiting.next()
+        #expect(changes == 0)
+        release.finish()
+        try await starting.value
+        #expect(changes == 1)
+        await observation.stop()
     }
 }
 
@@ -220,14 +244,18 @@ private final class TestInventoryChanges: DeviceInventoryChangeSource {
 
     /// What each call to `initialize()` throws, until there are no more.
     var initializations: [any Error] = []
+    var beforeSubscribe: (() async -> Void)?
 
     init() { (stream, events) = AsyncThrowingStream.makeStream() }
     func initialize() async throws {
         if !initializations.isEmpty { throw initializations.removeFirst() }
     }
 
-    func follow(onChange: @escaping @MainActor () -> Void) async throws {
+    func follow(onReady: @escaping @MainActor () -> Void, onChange: @escaping @MainActor () -> Void) async throws {
         defer { finished = true }
+        await beforeSubscribe?()
+        try Task.checkCancellation()
+        onReady()
         for try await _ in stream { onChange() }
     }
 }

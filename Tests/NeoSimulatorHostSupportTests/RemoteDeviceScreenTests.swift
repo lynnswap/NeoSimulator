@@ -2135,6 +2135,42 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func unsupportedSimulatorSettingsHaveNoValueWhileProviderFailuresStillThrow() async throws {
+        let peers = GuestHIDPeerFixture()
+        let guest = SimulatorGuestHID(codec: try await GuestHIDCodec(runtime: .shared), connect: peers.connect)
+        let settings = GuestSettingsActions(guest: guest, identifier: "simulator-not-in-coredevice")
+        let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.CoreDeviceError")))
+        let getter = try await type.resolve(.swift(.staticGetter("liquidGlassNotSupported", as: (() -> NativeSwiftValue).self,
+            valueABIs: [type: try .opaque(named: type.name)])))
+        let native = try #require(try unsafe getter.unsafeInvoke().withCopy { $0 as? any Error }) as NSError
+        for (version, declaration, code) in [
+            (UInt32(26), "GetDeviceLookAndFeelActionDeclaration", 21046),
+            (26, "GetLiquidGlassConfigurationActionDeclaration", 21035),
+            (27, "GetLiquidGlassConfigurationActionDeclaration", native.code),
+        ] {
+            peers.reply = { _, reply in
+                let error = xpc_dictionary_create(nil, nil, 0)
+                xpc_dictionary_set_string(error, "domain", "com.apple.dt.CoreDeviceError")
+                xpc_dictionary_set_int64(error, "code", Int64(code))
+                xpc_dictionary_set_value(reply, "CoreDevice.error", error)
+            }
+            #expect(try await settings.getIfSupported(declaration, runtimeVersion: version << 16) == nil)
+        }
+        for (domain, code) in [("com.apple.dt.CoreDeviceError", 1), ("NSCocoaErrorDomain", 4097), ("fixture-provider", 21035)] {
+            peers.reply = { _, reply in
+                let error = xpc_dictionary_create(nil, nil, 0)
+                xpc_dictionary_set_string(error, "domain", domain)
+                xpc_dictionary_set_int64(error, "code", Int64(code))
+                xpc_dictionary_set_value(reply, "CoreDevice.error", error)
+            }
+            await #expect { try await settings.getIfSupported("GetLiquidGlassConfigurationActionDeclaration", runtimeVersion: 26 << 16) } throws: {
+                let error = $0 as NSError
+                return error.domain == domain && error.code == code
+            }
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func cancellingASimulatorSettingReadClosesThePendingGuestRequest() async throws {
         let peers = GuestHIDPeerFixture()
         peers.holdsReplies = true

@@ -19,6 +19,44 @@ package final class GuestSettingsActions {
         try await perform(declaration, input: [:], readsOutput: true)
     }
 
+    /// Unsupported settings have no value; transport and provider failures still throw.
+    package func getIfSupported(_ declaration: String, runtimeVersion: UInt32) async throws -> DeviceInspectorValue? {
+        do { return try await get(declaration) }
+        catch {
+            guard (try? await Self.isUnsupported(error, declaration: declaration, runtimeVersion: runtimeVersion)) == true else { throw error }
+            return nil
+        }
+    }
+
+    private static func isUnsupported(_ error: any Error, declaration: String, runtimeVersion: UInt32) async throws -> Bool {
+        let error = error as NSError
+        guard error.domain == "com.apple.dt.CoreDeviceError" else { return false }
+        // iOS 26's provider predates the host's current CoreDeviceError numbering.
+        if runtimeVersion < (27 << 16) {
+            switch declaration {
+            case "GetDeviceLookAndFeelActionDeclaration": return error.code == 21046
+            case "GetLiquidGlassConfigurationActionDeclaration": return error.code == 21035
+            default: return false
+            }
+        }
+        let members = [
+            "GetDeviceLookAndFeelActionDeclaration": "lookAndFeelNotSupported",
+            "GetSupportedLooksAndFeelsActionDeclaration": "lookAndFeelNotSupported",
+            "GetLiquidGlassConfigurationActionDeclaration": "liquidGlassNotSupported",
+            "GetColorFilterActionDeclaration": "colorFilterNotSupported",
+            "GetReduceMotionActionDeclaration": "reduceMotionNotSupported",
+            "GetShowBordersActionDeclaration": "showBordersNotSupported",
+            "GetReduceTransparencyActionDeclaration": "reduceTransparencyNotSupported",
+            "GetVoiceOverActionDeclaration": "voiceOverNotSupported",
+        ]
+        guard let member = members[declaration] else { return false }
+        let type = try await ABIRuntime.shared.resolve(.swift(.type("CoreDevice.CoreDeviceError")))
+        let getter = try await type.resolve(.swift(.staticGetter(member, as: (() -> NativeSwiftValue).self,
+            valueABIs: [type: try .opaque(named: type.name)])))
+        guard let expected = try unsafe getter.unsafeInvoke().withCopy({ $0 as? any Error }) else { return false }
+        return error.code == (expected as NSError).code
+    }
+
     package func set(_ declaration: String, input: [String: Any]) async throws {
         _ = try await perform(declaration, input: input, readsOutput: false)
     }

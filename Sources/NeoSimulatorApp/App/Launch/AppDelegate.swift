@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var connectionTimer: Timer?
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
+    private var observationRetryTask: Task<Void, Never>?
     private var coreDeviceInitializationPanel: NSPanel?
     private var activeStateObservation: DeviceActiveStateObservation?
     private var quitKeepingDevicesRunning: Bool?
@@ -90,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.requestHostPreferenceAccess = { [weak self] in
             try await self?.requestHostPreferenceAccess()
         }
+        model.retryDeviceObservation = { [weak self] in await self?.retryDeviceObservation() }
         model.beforeStoppingScreens = { [weak self] in try await self?.stopScreens() }
         model.beforeManagingRemoteDevices = { [weak self] identifiers in
             try await self?.screens.stopRemoteScreens(for: identifiers)
@@ -199,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let observation = try DeviceInventoryObservation()
                 self.inventoryObservation = observation
+                observation.onReady = { [weak self] in self?.model.inventoryObservationRecovered() }
                 observation.onChange = { [weak self] in
                     // Preserve source-event order before the asynchronous inventory read.
                     self?.model.inventoryObservationRecovered()
@@ -215,6 +218,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.model.inventoryObservationFailed(error)
             }
         }
+    }
+
+    private func retryDeviceObservation() async {
+        if let observationRetryTask { await observationRetryTask.value; return }
+        guard !quitting else { return }
+        let task = Task { [self] in
+            let starting = inventoryObservationTask
+            starting?.cancel()
+            await inventoryObservation?.stop()
+            await starting?.value
+            await activeStateObservation?.stop()
+            inventoryObservation = nil
+            activeStateObservation = nil
+            guard !quitting, !Task.isCancelled else { return }
+            startInventoryObservation()
+            await inventoryObservationTask?.value
+        }
+        observationRetryTask = task
+        await task.value
+        observationRetryTask = nil
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -252,6 +275,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 mainWindow?.stopInspectorReads()
                 try await preparation.value
                 try await mainWindow?.finishInspectorPreviews()
+                observationRetryTask?.cancel()
+                await observationRetryTask?.value
                 inventoryObservationTask?.cancel()
                 await inventoryObservation?.stop()
                 await inventoryObservationTask?.value
