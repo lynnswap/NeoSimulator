@@ -1042,16 +1042,60 @@ struct XcodeConnectionsTests {
         #expect(ready)
     }
 
-    @Test(.timeLimit(.minutes(1))) @MainActor func helperProcessExitDoesNotRefreshSimulatorConnections() async throws {
+    @Test(.timeLimit(.minutes(1))) @MainActor func childEventsPreserveFailedDiscoveryRetry() async throws {
         let process = Process()
         let input = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "read trigger; /usr/bin/true"]
+        process.arguments = ["-c", "read trigger; /usr/bin/true; read finish"]
         process.standardInput = input
         try process.run()
         defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
         let pid = process.processIdentifier
-        let observation = SimulatorProcessObservation(rootProcessIdentifiers: { [pid] })
+        let attempts = Mutex(0)
+        let observation = SimulatorProcessObservation(rootProcessIdentifiers: {
+            let attempt = attempts.withLock { $0 += 1; return $0 }
+            if attempt == 2 { throw HostOperationError.temporary("process-list", "Try again") }
+            return [pid]
+        })
+        let (changes, changesContinuation) = AsyncStream<Void>.makeStream()
+        let (recovered, recoveredContinuation) = AsyncStream<Void>.makeStream()
+        var failed = false
+        observation.onChange = { changesContinuation.yield(()) }
+        observation.onError = { _ in
+            failed = true
+            do { try input.fileHandleForWriting.write(contentsOf: Data("fork\n".utf8)) }
+            catch { Issue.record(error) }
+        }
+        observation.onReady = {
+            if failed { recoveredContinuation.yield(()) }
+        }
+        observation.start()
+        defer {
+            observation.stop()
+            changesContinuation.finish()
+            recoveredContinuation.finish()
+        }
+        var changesIterator = changes.makeAsyncIterator()
+        await changesIterator.next()
+        observation.refresh()
+        for await _ in recovered { break }
+        #expect(attempts.withLock { $0 } == 3)
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func helperProcessExitDoesNotRefreshSimulatorConnections() async throws {
+        let process = Process()
+        let input = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "read trigger; /usr/bin/true; read finish"]
+        process.standardInput = input
+        try process.run()
+        defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
+        let pid = process.processIdentifier
+        let rootReads = Mutex(0)
+        let observation = SimulatorProcessObservation(rootProcessIdentifiers: {
+            rootReads.withLock { $0 += 1 }
+            return [pid]
+        })
         let (changes, continuation) = AsyncStream<Void>.makeStream()
         var refreshes = 0
         observation.onChange = { refreshes += 1; continuation.yield(()) }
@@ -1060,12 +1104,13 @@ struct XcodeConnectionsTests {
         var iterator = changes.makeAsyncIterator()
         await iterator.next()
         try input.fileHandleForWriting.write(contentsOf: Data("exit\n".utf8))
-        process.waitUntilExit()
         try await Task.sleep(for: .milliseconds(300))
         #expect(refreshes == 1)
+        #expect(rootReads.withLock { $0 } == 1)
         observation.refresh()
         await iterator.next()
         #expect(refreshes == 2)
+        #expect(rootReads.withLock { $0 } == 2)
     }
 
     @Test @MainActor func processNotificationsFindLaunchedAndExitedSimulatorApplications() async throws {

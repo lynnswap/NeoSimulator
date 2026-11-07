@@ -19,6 +19,7 @@ package final class SimulatorProcessObservation {
         let source: any DispatchSourceProcess
     }
     private struct Snapshot: Sendable {
+        let roots: Set<pid_t>
         let processes: [pid_t: Identity]
         let connections: [XcodeSimulatorConnection]
     }
@@ -31,22 +32,29 @@ package final class SimulatorProcessObservation {
     private var watchedTestingPath: String?
     private var generation = 0
     private var watches: [pid_t: Watch] = [:]
+    private var rootIdentifiers: Set<pid_t> = []
     private var reading: Task<Void, Never>?
     private var requested = false
+    private var pendingEvents: [pid_t: DispatchSource.ProcessEvent] = [:]
     private var deviceChangePending = false
     private var observedConnections: [XcodeSimulatorConnection]?
     private var active = false
     private var deviceObservationFailed = false
+    private var processObservationFailed = false
     private var retry: Task<Void, Never>?
     private var retryDelay: Duration = .seconds(1)
 
-    package convenience init() { self.init(rootProcessIdentifiers: Self.simulatorLaunchers, observesDeviceSets: true) }
+    package convenience init() {
+        self.init(rootProcessIdentifiers: Self.simulatorLaunchers, observesDeviceSets: true)
+    }
 
     package convenience init(rootProcessIdentifiers: @escaping @Sendable () throws -> [pid_t]) {
         self.init(rootProcessIdentifiers: rootProcessIdentifiers, observesDeviceSets: false)
     }
 
-    private init(rootProcessIdentifiers: @escaping @Sendable () throws -> [pid_t], observesDeviceSets: Bool) {
+    private init(
+        rootProcessIdentifiers: @escaping @Sendable () throws -> [pid_t], observesDeviceSets: Bool
+    ) {
         roots = rootProcessIdentifiers
         self.observesDeviceSets = observesDeviceSets
     }
@@ -80,11 +88,14 @@ package final class SimulatorProcessObservation {
         for (set, token) in deviceObservations.values { _ = set.stopObserving(token) }
         deviceObservations.removeAll()
         requested = false
+        processObservationFailed = false
+        pendingEvents.removeAll()
         deviceChangePending = false
         observedConnections = nil
         reading?.cancel()
         for watch in watches.values { watch.source.cancel() }
         watches.removeAll()
+        rootIdentifiers.removeAll()
     }
 
     /// Device boot notifications discover new launchers; process notifications discover new children.
@@ -97,13 +108,48 @@ package final class SimulatorProcessObservation {
         if deviceChanged { observeDeviceSets() }
         requested = true
         deviceChangePending = deviceChangePending || deviceChanged
+        readPendingChanges()
+    }
+
+    private func processChanged(
+        _ pid: pid_t, identity: Identity, events: DispatchSource.ProcessEvent
+    ) {
+        guard active, watches[pid]?.identity == identity else { return }
+        if events.contains(.exit) {
+            watches.removeValue(forKey: pid)?.source.cancel()
+            // Fork and exit may arrive separately. Surviving children have been adopted
+            // by launchd_sim, so enumerate its direct children to discover them.
+            for root in rootIdentifiers where root != pid {
+                pendingEvents[root, default: []].insert(.fork)
+            }
+        }
+        pendingEvents[pid, default: []].formUnion(events)
+        readPendingChanges()
+    }
+
+    private func readPendingChanges() {
         guard reading == nil else { return }
         reading = Task { [weak self, roots] in
-            while let self, self.active, self.requested, !Task.isCancelled {
+            while let self, self.active, self.requested || !self.pendingEvents.isEmpty,
+                !Task.isCancelled
+            {
+                let fullRefresh = self.requested
                 self.requested = false
+                let events = self.pendingEvents.mapValues(\.rawValue)
+                self.pendingEvents.removeAll(keepingCapacity: true)
+                let processes = self.watches.mapValues(\.identity)
+                let rootIdentifiers = self.rootIdentifiers
+                let connections = self.observedConnections ?? []
                 do {
-                    let snapshot = try await Task.detached(priority: .utility) { try Self.snapshot(roots: roots()) }.value
+                    let snapshot = try await Task.detached(priority: .utility) {
+                        if fullRefresh { return try Self.snapshot(roots: roots()) }
+                        return try Self.snapshot(
+                            updating: processes, roots: rootIdentifiers,
+                            connections: connections, events: events)
+                    }.value
                     guard self.active, !Task.isCancelled else { break }
+                    if fullRefresh { self.processObservationFailed = false }
+                    self.rootIdentifiers = snapshot.roots
                     self.apply(snapshot.processes)
                     let changed = self.observedConnections != snapshot.connections
                     self.observedConnections = snapshot.connections
@@ -111,18 +157,23 @@ package final class SimulatorProcessObservation {
                         self.deviceChangePending = false
                         self.onChange?()
                     }
-                    if !self.deviceObservationFailed {
+                    if !self.deviceObservationFailed, !self.processObservationFailed {
                         self.retry?.cancel()
                         self.retry = nil
                         self.retryDelay = .seconds(1)
                         self.onReady?()
                     }
                 } catch {
-                    if self.active, !Task.isCancelled { self.retryAfterFailure(error) }
+                    if self.active, !Task.isCancelled {
+                        self.processObservationFailed = true
+                        self.retryAfterFailure(error)
+                    }
                 }
             }
             self?.reading = nil
-            if let self, self.active, self.requested { self.requestRefresh(deviceChanged: false) }
+            if let self, self.active, self.requested || !self.pendingEvents.isEmpty {
+                self.readPendingChanges()
+            }
         }
     }
 
@@ -133,7 +184,9 @@ package final class SimulatorProcessObservation {
         let paths: [String?] = [nil] + (SimulatorDeviceSets.testingPath().map { [$0] } ?? [])
         let keys = Set(paths.map { $0 ?? "" })
         for key in deviceObservations.keys where !keys.contains(key) {
-            if let (set, token) = deviceObservations.removeValue(forKey: key) { _ = set.stopObserving(token) }
+            if let (set, token) = deviceObservations.removeValue(forKey: key) {
+                _ = set.stopObserving(token)
+            }
         }
         if let watchedTestingPath, !keys.contains(watchedTestingPath) {
             testingDirectoryWatch?.cancel()
@@ -144,7 +197,8 @@ package final class SimulatorProcessObservation {
         let missing = paths.filter { path in
             guard deviceObservations[path ?? ""] == nil else { return false }
             guard let path else { return true }
-            return path != watchedTestingPath || testingDirectoryWatch == nil || FileManager.default.fileExists(atPath: path)
+            return path != watchedTestingPath || testingDirectoryWatch == nil
+                || FileManager.default.fileExists(atPath: path)
         }
         guard !missing.isEmpty else {
             deviceObservationFailed = false
@@ -157,7 +211,9 @@ package final class SimulatorProcessObservation {
             do {
                 let xcode = try await CoreDeviceRuntime.uiXcodeURL()
                 for path in missing {
-                    guard self.active, self.generation == generation, !Task.isCancelled else { return }
+                    guard self.active, self.generation == generation, !Task.isCancelled else {
+                        return
+                    }
                     if let path, !FileManager.default.fileExists(atPath: path) {
                         try self.watchForTestingDirectory(path)
                         continue
@@ -191,7 +247,11 @@ package final class SimulatorProcessObservation {
     private func retryAfterFailure(_ error: any Error) {
         onError?(error)
         if let failure = error as? any IdentifiedFailure,
-           failure.category == .configuration || failure.category == .software || failure.identifier == "unsupported-xcode" { return }
+            failure.category == .configuration || failure.category == .software
+                || failure.identifier == "unsupported-xcode"
+        {
+            return
+        }
         guard retry == nil else { return }
         let delay = retryDelay
         retryDelay = min(delay * 2, .seconds(30))
@@ -215,9 +275,12 @@ package final class SimulatorProcessObservation {
         watchedTestingPath = nil
         let descriptor = open(ancestor.path, O_EVTONLY)
         guard descriptor >= 0 else {
-            throw HostOperationError.io("device-set-observation", "Could not observe \(ancestor.path): \(String(cString: strerror(errno)))")
+            throw HostOperationError.io(
+                "device-set-observation",
+                "Could not observe \(ancestor.path): \(String(cString: strerror(errno)))")
         }
-        let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor,
+        let watcher = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
             eventMask: [.write, .rename, .delete], queue: .main)
         watcher.setEventHandler { [weak self] in
             MainActor.assumeIsolated { self?.testingDirectoryChanged(path) }
@@ -234,10 +297,13 @@ package final class SimulatorProcessObservation {
 
     private func testingDirectoryChanged(_ path: String) {
         guard active, watchedTestingPath == path else { return }
-        if FileManager.default.fileExists(atPath: path) { observeDeviceSets() }
-        else {
-            do { try watchForTestingDirectory(path) }
-            catch { deviceObservationFailed = true; retryAfterFailure(error) }
+        if FileManager.default.fileExists(atPath: path) {
+            observeDeviceSets()
+        } else {
+            do { try watchForTestingDirectory(path) } catch {
+                deviceObservationFailed = true
+                retryAfterFailure(error)
+            }
         }
     }
 
@@ -247,22 +313,22 @@ package final class SimulatorProcessObservation {
             watches[pid] = nil
         }
         for (pid, identity) in snapshot where watches[pid] == nil {
-            let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: [.fork, .exec, .exit], queue: .main)
+            let source = DispatchSource.makeProcessSource(
+                identifier: pid, eventMask: [.fork, .exec, .exit], queue: .main)
             source.setEventHandler { [weak self, weak source] in
                 MainActor.assumeIsolated {
-                    guard let self, let source, self.active, self.watches[pid]?.identity == identity else { return }
-                    let events = source.data
-                    if events.contains(.exit) {
-                        self.watches.removeValue(forKey: pid)?.source.cancel()
-                    }
-                    self.requestRefresh(deviceChanged: false)
+                    guard let self, let source, self.active, self.watches[pid]?.identity == identity
+                    else { return }
+                    self.processChanged(pid, identity: identity, events: source.data)
                 }
             }
             // Cover launches/execs between the snapshot and registration in the kernel.
             source.setRegistrationHandler { [weak self] in
                 MainActor.assumeIsolated {
-                    guard let self, self.active, self.watches[pid]?.identity == identity else { return }
-                    self.requestRefresh(deviceChanged: false)
+                    guard let self, self.active, self.watches[pid]?.identity == identity else {
+                        return
+                    }
+                    self.processChanged(pid, identity: identity, events: [.fork, .exec])
                 }
             }
             watches[pid] = Watch(identity: identity, source: source)
@@ -272,32 +338,121 @@ package final class SimulatorProcessObservation {
 
     private nonisolated static func simulatorLaunchers() throws -> [pid_t] {
         let user = getuid()
-        let capacity = Int(proc_listpids(UInt32(PROC_UID_ONLY), user, nil, 0)) / MemoryLayout<pid_t>.stride + 128
+        let capacity =
+            Int(proc_listpids(UInt32(PROC_UID_ONLY), user, nil, 0)) / MemoryLayout<pid_t>.stride
+            + 128
         var pids = [pid_t](repeating: 0, count: capacity)
-        let bytes = pids.withUnsafeMutableBytes { proc_listpids(UInt32(PROC_UID_ONLY), user, $0.baseAddress, Int32($0.count)) }
-        guard bytes > 0 else { throw HostOperationError.io("process-list", "Could not enumerate simulator launchers.") }
+        let bytes = pids.withUnsafeMutableBytes {
+            proc_listpids(UInt32(PROC_UID_ONLY), user, $0.baseAddress, Int32($0.count))
+        }
+        guard bytes > 0 else {
+            throw HostOperationError.io("process-list", "Could not enumerate simulator launchers.")
+        }
         var name = [CChar](repeating: 0, count: 256)
         return pids.prefix(Int(bytes) / MemoryLayout<pid_t>.stride).filter { pid in
             pid > 0 && proc_name(pid, &name, UInt32(name.count)) > 0
-                && name.withUnsafeBufferPointer { String(cString: $0.baseAddress!) } == "launchd_sim"
+                && name.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+                    == "launchd_sim"
         }
     }
 
     private nonisolated static func snapshot(roots: [pid_t]) throws -> Snapshot {
         var processes: [pid_t: Identity] = [:]
         var pending = roots
+        let user = getuid()
         while let pid = pending.popLast() {
-            guard processes[pid] == nil else { continue }
-            var info = proc_bsdinfo()
-            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
-                  info.pbi_uid == getuid() else { continue }
-            processes[pid] = Identity(seconds: info.pbi_start_tvsec, microseconds: info.pbi_start_tvusec)
-            let capacity = Int(proc_listchildpids(pid, nil, 0)) + 32
-            var children = [pid_t](repeating: 0, count: capacity)
-            let count = children.withUnsafeMutableBytes { proc_listchildpids(pid, $0.baseAddress, Int32($0.count)) }
-            if count > 0 { pending.append(contentsOf: children.prefix(Int(count)).filter { $0 > 0 }) }
+            guard processes[pid] == nil, let identity = identity(of: pid, user: user) else {
+                continue
+            }
+            processes[pid] = identity
+            pending.append(contentsOf: children(of: pid))
         }
-        return Snapshot(processes: processes, connections: try SimulatorProcessConnections
-            .read(processIdentifiers: Array(processes.keys)).sorted { $0.event < $1.event })
+        return Snapshot(
+            roots: Set(roots).intersection(processes.keys),
+            processes: processes,
+            connections:
+                try SimulatorProcessConnections
+                .read(processIdentifiers: Array(processes.keys)).sorted { $0.event < $1.event })
+    }
+
+    private nonisolated static func snapshot(
+        updating known: [pid_t: Identity],
+        roots: Set<pid_t>,
+        connections: [XcodeSimulatorConnection],
+        events rawEvents: [pid_t: UInt]
+    ) throws -> Snapshot {
+        let events = rawEvents.mapValues { DispatchSource.ProcessEvent(rawValue: $0) }
+        var processes = known
+        var connectionsByPID = Dictionary(
+            uniqueKeysWithValues: connections.map { ($0.event.processIdentifier, $0) })
+        var pending: [pid_t] = []
+        var visited: Set<pid_t> = []
+        var changedExecutables: Set<pid_t> = []
+        let user = getuid()
+        for (pid, event) in events {
+            if event.contains(.exit) {
+                processes[pid] = nil
+                connectionsByPID[pid] = nil
+            } else {
+                pending.append(pid)
+                if event.contains(.exec) { changedExecutables.insert(pid) }
+            }
+        }
+        while let pid = pending.popLast() {
+            guard visited.insert(pid).inserted else { continue }
+            guard let identity = identity(of: pid, user: user) else {
+                processes[pid] = nil
+                connectionsByPID[pid] = nil
+                continue
+            }
+            let isNew = processes[pid] != identity
+            processes[pid] = identity
+            if isNew {
+                changedExecutables.insert(pid)
+                connectionsByPID[pid] = nil
+            }
+            // Existing children report their own forks. Only traverse a new process
+            // or the process whose notification says its children changed.
+            if isNew || events[pid]?.contains(.fork) == true {
+                pending.append(contentsOf: children(of: pid))
+            }
+        }
+        for pid in changedExecutables { connectionsByPID[pid] = nil }
+        if !changedExecutables.isEmpty {
+            for connection in try SimulatorProcessConnections.read(
+                processIdentifiers: Array(changedExecutables))
+            {
+                let event = connection.event
+                guard
+                    processes[event.processIdentifier]
+                        == Identity(
+                            seconds: event.startSeconds, microseconds: event.startMicroseconds)
+                else { continue }
+                connectionsByPID[event.processIdentifier] = connection
+            }
+        }
+        return Snapshot(
+            roots: roots.intersection(processes.keys),
+            processes: processes,
+            connections: connectionsByPID.values.sorted { $0.event < $1.event })
+    }
+
+    private nonisolated static func identity(of pid: pid_t, user: uid_t) -> Identity? {
+        var info = proc_bsdinfo()
+        guard
+            proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
+                == MemoryLayout<proc_bsdinfo>.size,
+            info.pbi_uid == user
+        else { return nil }
+        return Identity(seconds: info.pbi_start_tvsec, microseconds: info.pbi_start_tvusec)
+    }
+
+    private nonisolated static func children(of pid: pid_t) -> [pid_t] {
+        let capacity = Int(proc_listchildpids(pid, nil, 0)) + 32
+        var children = [pid_t](repeating: 0, count: capacity)
+        let count = children.withUnsafeMutableBytes {
+            proc_listchildpids(pid, $0.baseAddress, Int32($0.count))
+        }
+        return count > 0 ? children.prefix(Int(count)).filter { $0 > 0 } : []
     }
 }
