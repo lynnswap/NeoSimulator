@@ -580,7 +580,6 @@ package final class NativeDeviceTrackpad {
     /// Connects to the guest's UniversalHID service of a simulator in any device set. A trackpad's guest service is
     /// created with its first event over the screen; connecting sends the guest nothing.
     package static func connect(guest: SimulatorGuestHID, touchscreen: NativeDeviceScreenInput? = nil) async throws -> NativeDeviceTrackpad {
-        if let touchscreen { return NativeDeviceTrackpad(touchscreen: touchscreen) }
         let connection = try await guest.connection(to: CoreDeviceScreenInput.universalHIDFeature)
         let transport = try await CoreDeviceTrackpadTransport(runtime: .shared) { try await connection.createService($0) }
         return NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport }, touchscreen: touchscreen)

@@ -1551,6 +1551,20 @@ struct RemoteDeviceScreenTests {
         try await touchscreen.stop()
     }
 
+    @Test func touchscreenTrackpadKeepsPhaselessWheelEventsOnTheNativeRoute() async throws {
+        let native = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
+        let screen = ScreenFixtureTransport()
+        let touchscreen = NativeDeviceScreenInput(input: screen)
+        let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { native }, touchscreen: touchscreen)
+        trackpad.handle(try trackpadScroll(nil, units: .line, delta: -3, sender: 0xA),
+                        coordinateTransform: .init(scaleX: 1 / 400, y: 1 / 600))
+        try await waitUntil { native.services.contains { !$0.sent.isEmpty } }
+        try await trackpad.stop()
+        #expect(native.services.contains { !$0.sent.isEmpty })
+        #expect(screen.deliveries.isEmpty)
+        try await touchscreen.stop()
+    }
+
     @Test func touchscreenRejectsGestureTouchesWhileMouseIsDown() async throws {
         let screen = ScreenFixtureTransport()
         let touchscreen = NativeDeviceScreenInput(input: screen)
