@@ -23,15 +23,14 @@ convert() {
 rm -rf "$output_path" "$work_path/symbol-graphs" "$work_path/catalogs" "$archives"
 mkdir -p "$archives"
 
-# Article-only archives cannot resolve module symbol links. Keep their ordinary links in this build,
-# so local previews and deployments below a different hosting path do not open the published site.
-python3 - "$repo_root" "$work_path/catalogs" "$hosting_base_path" <<'PYTHON'
+# Article-only archives cannot resolve module symbol links. DocC's renderer adds the hosting base
+# to local links, so their destinations must start at /documentation in every deployment.
+python3 - "$repo_root" "$work_path/catalogs" <<'PYTHON'
 from pathlib import Path
 import shutil
 import sys
 
 root, catalogs = map(Path, sys.argv[1:3])
-prefix = "/" + sys.argv[3].strip("/") if sys.argv[3].strip("/") else ""
 for name, source in {
     "NeoSimulator": root / "Documentation/NeoSimulator.docc",
     "NeoSimulatorKit": root / "Sources/NeoSimulatorKit/NeoSimulatorKit.docc",
@@ -40,7 +39,7 @@ for name, source in {
     destination = catalogs / (name + ".docc")
     shutil.copytree(source, destination)
     for page in destination.rglob("*.md"):
-        page.write_text(page.read_text().replace("https://lynnswap.github.io/NeoSimulator", prefix))
+        page.write_text(page.read_text().replace("https://lynnswap.github.io/NeoSimulator", ""))
 PYTHON
 
 swift package --package-path "$repo_root" --scratch-path "$work_path/package" \
@@ -83,8 +82,8 @@ cat > "$output_path/index.html" <<'HTML'
 <head>
   <meta charset="utf-8">
   <title>NeoSimulator documentation</title>
-  <meta http-equiv="refresh" content="0;url=./documentation/neosimulator/">
+  <meta http-equiv="refresh" content="0;url=./documentation/">
 </head>
-<body><a href="./documentation/neosimulator/">NeoSimulator documentation</a></body>
+<body><a href="./documentation/">NeoSimulator documentation</a></body>
 </html>
 HTML
