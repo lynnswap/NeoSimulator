@@ -1566,14 +1566,29 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test func touchscreenRejectsGestureTouchesWhileMouseIsDown() async throws {
+        let native = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
         let screen = ScreenFixtureTransport()
         let touchscreen = NativeDeviceScreenInput(input: screen)
+        let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { native }, touchscreen: touchscreen)
+        let connecting = ScreenFixtureGate()
+        native.connecting = connecting
+        let transform = CGAffineTransform(scaleX: 1 / 400, y: 1 / 600)
+        trackpad.handle(try trackpadScroll(nil, units: .line, delta: -3, sender: 0xA), coordinateTransform: transform)
+        await connecting.wait()
+
         touchscreen.sendTouch(at: CGPoint(x: 0.4, y: 0.6), secondPoint: nil, phase: .began, edge: .none)
+        trackpad.handle(try trackpadScroll(.began, delta: -30, sender: 0xA), coordinateTransform: transform)
         touchscreen.sendContacts([NativeTouchContact(id: 1, point: CGPoint(x: 0.3, y: 0.5), isTouching: true)])
         touchscreen.sendContacts([NativeTouchContact(id: 1, point: CGPoint(x: 0.3, y: 0.5), isTouching: false)])
-        await touchscreen.waitForPendingInput()
-        #expect(screen.deliveries == ["touch began"] && touchscreen.hasPointerTouch)
         touchscreen.sendTouch(at: CGPoint(x: 0.4, y: 0.6), secondPoint: nil, phase: .ended, edge: .none)
+        // A second wheel sender can only be connected after the queued scroll was processed or rejected.
+        trackpad.handle(try trackpadScroll(nil, units: .line, delta: -3, sender: 0xB), coordinateTransform: transform)
+        native.connecting = nil
+        connecting.resume()
+        try await waitUntil { native.lookups.contains(0xB) }
+        await touchscreen.waitForPendingInput()
+        #expect(screen.deliveries == ["touch began", "touch ended"] && !touchscreen.hasPointerTouch)
+        try await trackpad.stop()
         try await touchscreen.stop()
     }
 

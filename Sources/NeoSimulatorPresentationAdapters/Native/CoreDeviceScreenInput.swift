@@ -612,7 +612,7 @@ package final class NativeDeviceTrackpad {
     /// move its trackpad's pointer there. The touchscreen route turns scrolling into a drag and pinching into two touches.
     package func handle(_ event: NSEvent, coordinateTransform: CGAffineTransform, renderScale: CGFloat = 1) {
         guard !isStopped, [.scrollWheel, .magnify, .mouseMoved].contains(event.type) else { return }
-        if touchscreen != nil, event.type == .mouseMoved { return }
+        if let touchscreen, event.type == .mouseMoved || touchscreen.hasPointerTouch { return }
         let token = generation
         enqueue { [weak self, gestures] in
             guard let self, generation == token else { return }
