@@ -4497,6 +4497,8 @@ struct InputFocusTests {
         canvas.addSubview(display)
         let framebuffer = NSView(frame: NSRect(x: 20, y: 30, width: 120, height: 200))
         display.addSubview(framebuffer)
+        #expect(NativeDeviceTrackpad.contentScale(of: framebuffer, renderScale: 1) == 2)
+        #expect(NativeDeviceTrackpad.contentScale(of: framebuffer, renderScale: 2) == 4)
         display.addSubview(NSView(frame: display.bounds))
         // A bar above the canvas covers the framebuffer's lower edge.
         content.addSubview(NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 140)))

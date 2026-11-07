@@ -1489,14 +1489,13 @@ struct RemoteDeviceScreenTests {
         }
         #expect(moved.y < start.y)
         let longScroll = gestures.events(for: try trackpadScroll(.changed, delta: -600, sender: 0xA, location: .zero), transform: transform)
-        for case let .touch(point, _, .began, _) in longScroll { #expect(point == start) }
-        let shortRestart = gestures.events(for: try trackpadScroll(.changed, delta: -1, sender: 0xA, location: .zero), transform: transform)
-        #expect(shortRestart.count == 1)
-        guard case .touch(_, nil, .ended, _) = try #require(shortRestart.first) else {
-            Issue.record("An edge restart must wait for enough movement"); return
+        #expect(longScroll.count == 1)
+        guard case let .touch(outside, nil, .moved, _) = try #require(longScroll.first) else {
+            Issue.record("A long scroll must preserve its original touch"); return
         }
+        #expect(outside.y < 0)
         let ended = gestures.events(for: try trackpadScroll(.ended, sender: 0xA, location: .zero), transform: transform)
-        #expect(ended.isEmpty)
+        #expect(ended.count == 1)
         #expect(gestures.events(for: try trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0xA, location: .zero), transform: transform).isEmpty)
 
         let zoomed = CGAffineTransform(a: 1 / 3200, b: 0, c: 0, d: -1 / 4800,

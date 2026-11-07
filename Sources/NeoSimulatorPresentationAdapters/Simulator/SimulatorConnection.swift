@@ -139,8 +139,10 @@ package final class SimulatorConnection: SimulatorDisplay {
         var input: NativeTrackpadInput?
         if let trackpad = services.trackpad {
             let framebuffer = try unsafe runtime.display.renderableView.unsafeInvoke(on: view)
-            input = NativeTrackpadInput(display: view, framebuffer: framebuffer, send: { [weak self, weak trackpad] event, transform in
-                trackpad?.handle(event, coordinateTransform: transform, renderScale: self?.renderScale ?? 1)
+            input = NativeTrackpadInput(display: view, framebuffer: framebuffer, send: { [weak self, weak trackpad, weak framebuffer] event, transform in
+                guard let self, let framebuffer else { return }
+                trackpad?.handle(event, coordinateTransform: transform,
+                                 renderScale: NativeDeviceTrackpad.contentScale(of: framebuffer, renderScale: renderScale))
             },
                                         endGestures: trackpad.endGestures)
         }

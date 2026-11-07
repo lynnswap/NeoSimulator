@@ -434,7 +434,7 @@ package final class NativeTrackpadGestures {
 /// Coordinates are in the same normalized screen space as mouse touches.
 package struct NativeTrackpadTouches {
     private enum Gesture {
-        case scroll(anchor: CGPoint, point: CGPoint, pending: CGVector, active: Bool)
+        case scroll(point: CGPoint, pending: CGVector, active: Bool)
         case pinch(center: CGPoint, offset: CGVector)
     }
     private var gesture: Gesture?
@@ -447,17 +447,14 @@ package struct NativeTrackpadTouches {
             if !event.phase.isDisjoint(with: [.ended, .cancelled]) { return end() }
             guard event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 else { return [] }
             var result: [RemoteScreenInput] = []
-            let anchor: CGPoint
             var point: CGPoint
             var pending: CGVector
             var active: Bool
-            if case let .scroll(oldAnchor, oldPoint, oldPending, oldActive) = gesture, !event.phase.contains(.began) {
-                anchor = oldAnchor
+            if case let .scroll(oldPoint, oldPending, oldActive) = gesture, !event.phase.contains(.began) {
                 (point, pending, active) = (oldPoint, oldPending, oldActive)
             } else {
                 result += end()
-                anchor = Self.bounded(event.locationInWindow.applying(transform))
-                point = anchor
+                point = Self.bounded(event.locationInWindow.applying(transform))
                 pending = .zero
                 active = false
             }
@@ -467,27 +464,21 @@ package struct NativeTrackpadTouches {
             let delta = CGPoint(x: event.scrollingDeltaX, y: -event.scrollingDeltaY).applying(motion)
             pending.dx += delta.x
             pending.dy += delta.y
-            var next = CGPoint(x: point.x + pending.dx, y: point.y + pending.dy)
-            if active, !CGRect(x: 0, y: 0, width: 1, height: 1).contains(next) {
-                // A long scroll may exceed one screen. Restart over the original target, never over an unrelated view at the screen center.
-                result.append(Self.touch(point, phase: .ended))
-                point = anchor
-                active = false
-                next = CGPoint(x: point.x + pending.dx, y: point.y + pending.dy)
-            }
-            next = Self.bounded(next)
+            // The guest retains the initial touch target when a drag moves beyond the screen.
+            // Keeping that contact avoids retargeting or tapping controls during a long scroll.
+            let next = CGPoint(x: point.x + pending.dx, y: point.y + pending.dy)
             if !active {
                 // Every segment needs enough actual touch movement to be a drag, including a segment limited by an edge.
                 let movement = CGPoint(x: next.x - point.x, y: next.y - point.y).applying(motion.inverted())
                 guard hypot(movement.x, movement.y) >= 12 else {
-                    gesture = .scroll(anchor: anchor, point: point, pending: pending, active: false)
+                    gesture = .scroll(point: point, pending: pending, active: false)
                     return result
                 }
                 result.append(Self.touch(point, phase: .began))
                 active = true
             }
             result.append(Self.touch(next, phase: .moved))
-            gesture = .scroll(anchor: anchor, point: next, pending: .zero, active: active)
+            gesture = .scroll(point: next, pending: .zero, active: active)
             if event.phase.isEmpty { result += end() }
             return result
         case .magnify:
@@ -523,7 +514,7 @@ package struct NativeTrackpadTouches {
     package mutating func end() -> [RemoteScreenInput] {
         defer { gesture = nil }
         switch gesture {
-        case let .scroll(_, point, _, active): return active ? [Self.touch(point, phase: .ended)] : []
+        case let .scroll(point, _, active): return active ? [Self.touch(point, phase: .ended)] : []
         case let .pinch(center, offset): return [Self.pinch(center, offset: offset, phase: .ended)]
         case nil: return []
         }
@@ -593,6 +584,13 @@ package final class NativeDeviceTrackpad {
             .scaledBy(x: 1 / bounds.width, y: view.isFlipped ? 1 / bounds.height : -1 / bounds.height)
             .translatedBy(x: -bounds.minX, y: -bounds.minY)
         return CGAffineTransform(sampling: { view.convert($0, from: nil) }).concatenating(toUnit)
+    }
+
+    /// Includes enclosing canvas magnification as well as SimulatorKit's framebuffer scale.
+    package static func contentScale(of view: NSView, renderScale: CGFloat) -> CGFloat {
+        let origin = view.convert(CGPoint.zero, to: nil)
+        let unit = view.convert(CGPoint(x: 1, y: 0), to: nil)
+        return renderScale * hypot(unit.x - origin.x, unit.y - origin.y)
     }
 
     /// Forwards a scroll, a pinch step, or a mouse movement, in the order of the calls. `coordinateTransform` maps the
