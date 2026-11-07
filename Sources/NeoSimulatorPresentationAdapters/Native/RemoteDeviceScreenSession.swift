@@ -709,11 +709,18 @@ package final class RemoteDeviceScreenSession {
     }
 }
 
+package struct NativeTouchContact: Equatable {
+    package let id: UInt8
+    package var point: CGPoint
+    package var isTouching: Bool
+}
+
 package enum RemoteScreenInput {
     case key(UInt16, RemoteDeviceButtonState)
     case pointer(CGPoint)
     case pointerButton(Int, RemoteDevicePointerPhase, Int, CGPoint)
     case touch(CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge)
+    case contacts([NativeTouchContact])
     case button(Int, Int, RemoteDeviceButtonState)
     /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub. A gesture that begins first moves the
     /// service's pointer where the transform, when there is one, maps the event's window location.

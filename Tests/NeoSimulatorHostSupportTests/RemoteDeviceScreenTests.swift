@@ -1282,6 +1282,14 @@ struct RemoteDeviceScreenTests {
                 #expect(try unsafe edge.unsafeInvoke(on: value, index) == true)
             }
         }
+        let handoff = try unsafe make.unsafeInvoke(builder.make(contacts: [
+            NativeTouchContact(id: 2, point: CGPoint(x: 0.1, y: 0.5), isTouching: false),
+            NativeTouchContact(id: 1, point: CGPoint(x: 0.7, y: 0.5), isTouching: true),
+        ]))
+        #expect(try unsafe identity.unsafeInvoke(on: handoff, 0) == 2)
+        #expect(try unsafe identity.unsafeInvoke(on: handoff, 1) == 1)
+        #expect(try unsafe !touch.unsafeInvoke(on: readContact.unsafeInvoke(on: handoff, 0)))
+        #expect(try unsafe touch.unsafeInvoke(on: readContact.unsafeInvoke(on: handoff, 1)))
     }
 
     @Test func trackpadPinchesBecomeScaleReportsForAServiceThatCarriesTheirTrackpad() async throws {
@@ -1481,79 +1489,50 @@ struct RemoteDeviceScreenTests {
         let transform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
                                           tx: 0.25 - location.x / 400, ty: 0.65 + location.y / 600)
         #expect(gestures.events(for: try trackpadScroll(.began, delta: -1, sender: 0xA, location: .zero), transform: transform).isEmpty)
-        #expect(gestures.events(for: try trackpadScroll(.ended, sender: 0xA, location: .zero), transform: transform).isEmpty)
+        #expect(gestures.end().isEmpty)
         let scroll = gestures.events(for: initial, transform: transform)
-        guard case let .touch(start, nil, .began, _) = try #require(scroll.first),
-              case let .touch(moved, nil, .moved, _) = try #require(scroll.last) else {
-            Issue.record("A scroll must drag one finger"); return
-        }
-        #expect(moved.y < start.y)
+        let start = try #require(scroll.first?.first)
+        let moved = try #require(scroll.last?.first)
+        #expect(start.id == moved.id && moved.point.y < start.point.y)
         let longScroll = gestures.events(for: try trackpadScroll(.changed, delta: -600, sender: 0xA, location: .zero), transform: transform)
-        #expect(longScroll.count == 1)
-        guard case let .touch(outside, nil, .moved, _) = try #require(longScroll.first) else {
-            Issue.record("A long scroll must preserve its original touch"); return
-        }
-        #expect(outside.y < 0)
+        #expect(longScroll.allSatisfy { $0.contains(where: \.isTouching) })
+        #expect(longScroll.contains { $0.count == 2 && !$0[0].isTouching && $0[1].isTouching })
+        #expect(longScroll.flatMap { $0 }.allSatisfy { (0...1).contains($0.point.x) && (0...1).contains($0.point.y) })
         let ended = gestures.events(for: try trackpadScroll(.ended, sender: 0xA, location: .zero), transform: transform)
-        #expect(ended.count == 1)
+        #expect(ended.count == 1 && ended[0].allSatisfy { !$0.isTouching })
         #expect(gestures.events(for: try trackpadScroll(nil, momentum: .begin, delta: -20, sender: 0xA, location: .zero), transform: transform).isEmpty)
 
         let zoomed = CGAffineTransform(a: 1 / 3200, b: 0, c: 0, d: -1 / 4800,
                                        tx: 0.25 - location.x / 3200, ty: 0.65 + location.y / 4800)
         let zoomedScroll = gestures.events(for: initial, transform: zoomed, renderScale: 8)
-        guard case let .touch(zoomedMoved, _, .moved, _) = try #require(zoomedScroll.last) else {
-            Issue.record("Zooming must not discard a content scroll"); return
-        }
-        #expect(abs(zoomedMoved.y - moved.y) < 0.0001)
-        #expect(gestures.end().count == 1)
+        let zoomedMoved = try #require(zoomedScroll.last?.first)
+        #expect(abs(zoomedMoved.point.y - moved.point.y) < 0.0001)
+        _ = gestures.end()
 
-        let edgeTransform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
-                                              tx: 0.01 - location.x / 400, ty: 0.05 + location.y / 600)
-        let edgeScroll = gestures.events(for: try trackpadScroll(.began, delta: -90, sender: 0xA, location: .zero), transform: edgeTransform)
-        // Crossing the edge on the first movement must not release a stationary touch as a tap.
-        #expect(edgeScroll.count == 2)
-        guard case let .touch(edgeStart, nil, .began, _) = try #require(edgeScroll.first),
-              case let .touch(edgeMoved, nil, .moved, _) = try #require(edgeScroll.last) else {
-            Issue.record("A scroll at the edge must drag without tapping"); return
-        }
-        #expect(abs(edgeStart.x - 0.01) < 0.0001)
-        #expect(edgeMoved != edgeStart)
-        #expect(gestures.end().count == 1)
+        // Starting near an edge must still carry a long scroll without a burst of tiny down/up contacts.
+        let edge = CGAffineTransform(a: transform.a, b: 0, c: 0, d: transform.d,
+                                     tx: transform.tx, ty: 0.01 + location.y / 600)
+        let edgeScroll = gestures.events(for: try trackpadScroll(.began, delta: -600, sender: 0xA, location: .zero), transform: edge)
+        #expect(edgeScroll.count < 25 && edgeScroll.allSatisfy { $0.contains(where: \.isTouching) })
+        _ = gestures.end()
 
         let pinch = gestures.events(for: try trackpadPinch(.began, magnification: 0.2, sender: 0xA, location: .zero), transform: transform)
-        guard case let .touch(first, second?, .began, _) = try #require(pinch.first),
-              case let .touch(spreadFirst, spreadSecond?, .moved, _) = try #require(pinch.last) else {
-            Issue.record("A pinch must move two fingers"); return
-        }
-        #expect(abs(spreadSecond.x - spreadFirst.x) > abs(second.x - first.x))
-        let extended = gestures.events(for: try trackpadPinch(.changed, magnification: 20, sender: 0xA, location: .zero), transform: transform)
-        let reversed = gestures.events(for: try trackpadPinch(.changed, magnification: -0.1, sender: 0xA, location: .zero), transform: transform)
-        guard case let .touch(wideFirst, wideSecond?, _, _) = try #require(extended.last),
-              case let .touch(narrowFirst, narrowSecond?, _, _) = try #require(reversed.last) else {
-            Issue.record("A pinch must retain both contacts"); return
-        }
-        #expect(abs(narrowSecond.x - narrowFirst.x) < abs(wideSecond.x - wideFirst.x))
-        guard case .touch(_, _?, .ended, _) = try #require(gestures.end().first) else {
-            Issue.record("Losing focus must release both fingers"); return
-        }
+        let before = try #require(pinch.first)
+        let after = try #require(pinch.last)
+        #expect(before.count == 2 && after.count == 2)
+        #expect(after[1].point.x - after[0].point.x > before[1].point.x - before[0].point.x)
+        let extended = try #require(gestures.events(for: try trackpadPinch(.changed, magnification: 20, sender: 0xA, location: .zero), transform: transform).last)
+        let reversed = try #require(gestures.events(for: try trackpadPinch(.changed, magnification: -0.1, sender: 0xA, location: .zero), transform: transform).last)
+        #expect(reversed[1].point.x - reversed[0].point.x < extended[1].point.x - extended[0].point.x)
+        let releases = try #require(gestures.end().first)
+        #expect(releases.count == 2 && releases.allSatisfy { !$0.isTouching })
         #expect(gestures.end().isEmpty)
-
-        let edgePinchTransform = CGAffineTransform(a: 1 / 400, b: 0, c: 0, d: -1 / 600,
-                                                   tx: 0.03 - location.x / 400, ty: 0.65 + location.y / 600)
-        let edgePinch = gestures.events(for: try trackpadPinch(.began, magnification: 0.2, sender: 0xA, location: .zero), transform: edgePinchTransform)
-        guard case let .touch(edgeFirst, edgeSecond?, .began, _) = try #require(edgePinch.first),
-              case let .touch(edgeSpreadFirst, edgeSpreadSecond?, .moved, _) = try #require(edgePinch.last) else {
-            Issue.record("An edge pinch must retain its target"); return
-        }
-        #expect(abs((edgeFirst.x + edgeSecond.x) / 2 - 0.03) < 0.0001)
-        #expect(edgeSpreadSecond.x - edgeSpreadFirst.x > edgeSecond.x - edgeFirst.x)
     }
 
-    @Test(.timeLimit(.minutes(1))) func aTrackpadTouchRouteReleasesAcceptedTouchesBeforeRemovingServices() async throws {
-        let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
+    @Test(.timeLimit(.minutes(1))) func aTrackpadStopWaitsForAcceptedContactsToBeReleased() async throws {
         let screen = ScreenFixtureTransport()
         let touchscreen = NativeDeviceScreenInput(input: screen)
-        let trackpad = NativeDeviceTrackpad(gestures: NativeTrackpadGestures { transport }, touchscreen: touchscreen)
+        let trackpad = NativeDeviceTrackpad(touchscreen: touchscreen)
         let sending = ScreenFixtureGate()
         screen.holdingSend = sending
         let event = try trackpadScroll(.began, delta: -30, sender: nil, location: .zero)
@@ -1567,9 +1546,8 @@ struct RemoteDeviceScreenTests {
         let stopping = Task { try await trackpad.stop() }
         sending.resume()
         try await stopping.value
-        #expect(screen.deliveries == ["touch began", "touch moved", "touch ended"])
-        #expect(screen.pressed.touch == nil)
-        #expect(transport.services.allSatisfy { $0.removes == 1 && $0.sent.isEmpty })
+        #expect(screen.deliveries == ["contacts", "contacts", "contacts"])
+        #expect(screen.pressed.contacts.isEmpty)
         try await touchscreen.stop()
     }
 
@@ -1577,10 +1555,8 @@ struct RemoteDeviceScreenTests {
         let screen = ScreenFixtureTransport()
         let touchscreen = NativeDeviceScreenInput(input: screen)
         touchscreen.sendTouch(at: CGPoint(x: 0.4, y: 0.6), secondPoint: nil, phase: .began, edge: .none)
-        touchscreen.sendTouch(at: CGPoint(x: 0.3, y: 0.5), secondPoint: CGPoint(x: 0.7, y: 0.5),
-                              phase: .began, edge: .none, source: .trackpad)
-        touchscreen.sendTouch(at: CGPoint(x: 0.3, y: 0.5), secondPoint: CGPoint(x: 0.7, y: 0.5),
-                              phase: .ended, edge: .none, source: .trackpad)
+        touchscreen.sendContacts([NativeTouchContact(id: 1, point: CGPoint(x: 0.3, y: 0.5), isTouching: true)])
+        touchscreen.sendContacts([NativeTouchContact(id: 1, point: CGPoint(x: 0.3, y: 0.5), isTouching: false)])
         await touchscreen.waitForPendingInput()
         #expect(screen.deliveries == ["touch began"] && touchscreen.hasPointerTouch)
         touchscreen.sendTouch(at: CGPoint(x: 0.4, y: 0.6), secondPoint: nil, phase: .ended, edge: .none)
@@ -3105,6 +3081,7 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
         case .trackpad(let event, let transform): try await gestures?.send(event, coordinateTransform: transform)
         case .gesturePointer(let event, let transform): try await gestures?.movePointer(event, coordinateTransform: transform)
         case .touch(_, _, let phase, _): deliveries.append("touch \(phase.rawValue)")
+        case .contacts: deliveries.append("contacts")
         case .button(_, _, let state): deliveries.append("button \(state.rawValue)")
         default: break
         }

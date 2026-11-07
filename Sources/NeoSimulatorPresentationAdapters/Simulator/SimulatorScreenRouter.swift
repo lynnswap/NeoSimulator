@@ -345,7 +345,7 @@ package final class SimulatorScreenRouter {
             let interface = try await runtime.touchInterface()
             let guest = try await SimulatorGuestHID(lookUp: device.lookUp)
             connected.keyboard = try await NativeDeviceKeyboard.connect(guest: guest)
-            let touchscreen = try await NativeDeviceScreenInput.connect(guest: guest)
+            let touchscreen = try await NativeDeviceScreenInput.connect(guest: guest, contactIdentities: touchscreenGestures)
             connected.touchRoute = NativeTouchRoute(input: touchscreen, interface: interface)
             connected.trackpad = try await NativeDeviceTrackpad.connect(guest: guest, touchscreen: touchscreenGestures ? touchscreen : nil)
         case .coreDevice(let keyboard, let trackpad, let touches):
