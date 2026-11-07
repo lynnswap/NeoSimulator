@@ -7,7 +7,8 @@ xcodebuild \
   -scheme NeoSimulator \
   -skipPackagePluginValidation \
   -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath "$repo_root/.build/host-tests" \
+  -enableCodeCoverage NO \
+  -derivedDataPath "${NEOSIMULATOR_DERIVED_DATA_PATH:-$repo_root/.build/host-tests}" \
   CODE_SIGN_IDENTITY=- \
   CODE_SIGN_STYLE=Manual \
   test
