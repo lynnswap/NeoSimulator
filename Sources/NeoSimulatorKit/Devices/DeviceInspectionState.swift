@@ -4,8 +4,26 @@ import Observation
 
 /// A value a device reports about itself, structured however its tools report it.
 public indirect enum DeviceInfoValue: Equatable, Sendable {
-    case object([String: Self]), array([Self]), string(String), integer(Int64), unsignedInteger(UInt64), number(Double),
-         boolean(Bool), data(Data), date(Date), null
+    /// A keyed collection of values.
+    case object([String: Self])
+    /// An ordered collection of values.
+    case array([Self])
+    /// A string.
+    case string(String)
+    /// A signed integer.
+    case integer(Int64)
+    /// An unsigned integer.
+    case unsignedInteger(UInt64)
+    /// A floating-point number.
+    case number(Double)
+    /// A Boolean value.
+    case boolean(Bool)
+    /// Binary data.
+    case data(Data)
+    /// A date.
+    case date(Date)
+    /// An explicitly empty value.
+    case null
 
     package init(_ value: DeviceInspectorValue) {
         switch value {
@@ -22,7 +40,9 @@ public indirect enum DeviceInfoValue: Equatable, Sendable {
         }
     }
 
+    /// The value of a ``string(_:)``, or `nil` for any other case.
     public var string: String? { if case .string(let value) = self { value } else { nil } }
+    /// The field named `key` of an ``object(_:)``, or `nil` for a missing field or any other case.
     public subscript(_ key: String) -> Self? { if case .object(let fields) = self { fields[key] } else { nil } }
 }
 
@@ -44,8 +64,11 @@ package enum DeviceInspectionSupport {
 public final class DeviceInspectionState {
     /// Device details keyed by the names its tools report. Available keys vary by device.
     public var info: [String: DeviceInfoValue] { infoRead.value }
+    /// The installed applications, sorted by name.
     public var applications: [DeviceApplication] { applicationsRead.value }
+    /// The installed configuration profiles.
     public var configurationProfiles: [DeviceProfile] { configurationRead.value }
+    /// The installed provisioning profiles.
     public var provisioningProfiles: [DeviceProfile] { provisioningRead.value }
     /// The device's reports, most recently modified first.
     public var reports: [DeviceReport] { reportsRead.value }
@@ -91,18 +114,28 @@ public final class DeviceInspectionState {
         for read in reads { read.attach(to: owner) }
     }
 
-    /// The last read status for one group in ``DeviceStateGroups/inspection``.
+    /// Returns the last read status for one group in ``DeviceStateGroups/inspection``.
+    ///
+    /// - Parameter group: One group in ``DeviceStateGroups/inspection``.
+    /// - Returns: The group's status, or ``DeviceReadStatus/unread`` for a value that is not one such group.
     public func status(of group: DeviceStateGroups) -> DeviceReadStatus {
         reads.first { $0.group == group }?.status ?? .unread
     }
 
-    /// Whether a read of any of `groups` is running.
+    /// Returns whether a read of any of `groups` is running.
+    ///
+    /// - Parameter groups: The groups to check.
+    /// - Returns: `true` if any of the groups is being read.
     public func isReading(_ groups: DeviceStateGroups) -> Bool {
         reads.contains { groups.contains($0.group) && $0.isReading }
     }
 
-    /// Whether the device can currently read one inspection group.
+    /// Returns whether the device can currently read one inspection group.
     /// Temporary unavailability, such as a stopped simulator, preserves cached values.
+    ///
+    /// - Parameter group: One group in ``DeviceStateGroups/inspection``.
+    /// - Returns: `true` if the device can answer for the group now. This is `false` once the inventory stops listing the
+    ///   device.
     public func canRead(_ group: DeviceStateGroups) -> Bool {
         guard let owner, !owner.isRetired else { return false }
         return owner.inventory.inspectionSupport(of: group) == .available
@@ -111,18 +144,57 @@ public final class DeviceInspectionState {
     // MARK: Changing
 
     /// Installs an `.app` bundle or the application in an `.ipa` package, and returns when it has finished.
+    ///
+    /// Changes to one device run in the order they are accepted. Afterwards, ``applications`` is out of date, even after
+    /// a failure, because a failed install can have changed the device.
+    ///
+    /// - Parameter url: The location of the bundle or package on this Mac.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the device is no longer listed, `CancellationError` if the caller is
+    ///   cancelled, or another error if the install fails. Use the error's `localizedDescription`, because these errors
+    ///   are not all ``SimulatorError`` values.
     public func installApplication(at url: URL) async throws {
         try await change(affecting: .applications) { try await $0.installApplication(at: url) }
     }
 
+    /// Removes an application, and returns when it has finished.
+    ///
+    /// Changes to one device run in the order they are accepted. Afterwards, ``applications`` is out of date, even after
+    /// a failure.
+    ///
+    /// - Parameter bundleIdentifier: The application's bundle identifier.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the device is no longer listed, `CancellationError` if the caller is
+    ///   cancelled, or another error if the removal fails. Use the error's `localizedDescription`, because these errors
+    ///   are not all ``SimulatorError`` values.
     public func uninstallApplication(bundleIdentifier: String) async throws {
         try await change(affecting: .applications) { try await $0.uninstallApplication(bundleIdentifier: bundleIdentifier) }
     }
 
+    /// Installs a profile, and returns when it has finished.
+    ///
+    /// Changes to one device run in the order they are accepted. Afterwards, the list of that kind of profile is out of
+    /// date, even after a failure.
+    ///
+    /// - Parameters:
+    ///   - url: The location of the profile on this Mac.
+    ///   - kind: The kind of profile.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the device is no longer listed, `CancellationError` if the caller is
+    ///   cancelled, or another error if the install fails. Use the error's `localizedDescription`, because these errors
+    ///   are not all ``SimulatorError`` values.
     public func installProfile(at url: URL, kind: DeviceProfileKind) async throws {
         try await change(affecting: .profiles(of: kind)) { try await $0.installProfile(at: url, kind: kind) }
     }
 
+    /// Removes a profile, and returns when it has finished.
+    ///
+    /// Changes to one device run in the order they are accepted. Afterwards, the list of that kind of profile is out of
+    /// date, even after a failure.
+    ///
+    /// - Parameters:
+    ///   - identifier: The profile's ``DeviceProfile/identifier``.
+    ///   - kind: The kind of profile.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the device is no longer listed, `CancellationError` if the caller is
+    ///   cancelled, or another error if the removal fails. Use the error's `localizedDescription`, because these errors
+    ///   are not all ``SimulatorError`` values.
     public func removeProfile(identifier: String, kind: DeviceProfileKind) async throws {
         try await change(affecting: .profiles(of: kind)) { try await $0.removeProfile(identifier: identifier, kind: kind) }
     }

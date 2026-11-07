@@ -1,69 +1,148 @@
 import Foundation
 import NeoSimulatorDeviceIO
 
+/// A guest's light or dark appearance.
 public enum DeviceAppearance: String, CaseIterable, Sendable {
-    case light, dark
+    /// Light appearance.
+    case light
+    /// Dark appearance.
+    case dark
 }
 
 /// The guest's preferred text size, smallest first. Raw values are `devicectl`'s.
 public enum DeviceContentSize: String, CaseIterable, Sendable {
-    case extraSmall = "extra-small", small, medium, large, extraLarge = "extra-large"
-    case extraExtraLarge = "extra-extra-large", extraExtraExtraLarge = "extra-extra-extra-large"
-    case accessibilityMedium = "accessibility-medium", accessibilityLarge = "accessibility-large"
+    /// Extra small.
+    case extraSmall = "extra-small"
+    /// Small.
+    case small
+    /// Medium.
+    case medium
+    /// Large.
+    case large
+    /// Extra large.
+    case extraLarge = "extra-large"
+    /// Extra extra large.
+    case extraExtraLarge = "extra-extra-large"
+    /// Extra extra extra large.
+    case extraExtraExtraLarge = "extra-extra-extra-large"
+    /// Accessibility medium.
+    case accessibilityMedium = "accessibility-medium"
+    /// Accessibility large.
+    case accessibilityLarge = "accessibility-large"
+    /// Accessibility extra large.
     case accessibilityExtraLarge = "accessibility-extra-large"
+    /// Accessibility extra extra large.
     case accessibilityExtraExtraLarge = "accessibility-extra-extra-large"
+    /// Accessibility extra extra extra large.
     case accessibilityExtraExtraExtraLarge = "accessibility-extra-extra-extra-large"
 }
 
+/// A guest's look and feel.
 public enum SimulatorLookAndFeel: String, CaseIterable, Sendable {
-    case clear, tinted
+    /// The clear look and feel.
+    case clear
+    /// The tinted look and feel.
+    case tinted
 }
 
+/// A guest's color filter.
 public enum SimulatorColorFilter: String, CaseIterable, Sendable {
-    case none, grayscale, protanopia, deuteranopia, tritanopia
+    /// No color filter.
+    case none
+    /// Grayscale.
+    case grayscale
+    /// The red and green filter for protanopia.
+    case protanopia
+    /// The green and red filter for deuteranopia.
+    case deuteranopia
+    /// The blue and yellow filter for tritanopia.
+    case tritanopia
 }
 
+/// An audio route that a device can select.
 public struct SimulatorAudioDevice: Sendable, Equatable {
+    /// `systemDefault`, or a CoreAudio device UID. Pass this to ``DeviceSettingChange/audioInputDevice(_:)`` or
+    /// ``DeviceSettingChange/audioOutputDevice(_:)``.
     public let identifier: String
+    /// The route's display name.
     public let name: String
 
+    /// Creates an audio-device description.
+    /// - Parameters:
+    ///   - identifier: The audio-device identifier used to select the route.
+    ///   - name: The name to display for the route.
     public init(identifier: String, name: String) {
         self.identifier = identifier
         self.name = name
     }
 }
 
+/// A recorded route that a device can simulate.
 public struct SimulatorLocationScenario: Sendable, Equatable {
+    /// The name to pass to ``DeviceSettingChange/locationScenario(_:)``.
     public let name: String
+    /// The route's display name.
     public let displayName: String
 
+    /// Creates a recorded location-scenario description.
+    /// - Parameters:
+    ///   - name: The scenario identifier used to select the route.
+    ///   - displayName: The name to display for the route.
     public init(name: String, displayName: String) {
         self.name = name
         self.displayName = displayName
     }
 }
 
+/// A Display Zoom mode that an iPhone or iPad simulator offers.
 public struct SimulatorDisplayZoomMode: Sendable, Equatable, Codable {
+    /// The value to pass to ``DeviceSettingChange/displayZoom(_:)``.
     public let rawMode: UInt64
+    /// The guest's localized name for this mode.
     public let nativeName: String
+    /// The width that the guest reports for this mode.
     public let width: Double
+    /// The height that the guest reports for this mode.
     public let height: Double
 }
 
 /// The device's saved desired location. External live changes may differ.
 public enum DeviceLocationMode: String, Sendable {
-    case none, custom, scenario
+    /// No simulated location.
+    case none
+    /// A location set by coordinates.
+    case custom
+    /// A recorded route, named by ``DeviceSettingsState/locationScenario``.
+    case scenario
 }
 
 /// Settings read as a group, sharing completion and failure status.
 public enum DeviceSettingsGroup: String, CaseIterable, Sendable {
-    case appearance, textSize, contrast, displayZoom, boldText, accessibility, voiceOver, audio, location
+    /// ``DeviceSettingsState/appearance``.
+    case appearance
+    /// ``DeviceSettingsState/contentSize``.
+    case textSize
+    /// ``DeviceSettingsState/increaseContrast``.
+    case contrast
+    /// ``DeviceSettingsState/displayZoom`` and ``DeviceSettingsState/supportedDisplayZoomModes``.
+    case displayZoom
+    /// ``DeviceSettingsState/boldText``.
+    case boldText
+    /// Look and feel, Liquid Glass opacity, color filter, Reduce Motion, Show Borders, and Reduce Transparency.
+    case accessibility
+    /// ``DeviceSettingsState/voiceOver``.
+    case voiceOver
+    /// Volume and audio routes.
+    case audio
+    /// Simulated location and recorded routes.
+    case location
 }
 
 /// A state group's last read result.
 public enum DeviceReadStatus: Equatable, Sendable {
     /// Nothing has answered yet.
     case unread
+    /// The last read answered in full.
     case current
     /// The last read failed or answered only in part. Its reason applies to the values that remain.
     case stale(String)
@@ -72,26 +151,49 @@ public enum DeviceReadStatus: Equatable, Sendable {
 }
 
 /// One change to one device's settings.
+///
+/// Kit passes numeric values to the device unchanged. NeoSimulator's own controls use 0 through 1 for Liquid Glass opacity,
+/// 0.25 through 1 for color filter intensity, and 0 through 100 for volume.
 public enum DeviceSettingChange: Equatable, Sendable {
+    /// Sets the light or dark appearance.
     case appearance(DeviceAppearance)
+    /// Sets the preferred text size.
     case contentSize(DeviceContentSize)
+    /// Turns Bold Text on or off. Only iPhone and iPad simulators support this.
     case boldText(Bool)
+    /// Selects a Display Zoom mode by its ``SimulatorDisplayZoomMode/rawMode``. Only iPhone and iPad simulators support this.
     case displayZoom(UInt64)
+    /// Turns Increase Contrast on or off.
     case increaseContrast(Bool)
+    /// Sets the look and feel.
     case lookAndFeel(SimulatorLookAndFeel)
+    /// Sets the Liquid Glass opacity.
     case liquidGlassOpacity(Double)
+    /// Sets the color filter. Pass an intensity only for a filter that takes one; ``SimulatorColorFilter/none`` and
+    /// ``SimulatorColorFilter/grayscale`` do not.
     case colorFilter(SimulatorColorFilter, intensity: Double? = nil)
+    /// Turns Reduce Motion on or off.
     case reduceMotion(Bool)
+    /// Turns Show Borders on or off.
     case showBorders(Bool)
+    /// Turns Reduce Transparency on or off.
     case reduceTransparency(Bool)
+    /// Turns VoiceOver on or off.
     case voiceOver(Bool)
+    /// Sets the output volume.
     case volume(Int)
+    /// Selects an audio input by its ``SimulatorAudioDevice/identifier``.
     case audioInputDevice(String)
+    /// Selects an audio output by its ``SimulatorAudioDevice/identifier``.
     case audioOutputDevice(String)
+    /// Simulates a location at these coordinates.
     case location(latitude: Double, longitude: Double)
+    /// Runs a recorded route by its ``SimulatorLocationScenario/name``.
     case locationScenario(String)
+    /// Stops simulating a location.
     case clearLocation
 
+    /// The group whose status and reads this change affects.
     public var group: DeviceSettingsGroup {
         switch self {
         case .appearance: .appearance

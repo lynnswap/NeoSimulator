@@ -6,8 +6,12 @@ import Observation
 ///
 /// Registries are process-local. Other processes' changes arrive through observed signals
 /// or revalidation, such as on foreground activation.
+///
+/// A device leaves ``devices`` only when every source that listed it answers without it, so a source that cannot be read
+/// does not remove what it listed.
 @MainActor @Observable
 public final class DeviceRegistry {
+    /// The listed devices, in inventory order. This is empty until the first ``refresh()`` publishes.
     public private(set) var devices: [DeviceModel] = []
     /// The inventory sources that the last read could not read. What only they list stays in `devices`.
     package private(set) var inventoryIssues: [DeviceInventoryIssue] = []
@@ -25,10 +29,19 @@ public final class DeviceRegistry {
 
     package init(source: any DeviceStateSource) { self.source = source }
 
+    /// Returns the model of a listed device, or of a device that an open session is showing.
+    ///
+    /// - Parameter id: The device's identity.
+    /// - Returns: The device's model, or `nil` if the registry has none.
     public func device(for id: DeviceInventoryID) -> DeviceModel? { models[id] }
 
     /// Reads the inventory, and returns once a read that began after this call has been published. Callers during a read
-    /// share the one read that follows it. Only cancellation throws: a source that fails is reported and what it listed stays.
+    /// share the one read that follows it.
+    ///
+    /// A source that cannot be read does not fail this call, and the devices it last listed stay in ``devices``.
+    /// Cancelling the caller does not stop the read: this method waits for it, publishes its result, and then throws.
+    ///
+    /// - Throws: `CancellationError` if the caller is cancelled.
     public func refresh() async throws {
         let task = queuedRead ?? beginInventoryRead()
         try await task.value

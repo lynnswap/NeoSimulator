@@ -23,6 +23,8 @@ NeoSimulator は、iPhone、iPad、Apple Watch、Apple TV、Apple Vision Pro に
 - [ユーザーガイド（英語）](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/)
 - [CLI 版からの移行](Documentation/MigratingFromCLI.ja.md)
 - [開発ガイド（英語）](Documentation/NeoSimulator.docc/Development.md)
+- [SDK ガイド（英語）](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/usingthesdk)
+- API リファレンス（英語）: [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit/)、[NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui/)
 
 ## 謝辞
 

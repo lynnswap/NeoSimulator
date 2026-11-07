@@ -35,31 +35,53 @@ package struct DeviceInfoSnapshot: Sendable {
 
 /// An application installed on a device, as the device listed it.
 public struct DeviceApplication: Equatable, Sendable, Identifiable {
+    /// The application's bundle identifier.
     public var id: String { bundleIdentifier }
+    /// The application's bundle identifier.
     public let bundleIdentifier: String
+    /// The application's display name, or its bundle identifier when the device reports no name.
     public let name: String
+    /// The application's version, if the device reports it.
     public let version: String?
+    /// The application's build number, if the device reports it.
     public let build: String?
     /// A path on the destination device, not necessarily a Mac file URL.
     public let bundlePath: String?
+    /// The path of the application's data container on the device, if the device reports it.
     public let dataContainerPath: String?
+    /// The paths of the application's group containers on the device, keyed by group identifier.
     public let groupContainerPaths: [String: String]
+    /// Whether the application's data container can be accessed. Without an answer from the device, this says whether
+    /// the device reported a container path.
     public let isContainerAccessible: Bool
+    /// Whether a developer built the application, if the device reports it.
     public let isDeveloperApplication: Bool?
+    /// Whether the application can be removed, if the device reports it.
     public let isRemovable: Bool?
     package let metadata: [String: DeviceInspectorValue]
 }
 
-public enum DeviceProfileKind: String, CaseIterable, Sendable { case configuration, provisioning }
+/// The kind of a profile on a device.
+public enum DeviceProfileKind: String, CaseIterable, Sendable {
+    /// A configuration profile.
+    case configuration
+    /// A provisioning profile.
+    case provisioning
+}
 
 /// A profile installed on a device, as the device listed it.
 public struct DeviceProfile: Equatable, Sendable, Identifiable {
     /// The payload identifier for configuration profiles, or UUID for provisioning profiles.
     public let identifier: String
+    /// The kind of profile.
     public let kind: DeviceProfileKind
+    /// A value that is unique across both kinds of profile.
     public var id: String { "\(kind.rawValue):\(identifier)" }
+    /// The profile's name, or its identifier when the device reports no name.
     public let name: String
+    /// The profile's UUID, if the device reports it.
     public let uuid: String?
+    /// Whether the device reports that this profile cannot be removed.
     public var isRemovalDisallowed: Bool { metadata["removalDisallowed"]?.boolean == true }
     /// Metadata actually returned by devicectl. Installed configuration payload bodies and
     /// provisioning entitlement values are not supplied by its public list operation.

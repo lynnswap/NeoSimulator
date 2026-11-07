@@ -10,10 +10,14 @@ let package = Package(
     defaultLocalization: "en",
     platforms: [.macOS("26.4")],
     products: [
+        // The supported SDK. The published API reference covers these two modules.
         .library(name: "NeoSimulatorKit", targets: ["NeoSimulatorKit"]),
         .library(name: "NeoSimulatorUI", targets: ["NeoSimulatorUI"]),
+        // Implementation details that App/NeoSimulator.xcodeproj links. They are not a supported API: their only entry
+        // points are `@_spi(AppBootstrap)`, for the application targets.
         .library(name: "NeoSimulatorApp", targets: ["NeoSimulatorApp"]),
         .library(name: "NeoSimulatorService", targets: ["NeoSimulatorService"]),
+        // A diagnostic that CI runs.
         .executable(name: "CoreDeviceInventoryProbe", targets: ["CoreDeviceInventoryProbe"]),
     ],
     dependencies: [

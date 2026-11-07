@@ -5,32 +5,45 @@ import Synchronization
 
 /// The parts of a device's state that are read independently.
 public struct DeviceStateGroups: OptionSet, Sendable {
+    /// The bit values of the groups in this set.
     public let rawValue: Int
 
+    /// Creates a set of groups from their bit values.
     public init(rawValue: Int) { self.rawValue = rawValue }
 
+    /// The values in ``DeviceSettingsState``.
     public static let settings = Self(rawValue: 1 << 0)
+    /// The values in ``BackgroundServicesState``.
     public static let backgroundServices = Self(rawValue: 1 << 1)
     /// What device commands show, which only a connected screen's session can read.
     public static let commandState = Self(rawValue: 1 << 2)
+    /// ``DeviceInspectionState/info``.
     public static let info = Self(rawValue: 1 << 3)
+    /// ``DeviceInspectionState/applications``.
     public static let applications = Self(rawValue: 1 << 4)
+    /// ``DeviceInspectionState/configurationProfiles``.
     public static let configurationProfiles = Self(rawValue: 1 << 5)
+    /// ``DeviceInspectionState/provisioningProfiles``.
     public static let provisioningProfiles = Self(rawValue: 1 << 6)
+    /// ``DeviceInspectionState/reports``.
     public static let reports = Self(rawValue: 1 << 7)
     /// Everything in ``DeviceInspectionState``.
     public static let inspection: Self = [.info, .applications, .configurationProfiles, .provisioningProfiles, .reports]
+    /// Every group.
     public static let all: Self = [.settings, .backgroundServices, .commandState, .inspection]
 }
 
 /// Keeps selected state groups current until released.
 /// Without an interest, reads occur only to confirm accepted changes.
+///
+/// Deallocating an interest also releases it. Other interests in the same groups keep them current.
 @MainActor
 public final class DeviceReadInterest {
     private var end: (@MainActor () -> Void)?
 
     fileprivate init(end: @escaping @MainActor () -> Void) { self.end = end }
 
+    /// Ends this interest. Calling this again does nothing.
     public func release() {
         end?()
         end = nil
@@ -59,11 +72,18 @@ package enum DeviceWriteResult {
 /// Retain a ``DeviceReadInterest`` from ``keepCurrent(_:)`` to refresh invalidated groups.
 /// Call ``revalidate(_:)`` or ``DeviceRegistry/revalidate()`` on foreground activation or
 /// explicit refresh to discover external changes that send no observable signal.
+///
+/// After the inventory stops listing the device, the model keeps its last values, ``isAvailable`` becomes `false`, and
+/// changes to the device throw ``SimulatorError/operation(_:)``.
 @MainActor @Observable
 public final class DeviceModel: Identifiable {
+    /// The device's stable identity.
     public nonisolated let id: DeviceInventoryID
+    /// The name that the inventory last listed.
     public private(set) var name: String
+    /// The kind of device that the inventory last listed.
     public private(set) var kind: DeviceInventoryKind
+    /// Whether the inventory last listed the device as available. This is `false` once the inventory stops listing it.
     public private(set) var isAvailable: Bool
     /// Whether the device can answer for its settings now. A simulator must be running.
     public private(set) var canInspectSettings: Bool
@@ -71,14 +91,26 @@ public final class DeviceModel: Identifiable {
     public private(set) var canInspectBackgroundServices: Bool
     package private(set) var inventory: InventoryDevice
 
+    /// The device's settings.
     public let settings: DeviceSettingsState
+    /// The device's background services, which only a running simulator can report.
     public let backgroundServices: BackgroundServicesState
+    /// The device's details, applications, profiles, and reports.
     public let inspection: DeviceInspectionState
 
     /// Whether biometrics are enrolled. Touch ID, Face ID, and Optic ID share this guest state.
+    ///
+    /// Only a connected session reads this. It is `nil` before that read, after the session ends, and on a device
+    /// without biometrics.
     public private(set) var isBiometricEnrolled: Bool?
+    /// Whether the guest is showing StandBy.
+    ///
+    /// Only a connected session reads this. It is `nil` before that read, after the session ends, and on a device
+    /// without StandBy.
     public private(set) var showsStandBy: Bool?
     /// The Core Animation debug options as the device last reported them.
+    ///
+    /// Only a connected session reads these, so this is empty before that read and after the session ends.
     public private(set) var debugOptions: [CADebugOption: Bool] = [:]
     /// The native request past its deadline. New requests are rejected until it returns.
     public private(set) var unresponsiveOperation: String?
@@ -134,6 +166,9 @@ public final class DeviceModel: Identifiable {
     // MARK: Reading
 
     /// Reads what is out of date in `groups` now, and again whenever it is invalidated, until the result is released.
+    ///
+    /// - Parameter groups: The groups to keep current.
+    /// - Returns: An interest to retain for as long as the groups should stay current.
     public func keepCurrent(_ groups: DeviceStateGroups = [.settings, .backgroundServices]) -> DeviceReadInterest {
         for group in Self.singleGroups where groups.contains(group) { interest[group.rawValue, default: 0] += 1 }
         scheduleReads()
@@ -150,6 +185,8 @@ public final class DeviceModel: Identifiable {
 
     /// Invalidates `groups`. Groups with a retained interest refresh after any current read;
     /// others refresh when interest resumes. Command state requires a connected session.
+    ///
+    /// - Parameter groups: The groups to invalidate.
     public func revalidate(_ groups: DeviceStateGroups = .all) {
         if groups.contains(.settings) { settings.markAllDirty() }
         if groups.contains(.backgroundServices) { backgroundServices.markDirty() }

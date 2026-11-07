@@ -3,9 +3,13 @@ import NeoSimulatorDeviceIO
 
 /// A failure while preparing, displaying, or controlling a simulator.
 public enum SimulatorError: LocalizedError, Sendable {
+    /// An argument that the operation cannot use. The message describes it.
     case invalidArguments(String)
+    /// Something that the operation needs is not available. The message names it.
     case unavailable(String)
+    /// Another app is displaying simulators. The message names the app, and ``recoverySuggestion`` says how to proceed.
     case conflict(String)
+    /// The operation could not run or finish, such as on a closed session or an invalidated context. The message says why.
     case operation(String)
     /// A request that changes the device was sent and did not answer in time or was given up on. It may yet apply, so
     /// reading the device, not repeating the request, is how to find out.
@@ -13,6 +17,7 @@ public enum SimulatorError: LocalizedError, Sendable {
     /// A lower layer's failure, kept for what it can tell a caller that inspects it.
     case failed(String, underlying: any Error)
 
+    /// The message that the case carries.
     public var errorDescription: String? {
         switch self {
         case .invalidArguments(let message), .unavailable(let message),
@@ -21,13 +26,14 @@ public enum SimulatorError: LocalizedError, Sendable {
         }
     }
 
+    /// What to do about a ``conflict(_:)``, or `nil` for other cases.
     public var recoverySuggestion: String? {
         if case .conflict = self { "Close the other display app, then try again." }
         else { nil }
     }
 
     /// What lower layers' `error` means to a caller of the public API, keeping `error` underneath.
-    public init(mapping error: any Error) {
+    package init(mapping error: any Error) {
         switch error {
         case let error as SimulatorError: self = error
         case let error as DeviceOperationFailure:

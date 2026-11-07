@@ -1,5 +1,5 @@
 import AppKit
-import NeoSimulatorApp
+@_spi(AppBootstrap) import NeoSimulatorApp
 
 @main
 enum NeoSimulatorMain {

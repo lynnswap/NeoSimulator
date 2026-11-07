@@ -4,34 +4,61 @@ import Observation
 
 /// Observable settings for one device. Groups publish independently as reads finish.
 /// Accepted changes appear immediately and remain until their outcome is known.
+///
+/// A value is `nil`, or an array is empty, until its group's read answers and on a device without that setting. Use
+/// ``status(of:)`` to tell these apart. A device can be read only while ``DeviceModel/canInspectSettings`` is `true`.
 @MainActor @Observable
 public final class DeviceSettingsState {
+    /// The light or dark appearance.
     public private(set) var appearance: DeviceAppearance?
+    /// The preferred text size.
     public private(set) var contentSize: DeviceContentSize?
+    /// Whether Bold Text is on. Only iPhone and iPad simulators report this.
     public private(set) var boldText: Bool?
+    /// The current Display Zoom mode. Only iPhone and iPad simulators report this.
     public private(set) var displayZoom: SimulatorDisplayZoomMode?
+    /// The Display Zoom modes that the device offers.
     public private(set) var supportedDisplayZoomModes: [SimulatorDisplayZoomMode] = []
+    /// Whether Increase Contrast is on.
     public private(set) var increaseContrast: Bool?
+    /// The look and feel as the device names it, which can be a value that ``SimulatorLookAndFeel`` does not list.
     public private(set) var lookAndFeel: String?
+    /// The looks and feels that the device offers.
     public private(set) var supportedLooksAndFeels: [SimulatorLookAndFeel] = []
+    /// The Liquid Glass opacity.
     public private(set) var liquidGlassOpacity: Double?
+    /// The current color filter.
     public private(set) var colorFilter: SimulatorColorFilter?
+    /// The current color filter's intensity.
     public private(set) var colorFilterIntensity: Double?
     /// The OS version required when this guest cannot change color filters.
     public private(set) var colorFilterRequiredOSVersion: Int?
+    /// Whether Reduce Motion is on.
     public private(set) var reduceMotion: Bool?
+    /// Whether Show Borders is on.
     public private(set) var showBorders: Bool?
+    /// Whether Reduce Transparency is on.
     public private(set) var reduceTransparency: Bool?
+    /// Whether VoiceOver is on.
     public private(set) var voiceOver: Bool?
+    /// The output volume.
     public private(set) var volume: Int?
     /// `systemDefault`, or a CoreAudio device UID.
     public private(set) var audioInputDevice: String?
+    /// `systemDefault`, or a CoreAudio device UID.
     public private(set) var audioOutputDevice: String?
+    /// The audio inputs that the device can select.
     public private(set) var audioInputDevices: [SimulatorAudioDevice] = []
+    /// The audio outputs that the device can select.
     public private(set) var audioOutputDevices: [SimulatorAudioDevice] = []
+    /// Whether the device can simulate a location.
     public private(set) var locationAvailable = false
+    /// The recorded routes that the device can simulate.
     public private(set) var locationScenarios: [SimulatorLocationScenario] = []
+    /// The device's saved desired location mode. External live changes may differ.
     public private(set) var locationMode: DeviceLocationMode?
+    /// The ``SimulatorLocationScenario/name`` of the selected route when ``locationMode`` is
+    /// ``DeviceLocationMode/scenario``.
     public private(set) var locationScenario: String?
     /// Whether no group has answered yet.
     public private(set) var isLoading = true
@@ -73,7 +100,10 @@ public final class DeviceSettingsState {
 
     package init() {}
 
-    /// The last read status of `group`.
+    /// Returns the last read status of `group`.
+    ///
+    /// - Parameter group: The group to look up.
+    /// - Returns: The group's status.
     public func status(of group: DeviceSettingsGroup) -> DeviceReadStatus { reads[group]!.status }
 
     /// Read failures by group. Failed reads preserve the previous values.
@@ -85,6 +115,14 @@ public final class DeviceSettingsState {
 
     /// Applies `change` optimistically and waits for completion. Cancellation before execution
     /// sends nothing; cancellation after it starts reports an unknown outcome and triggers read-back.
+    ///
+    /// Changes to one device run in the order they are accepted. The new value appears at once and stays until the change
+    /// settles. A change that reached the device is then read back, even without a ``DeviceReadInterest``.
+    ///
+    /// - Parameter change: The change to apply.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the device is no longer listed, `CancellationError` if the caller
+    ///   is cancelled, or another error if the device cannot accept the change or applying it fails. Use the
+    ///   error's `localizedDescription`, because these errors are not all ``SimulatorError`` values.
     public func set(_ change: DeviceSettingChange) async throws {
         let write = try accept(change)
         try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }

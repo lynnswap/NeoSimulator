@@ -81,9 +81,13 @@ package enum HIDState: UInt32 { case down = 1, up = 2 }
 /// A Core Animation debug option of the guest, numbered as
 /// `SimDevice setCADebugOption:enabled:` numbers it.
 public enum CADebugOption: UInt32, CaseIterable, Sendable {
+    /// Color Copied Images.
     case colorCopiedImages = 1
+    /// Color Blended Layers.
     case colorBlendedLayers = 2
+    /// Color Misaligned Images.
     case colorMisalignedImages = 14
+    /// Color Off-screen Rendered.
     case colorOffscreenRendered = 17
 
     /// The Debug menu's title for the option.
