@@ -1724,10 +1724,13 @@ struct RemoteDeviceScreenTests {
         try await input.send(.contacts([up]))
         let point = CGPoint(x: 0.5, y: 0.8)
         try await input.send(.touch(point, nil, .began, .bottom))
+        let second = CGPoint(x: 0.7, y: 0.4)
+        try await input.send(.touch(point, second, .moved, .bottom))
+        try await input.send(.touch(point, nil, .moved, .bottom))
         try await input.stop()
 
         let universalHID = CoreDeviceScreenInput.universalHIDFeature
-        let received = await peers.messages(to: universalHID, count: 7)
+        let received = await peers.messages(to: universalHID, count: 9)
         #expect(peers.lookUps == [universalHID, CoreDeviceScreenInput.features[.button]!])
         let idType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
         let id = try await unsafe idType.resolve(.swift(.staticGetter("mainTouchscreen", as: (() -> NativeSwiftValue).self,
@@ -1735,9 +1738,12 @@ struct RemoteDeviceScreenTests {
         let reports = try await CoreDeviceDigitizerReports(runtime: runtime)
         let frames = try [reports.make(contacts: [down]), reports.make(contacts: [up]),
                           reports.make(point: point, second: nil, phase: .began, edge: .bottom),
+                          reports.make(point: point, second: second, phase: .moved, edge: .bottom),
+                          reports.make(contacts: [NativeTouchContact(id: 1, point: point, isTouching: true),
+                                                  NativeTouchContact(id: 2, point: second, isTouching: false)], edge: .bottom),
                           reports.make(point: point, second: nil, phase: .ended, edge: .bottom)]
         let expected = try frames.map { try codec.message(.request, to: universalHID, payload: codec.send($0, to: id)) }
-        #expect(zip(received.dropFirst().prefix(4), expected).allSatisfy { xpc_equal($0, $1) })
+        #expect(zip(received.dropFirst().prefix(expected.count), expected).allSatisfy { xpc_equal($0, $1) })
     }
 
     @Test(.timeLimit(.minutes(1)))

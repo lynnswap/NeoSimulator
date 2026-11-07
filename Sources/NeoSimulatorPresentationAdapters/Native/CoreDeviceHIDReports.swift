@@ -81,8 +81,8 @@ package struct CoreDeviceDigitizerReports {
         return try build(points.enumerated().map { NativeTouchContact(id: UInt8($0.offset + 1), point: $0.element, isTouching: phase != .ended) }, edge)
     }
 
-    package func make(contacts: [NativeTouchContact]) throws -> NativeSwiftValue {
-        try build(contacts, .none)
+    package func make(contacts: [NativeTouchContact], edge: RemoteDeviceTouchEdge = .none) throws -> NativeSwiftValue {
+        try build(contacts, edge)
     }
 }
 

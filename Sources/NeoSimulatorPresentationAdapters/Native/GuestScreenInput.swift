@@ -32,7 +32,7 @@ package final class GuestScreenInput: NativeScreenInputTransport {
             case .indigo(let connection):
                 try connection.post(.digitizerEvent, codec.digitizerEvent(at: point, second: second, phase: phase, edge: edge))
             case .contacts(let input):
-                try await input.send(point: point, second: second, phase: phase, edge: edge)
+                try await input.send(point: point, second: second, previousSecond: pressed.touch?.1, phase: phase, edge: edge)
             }
         case .contacts(let contacts):
             guard case .contacts(let input) = digitizer else {
@@ -94,8 +94,14 @@ private final class GuestContactInput {
         activationDescriptor = try await CoreDeviceHIDService.touchscreenGestureDescriptor(runtime: .shared)
     }
 
-    func send(point: CGPoint, second: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge) async throws {
-        try await post(reports.make(point: point, second: second, phase: phase, edge: edge))
+    func send(point: CGPoint, second: CGPoint?, previousSecond: CGPoint?, phase: RemoteDeviceTouchPhase, edge: RemoteDeviceTouchEdge) async throws {
+        var contacts = [NativeTouchContact(id: 1, point: point, isTouching: phase != .ended)]
+        if let second {
+            contacts.append(NativeTouchContact(id: 2, point: second, isTouching: phase != .ended))
+        } else if let previousSecond {
+            contacts.append(NativeTouchContact(id: 2, point: previousSecond, isTouching: false))
+        }
+        try await post(reports.make(contacts: contacts, edge: edge))
     }
 
     func send(_ contacts: [NativeTouchContact]) async throws {
