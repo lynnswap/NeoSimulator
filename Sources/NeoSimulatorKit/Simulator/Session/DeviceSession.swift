@@ -237,7 +237,7 @@ package enum HostPreferences {
 }
 
 /// Per-device location selection, persisted as the last app-wide choice.
-package enum LocationSelection: Equatable {
+package enum LocationSelection: Hashable {
     case none, custom
     /// A runtime scenario, by its `LocationScenario.name`.
     case scenario(String)

@@ -3507,34 +3507,55 @@ struct ManagerModelTests {
         let panel = DeviceSettingsPanelModel(manager: manager, screens: DeviceScreens(model: manager),
             preferences: SimulatorPreferences(), customLocation: {})
         manager.inspect(first, selectionCount: 1)
+        #expect(panel.content == .settings)
+        let loadingForm = try #require(panel.form)
         #expect(await events.next() == .read(first.id))
-        var settings = SimulatorDeviceSettings(appearance: .light, boldText: false, liquidGlassOpacity: 0.5)
+        var settings = SimulatorDeviceSettings(appearance: .light, boldText: false, liquidGlassOpacity: 0.5, colorFilter: SimulatorColorFilter.none)
         settings.colorFilterRequiredOSVersion = 27
+        let zoomMode = SimulatorDisplayZoomMode(rawMode: 3, nativeName: "Default", width: 390, height: 844)
+        settings.displayZoom = zoomMode
+        settings.supportedDisplayZoomModes = [zoomMode]
+        settings.audioOutputDevice = "speakers"
+        settings.audioOutputDevices = [SimulatorAudioDevice(identifier: "speakers", name: "Speakers")]
+        settings.audioInputDevice = "microphone"
+        settings.audioInputDevices = [SimulatorAudioDevice(identifier: "microphone", name: "Microphone")]
         await source.completeRead(settings)
         await manager.registry.finishReading()
-        #expect(panel.colorFilterRequirement == "OS 27+")
-        let toggle = try #require(panel.binding(for: \.boldText))
-        let picker = try #require(panel.binding(for: \.appearance))
-        let slider = try #require(panel.binding(for: \.liquidGlassOpacity))
+        @Bindable var form = try #require(panel.form)
+        #expect(panel.content == .settings && form === loadingForm)
+        #expect(form.colorFilterRequirement == "OS 27+")
+        #expect(form.colorFilter == .some(.none) && form.colorFilterAvailable)
+        let toggle = $form.boldText
+        let picker = $form.appearance
+        let slider = $form.liquidGlassOpacity
+        let zoom = $form.displayZoom
+        let output = $form.audioOutput
+        let input = $form.audioInput
+        #expect(zoom.wrappedValue == 3 && output.wrappedValue == "speakers" && input.wrappedValue == "microphone")
 
         manager.inspect(deselect ? nil : second, selectionCount: deselect ? 0 : 1)
-        #expect(panel.boldText == nil && panel.appearance == nil && panel.liquidGlassOpacity == nil)
-        #expect(panel.colorFilterRequirement.isEmpty)
+        #expect(panel.form?.device.id == (deselect ? nil : second.id))
+        #expect(panel.form?.colorFilterRequirement.isEmpty ?? true)
         #expect(toggle.wrappedValue == false)
-        #expect(picker.wrappedValue == "light")
+        #expect(picker.wrappedValue == .light)
         #expect(slider.wrappedValue == 0.5)
         toggle.wrappedValue = true
-        picker.wrappedValue = "dark"
+        picker.wrappedValue = .dark
         slider.wrappedValue = 0.75
+        zoom.wrappedValue = 4
+        output.wrappedValue = "headphones"
+        input.wrappedValue = "external-microphone"
         if !deselect {
+            #expect(panel.content == .settings)
             #expect(await events.next() == .read(second.id))
             await source.completeRead(SimulatorDeviceSettings(appearance: .dark, boldText: true, liquidGlassOpacity: 1))
             await manager.registry.finishReading()
-            #expect(toggle.wrappedValue == false && picker.wrappedValue == "light" && slider.wrappedValue == 0.5)
+            #expect(toggle.wrappedValue == false && picker.wrappedValue == .light && slider.wrappedValue == 0.5)
             toggle.wrappedValue = false
-            picker.wrappedValue = "light"
+            picker.wrappedValue = .light
             slider.wrappedValue = 0
-            #expect(panel.boldText == true && panel.appearance == "dark" && panel.liquidGlassOpacity == 1)
+            let selected = try #require(panel.form)
+            #expect(selected.boldText && selected.appearance == .dark && selected.liquidGlassOpacity == 1)
         }
         try await manager.prepareForQuit()
         #expect(await source.writtenChanges.isEmpty)
@@ -3552,16 +3573,17 @@ struct ManagerModelTests {
         #expect(await events.next() == .read(device.id))
         await source.completeRead(SimulatorDeviceSettings(appearance: .light, contentSize: .medium, boldText: false))
         await manager.registry.finishReading()
-        let toggle = try #require(panel.binding(for: \.boldText))
-        let picker = try #require(panel.binding(for: \.appearance))
-        let slider = try #require(panel.binding(for: \.textSize))
+        @Bindable var form = try #require(panel.form)
+        let toggle = $form.boldText
+        let picker = $form.appearance
+        let slider = $form.textSize
         let medium = Double(try #require(DeviceContentSize.allCases.firstIndex(of: .medium)))
         let large = Double(try #require(DeviceContentSize.allCases.firstIndex(of: .large)))
 
         toggle.wrappedValue = true
-        picker.wrappedValue = "dark"
+        picker.wrappedValue = .dark
         slider.wrappedValue = large
-        #expect(toggle.wrappedValue == true && picker.wrappedValue == "dark" && slider.wrappedValue == large)
+        #expect(toggle.wrappedValue == true && picker.wrappedValue == .dark && slider.wrappedValue == large)
         // Each edit changes its own group, so each is read back at its own outcome, however far the next has got.
         var writes = 0
         var reads = 0
@@ -3580,13 +3602,13 @@ struct ManagerModelTests {
         }
         try await awaitServiceOperations(manager)
         await manager.registry.finishReading()
-        #expect(panel.boldText == true && panel.appearance == "dark" && panel.textSize == large)
+        #expect(form.boldText && form.appearance == .dark && form.textSize == large)
 
         await source.setDevices([simulator(state: "Shutdown")])
         await manager.refresh()
         #expect(panel.content == .unavailable)
         toggle.wrappedValue = false
-        picker.wrappedValue = "light"
+        picker.wrappedValue = .light
         slider.wrappedValue = medium
         await source.setDevices([device])
         await manager.refresh()
@@ -3594,16 +3616,95 @@ struct ManagerModelTests {
         await source.completeRead(SimulatorDeviceSettings())
         await manager.registry.finishReading()
         #expect(panel.content == .unavailable)
-        #expect(panel.binding(for: \.boldText) == nil)
-        #expect(panel.binding(for: \.appearance) == nil)
-        #expect(panel.binding(for: \.textSize) == nil)
-        #expect(toggle.wrappedValue == false && picker.wrappedValue == "light" && slider.wrappedValue == medium)
+        #expect(!form.boldTextAvailable && !form.appearanceAvailable && !form.textSizeAvailable)
+        #expect(toggle.wrappedValue == false && picker.wrappedValue == nil && slider.wrappedValue == 0)
+        #expect(form.displayZoom == nil && form.audioOutput == nil && form.audioInput == nil)
+        #expect(form.colorFilter == nil && form.locationSelection == nil)
         toggle.wrappedValue = true
-        picker.wrappedValue = "dark"
+        picker.wrappedValue = .dark
         slider.wrappedValue = large
         try await manager.prepareForQuit()
         #expect(await source.writtenChanges.count == 3)
         #expect(manager.selection.device?.settings.boldText == nil)
+    }
+
+    @Test(arguments: [
+        DeviceSettingChange.audioOutputDevice("systemDefault"),
+        .audioInputDevice("systemDefault"),
+        .displayZoom(2),
+        .clearLocation,
+        .locationScenario("city-bicycle"),
+    ])
+    func settingsPickersCanReplaceAnUnavailableSelection(_ change: DeviceSettingChange) async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let panel = DeviceSettingsPanelModel(
+            manager: manager, screens: DeviceScreens(model: manager),
+            preferences: SimulatorPreferences(), customLocation: {}
+        )
+        manager.inspect(device, selectionCount: 1)
+        #expect(await events.next() == .read(device.id))
+        var settings = SimulatorDeviceSettings(appearance: .light)
+        let systemDefault = SimulatorAudioDevice(identifier: "systemDefault", name: "System Default")
+        settings.locationAvailable = true
+        settings.locationMode = .scenario
+        settings.locationScenario = "deleted-route"
+        settings.locationScenarios = [SimulatorLocationScenario(name: "city-bicycle", displayName: "City Bicycle")]
+        if case .locationScenario = change {
+            settings.locationMode = nil
+            settings.locationScenario = nil
+        }
+        settings.audioOutputDevice = "disconnected-speakers"
+        settings.audioInputDevice = "disconnected-microphone"
+        settings.audioOutputDevices = [systemDefault]
+        settings.audioInputDevices = [systemDefault]
+        settings.displayZoom = SimulatorDisplayZoomMode(rawMode: 1, nativeName: "Old Mode", width: 320, height: 640)
+        settings.supportedDisplayZoomModes = [
+            SimulatorDisplayZoomMode(rawMode: 2, nativeName: "Default", width: 390, height: 844)
+        ]
+        await source.completeRead(settings)
+        await manager.registry.finishReading()
+        @Bindable var form = try #require(panel.form)
+
+        switch change {
+        case .audioOutputDevice(let identifier):
+            #expect(form.audioOutput == nil)
+            try #require(form.audioOutputAvailable)
+            $form.audioOutput.wrappedValue = identifier
+            #expect(form.audioOutput == identifier)
+        case .audioInputDevice(let identifier):
+            #expect(form.audioInput == nil)
+            try #require(form.audioInputAvailable)
+            $form.audioInput.wrappedValue = identifier
+            #expect(form.audioInput == identifier)
+        case .displayZoom(let mode):
+            #expect(form.displayZoom == nil)
+            try #require(form.displayZoomAvailable)
+            $form.displayZoom.wrappedValue = mode
+            #expect(form.displayZoom == mode)
+        case .clearLocation:
+            #expect(form.locationSelection == .some(.scenario("deleted-route")))
+            #expect(form.unavailableLocationScenario == "deleted-route")
+            $form.locationSelection.wrappedValue = .some(.none)
+            #expect(form.unavailableLocationScenario == nil)
+        case .locationScenario(let name):
+            #expect(form.locationSelection == nil)
+            try #require(form.locationAvailable)
+            $form.locationSelection.wrappedValue = .some(.scenario(name))
+            #expect(form.locationSelection == .some(.scenario(name)))
+        default:
+            Issue.record("Unexpected setting in picker test")
+        }
+        #expect(await events.next() == .write(device.id))
+        await source.returnOnNextRead(settings.applying(change))
+        await source.completeWrite()
+        try await awaitServiceOperations(manager)
+        await manager.registry.finishReading()
+        #expect(await source.writtenChanges == [change])
+        try await manager.prepareForQuit()
     }
 
     @Test func aClearedSelectionLeavesAResultWithItsDevice() async throws {
@@ -6160,7 +6261,8 @@ actor ManagerModelSource: SimulatorManagerSource {
     func write(_ change: DeviceSettingChange, to device: InventoryDevice) async throws {
         writtenChanges.append(change)
         switch change {
-        case .appearance, .contentSize, .boldText, .showBorders, .reduceTransparency: break
+        case .appearance, .contentSize, .boldText, .showBorders, .reduceTransparency,
+             .audioOutputDevice, .audioInputDevice, .displayZoom, .clearLocation, .locationScenario: break
         default: throw Failure.unavailable
         }
         try await withCheckedThrowingContinuation { waiting in

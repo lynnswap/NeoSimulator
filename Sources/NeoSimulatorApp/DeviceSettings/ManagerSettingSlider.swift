@@ -1,17 +1,16 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
 import AppKit
+import NeoSimulatorHostSupport
+import NeoSimulatorKit
 import SwiftUI
 
 @MainActor
 struct ManagerSettingSlider: NSViewRepresentable {
-    let value: Double
+    @Binding var value: Double
     let range: ClosedRange<Double>
     let tickMarks: Int
     let label: String
-    let changed: (Double) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(changed: changed) }
+    func makeCoordinator() -> Coordinator { Coordinator(value: $value) }
 
     func makeNSView(context: Context) -> NSSlider {
         let slider = NSSlider()
@@ -23,7 +22,7 @@ struct ManagerSettingSlider: NSViewRepresentable {
     }
 
     func updateNSView(_ slider: NSSlider, context: Context) {
-        context.coordinator.changed = changed
+        context.coordinator.value = $value
         slider.minValue = range.lowerBound
         slider.maxValue = range.upperBound
         slider.doubleValue = value
@@ -34,8 +33,14 @@ struct ManagerSettingSlider: NSViewRepresentable {
     }
 
     @MainActor final class Coordinator: NSObject {
-        var changed: (Double) -> Void
-        init(changed: @escaping (Double) -> Void) { self.changed = changed }
-        @objc func change(_ sender: NSSlider) { changed(sender.doubleValue) }
+        var value: Binding<Double>
+
+        init(value: Binding<Double>) {
+            self.value = value
+        }
+
+        @objc func change(_ sender: NSSlider) {
+            value.wrappedValue = sender.doubleValue
+        }
     }
 }
