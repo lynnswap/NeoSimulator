@@ -3,12 +3,19 @@ import NeoSimulatorDeviceIO
 
 /// A snapshot of a simulator in its Xcode device set.
 public struct SimulatorDeviceSnapshot: Identifiable, Sendable {
+    /// The identifier to pass to operations on this simulator.
     public let id: SimulatorDeviceIdentifier
+    /// The simulator's name.
     public let name: String
+    /// The display name of the simulator's runtime.
     public let runtimeName: String
+    /// CoreSimulator's identifier for the simulator's runtime.
     public let runtimeIdentifier: String
+    /// The name of the simulator's device type.
     public let modelName: String
+    /// The simulator's product family.
     public let family: SimulatorDeviceFamily
+    /// The simulator's state when this snapshot was read. Call ``SimulatorContext/devices()`` for a newer reading.
     public let state: SimulatorDeviceState
 
     package init(_ device: AvailableDevice) {
@@ -24,32 +31,71 @@ public struct SimulatorDeviceSnapshot: Identifiable, Sendable {
 
 /// The simulator's product family.
 public enum SimulatorDeviceFamily: Int, Sendable {
-    case unknown = 0, iPhone = 1, iPad = 2, tv = 3, watch = 4, vision = 7
+    /// A product family that this SDK does not recognize.
+    case unknown = 0
+    /// iPhone.
+    case iPhone = 1
+    /// iPad.
+    case iPad = 2
+    /// Apple TV.
+    case tv = 3
+    /// Apple Watch.
+    case watch = 4
+    /// Apple Vision Pro.
+    case vision = 7
 }
 
 /// The current state reported by CoreSimulator.
 public enum SimulatorDeviceState: UInt, Sendable {
-    case unknown = 0, shutDown = 1, booting = 2, booted = 3, shuttingDown = 4
+    /// A state that this SDK does not recognize.
+    case unknown = 0
+    /// The guest is not running.
+    case shutDown = 1
+    /// The guest is starting.
+    case booting = 2
+    /// The guest is running.
+    case booted = 3
+    /// The guest is stopping.
+    case shuttingDown = 4
 }
 
 /// Whether booting was necessary.
 public enum SimulatorBootOutcome: Sendable {
-    case booted, alreadyRunning
+    /// The guest was not running when the call began, and it is running now.
+    case booted
+    /// The guest was already running, so the call changed nothing.
+    case alreadyRunning
 }
 
 /// Why a screen stopped presenting its device.
 public enum SimulatorScreenEnd: Sendable {
+    /// A caller or the screen's window closed it, or its display connection ended while the guest was not stopping.
+    /// Closing a screen leaves its guest running.
     case closed
     /// The guest has begun shutting down, and its display has disconnected.
     case deviceStopping
     /// The guest has reached the shut-down state.
     case deviceStopped
-    case hostConflict, contextInvalidated
+    /// Another app began displaying simulators, which stopped the context. Its guests keep running.
+    case hostConflict
+    /// The context was invalidated or released. Its guests keep running.
+    case contextInvalidated
 }
 
 /// Hardware buttons available on supported simulator models.
 public enum SimulatorButton: Sendable {
-    case home, lock, side, siri, volumeUp, volumeDown
+    /// The Home button, which every simulator accepts.
+    case home
+    /// The lock button of iPhone, iPad, and Apple Watch simulators.
+    case lock
+    /// The side button of Apple Watch simulators.
+    case side
+    /// The Siri button, on simulators that support Siri.
+    case siri
+    /// The volume-up button, on simulators with routable audio.
+    case volumeUp
+    /// The volume-down button, on simulators with routable audio.
+    case volumeDown
 
     /// Whether the device has this button.
     package func isSupported(by capabilities: DeviceCapabilities) -> Bool {
@@ -106,13 +152,21 @@ package struct ManagedGuestLifetime {
 /// An open device's model, guest commands, and lifetime.
 ///
 /// `SimulatorScreens` in NeoSimulatorUI opens and presents sessions. ``onEnd`` reports when
-/// and why a session ends. Guest commands throw after the session closes.
+/// and why a session ends.
+///
+/// Guest commands throw ``SimulatorError/operation(_:)`` after the session ends or its context is released. While the
+/// session is open but its display is disconnected or its guest is not running, the asynchronous commands return
+/// without sending anything. A command whose request may still apply throws
+/// ``SimulatorError/outcomeUnknown(_:underlying:)``; read the device's state before repeating it.
 @MainActor
 public final class SimulatorDeviceSession {
     /// The device snapshot taken when this session opened.
     public let device: SimulatorDeviceSnapshot
+    /// Whether the session has ended. It becomes `true` before ``onEnd`` is called, and ``close()`` can throw after it does.
     public private(set) var isClosed = false
     /// Called once after the session ends. Closing a session leaves its guest running.
+    ///
+    /// A closure set after the session has ended is not called.
     public var onEnd: ((SimulatorScreenEnd) -> Void)?
     package let presentation: any DevicePresentation
     private weak var context: SimulatorContext?
@@ -125,6 +179,12 @@ public final class SimulatorDeviceSession {
     }
 
     /// Enqueues a hardware button press. Delivery errors arrive through `onFailure`.
+    ///
+    /// - Parameters:
+    ///   - button: The button to press.
+    ///   - onFailure: Receives the press's first delivery failure, which can arrive after this method returns.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the session has ended, the device does not have `button`, or the
+    ///   device cannot accept commands now.
     public func press(_ button: SimulatorButton, onFailure: @escaping @MainActor (any Error) -> Void) throws {
         try checkOpen()
         guard button.isSupported(by: session.capabilities), session.canPerformCommands else {
@@ -138,36 +198,63 @@ public final class SimulatorDeviceSession {
     public var deviceModel: DeviceModel { session.model }
 
     /// Native input readiness. SimulatorKit input remains active while native input prepares.
+    ///
+    /// This property is observable.
     public var inputReadiness: SimulatorServiceReadiness { session.optionalServices.input }
     /// Pasteboard readiness. Transfers wait for this service and report connection failures.
+    ///
+    /// This property is observable.
     public var pasteboardReadiness: SimulatorServiceReadiness { session.optionalServices.pasteboard }
-    /// Connects the native input again after ``inputReadiness`` failed.
+    /// Connects the native input again after ``inputReadiness`` failed. In any other state, this does nothing.
     public func retryInput() { session.optionalServices.retryInput() }
 
     /// Flips the guest between its light and dark appearance.
+    ///
+    /// - Throws: ``SimulatorError`` if the session has ended or the change fails, or `CancellationError` if the caller
+    ///   is cancelled.
     public func toggleAppearance() async throws {
         try checkOpen()
         try await mappingToSimulatorError { try await session.toggleAppearance() }
     }
 
-    /// Changes the guest's preferred text size by `delta` steps, stopping at the ends of its range.
+    /// Changes the guest's preferred text size by `delta` steps.
+    ///
+    /// A change that would leave the guest's range of sizes does nothing, so a `delta` of 2 from the second-largest size
+    /// leaves the size as it is.
+    ///
+    /// - Parameter delta: The number of steps. A positive value makes text larger, and a negative value makes it smaller.
+    /// - Throws: ``SimulatorError`` if the session has ended, the device does not report its text size, or the change
+    ///   fails, or `CancellationError` if the caller is cancelled.
     public func changeTextSize(by delta: Int) async throws {
         try checkOpen()
         try await mappingToSimulatorError { try await session.changeTextSize(by: delta) }
     }
 
+    /// Flips the guest's Increase Contrast setting.
+    ///
+    /// - Throws: ``SimulatorError`` if the session has ended, the device does not report the setting, or the change
+    ///   fails, or `CancellationError` if the caller is cancelled.
     public func toggleIncreaseContrast() async throws {
         try checkOpen()
         try await mappingToSimulatorError { try await session.toggleIncreaseContrast() }
     }
 
     /// Toggles the enrollment state shared by Touch ID, Face ID, and Optic ID, where supported.
+    ///
+    /// ``DeviceModel/isBiometricEnrolled`` reports the state that the device reads back.
+    ///
+    /// - Throws: ``SimulatorError`` if the session has ended or the change fails, or `CancellationError` if the caller
+    ///   is cancelled.
     public func toggleBiometricEnrollment() async throws {
         try checkOpen()
         try await mappingToSimulatorError { try await session.toggleBiometricEnrollment() }
     }
 
     /// Flips a Core Animation debug option, and throws if the device does not report the new state.
+    ///
+    /// - Parameter option: The option to flip.
+    /// - Throws: ``SimulatorError`` if the session has ended, the change fails, or the device reports the old state, or
+    ///   `CancellationError` if the caller is cancelled.
     public func toggle(_ option: CADebugOption) async throws {
         try checkOpen()
         try await mappingToSimulatorError { try await session.toggle(option) }
@@ -176,6 +263,11 @@ public final class SimulatorDeviceSession {
     /// Releases this session's resources without shutting down the guest.
     /// If cleanup fails after the session closes, this throws and `isClosed` remains true.
     /// Call again, or invalidate the context, to retry the unfinished cleanup.
+    ///
+    /// Calling this on a closed session with no unfinished cleanup does nothing. Concurrent close and shutdown calls
+    /// join the same cleanup.
+    ///
+    /// - Throws: ``SimulatorError`` if cleanup fails, or `CancellationError` if the cleanup is cancelled.
     public func close() async throws {
         try await mappingToSimulatorError { try await context?.close(self) }
     }
@@ -196,8 +288,13 @@ public final class SimulatorDeviceSession {
 
 /// Owns simulator connections for one Xcode installation.
 ///
-/// Keep the context alive while using its sessions. Call `invalidate()` to finish
-/// recordings and release input and display resources; this leaves guests running.
+/// Keep the context alive while using its sessions; releasing it ends them with
+/// ``SimulatorScreenEnd/contextInvalidated``. Call ``invalidate()`` to finish recordings and release input and display
+/// resources; this leaves guests running.
+///
+/// While `SimulatorScreens` in NeoSimulatorUI presents the context's devices, an app that starts displaying simulators
+/// stops the context and ends its sessions with ``SimulatorScreenEnd/hostConflict``. After a context stops, its
+/// operations throw ``SimulatorError/operation(_:)``; load a new context to continue.
 @MainActor
 public final class SimulatorContext {
     private let engine: SimulatorScreenHost
@@ -212,16 +309,28 @@ public final class SimulatorContext {
     private var releases: [SimulatorDeviceIdentifier: (intent: ReleaseIntent, task: Task<Void, any Error>)] = [:]
 
     /// Reports asynchronous connection failures, including a competing display host.
+    ///
+    /// Without a handler, these failures go to standard error.
     public var onError: ((any Error) -> Void)?
+    /// The Xcode application that this context uses for CoreSimulator and its tools.
     public var xcodeURL: URL { engine.runtime.xcodeURL }
 
     /// Selects the host's preferences before loading contexts. Device settings use the
     /// same store when `deviceSettings` is omitted.
+    ///
+    /// The selection applies to the whole process.
+    ///
+    /// - Parameters:
+    ///   - defaults: The store for host preferences, such as device bezels and touch indicators.
+    ///   - deviceSettings: The store for saved per-device settings, such as audio routes and locations.
     public static func configurePreferences(defaults: UserDefaults, deviceSettings: UserDefaults? = nil) {
         HostPreferences.configure(defaults: defaults, deviceSettingsDefaults: deviceSettings ?? defaults)
     }
 
     /// Chooses the process-wide SimulatorKit installation before the first context is loaded.
+    ///
+    /// - Parameter url: The Xcode application that provides SimulatorKit.
+    /// - Throws: An error if the process has already begun preparing its display Xcode. Restart the app to choose another.
     public static func selectDisplayXcode(_ url: URL) throws {
         try CoreDeviceRuntime.configureUIFrameworks(xcodeURL: url)
     }
@@ -230,6 +339,14 @@ public final class SimulatorContext {
     ///
     /// Loading neither boots devices nor loads a UI toolkit. Pass your application's registry
     /// to share device models with other views; otherwise the context creates its own.
+    ///
+    /// - Parameters:
+    ///   - xcodeURL: The Xcode application to use. When `nil`, the context uses the installation chosen with
+    ///     ``selectDisplayXcode(_:)`` or, without a selection, the one that `DEVELOPER_DIR` or `xcode-select` names.
+    ///   - deviceRegistry: The registry whose models this context's sessions share.
+    /// - Returns: A context that can read and boot devices.
+    /// - Throws: An error if the Xcode is missing or older than Xcode 27 or its frameworks cannot load, or
+    ///   `CancellationError` if the caller is cancelled.
     public static func load(xcodeURL: URL? = nil, deviceRegistry: DeviceRegistry? = nil) async throws -> SimulatorContext {
         var configuration = SimulatorContextConfiguration()
         configuration.deviceRegistry = deviceRegistry
@@ -361,13 +478,27 @@ public final class SimulatorContext {
     }
 
     /// Reads the devices currently available in this context.
+    ///
+    /// The list contains simulators of supported product families from Xcode's default device set and, by default, its
+    /// parallel testing device set, whose simulators have a ``SimulatorDeviceIdentifier/deviceSetPath``.
+    ///
+    /// - Returns: A snapshot of each simulator.
+    /// - Throws: ``SimulatorError`` if the context has stopped or the read fails, or `CancellationError` if the caller
+    ///   is cancelled.
     public func devices() async throws -> [SimulatorDeviceSnapshot] {
         try checkActive()
         return try await mappingToSimulatorError { try await engine.readAvailableDevices().map(SimulatorDeviceSnapshot.init) }
     }
 
     /// Boots the guest and waits for CoreSimulator to report it running, without opening its screen.
-    /// Concurrent callers for the same device share the boot operation.
+    /// Concurrent callers for the same device share the boot operation, and cancelling one caller ends only its wait.
+    ///
+    /// A close or shutdown of the device that is in progress finishes first.
+    ///
+    /// - Parameter id: The simulator to boot.
+    /// - Returns: Whether booting was necessary.
+    /// - Throws: ``SimulatorError`` if the context has stopped, the simulator is no longer available, it does not finish
+    ///   starting in time, or the boot fails, or `CancellationError` if the caller is cancelled.
     public func boot(_ id: SimulatorDeviceIdentifier) async throws -> SimulatorBootOutcome {
         try await mappingToSimulatorError { try await bootDevice(id) }
     }
@@ -442,6 +573,14 @@ public final class SimulatorContext {
 
     /// Finishes this device's screen resources, then shuts down its guest.
     /// Concurrent close and shutdown calls join the same cleanup operation.
+    ///
+    /// An open session ends with ``SimulatorScreenEnd/deviceStopped`` after a successful shutdown, or
+    /// ``SimulatorScreenEnd/closed`` if cleanup or shutdown fails. Once the operation has begun, cancelling the caller
+    /// does not stop it, and this method waits for it to finish.
+    ///
+    /// - Parameter id: The simulator to shut down.
+    /// - Throws: ``SimulatorError`` if the context has stopped, the simulator is no longer available, it does not finish
+    ///   shutting down in time, or the cleanup or shutdown fails, or `CancellationError` if the caller was already cancelled.
     public func shutDown(_ id: SimulatorDeviceIdentifier) async throws {
         try checkActive()
         try Task.checkCancellation()
@@ -506,6 +645,12 @@ public final class SimulatorContext {
     /// ``onError`` reports late failures, and the next call joins unfinished work.
     /// Failed capture saves are not retried automatically. Each call reports them until the
     /// file is moved from the reported location or ``acknowledgeCaptureFailures()`` is called.
+    ///
+    /// Open sessions end with ``SimulatorScreenEnd/contextInvalidated``, and the context's other operations throw from
+    /// the time this is first called.
+    ///
+    /// - Throws: ``SimulatorError/operation(_:)`` describing each unfinished cleanup or unsaved capture, or
+    ///   `CancellationError` if the cleanup is cancelled.
     public func invalidate() async throws {
         try await mappingToSimulatorError { try await invalidateResources() }
     }

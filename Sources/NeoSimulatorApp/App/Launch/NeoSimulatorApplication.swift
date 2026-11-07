@@ -4,7 +4,8 @@ import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import NeoSimulatorUI
 
-public enum NeoSimulatorApplication {
+/// Starts the NeoSimulator manager. Only the app's Xcode target calls this; it is not a supported API.
+@_spi(AppBootstrap) public enum NeoSimulatorApplication {
     @MainActor public static func main(makeLicenses: @escaping @MainActor () -> NSViewController) {
         let app = NSApplication.shared
 #if DEBUG

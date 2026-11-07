@@ -4,7 +4,8 @@ import AppKit
 import Darwin
 import Synchronization
 
-public enum NeoSimulatorServiceMain {
+/// Starts the embedded renderer. Only the renderer's Xcode target calls this; it is not a supported API.
+@_spi(AppBootstrap) public enum NeoSimulatorServiceMain {
     @MainActor private static var controller: HostApplication?
     @MainActor private static var ownerMonitor: RendererOwnerMonitor?
 

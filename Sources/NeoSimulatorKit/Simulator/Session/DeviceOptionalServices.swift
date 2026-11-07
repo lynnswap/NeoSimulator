@@ -9,11 +9,13 @@ public enum SimulatorServiceReadiness: Sendable {
     /// The routed transport has not connected yet, which includes not having said yet what this device has. A pasteboard
     /// starts connecting when a transfer first needs it.
     case pending
+    /// The routed transport is connected.
     case ready
     /// The routed transport could not be reached. This says nothing about whether the device supports it, so nothing else
     /// takes its place, and retrying asks it again.
     case failed(any Error)
 
+    /// The error of a ``failed(_:)`` state, or `nil` in any other state.
     public var failure: (any Error)? { if case .failed(let error) = self { error } else { nil } }
 }
 

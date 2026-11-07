@@ -3,8 +3,15 @@ import NeoSimulatorDeviceIO
 
 /// A simulator belongs to one device set; a UDID alone is not a session key.
 public struct SimulatorDeviceIdentifier: Hashable, Codable, Sendable, Comparable {
+    /// The simulator's UDID.
     public let identifier: String
+    /// The normalized path of the simulator's device set, or `nil` for Xcode's default device set.
     public let deviceSetPath: String?
+    /// Creates an identifier for a simulator.
+    ///
+    /// - Parameters:
+    ///   - identifier: The simulator's UDID.
+    ///   - deviceSetPath: The path of the simulator's device set, or `nil` for Xcode's default device set.
     public init(_ identifier: String, deviceSetPath: String? = nil) {
         self.identifier = identifier
         self.deviceSetPath = deviceSetPath.map(DeviceAddress.normalized(path:))
@@ -17,6 +24,7 @@ public struct SimulatorDeviceIdentifier: Hashable, Codable, Sendable, Comparable
         guard let path = deviceSetPath else { return identifier }
         return "set:\(path.utf8.count):\(path):\(identifier)"
     }
+    /// Returns whether `lhs` sorts before `rhs`. The order is stable and has no other meaning.
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.preferenceIdentifier < rhs.preferenceIdentifier }
 }
 

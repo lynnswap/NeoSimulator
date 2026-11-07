@@ -3,30 +3,50 @@ import NeoSimulatorDeviceIO
 
 /// A crash, log, spin, or diagnostic report that a device listed.
 public struct DeviceReport: Equatable, Sendable, Identifiable {
+    /// A report's identity, which its device and path make up.
     public struct ID: Hashable, Sendable {
+        /// The device that listed the report.
         public let deviceID: DeviceInventoryID
+        /// The report's path within the device's crash log domain.
         public let relativePath: String
     }
     /// Values reported by the source, without inferring a crash or hang from an .ips suffix.
     public struct FileType: Equatable, Sendable {
+        /// The extension of the report's path, which is empty if it has none.
         public let fileExtension: String
+        /// The file's recorded log type, if the source reports it.
         public let recordedLogType: String?
+        /// The file's bug type, if the source reports it.
         public let bugType: String?
     }
+    /// File properties reported by the source. An optional value is `nil` when the source does not report it.
     public struct Resources: Equatable, Sendable {
+        /// Whether the entry is a directory.
         public let isDirectory: Bool
+        /// Whether the entry is hidden.
         public let isHidden: Bool?
+        /// Whether the entry is readable.
         public let isReadable: Bool?
+        /// Whether the entry is a symbolic link.
         public let isSymbolicLink: Bool?
+        /// Whether the entry is writable.
         public let isWritable: Bool?
     }
+    /// The report's identity.
     public var id: ID { ID(deviceID: deviceID, relativePath: relativePath) }
+    /// The device that listed the report.
     public let deviceID: DeviceInventoryID
+    /// The report's path within the device's crash log domain.
     public let relativePath: String
+    /// The report's file name.
     public let name: String
+    /// The report's size in bytes, if the source reports it.
     public let size: Int64?
+    /// When the report last changed, if the source reports it.
     public let modificationDate: Date?
+    /// The report's file type.
     public let type: FileType
+    /// The report's file properties.
     public let resources: Resources
     package let metadata: [String: DeviceInspectorValue]
 }

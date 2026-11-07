@@ -12,12 +12,16 @@ project and select the products you need:
 
 | Product | Purpose |
 | --- | --- |
-| `NeoSimulatorKit` | Discover devices, read their state, and boot or shut them down. |
-| `NeoSimulatorUI` | Present simulators in AppKit windows or view controllers. |
+| [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit) | Discover devices, read their state, and boot or shut them down. |
+| [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui) | Present simulators in AppKit windows or view controllers. |
 
-Kit loads no UI toolkit. Creating `SimulatorScreens` loads the process's
-SimulatorKit UI toolkit. Quit Apple's Simulator and Device Hub before opening
-a screen.
+These two products are the supported API. The package's other products exist for
+building and checking the NeoSimulator app, and they are not for use in other
+projects.
+
+Kit loads no UI toolkit. Creating [SimulatorScreens](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui/simulatorscreens) loads the
+process's SimulatorKit UI toolkit. Quit Apple's Simulator and Device Hub before
+opening a screen.
 
 ## Open a simulator
 
@@ -38,11 +42,12 @@ if let device = devices.first {
 }
 ```
 
-`SimulatorScreens.open(_:)` attaches to a running guest; boot it first when
-needed. Reopening an attached device returns the same screen. Concurrent calls
+[SimulatorScreens.open(_:)](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui/simulatorscreens/open%28_%3A%29) attaches to a running guest; boot it
+first when needed. Reopening an attached device returns the same screen while you
+retain it. Concurrent calls
 share the connection, and cancelling one caller ends only that caller's wait.
 
-To embed a screen, create `SimulatorScreenViewController(screen:)` or call
+To embed a screen, create [SimulatorScreenViewController](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui/simulatorscreenviewcontroller) or call
 `screen.embed(in:)` with your own AppKit container. Use `showWindow()` to move it
 back to a window, or `detach()` to remove its presentation while keeping the
 connection.
@@ -52,9 +57,9 @@ connection.
 `screen.session` provides the device model and guest commands, including
 `press(_:onFailure:)`, `toggleAppearance()`, and `changeTextSize(by:)`.
 
-For shared observable state, retain a `DeviceRegistry` and pass it to
-`SimulatorContext.load(deviceRegistry:)`. The registry and each session then
-use the same `DeviceModel` for a device.
+For shared observable state, retain a [DeviceRegistry](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit/deviceregistry) and pass
+it to `SimulatorContext.load(deviceRegistry:)`. The registry and each session then
+use the same [DeviceModel](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit/devicemodel) for a device.
 
 Retain the interest returned by `model.keepCurrent(.settings)` while a view
 needs updates. Use `.applications` or other inspection groups to keep
@@ -68,6 +73,8 @@ failure. A failed service keeps its selected transport; `session.retryInput()`
 retries the input connection.
 
 ## Close and shut down
+
+For how each API reports failure, see [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit).
 
 `screen.close()` releases one screen. `context.invalidate()` finishes recordings
 and releases all of the context's input and display resources. Both leave guests

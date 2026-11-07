@@ -20,9 +20,20 @@ Xcode handles Build & Run. Choose NeoSimulator or Device Hub in Settings.
 - <doc:InputAndPeripherals>
 - <doc:Configuration>
 
-### Develop and maintain
+### Build with the SDK
 
 - <doc:UsingTheSDK>
+
+
+### Develop and maintain
+
 - <doc:Architecture>
 - <doc:SimulatorIntegration>
 - <doc:Development>
+
+## See Also
+
+### API reference
+
+- [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit)
+- [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui)

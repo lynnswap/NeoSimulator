@@ -20,8 +20,11 @@ Implementation lives under `Sources`:
 | `NeoSimulatorApp` | Manager UI, inspectors, and app lifecycle. |
 | `NeoSimulatorService` | Embedded renderer startup and owner monitoring. |
 
-Kit, UI, App, and Service are library products; the other modules are package-only.
-Tests import these modules. For SDK usage, see <doc:UsingTheSDK>.
+Kit and UI are the supported API. App and Service are library products because
+the Xcode application targets must link them; their only entry points are
+`@_spi(AppBootstrap)`, and other projects should not depend on them. The other
+modules are package-only. Tests import these modules. For SDK usage, see
+<doc:UsingTheSDK>.
 
 Targets may import only direct dependencies. CI checks the compiler's import
 pre-scan against the manifest and module graph:
@@ -140,25 +143,30 @@ elapsed sleeps and repeated task yields do not establish completion.
 
 ## Documentation
 
-The published guide comes from `Documentation/NeoSimulator.docc`. Keep app
+The published site combines the guide in `Documentation/NeoSimulator.docc` with the
+API reference for Kit and UI, whose catalogs are in their target directories. Keep app
 installation in README, SDK usage in <doc:UsingTheSDK>, and API contracts in doc comments.
+Give a new public declaration in Kit or UI a doc comment, and add a new public type to
+its module catalog's topics.
 
 ```bash
 scripts/build-documentation.sh
 ```
 
-This builds `.build/documentation` with DocC, fails on warnings, and uses the
-`NeoSimulator` hosting base path for GitHub Pages. It compiles articles directly,
-so it does not build the app or load private frameworks. For a local preview:
+This builds the package to extract public symbol graphs and keeps only those of Kit
+and UI. DocC then builds one archive for each catalog, fails on warnings, and merges
+the archives into `.build/documentation`, using the `NeoSimulator` hosting base path
+for GitHub Pages. The script does not build the Xcode application targets or load
+private frameworks. For a local preview:
 
 ```bash
 scripts/build-documentation.sh ''
 python3 -m http.server 8000 --directory .build/documentation
 ```
 
-Open `http://localhost:8000`. On pushes to main, the Documentation workflow builds
-and deploys the guide to GitHub Pages. The repository's Pages source must be
-**GitHub Actions**.
+Open `http://localhost:8000`. The Documentation workflow builds the site for pull
+requests that change the documented sources. On pushes to main, it builds the site and
+deploys it to GitHub Pages. The repository's Pages source must be **GitHub Actions**.
 
 ## DMG distribution
 

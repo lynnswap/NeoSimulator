@@ -1,4 +1,4 @@
-import NeoSimulatorService
+@_spi(AppBootstrap) import NeoSimulatorService
 
 @main
 enum NeoSimulatorRendererMain {

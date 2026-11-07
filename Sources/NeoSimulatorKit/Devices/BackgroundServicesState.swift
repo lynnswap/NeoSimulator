@@ -3,6 +3,9 @@ import NeoSimulatorDeviceIO
 import Observation
 
 /// A simulator's observed launchd state, with accepted changes shown until their read-back arrives.
+///
+/// Only a running simulator can answer; see ``DeviceModel/canInspectBackgroundServices``. Retain a ``DeviceReadInterest``
+/// for ``DeviceStateGroups/backgroundServices`` to keep this current.
 @MainActor @Observable
 public final class BackgroundServicesState {
     /// Differences between the requested and resulting service states.
@@ -28,12 +31,17 @@ public final class BackgroundServicesState {
         let change: Change
     }
 
-    /// Observed service states with pending accepted changes applied.
+    /// Observed service states with pending accepted changes applied, or `nil` until a read answers.
     public private(set) var services: SimulatorBackgroundServices?
+    /// Services enabled again that start at the simulator's next boot. A label leaves this set when a read shows it
+    /// loaded or disabled.
     public private(set) var pendingRestartLabels: Set<String> = []
+    /// How the last finished change differs from what it requested, or `nil` if it does not. A new change clears this, as
+    /// does the simulator stopping.
     public private(set) var outcome: Outcome?
     /// The last read status. Failed reads preserve previous values.
     public private(set) var status = DeviceReadStatus.unread
+    /// Whether a read is running.
     public private(set) var isReading = false
     /// Whether an accepted change has not finished.
     public private(set) var isChanging = false
@@ -48,23 +56,53 @@ public final class BackgroundServicesState {
 
     package init() {}
 
+    /// The disabled services among ``ServiceConfiguration/labels``, or `nil` until ``services`` is known.
     public var configuration: ServiceConfiguration? {
         services.map { ServiceConfiguration(disabledLabels: $0.disabledLabels.intersection(ServiceConfiguration.labels)) }
     }
 
+    /// Returns whether every service in `category` is enabled.
+    ///
+    /// - Parameter category: The category to check.
+    /// - Returns: `true` if each of its services is enabled. Until ``services`` is known, no service counts as enabled.
     public func isEnabled(_ category: SimulatorBackgroundServiceCategory) -> Bool {
         category.services.allSatisfy { isEnabled($0.label) }
     }
 
+    /// Returns whether the service named `label` is enabled.
+    ///
+    /// - Parameter label: The service's launchd label.
+    /// - Returns: `true` if the service has no disable override, or `false` until ``services`` is known.
     public func isEnabled(_ label: String) -> Bool { services?.isEnabled(label) == true }
 
     /// Enables or disables `targets` in the running simulator, and returns when launchd has been changed and read back.
+    ///
+    /// Changes to one device run in the order they are accepted, and ``services`` shows this change at once. Disable
+    /// overrides persist, so the change also applies to later boots. ``outcome`` reports services that did not end up as
+    /// requested. Cancellation before the change starts sends nothing.
+    ///
+    /// - Parameters:
+    ///   - targets: The categories and services to change.
+    ///   - enabled: Whether to enable or disable them.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the device is no longer listed, `CancellationError` if the caller is
+    ///   cancelled, or another error if the simulator is not running, a target is unknown, or the change fails. Use the
+    ///   error's `localizedDescription`, because these errors are not all ``SimulatorError`` values. After a failure,
+    ///   ``services`` shows the state read back, if that read succeeded.
     public func set(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) async throws {
         let write = try accept(.services(targets, enabled: enabled))
         try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }
     }
 
     /// Makes the services that a configuration covers match it.
+    ///
+    /// Labels outside ``ServiceConfiguration/labels`` are not changed, and a service that this simulator cannot disable
+    /// stays enabled. Changes to one device run in the order they are accepted. Cancellation before the change starts
+    /// sends nothing.
+    ///
+    /// - Parameter configuration: The configuration to apply.
+    /// - Throws: ``SimulatorError/operation(_:)`` if the device is no longer listed, `CancellationError` if the caller is
+    ///   cancelled, or another error if the simulator is not running or the change fails. Use the error's
+    ///   `localizedDescription`, because these errors are not all ``SimulatorError`` values.
     public func apply(_ configuration: ServiceConfiguration) async throws {
         let write = try accept(.configuration(configuration))
         try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }
