@@ -172,7 +172,7 @@ package struct SystemCommandRunner: CommandRunning, Sendable {
 package final class CommandReads: CommandRunning, Sendable {
     private struct State {
         var stopped = false
-        var running: [UUID: Task<CommandOutput, any Error>] = [:]
+        var running: [UUID: @Sendable () -> Void] = [:]
     }
     private let runner: SystemCommandRunner
     private let state = Mutex(State())
@@ -182,12 +182,24 @@ package final class CommandReads: CommandRunning, Sendable {
     }
 
     package nonisolated(nonsending) func run(_ command: SystemCommand) async throws -> CommandOutput {
-        let identifier = UUID()
         let runner = runner
+        return try await read { try await runner.runCancellable(command) }
+    }
+
+    /// Service reads share the command reads' stop/resume lifetime without starting a child process.
+    package nonisolated(nonsending) func read<Value: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let identifier = UUID()
         let read = try state.withLock { state in
             guard !state.stopped else { throw CancellationError() }
-            let read = Task { try await runner.runCancellable(command) }
-            state.running[identifier] = read
+            let read = Task {
+                try Task.checkCancellation()
+                let value = try await operation()
+                try Task.checkCancellation()
+                return value
+            }
+            state.running[identifier] = { read.cancel() }
             return read
         }
         defer { _ = state.withLock { $0.running.removeValue(forKey: identifier) } }
@@ -201,7 +213,7 @@ package final class CommandReads: CommandRunning, Sendable {
             return Array(state.running.values)
         }
         // A task's cancellation handlers run here, so never under the lock.
-        for read in running { read.cancel() }
+        for cancel in running { cancel() }
     }
 
     package func resume() {

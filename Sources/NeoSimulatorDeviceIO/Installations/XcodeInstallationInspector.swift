@@ -1,14 +1,20 @@
+import ABIBridge
+import Darwin
 import Foundation
+import NeoSimulatorNative
 
 package struct XcodeInstallationInspector {
-    private static let xcodeSelect = URL(fileURLWithPath: "/usr/bin/xcode-select")
-    private let runner: any CommandRunning
     private let environment: [String: String]
+    private let readSelection: @Sendable () async throws -> URL
 
-    package init(runner: any CommandRunning = SystemCommandRunner(),
-         environment: [String: String] = ProcessInfo.processInfo.environment) {
-        self.runner = runner
+    package init(reads: CommandReads? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
+                 readSelection: (@Sendable () async throws -> URL)? = nil) {
         self.environment = environment
+        let selection: @Sendable () async throws -> URL = readSelection ?? { try await NativeXcodeSelection.read() }
+        self.readSelection = {
+            if let reads { return try await reads.read(selection) }
+            return try await selection()
+        }
     }
 
     package nonisolated(nonsending) func selectedXcode() async throws -> XcodeInstallation {
@@ -46,17 +52,7 @@ package struct XcodeInstallationInspector {
             return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         }
 
-        let output = try await runner.runCancellable(SystemCommand(executable: Self.xcodeSelect, arguments: ["-p"], policy: .cancellable))
-        guard output.terminationStatus == 0, !output.stdoutText.isEmpty else {
-            let detail = output.stderrText.isEmpty
-                ? "exit status \(output.terminationStatus)"
-                : output.stderrText
-            throw DeviceIOError.unavailable(
-                "selected-xcode",
-                "xcode-select could not resolve an Xcode: \(detail)"
-            )
-        }
-        return URL(fileURLWithPath: output.stdoutText, isDirectory: true).standardizedFileURL
+        return try await readSelection().standardizedFileURL
     }
 
     private func xcodeApplicationURL(forDeveloperDirectory url: URL) throws -> URL {
@@ -138,5 +134,32 @@ package struct XcodeInstallationInspector {
                 "could not decode \(url.path): \(error.localizedDescription)"
             )
         }
+    }
+}
+
+private enum NativeXcodeSelection {
+    private static let binding = Task {
+        try await NativeFrameworks.load("/usr/lib/libxcselect.dylib")
+        return try await ABIRuntime.shared.resolve(.c(.function("xcselect_get_developer_dir_path",
+            as: ((UnsafeMutablePointer<CChar>, Int, UnsafeMutablePointer<Bool>, UnsafeMutablePointer<Bool>,
+                  UnsafeMutablePointer<Bool>) -> Bool).self)))
+    }
+
+    @concurrent
+    static func read() async throws -> URL {
+        try Task.checkCancellation()
+        let read = try await binding.value
+        try Task.checkCancellation()
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        var sources = [Bool](repeating: false, count: 3)
+        let found = try buffer.withUnsafeMutableBufferPointer { path in
+            try sources.withUnsafeMutableBufferPointer { sources in
+                let source = sources.baseAddress!
+                return try unsafe read.unsafeInvoke(path.baseAddress!, path.count, source, source + 1, source + 2)
+            }
+        }
+        guard found else { throw DeviceIOError.unavailable("selected-xcode", "No developer directory is selected.") }
+        let path = buffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 }
