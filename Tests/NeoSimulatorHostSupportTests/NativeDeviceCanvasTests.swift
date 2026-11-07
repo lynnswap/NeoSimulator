@@ -68,6 +68,51 @@ struct NativeDeviceCanvasTests {
             == CGRect(x: -800, y: -700, width: 600, height: 400))
     }
 
+    @Test func projectedCanvasKeepsHiddenHoverControlsInsideItsHitArea() throws {
+        _ = NSApplication.shared
+        let surface = CALayer()
+        surface.bounds = CGRect(x: 0, y: 0, width: 2000, height: 2000)
+        let screen = CALayer()
+        screen.anchorPoint = .zero
+        screen.bounds = CGRect(x: 0, y: 0, width: 200, height: 400)
+        screen.position = CGPoint(x: 700, y: 700)
+        surface.addSublayer(screen)
+        let presentation = NativeCanvasPresentation()
+        presentation.viewport = try #require(NativeCanvasProjection.viewport(for: [screen], frameMargin: 0,
+            controlMargin: NativeCanvasProjection.hoverControlMargin(renderingHeight: surface.bounds.height)))
+        presentation.pointScale = 2
+        let size = presentation.naturalSize
+        let control = RecorderView()
+        control.isHidden = true
+        let composition = ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: 1200, height: 1000)
+            Recorder(view: control).frame(width: 30, height: 30)
+                .padding(EdgeInsets(top: 350, leading: 530, bottom: 0, trailing: 0))
+        }
+        let hosting = NativeCanvasHostingView(rootView: AnyView(NativeCanvasRoot(
+            presentation: presentation, shown: AnyView(composition), hidden: AnyView(composition),
+            canvasPath: \.nativeCanvasTestFlag, zoomPath: \.nativeCanvasTestZoom)))
+        hosting.sizingOptions = []
+        let window = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        for zoom: CGFloat in [0.5, 1, 2] {
+            presentation.magnification = zoom
+            window.setContentSize(CGSize(width: size.width * zoom, height: size.height * zoom))
+            hosting.layoutSubtreeIfNeeded()
+            control.isHidden = false
+            hosting.layoutSubtreeIfNeeded()
+            let frame = control.convert(control.bounds, to: hosting)
+            #expect(hosting.bounds.contains(frame))
+            #expect(control.visibleRect.contains(control.bounds))
+            let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
+            #expect(hosting.hitTest(point).map { $0 === control || $0.isDescendant(of: control) } == true)
+            #expect(presentation.naturalSize == size)
+            control.isHidden = true
+        }
+    }
+
     /// The canvas frames the host at the scaled composition; Fit often shrinks a device below its natural size.
     @Test func shrunkenCanvasPresentsTheMeasuredCompositionInItsHostFrame() async throws {
         _ = NSApplication.shared
