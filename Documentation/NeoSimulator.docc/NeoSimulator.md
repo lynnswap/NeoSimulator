@@ -1,6 +1,6 @@
-# NeoSimulator
+# NeoSimulator Guide
 
-Choose a CoreSimulator display host for Xcode 27+.
+Use the app, build with the SDK, and contribute to NeoSimulator.
 
 @Metadata {
     @TechnologyRoot
@@ -11,6 +11,9 @@ Choose a CoreSimulator display host for Xcode 27+.
 Display and control devices using Xcode's private simulator frameworks, while
 Xcode handles Build & Run. Choose NeoSimulator or Device Hub in Settings.
 
+For API documentation, see [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit)
+and [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui).
+
 ## Topics
 
 ### Use the simulator
@@ -20,20 +23,11 @@ Xcode handles Build & Run. Choose NeoSimulator or Device Hub in Settings.
 - <doc:InputAndPeripherals>
 - <doc:Configuration>
 
-### Build with the SDK
+### Build simulator apps
 
 - <doc:UsingTheSDK>
-
-
-### Develop and maintain
+### Contribute to NeoSimulator
 
 - <doc:Architecture>
 - <doc:SimulatorIntegration>
 - <doc:Development>
-
-## See Also
-
-### API reference
-
-- [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit)
-- [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui)
