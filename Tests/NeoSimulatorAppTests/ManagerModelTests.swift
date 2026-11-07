@@ -4763,12 +4763,17 @@ struct ManagerModelTests {
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
         let sharedEditor = try #require(window.fieldEditor(true, for: nil) as? NSTextView)
         sharedEditor.enabledTextCheckingTypes = NSTextCheckingResult.CheckingType.link.rawValue
-        controller.model.create()
+        let actionsAccessory = try #require(controller.splitViewItems[0].bottomAlignedAccessoryViewControllers.first)
+        let actions = try #require(inspectorViews(actionsAccessory.view).compactMap { $0 as? NSSegmentedControl }.first)
+        #expect(!actions.isEnabled(forSegment: 1))
+        let add = try #require((actions.cell as? NSSegmentedCell)?.accessibilityChildren()?.first as? any NSAccessibilityProtocol)
+        _ = add.accessibilityPerformPress()
         try await wait(timeout: .seconds(5)) {
             guard let field = window.firstResponder as? NSTextView else { return false }
             return field.string == "Profile (1)" && field.selectedRange() == NSRange(location: 0, length: 11)
         }
         #expect(window.attachedSheet == nil)
+        #expect(actions.isEnabled(forSegment: 1))
         let first = controller.model.selectedProfile
         let field = try #require(window.firstResponder as? NSTextView)
         #expect(field.enabledTextCheckingTypes == 0)
