@@ -181,8 +181,8 @@ final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewD
 
 @MainActor
 private final class BackgroundServiceCell: NSTableCellView {
-    private let title = NSTextField(labelWithString: "")
-    private let detail = NSTextField(wrappingLabelWithString: "")
+    private let title = LiteralTextField(labelWithString: "")
+    private let detail = LiteralTextField(wrappingLabelWithString: "")
     private let toggle = NSSwitch()
     private var observation: PortableObservationTracking.Token?
     private var change: ((Bool) -> Void)?

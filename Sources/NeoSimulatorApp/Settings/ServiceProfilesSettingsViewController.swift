@@ -8,11 +8,11 @@ import SwiftUI
 final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
     let model: ServiceProfilesSettingsModel
     private let table = NSTableView()
+    private let defaultProfileMenu = NSPopUpButton(frame: .zero, pullsDown: false)
     private static let profileDragType = NSPasteboard.PasteboardType("dev.lynnswap.NeoSimulator.service-profile")
     private let remove = NSButton(image: NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
                                   target: nil, action: nil)
     private let detailsController = NSViewController()
-    private let listContainer = NSView()
     private lazy var outline = BackgroundServiceOutlineController(categories: model.selectedProfile.categories, showsDetails: true)
     private var displayedProfile: ServiceProfile?
     private lazy var searchField = BackgroundServiceSearchField(model: outline.model)
@@ -70,30 +70,6 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         sidebar.spacing = 0
         let details = OpaqueSettingsPane()
         detailsController.view = details
-        let defaults = NSHostingView(rootView: CommonServiceProfileForm(model: model))
-        defaults.sizingOptions = [.intrinsicContentSize]
-        defaults.translatesAutoresizingMaskIntoConstraints = false
-        details.addSubview(defaults)
-        let search = NSStackView(views: [searchField])
-        search.orientation = .horizontal
-        search.distribution = .fill
-        search.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 10, right: 16)
-        search.translatesAutoresizingMaskIntoConstraints = false
-        details.addSubview(search)
-        listContainer.translatesAutoresizingMaskIntoConstraints = false
-        details.addSubview(listContainer)
-        NSLayoutConstraint.activate([
-            defaults.topAnchor.constraint(equalTo: details.topAnchor),
-            defaults.leadingAnchor.constraint(equalTo: details.leadingAnchor),
-            defaults.trailingAnchor.constraint(equalTo: details.trailingAnchor),
-            search.topAnchor.constraint(equalTo: defaults.bottomAnchor),
-            search.leadingAnchor.constraint(equalTo: details.leadingAnchor),
-            search.trailingAnchor.constraint(equalTo: details.trailingAnchor),
-            listContainer.topAnchor.constraint(equalTo: search.bottomAnchor),
-            listContainer.leadingAnchor.constraint(equalTo: details.leadingAnchor, constant: 8),
-            listContainer.trailingAnchor.constraint(equalTo: details.trailingAnchor, constant: -8),
-            listContainer.bottomAnchor.constraint(equalTo: details.bottomAnchor, constant: -8),
-        ])
         unavailable.sizingOptions = []
         unavailable.translatesAutoresizingMaskIntoConstraints = false
         unavailable.isHidden = true
@@ -123,18 +99,44 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         detailsController.addChild(outline)
         let list = outline.view
         list.translatesAutoresizingMaskIntoConstraints = false
-        listContainer.addSubview(list)
+        details.addSubview(list, positioned: .below, relativeTo: unavailable)
         NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: listContainer.leadingAnchor),
-            list.trailingAnchor.constraint(equalTo: listContainer.trailingAnchor),
-            list.topAnchor.constraint(equalTo: listContainer.topAnchor),
-            list.bottomAnchor.constraint(equalTo: listContainer.bottomAnchor),
+            list.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            list.topAnchor.constraint(equalTo: details.topAnchor),
+            list.bottomAnchor.constraint(equalTo: details.bottomAnchor),
         ])
         addSplitViewItem(NSSplitViewItem(viewController: detailsController))
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Finish the initial pane measurement before accessory wrappers install their constraints.
+        let defaults = NSSplitViewItemAccessoryViewController()
+        defaults.preferredScrollEdgeEffectStyle = .hard
+        defaultProfileMenu.target = self
+        defaultProfileMenu.action = #selector(selectDefaultProfile(_:))
+        defaultProfileMenu.setAccessibilityLabel(String(localized: "Default Profile", bundle: #bundle))
+        defaultProfileMenu.toolTip = String(localized: "Used at the next simulator start.", bundle: #bundle)
+        let defaultLabel = NSTextField(labelWithString: String(localized: "Default Profile", bundle: #bundle))
+        defaultLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        defaultLabel.textColor = .secondaryLabelColor
+        let defaultControls = NSStackView(views: [defaultLabel, defaultProfileMenu])
+        defaultControls.orientation = .vertical
+        defaultControls.alignment = .leading
+        defaultControls.spacing = 6
+        defaultProfileMenu.widthAnchor.constraint(equalTo: defaultControls.widthAnchor).isActive = true
+        defaultControls.frame.size = NSSize(width: 180, height: defaultControls.fittingSize.height)
+        defaults.view = defaultControls
+        splitViewItems[0].addTopAlignedAccessoryViewController(defaults)
+        let search = NSSplitViewItemAccessoryViewController()
+        search.preferredScrollEdgeEffectStyle = .hard
+        let searchControls = NSStackView(views: [searchField])
+        searchControls.orientation = .vertical
+        searchControls.alignment = .width
+        searchControls.frame.size = searchControls.fittingSize
+        search.view = searchControls
+        splitViewItems[1].addTopAlignedAccessoryViewController(search)
         observation = withPortableContinuousObservation { [weak self] _ in self?.update() }
     }
 
@@ -145,6 +147,20 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             profiles = updated
             table.reloadData()
         }
+        if defaultProfileMenu.itemArray.map(\.title) != updated.map(\.name)
+            || defaultProfileMenu.itemArray.compactMap({ $0.representedObject as? UUID }) != updated.map(\.id) {
+            let menu = NSMenu()
+            for profile in updated {
+                let item = NSMenuItem(title: profile.name, action: nil, keyEquivalent: "")
+                item.representedObject = profile.id
+                menu.addItem(item)
+            }
+            defaultProfileMenu.menu = menu
+        }
+        if let index = updated.firstIndex(where: { $0.id == model.defaultProfileID }) {
+            defaultProfileMenu.selectItem(at: index)
+        }
+        defaultProfileMenu.isEnabled = model.store.issue == nil
         if let index = profiles.firstIndex(where: { $0.id == model.selectedProfile.id }) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         }
@@ -179,6 +195,11 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         beginRenaming()
     }
 
+    @objc private func selectDefaultProfile(_ sender: NSPopUpButton) {
+        guard let id = sender.selectedItem?.representedObject as? UUID else { return }
+        model.defaultProfileID = id
+    }
+
     private func beginRenaming() {
         guard let id = model.editingProfileID, view.window != nil,
               let row = profiles.firstIndex(where: { $0.id == id }) else { return }
@@ -206,7 +227,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-        guard profiles.indices.contains(row), profiles[row].id != ServiceProfile.default.id else { return nil }
+        guard profiles.indices.contains(row), profiles[row].id != ServiceProfile.allServices.id else { return nil }
         let item = NSPasteboardItem()
         item.setString(profiles[row].id.uuidString, forType: Self.profileDragType)
         return item
@@ -216,7 +237,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         guard let source = info.draggingSource as? NSTableView, source === table,
               let value = info.draggingPasteboard.string(forType: Self.profileDragType),
               let id = UUID(uuidString: value),
-              id != ServiceProfile.default.id,
+              id != ServiceProfile.allServices.id,
               profiles.contains(where: { $0.id == id }) else { return nil }
         return id
     }
@@ -247,7 +268,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         duplicate.target = self
         duplicate.representedObject = profile
         menu.addItem(duplicate)
-        if profile.id != ServiceProfile.default.id {
+        if profile.id != ServiceProfile.allServices.id {
             let rename = NSMenuItem(title: "Rename…", action: #selector(renameProfile(_:)), keyEquivalent: "")
             rename.target = self
             rename.representedObject = profile
@@ -274,10 +295,10 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         if let profile = sender.representedObject as? ServiceProfile { confirmDeletion(profile) }
     }
     private func confirmDeletion(_ profile: ServiceProfile) {
-        guard profile.id != ServiceProfile.default.id, let window = view.window else { return }
+        guard profile.id != ServiceProfile.allServices.id, let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "Delete Service Profile?"
-        alert.informativeText = "The simulators keep their current services. Devices using this profile will follow the common default at their next start."
+        alert.informativeText = "The simulators keep their current services. Devices using this profile will follow the default profile at their next start."
         alert.addButton(withTitle: "Delete").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -292,29 +313,6 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
                 model.issue = nil
             }
         }
-    }
-}
-
-private struct CommonServiceProfileForm: View {
-    @Bindable var model: ServiceProfilesSettingsModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker(selection: $model.commonProfileID) {
-                Text("Do Not Apply Automatically", bundle: #bundle).tag(UUID?.none)
-                ForEach(model.store.availableProfiles, id: \.id) { profile in
-                    Text(profile.name).tag(Optional(profile.id))
-                }
-            } label: {
-                Text("Common Default", bundle: #bundle)
-            }
-            Text("Used at the next start by simulators that follow the common default.", bundle: #bundle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .disabled(model.store.issue != nil)
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
     }
 }
 
@@ -339,7 +337,7 @@ private final class ServiceProfileCell: NSTableCellView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        let label = NSTextField(labelWithString: "")
+        let label = LiteralTextField(labelWithString: "")
         label.lineBreakMode = .byTruncatingTail
         subtitle.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         subtitle.textColor = .secondaryLabelColor
@@ -361,7 +359,7 @@ private final class ServiceProfileCell: NSTableCellView {
     required init?(coder: NSCoder) { nil }
 
     func configure(profile: ServiceProfile) {
-        subtitle.isHidden = profile.id != ServiceProfile.default.id
+        subtitle.isHidden = profile.id != ServiceProfile.allServices.id
         textField?.identifier = NSUserInterfaceItemIdentifier(profile.id.uuidString)
         textField?.isEditable = profile.canEdit
         textField?.isSelectable = profile.canEdit
@@ -395,7 +393,7 @@ final class OpaqueSettingsPane: NSView {
         return controller
     }.frame(width: 720, height: 520)
 }
-#Preview("Default Profile", traits: .sizeThatFitsLayout) {
+#Preview("All Services", traits: .sizeThatFitsLayout) {
     PreviewViewController {
         ServiceProfilesSettingsViewController(store: ServiceProfileStore(fileURL: URL.temporaryDirectory
             .appending(path: "NeoSimulator.DefaultServiceProfilePreview", directoryHint: .isDirectory)

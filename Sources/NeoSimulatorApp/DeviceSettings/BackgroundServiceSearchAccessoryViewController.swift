@@ -5,6 +5,11 @@ import ObservationBridge
 
 @MainActor
 final class BackgroundServiceSearchField: NSSearchField {
+    override class var cellClass: AnyClass? {
+        get { LiteralSearchFieldCell.self }
+        set {}
+    }
+
     private let model: BackgroundServiceListModel
     private var observation: PortableObservationTracking.Token?
 

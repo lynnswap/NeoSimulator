@@ -84,10 +84,10 @@ AppKit controllers retain observable models. `ObservationBridge` updates control
 and `DeviceBrowserState` saves pane visibility, inspector tabs, and device selection.
 `DeviceModel` owns device state; selection and inspector models own presentation.
 
-`ServiceProfileStore` owns profile definitions, the common default, and each device's
+`ServiceProfileStore` owns profile definitions, the default profile, and each device's
 selection and overrides. A device resolves its profile by reference, so a later boot
 uses the latest definition. Settings edit the selected profile directly. Saving a
-modified Default profile asks for a name and includes accepted changes still being
+modified All Services profile asks for a name and includes accepted changes still being
 applied. Profile edits do not change running devices.
 
 `SimulatorManagerModel` observes inventory boot transitions and CoreSimulator boot
@@ -103,7 +103,9 @@ value only when the file is absent, and removes that value after a successful
 write. A read failure preserves the existing data and prevents further writes
 until loading succeeds. Profile order is the stored array order; dragging
 profiles in settings changes that order in both settings and the inspector.
-The built-in Default profile remains first and is not stored in the file.
+The built-in All Services profile remains first and is not stored in the file.
+It is the initial default; devices inherit the selected default profile unless
+they select a saved profile. Per-service overrides apply above either choice.
 
 The Licenses pane uses LicenseList's generated dependency notices and license view,
 with an AppKit split view and library list. The simslim notice is loaded from the

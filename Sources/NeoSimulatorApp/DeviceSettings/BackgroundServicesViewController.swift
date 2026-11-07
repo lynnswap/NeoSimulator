@@ -100,8 +100,8 @@ private struct BackgroundServicesUnavailable: View {
 
 #if DEBUG
 #Preview("Profile + Overrides", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.overrides).frame(width: 320, height: 820) }
-#Preview("Default", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.defaultProfile).frame(width: 320, height: 820) }
-#Preview("Default Modified", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.defaultModified).frame(width: 320, height: 820) }
+#Preview("Use Default", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.defaultProfile).frame(width: 320, height: 820) }
+#Preview("Use Default (Modified)", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.defaultModified).frame(width: 320, height: 820) }
 #Preview("Stopped Simulator", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.stopped).frame(width: 320, height: 820) }
 #Preview("Save Profile", traits: .sizeThatFitsLayout) {
     PreviewViewController {
