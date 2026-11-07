@@ -11,10 +11,25 @@ import XPC
 /// become Swift errors. Sharing this immutable table avoids copying its prepared bindings
 /// into each call's stack frame on the smaller device workers.
 package final class CoreSimulatorInterface: @unchecked Sendable {
+    @MainActor private static var preparation: Task<CoreSimulatorInterface, any Error>?
+
     /// Loads CoreSimulator and prepares its messages, which neither selects nor loads a UI toolkit.
+    /// The process's classes share one preparation; each device set still owns its own service context.
+    @MainActor
     package static func load() async throws -> CoreSimulatorInterface {
-        try await CoreDeviceRuntime.loading("simulator-runtime") { try await NativeFrameworks.loadCoreSimulator() }
-        return try await CoreSimulatorInterface(runtime: .shared)
+        try Task.checkCancellation()
+        if let preparation { return try await CoreDeviceRuntime.preparedValue(of: preparation) }
+        let task = Task {
+            do {
+                try await CoreDeviceRuntime.loading("simulator-runtime") { try await NativeFrameworks.loadCoreSimulator() }
+                return try await CoreSimulatorInterface(runtime: .shared)
+            } catch {
+                preparation = nil
+                throw error
+            }
+        }
+        preparation = task
+        return try await CoreDeviceRuntime.preparedValue(of: task)
     }
 
     let serviceClass: AnyClass

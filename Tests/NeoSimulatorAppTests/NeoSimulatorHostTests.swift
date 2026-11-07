@@ -3458,6 +3458,14 @@ struct InputFocusTests {
         #expect(display.pasteboards.count == 3)
     }
 
+    @Test func coreSimulatorLoadsReusePreparedMessages() async throws {
+        async let first = CoreSimulatorInterface.load()
+        async let second = CoreSimulatorInterface.load()
+        let (original, concurrent) = try await (first, second)
+        let later = try await CoreSimulatorInterface.load()
+        #expect(original === concurrent && original === later)
+    }
+
     @Test func nativeRuntimeJoinsPreparationAndRecoversAfterToolkitMismatch() async throws {
         async let first = makeRuntime()
         async let second = makeRuntime()
