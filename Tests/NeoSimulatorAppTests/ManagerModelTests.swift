@@ -2457,6 +2457,8 @@ struct ManagerModelTests {
         #expect(postures.identifiers == [device.id, device.id])
         #expect(manager.devicePostures[device.id]?.canSelect == true)
         #expect(failures.isEmpty)
+        // Posture observation can resume while the restart's service defaults are still applying.
+        try await awaitServiceOperations(manager)
 
         // A presentation-preparation failure must restore controls for a screen
         // that remains open, even though the backend management never started.
