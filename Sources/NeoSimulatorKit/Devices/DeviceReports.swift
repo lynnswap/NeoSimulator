@@ -35,9 +35,9 @@ public struct DeviceReport: Equatable, Sendable, Identifiable {
     /// The report's identity.
     public var id: ID { ID(deviceID: deviceID, relativePath: relativePath) }
     /// The device that listed the report.
-    public let deviceID: DeviceInventoryID
+    public var deviceID: DeviceInventoryID
     /// The report's path within the device's crash log domain.
-    public let relativePath: String
+    public var relativePath: String
     /// The report's file name.
     public var name: String
     /// The report's size in bytes, if the source reports it.

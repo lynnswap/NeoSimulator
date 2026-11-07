@@ -5,7 +5,7 @@ import Synchronization
 /// A launchd job in a simulator that NeoSimulator can stop and start.
 public struct SimulatorBackgroundService: Sendable, Hashable, Identifiable {
     /// The service's launchd label.
-    public let label: String
+    public var label: String
     /// What the service does, in one short sentence.
     public var summary: String
     /// The service's launchd label.
@@ -25,7 +25,7 @@ public struct SimulatorBackgroundService: Sendable, Hashable, Identifiable {
 /// It can be enabled again after another tool disabled it, but it is never disabled.
 public struct SimulatorRequiredBackgroundService: Sendable, Hashable, Identifiable {
     /// The service's launchd label.
-    public let label: String
+    public var label: String
     /// Why simulators need the service.
     public var reason: String
     /// The service's launchd label.

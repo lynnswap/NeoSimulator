@@ -63,7 +63,7 @@ public enum SimulatorColorFilter: String, CaseIterable, Sendable {
 public struct SimulatorAudioDevice: Sendable, Equatable {
     /// `systemDefault`, or a CoreAudio device UID. Pass this to ``DeviceSettingChange/audioInputDevice(_:)`` or
     /// ``DeviceSettingChange/audioOutputDevice(_:)``.
-    public let identifier: String
+    public var identifier: String
     /// The route's display name.
     public var name: String
 
@@ -97,7 +97,7 @@ public struct SimulatorLocationScenario: Sendable, Equatable {
 /// A Display Zoom mode that an iPhone or iPad simulator offers.
 public struct SimulatorDisplayZoomMode: Sendable, Equatable, Codable {
     /// The value to pass to ``DeviceSettingChange/displayZoom(_:)``.
-    public let rawMode: UInt64
+    public var rawMode: UInt64
     /// The guest's localized name for this mode.
     public var nativeName: String
     /// The width that the guest reports for this mode.
