@@ -238,21 +238,25 @@ private final class ServiceCategoriesViewController: NSViewController, NSTableVi
     }
 }
 
-/// Lists the selected category's services that match the filter, and adds services to a category that the app added.
+/// Lists the selected category's services that match the filter, and adds, edits, and removes the services of a
+/// category that the app added.
 @MainActor
 private final class ServiceItemsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
     NSMenuDelegate
 {
     private let model: ServiceProfilesSettingsModel
     private var list: BackgroundServiceListModel { model.list }
-    private let table = NSTableView()
+    private let table = ServiceItemsTable()
     private let empty = NSHostingView(rootView: ServicesUnavailable())
     private var items: [BackgroundServiceItem] = []
+    private var updatingSelection = false
     private var observation: PortableObservationTracking.Token?
     let actions = NSSplitViewItemAccessoryViewController()
     private let serviceActions = NSSegmentedControl(
-        images: [NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Service")!],
-        trackingMode: .momentary, target: nil, action: nil)
+        images: [
+            NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Service")!,
+            NSImage(systemSymbolName: "minus", accessibilityDescription: "Remove Service")!,
+        ], trackingMode: .momentary, target: nil, action: nil)
     var controlsEnabled = true {
         didSet {
             guard controlsEnabled != oldValue else { return }
@@ -265,7 +269,7 @@ private final class ServiceItemsViewController: NSViewController, NSTableViewDat
         super.init(nibName: nil, bundle: nil)
         // The split view item takes the accessory before this pane loads.
         serviceActions.target = self
-        serviceActions.action = #selector(addService(_:))
+        serviceActions.action = #selector(performServiceAction(_:))
         actions.view = makeActionsView(serviceActions)
         actions.preferredScrollEdgeEffectStyle = .hard
     }
@@ -275,9 +279,11 @@ private final class ServiceItemsViewController: NSViewController, NSTableViewDat
     override func loadView() {
         let scroll = makeServiceScrollView(for: table, accessibilityLabel: "Services")
         table.rowHeight = 48
-        table.selectionHighlightStyle = .none
+        table.allowsMultipleSelection = true
         table.dataSource = self
         table.delegate = self
+        table.target = self
+        table.doubleAction = #selector(editClickedService(_:))
         let menu = NSMenu()
         menu.delegate = self
         table.menu = menu
@@ -296,12 +302,20 @@ private final class ServiceItemsViewController: NSViewController, NSTableViewDat
     private func update() {
         let section = list.selectedSection
         let shown = section?.items ?? []
+        let selected = model.selectedCustomServices
         serviceActions.setEnabled(model.selectedCustomCategory != nil, forSegment: 0)
+        serviceActions.setEnabled(!selected.isEmpty, forSegment: 1)
         // Only a category that the app added can have no services, until one is added to it.
         empty.isHidden = section == nil || !shown.isEmpty
-        guard shown.map(ObjectIdentifier.init) != items.map(ObjectIdentifier.init) else { return }
-        items = shown
-        table.reloadData()
+        // Reloading keeps the selected rows that remain, which can show other services.
+        updatingSelection = true
+        defer { updatingSelection = false }
+        if shown.map(ObjectIdentifier.init) != items.map(ObjectIdentifier.init) {
+            items = shown
+            table.reloadData()
+        }
+        let rows = IndexSet(items.indices.filter { row in selected.contains { $0 === items[row] } })
+        if rows != table.selectedRowIndexes { table.selectRowIndexes(rows, byExtendingSelection: false) }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
@@ -310,34 +324,104 @@ private final class ServiceItemsViewController: NSViewController, NSTableViewDat
         makeServiceCell(in: tableView, for: items[row], controlsEnabled: controlsEnabled)
     }
 
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
+    /// Only the services of a category that the app added can be edited and removed, so only they select.
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        model.selectedCustomCategory != nil
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !updatingSelection else { return }
+        model.selectedServices = table.selectedRowIndexes.map { items[$0] }
+    }
+
+    /// The clicked service, or the selection when it contains the clicked row.
+    private var clickedServices: [BackgroundServiceItem] {
+        guard items.indices.contains(table.clickedRow) else { return [] }
+        guard table.selectedRowIndexes.contains(table.clickedRow) else { return [items[table.clickedRow]] }
+        return model.selectedCustomServices
+    }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        guard items.indices.contains(table.clickedRow), model.selectedCustomCategory != nil else { return }
-        let remove = NSMenuItem(title: "Remove from Category", action: #selector(removeService(_:)), keyEquivalent: "")
+        let services = clickedServices
+        guard !services.isEmpty, model.selectedCustomCategory != nil else { return }
+        if let service = services.first, services.count == 1 {
+            let edit = NSMenuItem(title: "Edit…", action: #selector(editService(_:)), keyEquivalent: "")
+            edit.target = self
+            edit.representedObject = service
+            menu.addItem(edit)
+            menu.addItem(.separator())
+        }
+        let remove = NSMenuItem(title: "Remove from Category", action: #selector(removeServices(_:)), keyEquivalent: "")
         remove.target = self
-        remove.representedObject = items[table.clickedRow]
+        remove.representedObject = services
         menu.addItem(remove)
     }
 
-    @objc private func addService(_ sender: NSSegmentedControl) {
-        guard let category = model.selectedCustomCategory, let window = view.window else { return }
-        requestText(
-            in: window, title: "Add a Service to “\(category.category.name)”",
-            message: "Enter the launchd label of a service in the simulator, such as com.example.agent.",
-            value: "", confirm: "Add"
-        ) { [model] in try model.addService($0) }
+    @objc private func performServiceAction(_ sender: NSSegmentedControl) {
+        switch sender.selectedSegment {
+        case 0: addService()
+        case 1: confirmRemoving(model.selectedCustomServices)
+        default: break
+        }
     }
 
-    @objc private func removeService(_ sender: NSMenuItem) {
-        guard let service = sender.representedObject as? BackgroundServiceItem,
-            let category = model.selectedCustomCategory, let window = view.window
+    /// Removes the selected services, as the Delete key asks.
+    @objc private func delete(_ sender: Any?) {
+        let services = model.selectedCustomServices
+        guard !services.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        confirmRemoving(services)
+    }
+
+    private func addService() {
+        guard let category = model.selectedCustomCategory, let window = view.window else { return }
+        requestService(
+            in: window, title: "Add a Service to “\(category.category.name)”", label: "", summary: "", confirm: "Add"
+        ) { [model] in try model.addService($0, summary: $1) }
+    }
+
+    @objc private func editClickedService(_ sender: Any?) {
+        guard items.indices.contains(table.clickedRow) else { return }
+        edit(items[table.clickedRow])
+    }
+
+    @objc private func editService(_ sender: NSMenuItem) {
+        if let service = sender.representedObject as? BackgroundServiceItem { edit(service) }
+    }
+
+    private func edit(_ service: BackgroundServiceItem) {
+        guard let category = model.selectedCustomCategory, let window = view.window else { return }
+        requestService(
+            in: window, title: "Edit “\(service.label)”", label: service.label,
+            summary: model.summary(of: service, in: category), confirm: "Save"
+        ) { [model] in try model.updateService(service, in: category, label: $0, summary: $1) }
+    }
+
+    @objc private func removeServices(_ sender: NSMenuItem) {
+        if let services = sender.representedObject as? [BackgroundServiceItem] { confirmRemoving(services) }
+    }
+
+    private func confirmRemoving(_ services: [BackgroundServiceItem]) {
+        guard let service = services.first, let category = model.selectedCustomCategory, let window = view.window
         else { return }
+        let removed = services.count == 1 ? "“\(service.label)”" : "\(services.count) Services"
         confirmRemoval(
-            in: window, title: "Remove “\(service.label)” from “\(category.category.name)”?",
+            in: window, title: "Remove \(removed) from “\(category.category.name)”?",
             message: removedServicesConsequence, confirm: "Remove"
-        ) { [model] in try model.removeService(service, from: category) }
+        ) { [model] in try model.removeServices(services, from: category) }
+    }
+}
+
+/// A list whose Delete key sends `delete(_:)` up its responder chain, as the Edit menu's Delete does.
+@MainActor
+private final class ServiceItemsTable: NSTableView {
+    override func keyDown(with event: NSEvent) {
+        guard event.specialKey == .delete || event.specialKey == .deleteForward,
+            tryToPerform(#selector(NSText.delete(_:)), with: self)
+        else { return super.keyDown(with: event) }
     }
 }
 
@@ -382,18 +466,57 @@ private func requestText(
     in window: NSWindow, title: String, message: String, value: String, confirm: String,
     commit: @escaping @MainActor (String) throws -> Void
 ) {
+    let field = NSTextField(string: value)
+    field.frame = NSRect(x: 0, y: 0, width: 300, height: 22)
+    request(in: window, title: title, message: message, fields: field, focusing: field, confirm: confirm) {
+        try commit(field.stringValue)
+    }
+}
+
+/// Asks for a service's launchd label and what it does in a sheet, as ``requestText(in:title:message:value:confirm:commit:)``
+/// asks for a line of text.
+@MainActor
+private func requestService(
+    in window: NSWindow, title: String, label: String, summary: String, confirm: String,
+    commit: @escaping @MainActor (_ label: String, _ summary: String) throws -> Void
+) {
+    let labelField = NSTextField(string: label)
+    labelField.placeholderString = "com.example.agent"
+    let summaryField = NSTextField(string: summary)
+    summaryField.placeholderString = "Optional"
+    let fields = NSGridView(views: [
+        [NSTextField(labelWithString: "Label:"), labelField],
+        [NSTextField(labelWithString: "Description:"), summaryField],
+    ])
+    fields.rowAlignment = .firstBaseline
+    fields.column(at: 0).xPlacement = .trailing
+    labelField.widthAnchor.constraint(equalToConstant: 220).isActive = true
+    summaryField.widthAnchor.constraint(equalTo: labelField.widthAnchor).isActive = true
+    fields.frame.size = fields.fittingSize
+    request(
+        in: window, title: title, message: "Enter the launchd label of a service in the simulator, and what it does.",
+        fields: fields, focusing: labelField, confirm: confirm
+    ) { try commit(labelField.stringValue, summaryField.stringValue) }
+}
+
+/// Shows `fields` in a sheet, and runs `commit` unless the sheet is cancelled. A failure shows its description.
+@MainActor
+private func request(
+    in window: NSWindow, title: String, message: String, fields: NSView, focusing field: NSView, confirm: String,
+    commit: @escaping @MainActor () throws -> Void
+) {
     let alert = NSAlert()
     alert.messageText = title
     alert.informativeText = message
-    let field = NSTextField(string: value)
-    field.frame = NSRect(x: 0, y: 0, width: 300, height: 22)
-    alert.accessoryView = field
+    alert.accessoryView = fields
     alert.addButton(withTitle: confirm)
     alert.addButton(withTitle: "Cancel")
+    // Tab moves between the fields as well as the buttons.
+    alert.window.autorecalculatesKeyViewLoop = true
     alert.window.initialFirstResponder = field
     alert.beginSheetModal(for: window) { response in
         guard response == .alertFirstButtonReturn else { return }
-        do { try commit(field.stringValue) } catch { NSAlert(error: error).beginSheetModal(for: window) }
+        do { try commit() } catch { NSAlert(error: error).beginSheetModal(for: window) }
     }
 }
 

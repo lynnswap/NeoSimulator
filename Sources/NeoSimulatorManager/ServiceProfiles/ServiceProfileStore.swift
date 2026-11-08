@@ -76,6 +76,12 @@ package struct CustomServiceCategory: Codable, Equatable, Sendable {
     /// The identifier that ``SimulatorBackgroundServiceTarget/category(_:)`` takes for the category.
     package var categoryID: String { "custom." + id.uuidString }
 
+    /// Keeps what a service does without the spaces around it, or nothing for a service that doesn't say.
+    fileprivate mutating func setSummary(_ summary: String, for label: String) {
+        let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        summaries[label] = summary.isEmpty ? nil : summary
+    }
+
     /// A service that simulators need, which a profile file can group in a category of its own, stays on as it
     /// does in the built-in categories.
     fileprivate var category: SimulatorBackgroundServiceCategory {
@@ -295,7 +301,7 @@ package final class ServiceProfileStore {
 
     package enum Failure: Error, LocalizedError {
         case emptyName, missingProfile
-        case emptyCategoryName, missingCategory, emptyLabel
+        case emptyCategoryName, missingCategory, emptyLabel, missingService
         case listedService(String)
         case requiredService(String, reason: String)
         case wedgingService(String)
@@ -309,6 +315,7 @@ package final class ServiceProfileStore {
             case .emptyCategoryName: "Enter a name for the category."
             case .missingCategory: "This category no longer exists."
             case .emptyLabel: "Enter the launchd label of a service."
+            case .missingService: "The category no longer lists this service."
             case .listedService(let label): "The category already lists “\(label)”."
             case .requiredService(let label, let reason): "“\(label)” stays on because simulators need it. \(reason)"
             case .wedgingService(let label):
@@ -526,21 +533,63 @@ package final class ServiceProfileStore {
     /// Adds the service with this launchd label to a custom category, which starts on in every profile.
     ///
     /// The label need not exist in every runtime, since enabling one without a job only lifts its override.
+    /// - Parameter summary: What the service does, which its row shows below the label.
+    /// - Returns: The label without the spaces around it.
     /// - Throws: ``Failure`` if the label is empty, the category lists it, or turning it off would break simulators.
-    package func addService(_ label: String, to categoryID: String) throws {
+    @discardableResult
+    package func addService(_ label: String, summary: String = "", to categoryID: String) throws -> String {
         var updated = state
         let index = try customCategoryIndex(categoryID, in: updated)
-        updated.customCategories[index].labels.append(
-            try validLabel(label, besides: updated.customCategories[index].labels))
+        let label = try validLabel(label, besides: updated.customCategories[index].labels)
+        updated.customCategories[index].labels.append(label)
+        updated.customCategories[index].setSummary(summary, for: label)
         try save(updated)
+        return label
     }
 
-    /// Removes a service from a custom category, as ``deleteCategory(_:)`` does for each of its services.
-    package func removeService(_ label: String, from categoryID: String) throws {
+    /// Changes the launchd label of a custom category's service and what it does, keeping its place in the category.
+    ///
+    /// Under a new label, the service stays on or off in each profile and simulator as it was, unless a category
+    /// lists that label already, whose switch it then shares. The old label leaves profiles and simulators once no
+    /// category lists it, as ``removeServices(_:from:)`` describes.
+    /// - Returns: The label without the spaces around it.
+    /// - Throws: ``Failure`` if the category doesn't list `label`, or if ``addService(_:summary:to:)`` refuses the new
+    ///   label.
+    @discardableResult
+    package func updateService(_ label: String, in categoryID: String, label newLabel: String, summary: String) throws
+        -> String
+    {
         var updated = state
         let index = try customCategoryIndex(categoryID, in: updated)
-        updated.customCategories[index].labels.removeAll { $0 == label }
-        updated.customCategories[index].summaries[label] = nil
+        let labels = updated.customCategories[index].labels
+        guard let position = labels.firstIndex(of: label) else { throw Failure.missingService }
+        let renamed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines) != label
+        let edited = try renamed ? validLabel(newLabel, besides: labels) : label
+        if renamed {
+            updated.customCategories[index].labels[position] = edited
+            updated.customCategories[index].summaries[label] = nil
+        }
+        if renamed, !catalog.slimmable.contains(edited) {
+            for profile in updated.profiles.indices
+            where updated.profiles[profile].configuration.disabledLabels.contains(label) {
+                updated.profiles[profile].configuration.disabledLabels.insert(edited)
+            }
+            for (device, binding) in updated.devices {
+                if let enabled = binding.overrides[label] { updated.devices[device]?.overrides[edited] = enabled }
+            }
+        }
+        updated.customCategories[index].setSummary(summary, for: edited)
+        try save(forgettingUnlistedServices(updated))
+        return edited
+    }
+
+    /// Removes services from a custom category, as ``deleteCategory(_:)`` does for each of its services.
+    package func removeServices(_ labels: some Sequence<String>, from categoryID: String) throws {
+        var updated = state
+        let index = try customCategoryIndex(categoryID, in: updated)
+        let removed = Set(labels)
+        updated.customCategories[index].labels.removeAll { removed.contains($0) }
+        for label in removed { updated.customCategories[index].summaries[label] = nil }
         try save(forgettingUnlistedServices(updated))
     }
 

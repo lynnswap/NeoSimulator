@@ -99,15 +99,42 @@ final class ServiceProfilesSettingsModel {
         try store.deleteCategory(category.id)
     }
 
-    /// Adds a service to the selected custom category, clearing the filter so that it shows.
-    func addService(_ label: String) throws {
-        guard let category = selectedCustomCategory else { throw ServiceProfileStore.Failure.missingCategory }
-        try store.addService(label, to: category.id)
-        list.query = ""
+    /// The services that the services pane selects.
+    var selectedServices: [BackgroundServiceItem] = []
+
+    /// The selected services that the selected custom category shows, which can be edited and removed.
+    var selectedCustomServices: [BackgroundServiceItem] {
+        guard selectedCustomCategory != nil, let items = list.selectedSection?.items else { return [] }
+        return items.filter { item in selectedServices.contains { $0 === item } }
     }
 
-    func removeService(_ service: BackgroundServiceItem, from category: BackgroundServiceCategoryModel) throws {
-        try store.removeService(service.label, from: category.id)
+    /// Adds a service to the selected custom category and selects it, clearing the filter so that it shows.
+    func addService(_ label: String, summary: String) throws {
+        guard let category = selectedCustomCategory else { throw ServiceProfileStore.Failure.missingCategory }
+        let label = try store.addService(label, summary: summary, to: category.id)
+        list.query = ""
+        selectService(label, in: category)
+    }
+
+    /// What `service` does as `category` says, which an edit starts from.
+    func summary(of service: BackgroundServiceItem, in category: BackgroundServiceCategoryModel) -> String {
+        store.customCategories.first { $0.categoryID == category.id }?.summaries[service.label] ?? ""
+    }
+
+    /// Changes `service`'s label and what it does, keeping it selected.
+    func updateService(
+        _ service: BackgroundServiceItem, in category: BackgroundServiceCategoryModel, label: String, summary: String
+    ) throws {
+        let label = try store.updateService(service.label, in: category.id, label: label, summary: summary)
+        selectService(label, in: category)
+    }
+
+    func removeServices(_ services: [BackgroundServiceItem], from category: BackgroundServiceCategoryModel) throws {
+        try store.removeServices(services.map(\.label), from: category.id)
+    }
+
+    private func selectService(_ label: String, in category: BackgroundServiceCategoryModel) {
+        selectedServices = category.items.filter { $0.label == label }
     }
 
     // MARK: JSON files, which carry profiles between Macs

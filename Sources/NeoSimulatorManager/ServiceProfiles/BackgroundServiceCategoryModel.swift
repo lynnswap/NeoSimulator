@@ -63,14 +63,13 @@ package final class BackgroundServiceCategoryModel: Identifiable {
         source: any BackgroundServiceEditing
     ) -> [BackgroundServiceItem] {
         let items = Dictionary(existing.map { ($0.label, $0) }, uniquingKeysWith: { first, _ in first })
-        return category.services.map {
-            items[$0.label] ?? BackgroundServiceItem(label: $0.label, detail: $0.summary, source: source)
+        // A service whose description changed takes a new item, whose row shows the description.
+        func item(_ label: String, detail: String, requiredReason: String? = nil) -> BackgroundServiceItem {
+            if let item = items[label], item.detail == detail { return item }
+            return BackgroundServiceItem(label: label, detail: detail, requiredReason: requiredReason, source: source)
         }
-            + category.requiredServices.map {
-                items[$0.label]
-                    ?? BackgroundServiceItem(
-                        label: $0.label, detail: $0.reason, requiredReason: $0.reason, source: source)
-            }
+        return category.services.map { item($0.label, detail: $0.summary) }
+            + category.requiredServices.map { item($0.label, detail: $0.reason, requiredReason: $0.reason) }
     }
 
     /// A partially disabled category stays on, as a switch shows a mixed state.

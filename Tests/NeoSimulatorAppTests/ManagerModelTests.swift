@@ -5234,15 +5234,26 @@ struct ManagerModelTests {
         func editsCustomCategory() -> Bool {
             actions[0].isEnabled(forSegment: 1) && actions[1].isEnabled(forSegment: 0)
         }
-        func press(_ control: NSSegmentedControl, answering text: String) async throws {
-            let add = try #require(
-                (control.cell as? NSSegmentedCell)?.accessibilityChildren()?.first as? any NSAccessibilityProtocol)
-            _ = add.accessibilityPerformPress()
+        // Fills in the sheet that shows and confirms it, and returns what its fields showed.
+        @discardableResult
+        func answer(_ texts: [String], confirming confirm: String) async throws -> [String] {
             try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
             let sheet = inspectorViews(try #require(window.attachedSheet?.contentView))
-            try #require(sheet.compactMap { $0 as? NSTextField }.first { $0.isEditable }).stringValue = text
-            try #require(sheet.compactMap { $0 as? NSButton }.first { $0.title == "Add" }).performClick(nil)
+            let fields = sheet.compactMap { $0 as? NSTextField }.filter(\.isEditable)
+            let shown = fields.map(\.stringValue)
+            for (field, text) in zip(fields, texts) { field.stringValue = text }
+            try #require(sheet.compactMap { $0 as? NSButton }.first { $0.title == confirm }).performClick(nil)
             try await wait(timeout: .seconds(5)) { window.attachedSheet == nil }
+            return shown
+        }
+        func press(
+            _ control: NSSegmentedControl, segment: Int = 0, answering texts: String...,
+            confirming confirm: String = "Add"
+        ) async throws {
+            let button = try #require(
+                (control.cell as? NSSegmentedCell)?.accessibilityChildren()?[segment] as? any NSAccessibilityProtocol)
+            _ = button.accessibilityPerformPress()
+            try await answer(texts, confirming: confirm)
         }
         // The built-in profile shows its fixed categories, which gain nothing beside it.
         let builtIn = SimulatorBackgroundServiceCategory.all.map(\.name)
@@ -5261,7 +5272,6 @@ struct ManagerModelTests {
         }
         let agents = try #require(list.selectedSection?.category)
         #expect(categories.delegate?.tableView?(categories, shouldSelectRow: 0) == false)
-        #expect(editsCustomCategory())
         let servicesPane = controller.services.splitViewItems[1].viewController.view
         func showsNoServices() -> Bool {
             services.numberOfRows == 0
@@ -5269,7 +5279,8 @@ struct ManagerModelTests {
                     String(describing: type(of: $0)).hasPrefix("NSHostingView") && !$0.isHidden
                 }
         }
-        #expect(showsNoServices())
+        // The services pane can take the new category after the categories pane shows it.
+        try await wait(timeout: .seconds(5)) { editsCustomCategory() && showsNoServices() }
         list.query = "agents"
         try await wait(timeout: .seconds(5)) {
             titles(categories) == ["Custom", "Agents"] && categories.selectedRow == 1 && showsNoServices()
@@ -5281,10 +5292,62 @@ struct ManagerModelTests {
             list.query.isEmpty && titles(services) == ["com.example.agent"] && !showsNoServices()
         }
         #expect(list.selectedSection?.category === agents && categories.selectedRow == 1)
+
+        // A service can say what it does, and the one that's added or edited is selected.
+        try await press(actions[1], answering: "com.example.helper", " Helps the agent. ")
+        try await wait(timeout: .seconds(5)) {
+            titles(services) == ["com.example.agent", "com.example.helper"] && services.selectedRowIndexes == [1]
+        }
+        #expect(agents.items.map(\.detail) == ["", "Helps the agent."])
+        // A row's shortcut menu edits its label and description, starting from what it has.
+        func edit(row: Int) throws {
+            let rect = services.rect(ofRow: row)
+            let click = try #require(
+                NSEvent.mouseEvent(
+                    with: .rightMouseDown, location: services.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil),
+                    modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: 1))
+            let menu = try #require(services.menu(for: click))
+            menu.delegate?.menuNeedsUpdate?(menu)
+            menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Edit…" }))
+        }
+        try edit(row: 0)
+        #expect(
+            try await answer(["com.example.worker", "Works for the agent."], confirming: "Save")
+                == ["com.example.agent", ""])
+        try await wait(timeout: .seconds(5)) {
+            titles(services) == ["com.example.worker", "com.example.helper"] && services.selectedRowIndexes == [0]
+        }
+        try edit(row: 1)
+        #expect(
+            try await answer(["com.example.helper", "Helps."], confirming: "Save")
+                == ["com.example.helper", "Helps the agent."])
+        try await wait(timeout: .seconds(5)) {
+            agents.items.map(\.detail) == ["Works for the agent.", "Helps."] && services.selectedRowIndexes == [1]
+        }
+
+        // The Delete key and the minus button remove the selected services once the removal is confirmed.
+        services.selectRowIndexes([0, 1], byExtendingSelection: false)
+        try await wait(timeout: .seconds(5)) { actions[1].isEnabled(forSegment: 1) }
+        // The Delete key, whose key code is kVK_Delete.
+        let delete = try #require(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: "\u{7F}", charactersIgnoringModifiers: "\u{7F}", isARepeat: false,
+                keyCode: 51))
+        services.keyDown(with: delete)
+        try await answer([], confirming: "Cancel")
+        #expect(titles(services) == ["com.example.worker", "com.example.helper"])
+        try await press(actions[1], segment: 1, confirming: "Remove")
+        try await wait(timeout: .seconds(5)) { showsNoServices() && !actions[1].isEnabled(forSegment: 1) }
+        #expect(store.customCategories.map(\.labels) == [[]])
+
+        // The built-in categories' services stay as they are.
         categories.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
         try await wait(timeout: .seconds(5)) {
             list.selectedSection?.category.isCustom == false && !editsCustomCategory()
         }
+        #expect(services.delegate?.tableView?(services, shouldSelectRow: 0) == false)
         controller.model.selectedProfileID = ServiceProfile.allServicesID
         try await wait(timeout: .seconds(5)) { titles(categories) == builtIn && !actions[0].isEnabled(forSegment: 0) }
     }
@@ -5444,11 +5507,22 @@ struct ManagerModelTests {
         try store.record([.service(label)], enabled: false, for: device.id, productFamily: "iPhone")
         try await manager.prepareForQuit()
 
-        // The definitions last, and removing a service takes it out of every profile and device.
+        // The definitions last, and a service that takes a new label stays off where it was off.
         let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
         #expect(restored.customCategories.map(\.labels) == [[label]])
         #expect(restored.profile(copy.id)?.configuration.disabledLabels == [label])
-        try restored.removeService(label, from: categoryID)
+        let renamed = "com.example.worker"
+        try restored.updateService(label, in: categoryID, label: renamed, summary: " Works for the agents. ")
+        for saved in [restored, ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)] {
+            #expect(
+                saved.catalog.category(categoryID)?.services
+                    == [SimulatorBackgroundService(renamed, "Works for the agents.")])
+            #expect(saved.profile(copy.id)?.configuration.disabledLabels == [renamed])
+            #expect(saved.binding(for: device.id)?.overrides == [renamed: false])
+        }
+
+        // Removing a service takes it out of every profile and device.
+        try restored.removeServices([renamed], from: categoryID)
         for saved in [restored, ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)] {
             #expect(saved.profiles.allSatisfy { $0.configuration.disabledLabels.isEmpty })
             #expect(saved.binding(for: device.id)?.overrides == [:])
