@@ -56,8 +56,8 @@ do not select another host.
 
 ## App preferences
 
-**NeoSimulator → Settings…** (Command-,) contains General, Devices, and Capture
-settings.
+**NeoSimulator → Settings…** (Command-,) contains General, Devices, Capture,
+Service Profiles, and Licenses settings; Debug builds also show Debug.
 General controls the preferred display host, UI framework installation, keeping devices running when closing or
 quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
