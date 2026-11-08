@@ -6,15 +6,16 @@ import NeoSimulatorUI
 import Observation
 import ObservationBridge
 import NeoSimulatorManager
+import NeoSimulatorCompactWindow
 
 /// Indexes open screens by inventory identity and owns their contexts and remote connections.
 /// `SimulatorScreens` owns simulator screen lifetimes; this registry owns remote lifetimes.
 /// `insert(_:)` and `remove(_:)` publish the open set to posture observation.
 @MainActor @Observable
-final class DeviceScreens {
+package final class DeviceScreens {
     private var entries: [DeviceInventoryID: DeviceScreen] = [:]
     /// The Xcode whose SimulatorKit UI toolkit the manager loaded, which also supplies device artwork.
-    private(set) var displayXcodeURL: URL?
+    package private(set) var displayXcodeURL: URL?
     @ObservationIgnored private let model: SimulatorManagerModel
     @ObservationIgnored private var contexts: [URL: SimulatorScreens] = [:]
     /// Invalidated contexts remain available until their native resources have finished closing.
@@ -25,19 +26,19 @@ final class DeviceScreens {
         self?.onError?(error)
     })
     /// Set while the app quits, until a cancelled quit resumes.
-    @ObservationIgnored private(set) var isQuitting = false
+    @ObservationIgnored package private(set) var isQuitting = false
     @ObservationIgnored private var locationObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var remoteDevicesObservation: PortableObservationTracking.Token?
     @ObservationIgnored private var lastRemoteHost: SimulatorHost?
     @ObservationIgnored private var remoteHostCleanup: Task<Void, Never>?
-    @ObservationIgnored var onError: ((any Error) -> Void)?
-    @ObservationIgnored var onShowInMainWindow: ((DeviceInventoryID) -> Void)?
+    @ObservationIgnored package var onError: ((any Error) -> Void)?
+    @ObservationIgnored package var onShowInMainWindow: ((DeviceInventoryID) -> Void)?
     /// Edit ▸ Automatically Sync Pasteboard for every simulator screen, whichever host presents it.
-    @ObservationIgnored private(set) lazy var pasteboardSync = PasteboardSync { [weak self] in
+    @ObservationIgnored package private(set) lazy var pasteboardSync = PasteboardSync { [weak self] in
         self?.simulatorControllers.map(\.session) ?? []
     }
 
-    init(model: SimulatorManagerModel) {
+    package init(model: SimulatorManagerModel) {
         self.model = model
         locationObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
@@ -60,13 +61,13 @@ final class DeviceScreens {
         if let locationObserver { DistributedNotificationCenter.default().removeObserver(locationObserver) }
     }
 
-    var identifiers: Set<DeviceInventoryID> { Set(entries.keys) }
+    package var identifiers: Set<DeviceInventoryID> { Set(entries.keys) }
 
-    func screen(for identifier: DeviceInventoryID) -> DeviceScreen? { entries[identifier] }
+    package func screen(for identifier: DeviceInventoryID) -> DeviceScreen? { entries[identifier] }
 
     /// CoreDevice identifiers of open native canvases. Evaluating DeviceKit activity for
     /// other devices can start their native HID services and interfere with SimulatorKit input.
-    var nativeCanvasDeviceIdentifiers: Set<UUID> {
+    package var nativeCanvasDeviceIdentifiers: Set<UUID> {
         Set(entries.values.filter(\.usesNativeCanvas).compactMap { screen in
             guard case .simulator(let simulator) = model.inventory.first(where: { $0.id == screen.id }) else { return nil }
             return simulator.coreDevice.flatMap { UUID(uuidString: $0.identifier) }
@@ -91,7 +92,7 @@ final class DeviceScreens {
 
     /// Registers a simulator presentation's controller, or returns its existing screen.
     @discardableResult
-    func attach(_ controller: DeviceWindowController, as identifier: DeviceInventoryID) -> DeviceScreen {
+    package func attach(_ controller: DeviceWindowController, as identifier: DeviceInventoryID) -> DeviceScreen {
         if let screen = entries[identifier], case .simulator(let current) = screen.controller, current === controller {
             return screen
         }
@@ -103,7 +104,7 @@ final class DeviceScreens {
 
     /// Registers a remote screen until its controller closes.
     @discardableResult
-    func attach(_ controller: RemoteDeviceWindowController) -> DeviceScreen {
+    package func attach(_ controller: RemoteDeviceWindowController) -> DeviceScreen {
         let identifier = DeviceInventoryID.coreDevice(controller.device.identifier)
         let screen = DeviceScreen(id: identifier, controller: .remote(controller), model: model, screens: self)
         controller.onClose = { [weak self, weak screen] in
@@ -162,7 +163,7 @@ final class DeviceScreens {
 
     /// Opens a screen in its Xcode context, releasing any previous context's presentation first.
     /// The backend serializes requests for the same device through cancellation cleanup.
-    func openSimulatorScreen(_ request: SimulatorPresentationContext,
+    package func openSimulatorScreen(_ request: SimulatorPresentationContext,
                              present: (SimulatorScreenRestoration.Presentation?) async throws -> Void) async throws {
         guard !isQuitting else { throw CancellationError() }
         let displayURL = try await CoreDeviceRuntime.uiXcodeURL()
@@ -285,7 +286,7 @@ final class DeviceScreens {
 
     /// Prepares screens before stopping or restarting simulators, retaining booted screens for
     /// restart. On failure, finishes already-prepared restarts.
-    func prepareSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
+    package func prepareSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
         var prepared: [InventoryDevice] = []
         do {
             for device in devices {
@@ -316,7 +317,7 @@ final class DeviceScreens {
     }
 
     /// Reconnects the screens that a restart or erase kept, reporting each simulator that could not reconnect.
-    func finishSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
+    package func finishSimulatorManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) async throws {
         guard action == .restart || action == .erase else { return }
         var failures: [String] = []
         for device in devices {
@@ -331,7 +332,7 @@ final class DeviceScreens {
     }
 
     /// The open simulator screens to reopen after relaunching, ordered so the main window's screen opens last.
-    func restorations() -> [SimulatorScreenRestoration] {
+    package func restorations() -> [SimulatorScreenRestoration] {
         contexts.flatMap { xcode, context in
             context.openScreens.compactMap { presentation -> SimulatorScreenRestoration? in
                 let device = presentation.device.id
@@ -341,14 +342,14 @@ final class DeviceScreens {
         }.sorted { $0.presentation.restorationOrder < $1.presentation.restorationOrder }
     }
 
-    func setDeviceBezelsVisible(_ visible: Bool) {
+    package func setDeviceBezelsVisible(_ visible: Bool) {
         for controller in simulatorControllers { controller.setDeviceBezelVisible(visible) }
     }
 
     // MARK: Remote screens
 
     /// Opens or reconnects the device's remote screen unless the device is being managed or the app is quitting.
-    func openRemoteScreen(for device: CoreDeviceDevice) -> DeviceScreen? {
+    package func openRemoteScreen(for device: CoreDeviceDevice) -> DeviceScreen? {
         let identifier = DeviceInventoryID.coreDevice(device.identifier)
         guard !isQuitting, !model.managingDeviceIDs.contains(identifier) else { return nil }
         let screen = entries[identifier] ?? attach(RemoteDeviceWindowController(device: device))
@@ -357,7 +358,7 @@ final class DeviceScreens {
     }
 
     /// Follows the inventory and the selected host, which can make remote screens unavailable.
-    func observeRemoteDevices() {
+    package func observeRemoteDevices() {
         remoteDevicesObservation?.cancel()
         remoteDevicesObservation = withPortableContinuousObservation { [weak self, model] event in
             _ = model.inventory
@@ -389,13 +390,13 @@ final class DeviceScreens {
     }
 
     /// Waits for the remote screens that switching to Device Hub is closing.
-    func waitForRemoteHostCleanup() async {
+    package func waitForRemoteHostCleanup() async {
         await remoteHostCleanup?.value
     }
 
     /// Stops and closes remote screens, all of them by default. One screen's failure does not keep the others open;
     /// a cancellation leaves the remaining screens open.
-    func stopRemoteScreens(for identifiers: Set<DeviceInventoryID>? = nil) async throws {
+    package func stopRemoteScreens(for identifiers: Set<DeviceInventoryID>? = nil) async throws {
         var failures: [String] = []
         let targets = remoteControllers.filter { identifiers?.contains($0.key) ?? true }.map(\.value)
         for controller in targets {
@@ -412,16 +413,16 @@ final class DeviceScreens {
     // MARK: Stopping
 
     /// Refuses new screens while the app quits, and keeps later registry changes from restarting posture observation.
-    func beginQuitting() { isQuitting = true }
+    package func beginQuitting() { isQuitting = true }
 
-    func resumeAfterCancelledQuit() {
+    package func resumeAfterCancelledQuit() {
         isQuitting = false
         publishOpenScreens()
     }
 
     /// Disconnects all screens without stopping guests. Screens still open after a failure
     /// resume posture observation.
-    func stopAll() async throws {
+    package func stopAll() async throws {
         do {
             await model.stopDevicePostures()
             retiredContexts.append(contentsOf: contexts.values.map(\.context))
@@ -447,5 +448,5 @@ final class DeviceScreens {
 }
 
 private extension SimulatorDeviceIdentifier {
-    var inventoryID: DeviceInventoryID { .simulator(udid: identifier, deviceSetPath: deviceSetPath) }
+    package var inventoryID: DeviceInventoryID { .simulator(udid: identifier, deviceSetPath: deviceSetPath) }
 }

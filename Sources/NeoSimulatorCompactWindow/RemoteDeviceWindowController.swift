@@ -8,29 +8,29 @@ import NeoSimulatorUI
 import UniformTypeIdentifiers
 
 @MainActor
-final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, NSMenuItemValidation {
+package final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuDelegate, NSMenuItemValidation {
     private enum RecordingDestination: Sendable {
         case automatic(URL), selected(URL)
 
-        var url: URL {
+        package var url: URL {
             switch self {
             case .automatic(let url), .selected(let url): url
             }
         }
     }
-    let device: CoreDeviceDevice
-    let session: RemoteDeviceScreenSession
-    var onClose: (() -> Void)?
-    var onChange: (() -> Void)?
-    var onConnect: (() async -> Void)?
-    var onShowInMainWindow: (() -> Void)? { didSet { update() } }
+    package let device: CoreDeviceDevice
+    package let session: RemoteDeviceScreenSession
+    package var onClose: (() -> Void)?
+    package var onChange: (() -> Void)?
+    package var onConnect: (() async -> Void)?
+    package var onShowInMainWindow: (() -> Void)? { didSet { update() } }
     /// Application bundles dropped on the screen go to the device's installer, whichever window shows it.
-    var canInstallApplications: () -> Bool = { false }
-    var installApplications: ([URL]) -> Void = { _ in }
-    let presentationViewController = RemoteDevicePresentationViewController()
-    var isEmbedded: Bool { presentationViewController.parent != nil }
+    package var canInstallApplications: () -> Bool = { false }
+    package var installApplications: ([URL]) -> Void = { _ in }
+    package let presentationViewController = RemoteDevicePresentationViewController()
+    package var isEmbedded: Bool { presentationViewController.parent != nil }
     private var presentationWindow: NSWindow? { presentationViewController.view.window }
-    var canMovePresentation: Bool {
+    package var canMovePresentation: Bool {
         guard !closing, !mayClose, stoppingTask == nil, appResizeTask == nil else { return false }
         guard let window = presentationWindow else { return true }
         return window.attachedSheet == nil && !window.styleMask.contains(.fullScreen)
@@ -39,7 +39,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private var changingPresentation = false
     private let viewport = RemoteDeviceViewport()
     private let canvasControlsContainer = NSStackView()
-    var canvasControls: DeviceCanvasControls? {
+    package var canvasControls: DeviceCanvasControls? {
         didSet {
             oldValue?.removeFromSuperview()
             if let canvasControls { canvasControlsContainer.addArrangedSubview(canvasControls) }
@@ -87,7 +87,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             for event in releases { input.flagsChanged(with: event) }
         }
     })
-    var capturesKeyboard: Bool { keyboardCapture.isCapturing }
+    package var capturesKeyboard: Bool { keyboardCapture.isCapturing }
     private var connectionTask: Task<Void, Never>?
     private var stoppingTask: Task<Void, any Error>?
     private var inputTask: Task<Void, Never>?
@@ -110,7 +110,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     private let presentAlert: @MainActor (NSAlert, NSWindow) async -> NSApplication.ModalResponse
     private let presentCompactWindow: @MainActor (NSWindow) -> Void
 
-    init(device: CoreDeviceDevice, session: RemoteDeviceScreenSession? = nil,
+    package init(device: CoreDeviceDevice, session: RemoteDeviceScreenSession? = nil,
          writeImage: @escaping @MainActor (CGImage, URL) async throws -> Void = { image, destination in
              try await RemoteDeviceWindowController.writeScreenshot(image, to: destination)
          },
@@ -249,9 +249,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             name: NSWindow.didResignKeyNotification, object: nil)
         update()
     }
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    func embed(in parent: NSViewController) async throws {
+    package func embed(in parent: NSViewController) async throws {
         guard presentationViewController.parent !== parent else { return }
         try await changePresentation {
             self.removePresentation()
@@ -272,7 +272,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    func showCompactWindow() async throws {
+    package func showCompactWindow() async throws {
         guard !closing, !mayClose, stoppingTask == nil else { throw CancellationError() }
         if window?.contentViewController === presentationViewController {
             if let window { presentCompactWindow(window) }
@@ -285,7 +285,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    func detachPresentation() async throws {
+    package func detachPresentation() async throws {
         guard presentationViewController.view.superview != nil else { return }
         try await changePresentation {
             self.removePresentation()
@@ -293,7 +293,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    func preparePresentationMove() async throws {
+    package func preparePresentationMove() async throws {
         guard !closing, !mayClose, stoppingTask == nil else { throw CancellationError() }
         if capturePanel != nil {
             do { try await captureTask?.value }
@@ -397,7 +397,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         return window
     }
 
-    func connectIfNeeded() {
+    package func connectIfNeeded() {
         guard !closing, !mayClose, connectionTask == nil else { return }
         connectionTask = Task { [weak self] in
             guard let self else { return }
@@ -413,7 +413,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         update()
     }
 
-    func updateInventory(_ snapshot: InventoryDevice?) {
+    package func updateInventory(_ snapshot: InventoryDevice?) {
         let wasAvailable = inventoryAvailable
         if case .remote(let current) = snapshot {
             window?.title = current.name
@@ -571,14 +571,14 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         catch { showIssue(error); throw error }
     }
 
-    func stopAndClose() async throws {
+    package func stopAndClose() async throws {
         try await stop()
         mayClose = true
         removePresentation()
         window?.close()
     }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
+    package func windowShouldClose(_ sender: NSWindow) -> Bool {
         if mayClose { return true }
         Task { [weak self] in
             do { try await self?.stopAndClose() }
@@ -587,7 +587,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
         return false
     }
-    func windowWillClose(_ notification: Notification) { onClose?(); onClose = nil }
+    package func windowWillClose(_ notification: Notification) { onClose?(); onClose = nil }
     @objc private func presentationWindowBecameKey(_ notification: Notification) {
         guard notification.object as? NSWindow === presentationWindow else { return }
         if !isEmbedded || screenOwnsFocus { focusScreen() }
@@ -623,7 +623,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
             && captureSourceTask == nil && stoppingTask == nil && isScreenActionEnabled("reconnect")
     }
 
-    @objc func chooseCaptureSource(_ sender: Any?) {
+    @objc package func chooseCaptureSource(_ sender: Any?) {
         guard canChooseCaptureSource else { return }
         // A button shows the sources below itself and the canvas's context menu where it was opened;
         // the menu bar shows them over the screen.
@@ -668,7 +668,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     /// The canvas's context menu holds the screen's connection actions outside the device.
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    package func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         if session.captureSource != nil || session.needsCaptureSource {
             let source = NSMenuItem(title: "Choose Screen Source…", action: #selector(chooseCaptureSource(_:)), keyEquivalent: "")
@@ -680,11 +680,11 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         menu.addItem(reconnect)
     }
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+    package func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         ["captureKeyboard", "resizeApp", "home", "lock", "volumeDown", "volumeUp", NSToolbarItem.Identifier.flexibleSpace.rawValue, "capture", "record", "compact", "reconnect"].map { NSToolbarItem.Identifier($0) }
     }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+    package func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+    package func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         guard let presentation = screenActionPresentation(itemIdentifier.rawValue) else { return nil }
         let (label, symbol) = presentation
@@ -717,7 +717,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         performScreenAction(identifier)
     }
 
-    func screenActionPresentation(_ identifier: String) -> (title: String, symbolName: String)? {
+    package func screenActionPresentation(_ identifier: String) -> (title: String, symbolName: String)? {
         if identifier == "resizeApp" { return (session.isResizingApp ? "Stop Resize" : "Resize App", "arrow.up.left.and.arrow.down.right") }
         if identifier == "captureKeyboard" { return (capturesKeyboard ? "Release Keyboard" : "Capture Keyboard", "keyboard") }
         if identifier == "record" {
@@ -734,7 +734,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         return fixed[identifier]
     }
 
-    func isScreenActionEnabled(_ identifier: String) -> Bool {
+    package func isScreenActionEnabled(_ identifier: String) -> Bool {
         guard !closing, !mayClose, !changingPresentation else { return false }
         switch identifier {
         case "resizeApp": return session.canResizeApp && appResizeTask == nil && recordingTask == nil && capturePanel == nil && recordingPanel == nil
@@ -755,7 +755,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    func performScreenAction(_ identifier: String) {
+    package func performScreenAction(_ identifier: String) {
         guard isScreenActionEnabled(identifier) else { return }
         switch identifier {
         case "captureKeyboard":
@@ -815,7 +815,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         update()
     }
 
-    func layoutScreen() {
+    package func layoutScreen() {
         guard !changingPresentation, session.isResizingApp, !session.isChangingDisplay,
               viewport.bounds.width > 0, viewport.bounds.height > 0 else { return }
         let size = viewport.bounds.size
@@ -824,7 +824,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         session.resizeApp(to: size)
     }
 
-    func windowDidResize(_ notification: Notification) { layoutScreen() }
+    package func windowDidResize(_ notification: Notification) { layoutScreen() }
 
     private var canStartRecording: Bool {
         !closing && !changingPresentation && inventoryAvailable && session.canRecordScreen && !session.hasUnfinishedRecording
@@ -843,7 +843,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         !closing && !changingPresentation && completedScreenshot != nil && captureTask == nil && capturePanel == nil
     }
 
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    package func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(saveScreenshot(_:)):
             return canSaveScreenshot
@@ -863,9 +863,9 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    @objc func saveScreenshot(_ sender: Any?) { saveScreenshot() }
+    @objc package func saveScreenshot(_ sender: Any?) { saveScreenshot() }
 
-    @objc func recordScreen(_ sender: Any?) {
+    @objc package func recordScreen(_ sender: Any?) {
         guard canStartRecording else { return }
         guard let directory = captureDirectory else {
             showIssue(RemoteDeviceWindowError.unavailable("Choose a recording destination using File → Record Screen…."))
@@ -874,7 +874,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         startRecording(to: directory.appendingPathComponent(recordingFilename))
     }
 
-    @objc func recordScreenTo(_ sender: Any?) {
+    @objc package func recordScreenTo(_ sender: Any?) {
         guard canStartRecording else { return }
         runRecordingOperation { [self] in
             let destination = try await chooseRecordingDestination()
@@ -890,7 +890,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         runRecordingOperation { [session] in try await session.startRecording() }
     }
 
-    @objc func stopScreenRecording(_ sender: Any?) {
+    @objc package func stopScreenRecording(_ sender: Any?) {
         guard canStopRecording else { return }
         let acceptedStart = recordingTask
         runRecordingOperation(finishing: true) { [self] in
@@ -904,7 +904,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    @objc func saveScreenRecording(_ sender: Any?) {
+    @objc package func saveScreenRecording(_ sender: Any?) {
         guard canSaveRecording else { return }
         runRecordingOperation { [self] in
             let destination = try await chooseRecordingDestination()
@@ -912,7 +912,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         }
     }
 
-    @objc func discardScreenRecording(_ sender: Any?) {
+    @objc package func discardScreenRecording(_ sender: Any?) {
         guard canSaveRecording else { return }
         runRecordingOperation { [self] in
             let alert = NSAlert()
@@ -1118,7 +1118,7 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
         return destination
     }
 
-    @objc func discardScreenshot(_ sender: Any?) {
+    @objc package func discardScreenshot(_ sender: Any?) {
         guard canDiscardScreenshot else { return }
         runCaptureOperation { [self] in
             let alert = NSAlert()
@@ -1165,20 +1165,20 @@ final class RemoteDeviceWindowController: NSWindowController, NSWindowDelegate, 
 /// Contains the screen with whichever input view it uses, and moves with the presentation between windows.
 @MainActor
 private final class RemoteDeviceViewport: NSView {
-    var canInstallApplications: () -> Bool = { false }
-    var installApplications: ([URL]) -> Void = { _ in }
+    package var canInstallApplications: () -> Bool = { false }
+    package var installApplications: ([URL]) -> Void = { _ in }
 
-    init() {
+    package init() {
         super.init(frame: .zero)
         registerForDraggedTypes([.fileURL])
     }
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    package override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         canInstallApplications() && applications(in: sender) != nil ? .copy : []
     }
 
-    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    package override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         guard canInstallApplications(), let urls = applications(in: sender) else { return false }
         installApplications(urls)
         return true

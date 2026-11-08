@@ -4,6 +4,7 @@ import NeoSimulatorKit
 import ObservationBridge
 import SwiftUI
 import NeoSimulatorManager
+import NeoSimulatorDeviceScreens
 
 @MainActor
 final class ManagerInspectorController: NSViewController {

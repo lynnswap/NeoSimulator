@@ -3,15 +3,15 @@ import NeoSimulatorHostSupport
 import AppKit
 
 @MainActor
-final class RemoteDevicePresentationViewController: NSViewController {
-    weak var owner: RemoteDeviceWindowController?
+package final class RemoteDevicePresentationViewController: NSViewController {
+    package weak var owner: RemoteDeviceWindowController?
 
-    override func viewDidLayout() {
+    package override func viewDidLayout() {
         super.viewDidLayout()
         owner?.layoutScreen()
     }
 
-    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+    package override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
         if let owner {
             switch action {
             case #selector(RemoteDeviceWindowController.saveScreenshot(_:)),

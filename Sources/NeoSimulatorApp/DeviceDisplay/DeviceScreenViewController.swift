@@ -4,6 +4,7 @@ import AppKit
 import Observation
 import ObservationBridge
 import NeoSimulatorManager
+import NeoSimulatorDeviceScreens
 
 /// Shows the selected device's screen or preview in the manager's center pane.
 /// The window owns selection, toolbar, and the attached `canvasAccessory`.

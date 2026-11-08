@@ -8,51 +8,51 @@ import NeoSimulatorPresentationAdapters
 import Quartz
 
 @MainActor
-final class RemoteDeviceInputView: NSView {
-    let session: RemoteDeviceScreenSession
-    var enqueue: ((@escaping @MainActor () async throws -> Void) -> Void)?
-    var isInputEnabled = false {
+package final class RemoteDeviceInputView: NSView {
+    package let session: RemoteDeviceScreenSession
+    package var enqueue: ((@escaping @MainActor () async throws -> Void) -> Void)?
+    package var isInputEnabled = false {
         didSet { if oldValue && !isInputEnabled { releaseFocus() } }
     }
-    override var acceptsFirstResponder: Bool { true }
-    override var isFlipped: Bool { true }
+    package override var acceptsFirstResponder: Bool { true }
+    package override var isFlipped: Bool { true }
 
-    init(session: RemoteDeviceScreenSession) {
+    package init(session: RemoteDeviceScreenSession) {
         self.session = session
         super.init(frame: .zero)
         setAccessibilityLabel("Remote Device Screen")
         setAccessibilityRole(.group)
     }
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
     /// Only the screen takes the device's pointer input; the frame around it keeps its own buttons.
-    override func hitTest(_ point: NSPoint) -> NSView? {
+    package override func hitTest(_ point: NSPoint) -> NSView? {
         guard isInputEnabled, let superview,
               session.inputLocations(atWindowPoint: superview.convert(point, to: nil)) != nil else { return nil }
         return super.hitTest(point)
     }
-    func releaseFocus() {
+    package func releaseFocus() {
         resetMouseGestures()
         enqueue? { [session] in try await session.releaseInputs() }
     }
-    override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
+    package override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
 
-    func releaseModifiers(_ events: [NSEvent]) {
+    package func releaseModifiers(_ events: [NSEvent]) {
         for event in events {
             guard let usage = Self.keyUsage[event.keyCode] else { continue }
             enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
         }
     }
 
-    override func keyDown(with event: NSEvent) {
+    package override func keyDown(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), !event.isARepeat,
               let usage = Self.keyUsage[event.keyCode] else { return }
         enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .down) }
     }
-    override func keyUp(with event: NSEvent) {
+    package override func keyUp(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
         enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
     }
-    override func flagsChanged(with event: NSEvent) {
+    package override func flagsChanged(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
         if event.keyCode == UInt16(kVK_CapsLock) {
             enqueueInput(for: .keyboard) { [session] in
@@ -65,13 +65,13 @@ final class RemoteDeviceInputView: NSView {
         }
     }
 
-    func invalidateInputs(for kinds: Set<RemoteDeviceInputKind>) {
+    package func invalidateInputs(for kinds: Set<RemoteDeviceInputKind>) {
         for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
         mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
         if kinds.contains(.gesture) { interruptTrackpadGestures() }
     }
 
-    func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
+    package func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
         let generation = capabilityGenerations[kind, default: 0]
         enqueue? { [weak self] in
             guard self?.capabilityGenerations[kind, default: 0] == generation else { return }
@@ -81,13 +81,13 @@ final class RemoteDeviceInputView: NSView {
 
     private enum MouseInputKind {
         case touch, pointer
-        var capability: RemoteDeviceInputKind {
+        package var capability: RemoteDeviceInputKind {
             switch self { case .touch: .digitizer; case .pointer: .pointer }
         }
     }
     private struct MouseGesture {
-        let kind: MouseInputKind
-        let clicks: Int
+        package let kind: MouseInputKind
+        package let clicks: Int
     }
     private var mouseGestures: [Int: MouseGesture] = [:]
     /// A gesture keeps its original destination until it ends, including momentum after the fingers lift.
@@ -99,7 +99,7 @@ final class RemoteDeviceInputView: NSView {
     private var capabilityGenerations: [RemoteDeviceInputKind: Int] = [:]
     private var pointerTracking: NSTrackingArea?
 
-    override func updateTrackingAreas() {
+    package override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let pointerTracking { removeTrackingArea(pointerTracking) }
         let tracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
@@ -141,7 +141,7 @@ final class RemoteDeviceInputView: NSView {
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
+    package override func mouseDown(with event: NSEvent) {
         guard isInputEnabled else { return }
         window?.makeFirstResponder(self)
         let kind: MouseInputKind
@@ -159,10 +159,10 @@ final class RemoteDeviceInputView: NSView {
             }
         }
     }
-    override func rightMouseDown(with event: NSEvent) { mouseDown(with: event) }
-    override func otherMouseDown(with event: NSEvent) { mouseDown(with: event) }
+    package override func rightMouseDown(with event: NSEvent) { mouseDown(with: event) }
+    package override func otherMouseDown(with event: NSEvent) { mouseDown(with: event) }
 
-    override func mouseDragged(with event: NSEvent) {
+    package override func mouseDragged(with event: NSEvent) {
         guard isInputEnabled, let gesture = mouseGestures[event.buttonNumber] else { return }
         guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else { return }
         let button = event.buttonNumber
@@ -173,10 +173,10 @@ final class RemoteDeviceInputView: NSView {
             }
         }
     }
-    override func rightMouseDragged(with event: NSEvent) { mouseDragged(with: event) }
-    override func otherMouseDragged(with event: NSEvent) { mouseDragged(with: event) }
+    package override func rightMouseDragged(with event: NSEvent) { mouseDragged(with: event) }
+    package override func otherMouseDragged(with event: NSEvent) { mouseDragged(with: event) }
 
-    override func mouseUp(with event: NSEvent) {
+    package override func mouseUp(with event: NSEvent) {
         guard isInputEnabled, let gesture = mouseGestures.removeValue(forKey: event.buttonNumber) else { return }
         guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow, clampingToDisplay: true) else {
             releaseFocus()
@@ -190,10 +190,10 @@ final class RemoteDeviceInputView: NSView {
             }
         }
     }
-    override func rightMouseUp(with event: NSEvent) { mouseUp(with: event) }
-    override func otherMouseUp(with event: NSEvent) { mouseUp(with: event) }
+    package override func rightMouseUp(with event: NSEvent) { mouseUp(with: event) }
+    package override func otherMouseUp(with event: NSEvent) { mouseUp(with: event) }
 
-    override func scrollWheel(with event: NSEvent) {
+    package override func scrollWheel(with event: NSEvent) {
         let begins = !event.phase.isDisjoint(with: [.mayBegin, .began])
             || (event.phase.isEmpty && event.momentumPhase.isEmpty)
         if begins {
@@ -213,7 +213,7 @@ final class RemoteDeviceInputView: NSView {
     }
 
     /// A pinch that begins over the screen pinches the device's app; others magnify whatever contains the screen.
-    override func magnify(with event: NSEvent) {
+    package override func magnify(with event: NSEvent) {
         if event.phase.contains(.began) {
             pinchGesture = nil
             guard isInputEnabled, session.inputCapabilities.contains(.gesture),
@@ -228,7 +228,7 @@ final class RemoteDeviceInputView: NSView {
         enqueueGestureInput(for: .gesture) { [session] in try await session.sendTrackpadGesture(event) }
     }
 
-    override func mouseMoved(with event: NSEvent) {
+    package override func mouseMoved(with event: NSEvent) {
         guard isInputEnabled, let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
         if session.inputCapabilities.contains(.pointer) {
             enqueueMouseInput(kind: .pointer) { [session] in try await session.movePointer(to: locations.pointer) }

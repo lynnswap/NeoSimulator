@@ -6,21 +6,22 @@ import NeoSimulatorUI
 import Observation
 import ObservationBridge
 import NeoSimulatorManager
+import NeoSimulatorCompactWindow
 
 /// An open manager screen's canvas controls, actions, and presentation.
 /// The controller retains its connection; `DeviceScreens` registers and ends the screen.
 @MainActor @Observable
-final class DeviceScreen {
-    enum Controller {
+package final class DeviceScreen {
+    package enum Controller {
         case simulator(DeviceWindowController)
         case remote(RemoteDeviceWindowController)
     }
 
-    let id: DeviceInventoryID
-    let controller: Controller
-    let canvasControls = DeviceCanvasControls()
+    package let id: DeviceInventoryID
+    package let controller: Controller
+    package let canvasControls = DeviceCanvasControls()
     /// Advances after each update of `canvasControls`, so the pane can fit the accessory that shows them.
-    private(set) var canvasControlsUpdates = 0
+    package private(set) var canvasControlsUpdates = 0
     @ObservationIgnored private var canvasControlsRevision = 0
     /// Changes that Observation cannot record: the remote controller's callback, a simulator session replacement,
     /// and dispatched actions. The state accessors read it through `observedController`.
@@ -29,7 +30,7 @@ final class DeviceScreen {
     @ObservationIgnored private weak var screens: DeviceScreens?
     @ObservationIgnored private var observation: PortableObservationTracking.Token?
 
-    init(id: DeviceInventoryID, controller: Controller, model: SimulatorManagerModel, screens: DeviceScreens) {
+    package init(id: DeviceInventoryID, controller: Controller, model: SimulatorManagerModel, screens: DeviceScreens) {
         self.id = id
         self.controller = controller
         self.model = model
@@ -47,7 +48,7 @@ final class DeviceScreen {
 
     // MARK: Observation
 
-    func startObserving() {
+    package func startObserving() {
         observation?.cancel()
         observation = withPortableContinuousObservation { [weak self] _ in
             guard let self else { return }
@@ -57,7 +58,7 @@ final class DeviceScreen {
         }
     }
 
-    func stopObserving() {
+    package func stopObserving() {
         observation?.cancel()
         observation = nil
     }
@@ -84,14 +85,14 @@ final class DeviceScreen {
 
     // MARK: State
 
-    var commandTarget: NSResponder {
+    package var commandTarget: NSResponder {
         switch controller {
         case .simulator(let controller): controller
         case .remote(let controller): controller
         }
     }
 
-    var canControlDevice: Bool {
+    package var canControlDevice: Bool {
         switch observedController {
         case .simulator(let controller): controller.session.canPerformCommands
         case .remote(let controller): controller.session.state == .connected
@@ -99,23 +100,23 @@ final class DeviceScreen {
     }
 
     /// Whether the screen shows DeviceKit's native device canvas, whose views supply DeviceKit's Active value.
-    var usesNativeCanvas: Bool {
+    package var usesNativeCanvas: Bool {
         guard case .simulator(let controller) = observedController else { return false }
         return controller.display.usesNativeCanvas
     }
 
-    var nativePoseControls: NativeDevicePoseControls? {
+    package var nativePoseControls: NativeDevicePoseControls? {
         guard case .simulator(let controller) = observedController else { return nil }
         return controller.display.nativePoseControls
     }
 
     /// The simulator's capabilities, which assign the shared shortcuts of device commands.
-    var simulatorCapabilities: DeviceCapabilities? {
+    package var simulatorCapabilities: DeviceCapabilities? {
         guard case .simulator(let controller) = observedController else { return nil }
         return controller.session.capabilities
     }
 
-    func supports(_ identifier: String) -> Bool {
+    package func supports(_ identifier: String) -> Bool {
         switch observedController {
         case .simulator(let controller):
             if CanvasZoom.Action(rawValue: identifier) != nil { return true }
@@ -127,7 +128,7 @@ final class DeviceScreen {
         }
     }
 
-    func isEnabled(_ identifier: String) -> Bool {
+    package func isEnabled(_ identifier: String) -> Bool {
         switch observedController {
         case .simulator(let controller):
             if let action = CanvasZoom.Action(rawValue: identifier) { return controller.canPerformCanvasZoom(action) }
@@ -137,34 +138,34 @@ final class DeviceScreen {
         }
     }
 
-    var resizingApp: Bool {
+    package var resizingApp: Bool {
         switch observedController {
         case .simulator(let controller): controller.session.isResizingApp || controller.session.isStartingAppResize
         case .remote(let controller): controller.session.isResizingApp || controller.session.isChangingDisplay
         }
     }
 
-    func canvasZoomIsSelected(_ identifier: String) -> Bool {
+    package func canvasZoomIsSelected(_ identifier: String) -> Bool {
         guard let action = CanvasZoom.Action(rawValue: identifier),
               case .simulator(let controller) = observedController else { return false }
         return controller.canvasZoomIsSelected(action)
     }
 
-    var recordingTitle: String {
+    package var recordingTitle: String {
         switch observedController {
         case .simulator(let controller): controller.session.recording == nil ? "Record Screen" : "Stop Recording"
         case .remote(let controller): controller.screenActionPresentation("record")?.title ?? "Record Screen"
         }
     }
 
-    var recordingStartDate: Date? {
+    package var recordingStartDate: Date? {
         switch observedController {
         case .simulator(let controller): controller.session.recording?.startDate
         case .remote(let controller): controller.session.recordingStartDate
         }
     }
 
-    var capturesKeyboard: Bool {
+    package var capturesKeyboard: Bool {
         switch observedController {
         case .simulator(let controller): controller.capturesKeyboard
         case .remote(let controller): controller.capturesKeyboard
@@ -174,7 +175,7 @@ final class DeviceScreen {
     // MARK: Actions
 
     /// Sends a canvas or toolbar action to the device while this screen is open.
-    func perform(_ action: String) {
+    package func perform(_ action: String) {
         guard let screens, screens.screen(for: id) === self else { return }
         if action == "pairedDevice" {
             model.openActivePairedDevice(for: id)
@@ -218,14 +219,14 @@ final class DeviceScreen {
 
     // MARK: Presentation
 
-    var presentation: SimulatorScreenRestoration.Presentation {
+    package var presentation: SimulatorScreenRestoration.Presentation {
         switch controller {
         case .simulator(let controller): .init(isEmbedded: controller.isEmbedded, window: controller.window)
         case .remote(let controller): .init(isEmbedded: controller.isEmbedded, window: controller.window)
         }
     }
 
-    func isEmbedded(in parent: NSViewController) -> Bool {
+    package func isEmbedded(in parent: NSViewController) -> Bool {
         let content = switch controller {
         case .simulator(let controller): controller.presentationViewController
         case .remote(let controller): controller.presentationViewController as NSViewController
@@ -233,7 +234,7 @@ final class DeviceScreen {
         return content.parent === parent && content.view.superview === parent.view
     }
 
-    func validatePresentationMove() throws {
+    package func validatePresentationMove() throws {
         let canMove = switch controller {
         case .simulator(let controller): controller.canMovePresentation
         case .remote(let controller): controller.canMovePresentation
@@ -243,28 +244,28 @@ final class DeviceScreen {
         }
     }
 
-    func preparePresentationMove() async throws {
+    package func preparePresentationMove() async throws {
         switch controller {
         case .simulator: try validatePresentationMove()
         case .remote(let controller): try await controller.preparePresentationMove()
         }
     }
 
-    func embed(in parent: NSViewController) async throws {
+    package func embed(in parent: NSViewController) async throws {
         switch controller {
         case .simulator(let controller): controller.embed(in: parent)
         case .remote(let controller): try await controller.embed(in: parent)
         }
     }
 
-    func showCompactWindow() async throws {
+    package func showCompactWindow() async throws {
         switch controller {
         case .simulator(let controller): controller.showCompactWindow()
         case .remote(let controller): try await controller.showCompactWindow()
         }
     }
 
-    func detach() async throws {
+    package func detach() async throws {
         switch controller {
         case .simulator(let controller): controller.detachPresentation()
         case .remote(let controller): try await controller.detachPresentation()
@@ -274,7 +275,7 @@ final class DeviceScreen {
 
 extension SimulatorScreenRestoration.Presentation {
     /// Where a screen's controller presents it.
-    @MainActor init(isEmbedded: Bool, window: NSWindow?) {
+    @MainActor package init(isEmbedded: Bool, window: NSWindow?) {
         self = isEmbedded ? .main : window?.isVisible == true ? .compact : .hidden
     }
 }

@@ -3,6 +3,7 @@ import NeoSimulatorHostSupport
 import AppKit
 import SwiftUI
 import NeoSimulatorPresentationAdapters
+import NeoSimulatorDeviceScreens
 
 @MainActor
 final class SimulatorSidebarCellView: NSTableCellView {

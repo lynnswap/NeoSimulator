@@ -6,6 +6,8 @@ import NeoSimulatorUI
 import ObservationBridge
 import SwiftUI
 import NeoSimulatorManager
+import NeoSimulatorCompactWindow
+import NeoSimulatorDeviceScreens
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {

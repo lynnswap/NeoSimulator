@@ -12,6 +12,8 @@ import Synchronization
 import Testing
 import IOSurface
 @testable import NeoSimulatorManager
+@testable import NeoSimulatorCompactWindow
+@testable import NeoSimulatorDeviceScreens
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
