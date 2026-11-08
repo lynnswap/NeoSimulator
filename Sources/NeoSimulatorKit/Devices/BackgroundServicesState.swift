@@ -31,7 +31,8 @@ public final class BackgroundServicesState {
         let change: Change
     }
 
-    /// Observed service states with pending accepted changes applied, or `nil` until a read answers.
+    /// Observed service states with pending accepted changes applied, or `nil` until a read of every service that the
+    /// categories list answers.
     public private(set) var services: SimulatorBackgroundServices?
     /// Services enabled again that start at the simulator's next boot. A label leaves this set when a read shows it
     /// loaded or disabled.
@@ -184,8 +185,8 @@ public final class BackgroundServicesState {
 
     package func markDirty() { dirty = true }
 
-    /// The registry's categories changed. What was read covers the earlier ones, so it shows only what both manage
-    /// until a read of the new ones answers.
+    /// The registry's categories changed. What was read covers the earlier ones, so until a read of the new ones
+    /// answers, it shows only what both manage, and nothing while the new ones list a service that it didn't read.
     package func catalogDidChange() {
         // A read that began before this covers the earlier categories.
         serial += 1
@@ -279,8 +280,14 @@ public final class BackgroundServicesState {
             if services != nil { services = nil }
             return
         }
-        let family = owner.inventory.serviceProductFamily
         let catalog = owner.backgroundServiceCatalog
+        // A read keeps only the labels of the categories that it read with, so it can't tell whether a label that a
+        // category added since is on or off.
+        guard catalog.managed.isSubset(of: confirmed.catalog.managed) else {
+            if services != nil { services = nil }
+            return
+        }
+        let family = owner.inventory.serviceProductFamily
         var configuration = ServiceConfiguration(disabledLabels: confirmed.disabledLabels)
         for edit in pending {
             switch edit.change {

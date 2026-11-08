@@ -6105,6 +6105,57 @@ struct ManagerModelTests {
         try await manager.prepareForQuit()
     }
 
+    @Test func servicesThatACategoryAddsStayUnknownUntilAReadCoversThem() async throws {
+        let domain = "NeoSimulator.AddedServiceCoverage.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let label = "com.example.agent"
+        let searchd = "com.apple.searchd"
+        let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        await manager.refresh()
+        manager.inspect(device, selectionCount: 1)
+        manager.selection.setServicesVisible(true)
+        // The simulator has the label turned off, which a read of the built-in categories leaves out.
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label])
+        await manager.registry.finishReading()
+        #expect(inspector.content == .simulator(.services))
+
+        // A category without new services keeps what was read while the services are read again.
+        let categoryID = try store.createCategory(named: "Agents")
+        #expect(inspector.content == .simulator(.services))
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label])
+        await manager.registry.finishReading()
+
+        // Once the category lists the label, the services are unknown rather than showing it on, and a change that
+        // started before reads back without the label.
+        manager.setBackgroundServices([.service(searchd)], enabled: false, for: device.id)
+        #expect(await events.next() == .changeServices(device.id))
+        try store.addService(label, to: categoryID)
+        #expect(inspector.serviceState == nil && inspector.content == .simulator(.loading) && !inspector.canSaveProfile)
+        await source.completeServiceChange(disabled: [label, searchd])
+        #expect(await events.next() == .readServices(device.id))
+        #expect(inspector.serviceState == nil)
+        await source.failServiceRead()
+        await manager.registry.finishReading()
+        #expect(inspector.serviceState == nil)
+        #expect(inspector.content == .simulator(.failure(ManagerModelSource.Failure.unavailable.localizedDescription)))
+
+        inspector.requestRefresh()
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label, searchd])
+        await manager.registry.finishReading()
+        #expect(inspector.serviceState?.disabledLabels == [label, searchd])
+        try await manager.prepareForQuit()
+    }
+
     @Test func backgroundServiceChangesRunInOrderAndQuitWaitsForThem() async throws {
         let domain = "NeoSimulator.ServiceQueue.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
