@@ -5,17 +5,21 @@ import ObservationBridge
 import SwiftUI
 import NeoSimulatorManager
 import NeoSimulatorInspector
+import UniformTypeIdentifiers
 
 @MainActor
 final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
     let model: ServiceProfilesSettingsModel
     private let table = NSTableView()
     private let defaultProfileMenu = NSPopUpButton(frame: .zero, pullsDown: false)
-    private static let profileDragType = NSPasteboard.PasteboardType("dev.lynnswap.NeoSimulator.service-profile")
+    nonisolated fileprivate static let profileDragType = NSPasteboard.PasteboardType(
+        "dev.lynnswap.NeoSimulator.service-profile")
     private let profileActions = NSSegmentedControl(images: [
-        NSImage(systemSymbolName: "plus", accessibilityDescription: "New Service Profile")!,
+            NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Service Profile")!,
         NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
     ], trackingMode: .momentary, target: nil, action: nil)
+    /// What the add button offers: a profile that starts from the selected one, or profiles from files.
+    let addProfileMenu = NSMenu()
     private let detailsController = NSViewController()
     let services: ServiceProfileServicesViewController
     private var observation: PortableObservationTracking.Token?
@@ -47,8 +51,10 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         table.delegate = self
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.setAccessibilityLabel("Service Profiles")
-        table.registerForDraggedTypes([Self.profileDragType])
+        table.registerForDraggedTypes([Self.profileDragType, .fileURL])
         table.setDraggingSourceOperationMask(.move, forLocal: true)
+        // Outside the app, a profile drops as a file.
+        table.setDraggingSourceOperationMask(.copy, forLocal: false)
         table.draggingDestinationFeedbackStyle = .gap
         let menu = NSMenu()
         menu.delegate = self
@@ -124,6 +130,11 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         profileActions.target = self
         profileActions.action = #selector(performProfileAction(_:))
         profileActions.segmentStyle = .smallSquare
+        for (title, action) in [
+            ("New Profile", #selector(newProfile(_:))), ("Import…", #selector(chooseProfilesToImport(_:))),
+        ] {
+            addProfileMenu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
         let controls = NSStackView(views: [profileActions, NSView()])
         controls.frame.size = NSSize(width: 180, height: controls.fittingSize.height)
         actions.view = controls
@@ -214,10 +225,13 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-        guard profiles.indices.contains(row), profiles[row].id != ServiceProfile.allServicesID else { return nil }
-        let item = NSPasteboardItem()
-        item.setString(profiles[row].id.uuidString, forType: Self.profileDragType)
-        return item
+        guard profiles.indices.contains(row) else { return nil }
+        let profile = profiles[row]
+        // Encoding the profile's names and labels can't fail.
+        guard let contents = try? model.store.exportedLine(for: profile) else { return nil }
+        return ServiceProfileFilePromise(
+            movedProfile: profile.id == ServiceProfile.allServicesID ? nil : profile.id,
+            fileName: model.exportFileName(for: profile), contents: contents)
     }
 
     private func draggedProfile(_ info: any NSDraggingInfo) -> UUID? {
@@ -229,18 +243,36 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         return id
     }
 
+    private func droppedFiles(_ info: any NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [ServiceProfilesSettingsModel.fileType.identifier],
+        ]
+        return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
+
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
                    proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-        guard draggedProfile(info) != nil else { return [] }
-        tableView.setDropRow(max(1, min(row, profiles.count)), dropOperation: .above)
-        return .move
+        if draggedProfile(info) != nil {
+            tableView.setDropRow(max(1, min(row, profiles.count)), dropOperation: .above)
+            return .move
+        }
+        guard !droppedFiles(info).isEmpty else { return [] }
+        // Files add profiles to the list rather than at a row.
+        tableView.setDropRow(-1, dropOperation: .on)
+        return .copy
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo,
                    row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard dropOperation == .above, row >= 1, row <= profiles.count,
-              let id = draggedProfile(info) else { return false }
-        return model.move(id, before: row < profiles.count ? profiles[row].id : nil)
+        if let id = draggedProfile(info) {
+            guard dropOperation == .above, row >= 1, row <= profiles.count else { return false }
+            return model.move(id, before: row < profiles.count ? profiles[row].id : nil)
+        }
+        let files = droppedFiles(info)
+        guard !files.isEmpty else { return false }
+        importProfiles(from: files)
+        return true
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -260,6 +292,12 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             rename.target = self
             rename.representedObject = profile
             menu.addItem(rename)
+        }
+        let export = NSMenuItem(title: "Export…", action: #selector(exportProfile(_:)), keyEquivalent: "")
+        export.target = self
+        export.representedObject = profile
+        menu.addItem(export)
+        if profile.id != ServiceProfile.allServicesID {
             menu.addItem(.separator())
             let delete = NSMenuItem(title: "Delete", action: #selector(deleteProfile(_:)), keyEquivalent: "")
             delete.target = self
@@ -269,11 +307,57 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
     @objc private func performProfileAction(_ sender: NSSegmentedControl) {
         switch sender.selectedSegment {
-        // A new profile starts from the selected one, which can be the built-in profile.
-        case 0: model.duplicate(model.selectedProfile)
+        case 0:
+            addProfileMenu.popUp(
+                positioning: nil, at: NSPoint(x: 0, y: sender.isFlipped ? sender.bounds.maxY + 4 : -4), in: sender)
         case 1: confirmDeletion(model.selectedProfile)
         default: break
         }
+    }
+    // A new profile starts from the selected one, which can be the built-in profile.
+    @objc private func newProfile(_ sender: Any?) { model.duplicate(model.selectedProfile) }
+    @objc private func chooseProfilesToImport(_ sender: Any?) {
+        guard let window = view.window else { return }
+        let panel = NSOpenPanel()
+        panel.message = "Choose JSON Lines files of service profiles to add."
+        panel.allowedContentTypes = [ServiceProfilesSettingsModel.fileType]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let self else { return }
+            importProfiles(from: panel.urls)
+        }
+    }
+    private func importProfiles(from urls: [URL]) {
+        Task { [weak self, model] in
+            do { try await model.importProfiles(from: urls) } catch {
+                self?.showFailure("Unable to Import Service Profiles", error)
+            }
+        }
+    }
+    @objc private func exportProfile(_ sender: NSMenuItem) {
+        guard let profile = sender.representedObject as? ServiceProfile, let window = view.window else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Service Profile"
+        panel.nameFieldStringValue = model.exportFileName(for: profile)
+        panel.allowedContentTypes = [ServiceProfilesSettingsModel.fileType]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.beginSheetModal(for: window) { [weak self, model] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { [weak self] in
+                do { try await model.export(profile, to: url) } catch {
+                    self?.showFailure("Unable to Export “\(profile.name)”", error)
+                }
+            }
+        }
+    }
+    private func showFailure(_ title: String, _ error: any Error) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.beginSheetModal(for: window)
     }
     @objc private func renameProfile(_ sender: NSMenuItem) {
         if let profile = sender.representedObject as? ServiceProfile {
@@ -306,6 +390,56 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
                 model.issue = nil
             }
         }
+    }
+}
+
+/// A dragged profile, which moves within the list and becomes a JSON Lines file where it drops outside the app. Its
+/// file's contents come from when the drag starts.
+private final class ServiceProfileFilePromise: NSFilePromiseProvider, NSFilePromiseProviderDelegate {
+    /// The profile that the drag moves within the list, or `nil` for the built-in profile, which stays first.
+    let movedProfile: UUID?
+    private let fileName: String
+    private let contents: Data
+    private let writes = OperationQueue()
+
+    init(movedProfile: UUID?, fileName: String, contents: Data) {
+        self.movedProfile = movedProfile
+        self.fileName = fileName
+        self.contents = contents
+        super.init()
+        writes.qualityOfService = .userInitiated
+        fileType = ServiceProfilesSettingsModel.fileType.identifier
+        // The provider holds what it writes, so the drag keeps the delegate as long as it needs it.
+        delegate = self
+    }
+
+    override func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        super.writableTypes(for: pasteboard)
+            + (movedProfile == nil ? [] : [ServiceProfilesSettingsViewController.profileDragType])
+    }
+
+    override func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        guard type == ServiceProfilesSettingsViewController.profileDragType else {
+            return super.pasteboardPropertyList(forType: type)
+        }
+        return movedProfile?.uuidString
+    }
+
+    func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
+        fileName
+    }
+
+    func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue { writes }
+
+    func filePromiseProvider(
+        _ filePromiseProvider: NSFilePromiseProvider, writePromiseTo url: URL,
+        completionHandler: @escaping @Sendable ((any Error)?) -> Void
+    ) {
+        do {
+            // The destination needn't be empty, and a file already there stays.
+            try contents.write(to: url, options: .withoutOverwriting)
+            completionHandler(nil)
+        } catch { completionHandler(error) }
     }
 }
 

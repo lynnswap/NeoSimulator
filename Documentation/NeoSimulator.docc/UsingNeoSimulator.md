@@ -350,13 +350,23 @@ immediately when that simulator is running. Automatic application works while
 NeoSimulator is open, including starts from Xcode. Opening NeoSimulator leaves
 already-running simulators unchanged.
 
-To switch services that the built-in categories don't list, add categories of
-your own in **Settings → Service Profiles**. The **+** below the categories adds
-one, and the **+** below its services adds a service by its launchd label. Your
-categories appear above the built-in ones in every profile and in the
-inspector, and each profile turns their services on and off. Control-click one
-of your categories to rename or delete it, or one of its services to remove it.
-Removing a service leaves running simulators as they are, so a service that is
-off stays off. Built-in categories can't be changed, and NeoSimulator doesn't
-add services that simulators need or that stop a simulator from working while
-they're off.
+To switch services that the built-in categories don't list, select one of your
+profiles in **Settings → Service Profiles** and add categories of your own. The
+**+** below the categories adds one, and the **+** below its services adds a
+service by its launchd label. Your categories appear above the built-in ones in
+each of your profiles and in the inspector, and each profile turns their
+services on and off. All Services shows only the built-in categories, and still
+turns on every service, including yours. Control-click one of your categories
+to rename or delete it, or one of its services to remove it. Removing a service
+leaves running simulators as they are, so a service that is off stays off.
+Built-in categories can't be changed, and NeoSimulator doesn't add services that
+simulators need or that stop a simulator from working while they're off.
+
+To use a profile on another Mac, Control-click it and choose **Export…**, or drag
+it to the Finder. The JSON Lines file has the profile's name, the services that
+it turns off, and your categories that it lists, but not which simulators use it
+or which profile is the default. To add profiles from files, choose **Import…**
+from the **+** below the profiles, or drop the files on the profiles. Each
+profile in a file becomes a new profile, and its categories join yours. A
+category that you already have must match the file's. If a line of a file can't
+be imported, nothing changes, and NeoSimulator names the file and the line.

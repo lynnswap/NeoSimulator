@@ -4534,7 +4534,12 @@ struct ManagerModelTests {
                 .first { $0.accessibilityLabel() == "Service Profiles" })
         let accessory = try #require(controller.splitViewItems.first?.topAlignedAccessoryViewControllers.first)
         let defaultMenu = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSPopUpButton }.first)
-        #expect(controller.tableView(table, pasteboardWriterForRow: 0) == nil)
+        // The built-in profile drags out as a file, but stays first.
+        let builtIn = TestDraggingInfo(
+            item: try #require(controller.tableView(table, pasteboardWriterForRow: 0)), source: table)
+        defer { builtIn.draggingPasteboard.releaseGlobally() }
+        #expect(
+            controller.tableView(table, validateDrop: builtIn, proposedRow: 2, proposedDropOperation: .above).isEmpty)
         let writer = try #require(controller.tableView(table, pasteboardWriterForRow: 3))
         let drag = TestDraggingInfo(item: writer, source: table)
         defer { drag.draggingPasteboard.releaseGlobally() }
@@ -4577,6 +4582,77 @@ struct ManagerModelTests {
         defaultMenu.select(choice)
         #expect(NSApp.sendAction(try #require(defaultMenu.action), to: defaultMenu.target, from: defaultMenu))
         #expect(store.defaultProfile === first)
+    }
+
+    @Test func serviceProfilesDragOutAsFilesThatDropInAsNewProfiles() async throws {
+        let domain = "NeoSimulator.ProfileFileDrags.\(UUID().uuidString)"
+        let directory = FileManager.default.temporaryDirectory.appending(path: domain, directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let search = ServiceConfiguration(disabledLabels: ["com.apple.searchd"])
+        let profile = try store.create(name: "Search: Off", configuration: search)
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 520), styleMask: [.titled, .resizable],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let table = try #require(
+            inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+                .first { $0.accessibilityLabel() == "Service Profiles" })
+        try await wait(timeout: .seconds(5)) { table.numberOfRows == 2 }
+
+        // Control-clicking the built-in profile offers to export it, but not to rename it.
+        let row = table.rect(ofRow: 0)
+        let click = try #require(
+            NSEvent.mouseEvent(
+                with: .rightMouseDown, location: table.convert(NSPoint(x: row.midX, y: row.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 1, pressure: 1))
+        let menu = try #require(table.menu(for: click))
+        controller.menuNeedsUpdate(menu)
+        #expect(menu.items.map(\.title) == ["Duplicate", "Export…"])
+
+        // A profile drags out as a file named after it, with what it had when the drag started.
+        let promise = try #require(controller.tableView(table, pasteboardWriterForRow: 1) as? NSFilePromiseProvider)
+        let delegate = try #require(promise.delegate)
+        let name = delegate.filePromiseProvider(promise, fileNameForType: promise.fileType)
+        #expect(name == "Search- Off.jsonl")
+        try store.update(profile.id, name: "Renamed", configuration: ServiceConfiguration())
+        func write(to url: URL) async -> (any Error)? {
+            await withCheckedContinuation { written in
+                delegate.filePromiseProvider(promise, writePromiseTo: url) { written.resume(returning: $0) }
+            }
+        }
+        // A file that the destination already has stays as it is.
+        let existing = directory.appending(path: "Existing.jsonl")
+        try Data("kept".utf8).write(to: existing)
+        let refusal = await write(to: existing)
+        #expect(try refusal != nil && Data(contentsOf: existing) == Data("kept".utf8))
+        let file = directory.appending(path: name)
+        #expect(await write(to: file) == nil)
+
+        // Dropping the file adds a profile with what the file has, and only a file of profiles drops.
+        let notes = directory.appending(path: "Notes.txt")
+        try Data().write(to: notes)
+        for (url, operation) in [(notes, NSDragOperation()), (file, .copy)] {
+            let drop = TestDraggingInfo([url])
+            defer { drop.draggingPasteboard.releaseGlobally() }
+            #expect(
+                controller.tableView(table, validateDrop: drop, proposedRow: 1, proposedDropOperation: .above)
+                    == operation)
+            #expect(controller.tableView(table, acceptDrop: drop, row: -1, dropOperation: .on) == !operation.isEmpty)
+        }
+        try await wait(timeout: .seconds(5)) { store.profiles.count == 2 }
+        let imported = try #require(store.profiles.last)
+        #expect(imported.id != profile.id && imported.name == "Search: Off" && imported.configuration == search)
+        #expect(controller.model.selectedProfile === imported)
     }
 
     @Test func serviceProfilesKeepDeviceOverridesAcrossSwitchesAndRelaunch() throws {
@@ -4986,8 +5062,9 @@ struct ManagerModelTests {
         let actionsAccessory = try #require(controller.splitViewItems[0].bottomAlignedAccessoryViewControllers.first)
         let actions = try #require(inspectorViews(actionsAccessory.view).compactMap { $0 as? NSSegmentedControl }.first)
         #expect(!actions.isEnabled(forSegment: 1))
-        let add = try #require((actions.cell as? NSSegmentedCell)?.accessibilityChildren()?.first as? any NSAccessibilityProtocol)
-        _ = add.accessibilityPerformPress()
+        #expect(controller.addProfileMenu.items.map(\.title) == ["New Profile", "Import…"])
+        func addProfile() { controller.addProfileMenu.performActionForItem(at: 0) }
+        addProfile()
         try await wait(timeout: .seconds(5)) {
             guard let field = window.firstResponder as? NSTextView else { return false }
             return field.string == "Profile (1)" && field.selectedRange() == NSRange(location: 0, length: 11)
@@ -5078,13 +5155,13 @@ struct ManagerModelTests {
         #expect(search.stringValue == otherLabel && categories.selectedRow == selectedRow)
         #expect(controller.services.list.selectedSection?.category === other.category && shownServices() == shown)
         // Adding copies the selected profile into a new one and keeps the default.
-        _ = add.accessibilityPerformPress()
+        addProfile()
         let copy = controller.model.selectedProfile
         #expect(copy.name == "Profile (1)" && copy.id != first.id)
         #expect(
             copy.configuration == first.configuration && first.configuration.disabledLabels == ["com.apple.searchd"])
         #expect(store.defaultProfileID == ServiceProfile.allServicesID)
-        _ = add.accessibilityPerformPress()
+        addProfile()
         #expect(controller.model.selectedProfile.name == "Profile (2)")
     }
 
@@ -5343,6 +5420,50 @@ struct ManagerModelTests {
         }
         try restored.deleteCategory(categoryID)
         #expect(ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil).catalog == .builtIn)
+    }
+
+    @Test func exportedProfilesImportElsewhereWithTheirCategoriesOrNotAtAll() throws {
+        let domains = ["Exporting", "Importing"].map { "NeoSimulator.ServiceProfileFiles.\($0).\(UUID().uuidString)" }
+        defer {
+            for domain in domains {
+                try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+            }
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domains[0]), legacyDefaults: nil)
+        let label = "com.example.agent"
+        let categoryID = try store.createCategory(named: "Agents")
+        try store.addService(label, to: categoryID)
+        let profile = try store.create(
+            name: "Agents Off", configuration: ServiceConfiguration(disabledLabels: [label, "com.apple.searchd"]))
+        let line = try store.exportedLine(for: profile)
+        let builtIn = try store.exportedLine(for: store.allServices)
+        #expect(line.firstIndex(of: UInt8(ascii: "\n")) == line.indices.last)
+
+        // Each line becomes a new profile, and a category that two lines list joins once.
+        let other = ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil)
+        let imported = try other.importProfiles(from: [("Profiles.jsonl", line + builtIn + line)])
+        #expect(imported.map(\.name) == ["Agents Off", "All Services", "Agents Off"])
+        #expect(Set(imported.map(\.id)).count == 3 && imported.allSatisfy { $0.canEdit && $0.id != profile.id })
+        #expect(other.customCategories == store.customCategories)
+        #expect(
+            imported[0].configuration == profile.configuration && imported[1].configuration == ServiceConfiguration())
+        #expect(imported[0].categories.first?.id == categoryID && imported[0].categories.first?.isEnabled == false)
+        #expect(
+            ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil).profiles.map(\.id)
+                == imported.map(\.id))
+
+        // A category that differs from the one here, or a line that can't import, leaves everything as it was.
+        try other.renameCategory(categoryID, to: "Renamed")
+        let saved = try Data(contentsOf: other.fileURL)
+        for (contents, failedLine) in [
+            (line, 1), (builtIn + Data("{\"version\":2}\n".utf8), 2), (builtIn + builtIn + Data("[]\n".utf8), 3),
+        ] {
+            let failure = try #require(throws: ServiceProfileStore.ImportFailure.self) {
+                try other.importProfiles(from: [("Profiles.jsonl", contents)])
+            }
+            #expect(failure.line == failedLine && failure.localizedDescription.contains("Profiles.jsonl"))
+            #expect(try other.profiles.count == 3 && Data(contentsOf: other.fileURL) == saved)
+        }
     }
 
     @Test func profileEditsUseTheSameSharedServiceAndPlatformRulesAsLiveControls() throws {

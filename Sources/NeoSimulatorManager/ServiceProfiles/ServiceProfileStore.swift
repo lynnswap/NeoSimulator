@@ -80,6 +80,19 @@ package struct CustomServiceCategory: Codable, Equatable, Sendable {
     }
 }
 
+/// A profile as a line of a JSON Lines file, with the custom categories that it lists. Which simulators use the profile
+/// and which profile is the default stay behind.
+private struct PortableServiceProfile: Codable {
+    /// Reads what a line says about its format before the rest, so that one from a later format can say so.
+    struct Format: Decodable { let version: Int }
+
+    static let currentVersion = 1
+    var version = Self.currentVersion
+    var name: String
+    var disabledLabels: [String]
+    var customCategories: [CustomServiceCategory]
+}
+
 /// Which profile a device takes at each boot.
 package enum ServiceProfileSelection: Codable, Hashable, Sendable {
     /// The app-wide default profile, whichever it is at the next boot.
@@ -169,6 +182,9 @@ package final class ServiceProfileStore {
         case listedService(String)
         case requiredService(String, reason: String)
         case wedgingService(String)
+        case noProfiles, unreadableProfile, unsupportedProfileVersion
+        case conflictingCategory(String)
+        case unlistedService(String)
 
         package var errorDescription: String? {
             switch self {
@@ -181,7 +197,25 @@ package final class ServiceProfileStore {
             case .requiredService(let label, let reason): "“\(label)” stays on because simulators need it. \(reason)"
             case .wedgingService(let label):
                 "Turning off “\(label)” stops simulators from working, even after they restart."
+            case .noProfiles: "The file contains no service profiles."
+            case .unreadableProfile: "The line isn’t a NeoSimulator service profile."
+            case .unsupportedProfileVersion: "The profile is in a format that this version of NeoSimulator can’t read."
+            case .conflictingCategory(let name): "The category “\(name)” differs from the one with its identifier here."
+            case .unlistedService(let label): "The profile turns off “\(label)”, which none of the categories lists."
             }
+        }
+    }
+
+    /// Why a line of a file can't become a profile.
+    package struct ImportFailure: Error, LocalizedError {
+        package let file: String
+        /// The line, counting from 1, or `nil` for a failure of the whole file.
+        package let line: Int?
+        package let reason: any Error
+
+        package var errorDescription: String? {
+            guard let line else { return "“\(file)”: \(reason.localizedDescription)" }
+            return "“\(file)”, line \(line): \(reason.localizedDescription)"
         }
     }
 
@@ -378,18 +412,10 @@ package final class ServiceProfileStore {
     /// The label need not exist in every runtime, since enabling one without a job only lifts its override.
     /// - Throws: ``Failure`` if the label is empty, the category lists it, or turning it off would break simulators.
     package func addService(_ label: String, to categoryID: String) throws {
-        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !label.isEmpty else { throw Failure.emptyLabel }
         var updated = state
         let index = try customCategoryIndex(categoryID, in: updated)
-        guard !updated.customCategories[index].labels.contains(label) else { throw Failure.listedService(label) }
-        if let required = SimulatorBackgroundServiceCategory.all.lazy.flatMap(\.requiredServices)
-            .first(where: { $0.label == label })
-        {
-            throw Failure.requiredService(label, reason: required.reason)
-        }
-        guard !BackgroundServiceCatalog.wedgingLabels.contains(label) else { throw Failure.wedgingService(label) }
-        updated.customCategories[index].labels.append(label)
+        updated.customCategories[index].labels.append(
+            try validLabel(label, besides: updated.customCategories[index].labels))
         try save(updated)
     }
 
@@ -419,6 +445,93 @@ package final class ServiceProfileStore {
             result.devices[device]?.overrides = binding.overrides.filter { !unlisted.contains($0.key) }
         }
         return result
+    }
+
+    /// The trimmed label, if a custom category that lists `labels` can add it.
+    private func validLabel(_ label: String, besides labels: [String]) throws -> String {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { throw Failure.emptyLabel }
+        guard !labels.contains(label) else { throw Failure.listedService(label) }
+        if let required = SimulatorBackgroundServiceCategory.all.lazy.flatMap(\.requiredServices)
+            .first(where: { $0.label == label })
+        {
+            throw Failure.requiredService(label, reason: required.reason)
+        }
+        guard !BackgroundServiceCatalog.wedgingLabels.contains(label) else { throw Failure.wedgingService(label) }
+        return label
+    }
+
+    // MARK: Files
+
+    /// The profile as a line of JSON Lines, ending in a line feed, that ``importProfiles(from:)`` reads on another Mac.
+    ///
+    /// The line has the profile's name, the services that it turns off, and the custom categories that it lists.
+    package func exportedLine(for profile: ServiceProfile) throws -> Data {
+        // A profile saved by an earlier version can turn off a label that the categories no longer list, which
+        // couldn't import.
+        let portable = PortableServiceProfile(
+            name: profile.name,
+            disabledLabels: profile.configuration.disabledLabels.intersection(catalog.slimmable).sorted(),
+            customCategories: profile.canEdit ? customCategories : [])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(portable) + Data("\n".utf8)
+    }
+
+    /// Adds the profile on each line of JSON Lines files as a new profile, with the custom categories that it lists.
+    ///
+    /// A category joins the custom categories unless one with its identifier is here, which must match it. Nothing
+    /// changes unless every line of every file imports.
+    /// - Parameter files: Each file's name, which a failure names, and its contents.
+    /// - Returns: The new profiles, in the order of the files and their lines.
+    /// - Throws: ``ImportFailure`` for the first line or file that can't import.
+    @discardableResult
+    package func importProfiles(from files: [(name: String, contents: Data)]) throws -> [ServiceProfile] {
+        if let loadFailure { throw loadFailure }
+        var updated = state
+        var imported: [ServiceProfile.Record] = []
+        for file in files {
+            let lines = file.contents.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+            let count = imported.count
+            // JSON allows the whitespace that a blank line or a carriage return leaves.
+            for (index, line) in lines.enumerated() where line.contains(where: { !" \t\r".utf8.contains($0) }) {
+                do { imported.append(try importLine(Data(line), into: &updated)) } catch {
+                    throw ImportFailure(file: file.name, line: index + 1, reason: error)
+                }
+            }
+            if imported.count == count { throw ImportFailure(file: file.name, line: nil, reason: Failure.noProfiles) }
+        }
+        updated.profiles += imported
+        try save(updated)
+        return imported.compactMap { profile($0.id) }
+    }
+
+    private func importLine(_ line: Data, into state: inout State) throws -> ServiceProfile.Record {
+        let decoder = JSONDecoder()
+        guard let format = try? decoder.decode(PortableServiceProfile.Format.self, from: line) else {
+            throw Failure.unreadableProfile
+        }
+        guard format.version == PortableServiceProfile.currentVersion else { throw Failure.unsupportedProfileVersion }
+        guard let portable = try? decoder.decode(PortableServiceProfile.self, from: line) else {
+            throw Failure.unreadableProfile
+        }
+        for category in portable.customCategories {
+            var labels: [String] = []
+            for label in category.labels { labels.append(try validLabel(label, besides: labels)) }
+            let imported = CustomServiceCategory(
+                id: category.id, name: try validName(category.name, empty: .emptyCategoryName), labels: labels)
+            if let existing = state.customCategories.first(where: { $0.id == imported.id }) {
+                guard existing == imported else { throw Failure.conflictingCategory(existing.name) }
+            } else {
+                state.customCategories.append(imported)
+            }
+        }
+        // A choice for a service that no category lists could never show or change.
+        let configuration = ServiceConfiguration(disabledLabels: Set(portable.disabledLabels))
+        if let unlisted = configuration.disabledLabels.subtracting(state.catalog.slimmable).sorted().first {
+            throw Failure.unlistedService(unlisted)
+        }
+        return ServiceProfile.Record(id: UUID(), name: try validName(portable.name), configuration: configuration)
     }
 
     private func validName(_ name: String, empty: Failure = .emptyName) throws -> String {

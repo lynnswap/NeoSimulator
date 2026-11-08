@@ -3,6 +3,7 @@ import NeoSimulatorHostSupport
 import Foundation
 import Observation
 import NeoSimulatorManager
+import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class ServiceProfilesSettingsModel {
@@ -109,4 +110,37 @@ final class ServiceProfilesSettingsModel {
     func removeService(_ service: BackgroundServiceItem, from category: BackgroundServiceCategoryModel) throws {
         try store.removeService(service.label, from: category.id)
     }
+
+    // MARK: Files, which carry profiles between Macs
+
+    /// JSON Lines, which the system doesn't declare a type for.
+    nonisolated static let fileType = UTType(filenameExtension: "jsonl") ?? .data
+
+    /// A name for `profile`'s file, from its name without what file names can't have.
+    func exportFileName(for profile: ServiceProfile) -> String {
+        let unsafe = CharacterSet(charactersIn: "/:").union(.controlCharacters)
+        let name = String(String.UnicodeScalarView(profile.name.unicodeScalars.map { unsafe.contains($0) ? "-" : $0 }))
+            // A leading period hides the file.
+            .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ".")))
+        return (name.isEmpty ? "Service Profile" : name) + ".jsonl"
+    }
+
+    /// Writes `profile` to a JSON Lines file at `url`.
+    func export(_ profile: ServiceProfile, to url: URL) async throws {
+        try await writeFile(store.exportedLine(for: profile), to: url)
+    }
+
+    /// Adds the profiles in JSON Lines files and selects the first. Nothing changes unless every file imports.
+    func importProfiles(from urls: [URL]) async throws {
+        let files = try await readFiles(at: urls)
+        if let first = try store.importProfiles(from: files).first { selectedProfileID = first.id }
+    }
+}
+
+@concurrent private func writeFile(_ contents: Data, to url: URL) async throws {
+    try contents.write(to: url, options: .atomic)
+}
+
+@concurrent private func readFiles(at urls: [URL]) async throws -> [(name: String, contents: Data)] {
+    try urls.map { (name: $0.lastPathComponent, contents: try Data(contentsOf: $0)) }
 }
