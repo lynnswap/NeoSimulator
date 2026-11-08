@@ -188,6 +188,8 @@ package final class SimulatorConnection: SimulatorDisplay {
 
     package var isBooted: Bool { !disconnected && device.state == 3 }
 
+    package func waitForGuestStartup() async throws { try await device.waitForStartup { _ in } }
+
     package var inputView: NSView { nativeCanvas?.inputView ?? plugin?.overlayView ?? digitizerView ?? view }
 
     package var deviceFrame: NSRect {

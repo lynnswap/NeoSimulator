@@ -218,10 +218,6 @@ package final class DeviceScreens {
         configuration.pasteboardSync = pasteboardSync
         configuration.deviceRegistry = model.registry
         configuration.offersLifetimeChoice = true
-        configuration.onOpen = { identifier in
-            HostPreferences.defaults.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
-            HostPreferences.defaults.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
-        }
         configuration.onError = { [weak self] error in self?.onError?(error) }
         configuration.onHostConflictBegan = { [weak self] context, name in
             guard let self else { return }

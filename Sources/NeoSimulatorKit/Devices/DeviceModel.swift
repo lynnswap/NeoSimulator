@@ -132,8 +132,10 @@ public final class DeviceModel: Identifiable {
     @ObservationIgnored private var interest: [Int: Int] = [:]
     @ObservationIgnored private var presentations = 0
     @ObservationIgnored private var commandReaders: [UUID: @MainActor () -> Void] = [:]
-    @ObservationIgnored private var health: Task<Void, Never>?
+    @ObservationIgnored private var health: [Task<Void, Never>] = []
     @ObservationIgnored private weak var followedChannel: SimulatorDeviceChannel?
+    /// The call that each followed channel holds, in the order that ``follow(_:)`` follows them.
+    @ObservationIgnored private var heldCalls: [String?] = []
     @ObservationIgnored private var recoveryObservers: [UUID: AsyncStream<Void>.Continuation] = [:]
     @ObservationIgnored private var writes: [UUID: Task<Void, any Error>] = [:]
     @ObservationIgnored private var unstartedWrites: Set<UUID> = []
@@ -161,7 +163,7 @@ public final class DeviceModel: Identifiable {
     }
 
     isolated deinit {
-        health?.cancel()
+        for follower in health { follower.cancel() }
         for observer in recoveryObservers.values { observer.finish() }
     }
 
@@ -275,7 +277,7 @@ public final class DeviceModel: Identifiable {
         backgroundServices.discardRunningRead()
         inspection.discardRunningReads()
         for identifier in unstartedWrites { writes[identifier]?.cancel() }
-        health?.cancel()
+        for follower in health { follower.cancel() }
     }
 
     package func stopReading() {
@@ -298,12 +300,10 @@ public final class DeviceModel: Identifiable {
 
     // MARK: Writing
 
-    /// Refuses a change that the device could not be sent because an earlier call to it has not returned.
+    /// Refuses a change that the device must not receive. One that an earlier call holds the way to is refused by the
+    /// channel that it would take, since a call held on one of a device's channels leaves the others answering.
     package func checkAcceptsChanges() throws {
         try checkIsListed()
-        if let unresponsiveOperation {
-            throw DeviceOperationFailure.notSent(operation: "change the device's state", heldBy: unresponsiveOperation)
-        }
     }
 
     /// Refuses a change that a later device with the same identity must not receive.
@@ -353,34 +353,42 @@ public final class DeviceModel: Identifiable {
 
     // MARK: Channel health
 
-    /// Keeps `unresponsiveOperation` as `channel` reports it. A channel's stream has one consumer each, so the model takes
-    /// its own and fans recoveries out through ``recoveries()``.
+    /// Keeps `unresponsiveOperation` as `channel` and, for a device's channel, the channel of the requests that its guest
+    /// answers report it, since either can hold a call while the other answers. A channel's stream has one consumer
+    /// each, so the model takes its own and fans recoveries out through ``recoveries()``.
     package func follow(_ channel: SimulatorDeviceChannel) {
         guard followedChannel !== channel else { return }
         followedChannel = channel
-        health?.cancel()
-        let changes = channel.healthChanges()
-        health = Task { [weak self] in
-            for await health in changes {
-                guard let self else { return }
-                self.apply(health)
+        for follower in health { follower.cancel() }
+        var channels = [channel]
+        if case .device(let device) = channel.scope { channels.append(DeviceIOHub.shared.channel(for: .bridge(device))) }
+        // What a replaced channel held is taken as this one's, so that its first report of an answer recovers the device.
+        heldCalls = [unresponsiveOperation] + Array(repeating: nil, count: channels.count - 1)
+        health = channels.enumerated().map { index, channel in
+            let changes = channel.healthChanges()
+            return Task { [weak self] in
+                for await health in changes {
+                    // A channel that another has replaced may still have had a change on its way.
+                    guard let self, !Task.isCancelled else { return }
+                    self.apply(health, from: index)
+                }
             }
         }
     }
 
-    private func apply(_ health: DeviceChannelHealth) {
-        switch health {
-        case .unresponsive(let call, _):
-            unresponsiveOperation = call
-        case .ready:
-            guard unresponsiveOperation != nil else { return }
-            unresponsiveOperation = nil
-            revalidate([.settings, .backgroundServices])
-            for observer in recoveryObservers.values { observer.yield() }
-        }
+    /// A channel that answers again is a recovery even while another still holds a call, since what it takes can go on.
+    private func apply(_ health: DeviceChannelHealth, from channel: Int) {
+        let wasHeld = heldCalls[channel] != nil
+        if case .unresponsive(let call, _) = health { heldCalls[channel] = call } else { heldCalls[channel] = nil }
+        let held = heldCalls.lazy.compactMap { $0 }.first
+        if held != unresponsiveOperation { unresponsiveOperation = held }
+        guard wasHeld, heldCalls[channel] == nil else { return }
+        revalidate([.settings, .backgroundServices])
+        for observer in recoveryObservers.values { observer.yield() }
     }
 
-    /// An element each time a call that outlived its deadline returns, which is the only thing that recovers a device.
+    /// An element each time a call that outlived its deadline on one of the device's channels returns, which is the only
+    /// thing that recovers that channel.
     package func recoveries() -> AsyncStream<Void> {
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let identifier = UUID()

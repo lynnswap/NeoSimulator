@@ -22,6 +22,8 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
     private var isRestarting = false
     private enum OrientationRead { case notStarted, pending, finished }
     private var orientationRead = OrientationRead.notStarted
+    /// Waits for the guest to start before the orientation is read, holding none of the session's operations.
+    private var orientationStartup: Task<Void, Never>?
     /// Distinguishes a previously presented compact frame from its unplaced initial frame.
     private var hasPresentedCompactWindow = false
     private let cascade: WindowCascade
@@ -558,8 +560,14 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
             guard let self else { return }
             let services = self.session.optionalServices
             self.serviceStatus = DeviceServiceStatus(input: services.input, pasteboard: services.pasteboard,
-                                                     isAwaitingDeviceRecord: services.isAwaitingDeviceRecord)
-            self.content.setServiceStatus(self.serviceStatus) { [weak self] in self?.session.optionalServices.retryInput() }
+                                                     isAwaitingDeviceRecord: services.isAwaitingDeviceRecord,
+                                                     startup: services.startup)
+            self.content.setServiceStatus(self.serviceStatus) { [weak self] action in
+                switch action {
+                case .retry: self?.session.optionalServices.retryInput()
+                case .restart: self?.restart()
+                }
+            }
         }
     }
 
@@ -697,6 +705,7 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         }
         display.setChromeVisible(preferences.showsDeviceBezels)
         bezelChanged()
+        orientationStartup?.cancel()
         orientationRead = .notStarted
         initialPlacement = nil
         fitting.setScale(scale)
@@ -725,6 +734,27 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         let session = self.session
         guard session.canPerformToolOperation else { return }
         orientationRead = .pending
+        // The guest's own service answers, so the read waits for the guest to start. The wait is no operation of the
+        // session's, so the device can still be restarted or shut down while its boot lasts.
+        orientationStartup = Task { [weak self] in
+            do { try await session.waitForGuestStartup() } catch {
+                guard let self, self.session === session else { return }
+                self.orientationRead = .finished
+                self.initialPlacement = nil
+                if !(error is CancellationError) { hostLog(error.localizedDescription) }
+                return
+            }
+            guard let self, self.session === session else { return }
+            self.readOrientation(of: session)
+        }
+    }
+
+    private func readOrientation(of session: DeviceSession) {
+        // Another operation that began during the wait leaves the read to the next activation.
+        guard session.canPerformToolOperation else {
+            orientationRead = .notStarted
+            return
+        }
         session.run({ [weak self] in
             guard let self, self.session === session else { return }
             defer {
@@ -1739,6 +1769,8 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         }
         pluginLookUp?.cancel()
         pluginLookUp = nil
+        orientationStartup?.cancel()
+        orientationStartup = nil
         serviceStatusObservation?.cancel()
         serviceStatusObservation = nil
         keyboard.invalidate()
@@ -1993,13 +2025,13 @@ final class DeviceContentView: NSView, DisplayContentView {
     var heightAboveDisplay: CGFloat { bounds.height - availableDisplayRect.height }
     private var serviceStatusView: DeviceServiceStatusView?
     /// What the device's optional services say, in front of the display. This changes nothing else in the layout.
-    func setServiceStatus(_ status: DeviceServiceStatus?, retry: @escaping () -> Void) {
+    func setServiceStatus(_ status: DeviceServiceStatus?, perform: @escaping (DeviceServiceStatus.Action) -> Void) {
         guard let status else {
             serviceStatusView?.removeFromSuperview()
             serviceStatusView = nil
             return
         }
-        let view = serviceStatusView ?? DeviceServiceStatusView(onRetry: retry)
+        let view = serviceStatusView ?? DeviceServiceStatusView(perform: perform)
         if serviceStatusView == nil {
             serviceStatusView = view
             addSubview(view, positioned: .above, relativeTo: nil)

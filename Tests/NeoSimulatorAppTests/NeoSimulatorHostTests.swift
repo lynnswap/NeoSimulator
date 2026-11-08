@@ -3764,8 +3764,6 @@ struct InputFocusTests {
     func aTestingDeviceHiddenWhileItIsReadDoesNotOpen() async throws {
         let (host, device, channel, cleanUp) = try await makeHostWithListedTestingDevice()
         defer { cleanUp() }
-        var opened: [SimulatorDeviceIdentifier] = []
-        host.onOpen = { opened.append($0) }
 
         let release = DispatchSemaphore(value: 0)
         defer { release.signal() }
@@ -3781,7 +3779,7 @@ struct InputFocusTests {
         let failure = await #expect(throws: SimulatorError.self) { try await opening.value }
         #expect(failure?.localizedDescription == "The selected simulator is no longer available")
         // What the read found would claim the device, and start it if it were not running, before anything read it again.
-        #expect(opened.isEmpty)
+        #expect(!host.ownedDeviceIdentifiers.contains(device))
         try await host.stop()
     }
 
@@ -5466,13 +5464,10 @@ struct InputFocusTests {
         defer { phone.invalidate() }
         if embedded { phone.embed(in: parent) }
         else { phone.showNewWindow(cascadingFrom: &position) }
-        #expect(phone.session.isBusy)
-        while phone.session.isBusy {
-            await withCheckedContinuation { continuation in
-                withObservationTracking { _ = phone.session.isBusy } onChange: { continuation.resume() }
-            }
+        // The read waits for the guest to start, which a test display has done.
+        try await wait {
+            !phone.session.isBusy && (try? String(contentsOf: log, encoding: .utf8))?.contains("orientation get") == true
         }
-        #expect(try String(contentsOf: log, encoding: .utf8).contains("orientation get"))
         if embedded {
             phone.showCompactWindow()
             phone.embed(in: parent)
@@ -6027,9 +6022,10 @@ struct InputFocusTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let devicectl = directory.appendingPathComponent("devicectl")
+        let log = directory.appendingPathComponent("arguments"), devicectl = directory.appendingPathComponent("devicectl")
         try """
             #!/bin/sh
+            printf '%s\\n' "$*" >> "\(log.path)"
             printf '{"result":{"deviceOrientation":"landscapeLeft","deviceOrientationNonFlat":"landscapeLeft"}}'
             """.write(to: devicectl, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: devicectl.path)
@@ -6041,11 +6037,13 @@ struct InputFocusTests {
             display.onRotation = { [unowned display] in display.naturalSize = $0 == 0 ? portrait : landscape }
             return (try makeController(display, devicectl: devicectl, device: device, preferences: preferences), display)
         }
-        func readOrientation(_ controller: DeviceWindowController) async {
-            while controller.session.isBusy {
-                await withCheckedContinuation { continuation in
-                    withObservationTracking { _ = controller.session.isBusy } onChange: { continuation.resume() }
-                }
+        // Each window reads once, after its guest has started, so the read may not have begun when the window shows.
+        var reads = 0
+        func readOrientation(_ controller: DeviceWindowController) async throws {
+            reads += 1
+            try await wait {
+                !controller.session.isBusy
+                    && (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n").count == reads
             }
         }
         let visible = try #require(NSScreen.screens.first?.visibleFrame)
@@ -6057,7 +6055,7 @@ struct InputFocusTests {
         let (reopened, display) = try open("A")
         defer { reopened.invalidate() }
         reopened.showNewWindow(cascadingFrom: &cascade)
-        await readOrientation(reopened)
+        try await readOrientation(reopened)
         #expect(display.rotations == [90])
         let window = try #require(reopened.window)
         #expect(window.contentLayoutRect.width == landscape.width)
@@ -6069,14 +6067,14 @@ struct InputFocusTests {
         let movedWindow = try #require(moved.window)
         movedWindow.setFrameOrigin(NSPoint(x: movedWindow.frame.minX - 20, y: movedWindow.frame.minY - 20))
         let topLeft = NSPoint(x: movedWindow.frame.minX, y: movedWindow.frame.maxY)
-        await readOrientation(moved)
+        try await readOrientation(moved)
         #expect(movedWindow.contentLayoutRect.width == landscape.width)
         #expect(abs(movedWindow.frame.minX - topLeft.x) < 1 && abs(movedWindow.frame.maxY - topLeft.y) < 1)
         let (centered, _) = try open("C")
         defer { centered.invalidate() }
         var first = NSPoint.zero
         centered.showNewWindow(cascadingFrom: &first)
-        await readOrientation(centered)
+        try await readOrientation(centered)
         let centeredWindow = try #require(centered.window)
         #expect(centeredWindow.contentLayoutRect.width == landscape.width)
         let placed = centeredWindow.frame
@@ -6092,7 +6090,7 @@ struct InputFocusTests {
         defer { rescaled.invalidate() }
         #expect(tallDisplay.renderScale < 0.5)
         rescaled.showNewWindow(cascadingFrom: &cascade)
-        await readOrientation(rescaled)
+        try await readOrientation(rescaled)
         #expect(tallDisplay.renderScale == 0.5)
         let rescaledWindow = try #require(rescaled.window)
         #expect(rescaledWindow.contentLayoutRect.width == landscape.width * 0.5)
@@ -6110,8 +6108,8 @@ struct InputFocusTests {
         guestRotated.showNewWindow(cascadingFrom: &cascade)
         guestDisplay.guestInterfaceAngle = 90
         guestDisplay.onPropertiesChange?()
-        #expect(guestDisplay.rotations == [90] && guestRotated.session.isBusy)
-        await readOrientation(guestRotated)
+        #expect(guestDisplay.rotations == [90])
+        try await readOrientation(guestRotated)
         #expect(guestDisplay.renderScale == 0.5)
         let guestWindow = try #require(guestRotated.window)
         #expect(abs(guestWindow.frame.midX - center.x) < 1 && abs(guestWindow.frame.midY - center.y) < 1)
@@ -6123,7 +6121,7 @@ struct InputFocusTests {
         defer { reshown.invalidate() }
         reshown.showNewWindow(cascadingFrom: &cascade)
         reshown.showAndActivate()
-        await readOrientation(reshown)
+        try await readOrientation(reshown)
         #expect(reshownDisplay.renderScale == 0.5)
         let reshownWindow = try #require(reshown.window)
         #expect(abs(reshownWindow.frame.midX - center.x) < 1 && abs(reshownWindow.frame.midY - center.y) < 1)
@@ -7496,6 +7494,36 @@ struct InputFocusTests {
         try await wait { display.notificationStates[slowMotion] == 1 && worker.calls.contains("read the device's state") }
         #expect(worker.calls.filter { $0 == "toggle the device's appearance" }.count == 1)
         #expect(display.appearanceToggles == 0)
+    }
+
+    /// The guest's bridge answers on a channel of its own. The device's model hears of a call held there, leaves refusing
+    /// what would follow it to that channel, and recovers with each channel that answers again.
+    @Test func aCallHeldOnTheGuestsBridgeMakesTheModelUnresponsiveWithoutItRefusingChanges() async throws {
+        let device = DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil)
+        let bridge = HeldDeviceWorker(limit: .milliseconds(50), channel: DeviceIOHub.shared.channel(for: .bridge(device)))
+        defer { bridge.release() }
+        let own = HeldDeviceWorker(limit: .milliseconds(50), channel: SimulatorDeviceChannel(scope: .device(device)))
+        defer { own.release() }
+        let model = standaloneDeviceModel()
+        model.follow(own.channel)
+        let recoveries = model.recoveries(), recovered = Mutex(0)
+        let counting = Task { for await _ in recoveries { recovered.withLock { $0 += 1 } } }
+        defer { counting.cancel() }
+        bridge.hold()
+        own.hold()
+
+        await #expect(throws: DeviceOperationFailure.self) { try await bridge.read("read the guest's state") }
+        try await wait { model.unresponsiveOperation == "read the guest's state" }
+        try model.checkAcceptsChanges()
+        await #expect(throws: DeviceOperationFailure.self) { try await own.read("look up a service") }
+        try await wait { model.unresponsiveOperation == "look up a service" }
+
+        // The bridge's requests can go on while the device's own channel still holds its call.
+        bridge.release()
+        try await wait { recovered.withLock { $0 } == 1 }
+        #expect(model.unresponsiveOperation == "look up a service")
+        own.release()
+        try await wait { model.unresponsiveOperation == nil }
     }
 
     @Test func aPasteboardConnectionThatArrivesAfterTheSessionEndedIsLetGo() async throws {
@@ -9941,28 +9969,6 @@ struct InputFocusTests {
         #expect(!window.isVisible && closes == [.keepRunning])
     }
 
-    @Test func launchStartsTheLastDeviceOrSimulatorAppsFallback() {
-        let devices = [
-            availableDevice("A", "iPad A", runtime: "iOS 27.0", state: 1),
-            availableDevice("B", "iPhone B", runtime: "iOS 27.0", state: 1),
-            availableDevice("C", "iPod touch C", runtime: "iOS 27.0", state: 1),
-            availableDevice("D", "iPhone D", runtime: "iOS 27.0", state: 1),
-            availableDevice("E", "iPad E", runtime: "iOS 27.0", state: 1),
-        ]
-        let identifier = UUID().uuidString
-        let current = AvailableDevice(identifier: identifier, name: "Mine", descriptiveName: "Mine", runtimeIdentifier: "",
-                                      runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1)
-        #expect(HostApplication.initialDevice(in: devices + [current], current: SimulatorDeviceIdentifier(identifier.lowercased()))?.id == identifier)
-        #expect(HostApplication.initialDevice(in: devices, current: SimulatorDeviceIdentifier(identifier))?.id == "D")
-        #expect(HostApplication.initialDevice(in: [devices[0], devices[4]], current: nil)?.id == "A")
-        #expect(HostApplication.initialDevice(in: [], current: nil) == nil)
-        let path = "/fixture/TestingDevices"
-        let clone = AvailableDevice(identifier: identifier, name: "Testing iPad", descriptiveName: "Testing iPad", runtimeIdentifier: "", runtimeName: "", productFamily: 2, deviceTypeName: "iPad", state: 1, deviceSetPath: path)
-        let saved = SimulatorDeviceIdentifier(identifier.lowercased(), deviceSetPath: path)
-        #expect(HostApplication.initialDevice(in: devices + [current, clone], current: saved)?.identity == clone.identity)
-        #expect(HostApplication.initialDevice(in: devices + [current], current: saved)?.identity == devices[3].identity)
-    }
-
     @Test func newSimulatorKeepsDeviceTypeAndRuntimeCompatible() async throws {
         let catalog = SimulatorCatalog(
             deviceTypes: [.init(identifier: "a", name: "iPhone A", productFamily: 1),
@@ -11527,11 +11533,15 @@ struct InputFocusTests {
         #expect(DeviceServiceStatus(input: .ready, pasteboard: .pending) == nil)
         // A wait for CoreDevice's word about the device can last, so it shows even when only a transfer waits.
         #expect(DeviceServiceStatus(input: .ready, pasteboard: .pending, isAwaitingDeviceRecord: true)?.message.contains("CoreDevice") == true)
-        #expect(DeviceServiceStatus(input: .pending, pasteboard: .ready)?.offersRetry == false)
+        #expect(DeviceServiceStatus(input: .pending, pasteboard: .ready)?.action == nil)
+        // Connecting again would wait for the same boot, so a wait for the boot, or its unfinished end, offers a restart.
+        let starting = DeviceServiceStatus(input: .pending, pasteboard: .ready, startup: .starting("waiting for backboardd"))
+        #expect(starting?.action == .restart && starting?.message.contains("waiting for backboardd") == true)
+        #expect(DeviceServiceStatus(input: .failed(failure), pasteboard: .ready, startup: .unfinished)?.action == .restart)
         let input = DeviceServiceStatus(input: .failed(failure), pasteboard: .failed(failure))
-        #expect(input?.offersRetry == true && input?.message.contains("It did not answer.") == true)
+        #expect(input?.action == .retry && input?.message.contains("It did not answer.") == true)
         let pasteboard = DeviceServiceStatus(input: .ready, pasteboard: .failed(failure))
-        #expect(pasteboard?.offersRetry == false && pasteboard?.message.contains("pasteboard") == true)
+        #expect(pasteboard?.action == nil && pasteboard?.message.contains("pasteboard") == true)
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -11548,12 +11558,12 @@ struct InputFocusTests {
         services.onRetryInput = { retries += 1 }
 
         services.setInput(.pending)
-        try await wait { controller.serviceStatus?.offersRetry == false }
+        try await wait { controller.serviceStatus != nil && controller.serviceStatus?.action == nil }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
 
         services.setInput(.failed(DeviceIOError.temporary("fixture", "It did not answer.")))
-        try await wait { controller.serviceStatus?.offersRetry == true }
+        try await wait { controller.serviceStatus?.action == .retry }
         window.layoutIfNeeded()
         #expect(display.view.frame == frame && window.frame == windowFrame)
         services.retryInput()
@@ -11568,7 +11578,7 @@ struct InputFocusTests {
     /// The screen beneath keeps its input: only Retry takes events.
     @Test func serviceStatusPassesEventsThroughExceptRetry() throws {
         var retries = 0
-        let view = DeviceServiceStatusView { retries += 1 }
+        let view = DeviceServiceStatusView { _ in retries += 1 }
         view.show(try #require(DeviceServiceStatus(input: .failed(DeviceIOError.temporary("fixture", "Failed.")), pasteboard: .ready)))
         view.frame = NSRect(origin: .zero, size: view.size(fitting: 420))
         view.layoutSubtreeIfNeeded()
@@ -12466,8 +12476,9 @@ final class HeldDeviceWorker: Sendable {
     private let limit: Duration
     private let state = Mutex<(calls: [String], gate: DispatchSemaphore?)>(([], nil))
 
-    init(limit: Duration = .seconds(10)) {
-        channel = SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil)))
+    init(limit: Duration = .seconds(10),
+         channel: SimulatorDeviceChannel = SimulatorDeviceChannel(scope: .device(DeviceAddress(identifier: UUID().uuidString, deviceSetPath: nil)))) {
+        self.channel = channel
         self.limit = limit
     }
 

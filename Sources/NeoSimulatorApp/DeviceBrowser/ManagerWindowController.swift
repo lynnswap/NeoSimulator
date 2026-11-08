@@ -95,7 +95,9 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         window.toolbarStyle = .unified
         super.init(window: window)
         sidebar.onSelectionChange = { [weak self] in self?.sidebarSelectionChanged(byUser: $0) }
-        sidebar.populateDeviceMenu = { [weak self] in self?.deviceActions.populate($0, devices: $1) }
+        sidebar.populateDeviceMenu = { [weak self] in
+            self?.deviceActions.populate($0, devices: $1, includesViewScreen: false)
+        }
         let sidebarItem = sidebar.makeSplitViewItem()
         splitController.addSplitViewItem(sidebarItem)
         splitController.addSplitViewItem(deviceScreenViewController.makeSplitViewItem())

@@ -39,12 +39,17 @@ package enum DeviceChannelScope: Hashable, Sendable {
     /// SimulatorKit's registrations for a device's screens, which wait for the screens' queues and not for
     /// CoreSimulator.
     case screens(DeviceAddress)
+    /// The requests that CoreSimulatorBridge answers in a device's guest. It answers one at a time, with no deadline, so
+    /// one that waits on the guest holds every later one; requests that CoreSimulator answers on the host stay on the
+    /// device's own channel.
+    case bridge(DeviceAddress)
 
     fileprivate var workerLabel: String {
         switch self {
         case .device(let device): "dev.lynnswap.NeoSimulator.device-worker.\(device.identifier)"
         case .deviceSet(let set): "dev.lynnswap.NeoSimulator.device-set-worker.\(set.path ?? "default")"
         case .screens(let device): "dev.lynnswap.NeoSimulator.screen-worker.\(device.identifier)"
+        case .bridge(let device): "dev.lynnswap.NeoSimulator.bridge-worker.\(device.identifier)"
         }
     }
 
@@ -53,6 +58,7 @@ package enum DeviceChannelScope: Hashable, Sendable {
         case .device(let device): "\(device.identifier)\(device.deviceSetPath.map { " in \($0)" } ?? "")"
         case .deviceSet(let set): set.path.map { "Device set \($0)" } ?? "Default device set"
         case .screens(let device): "Screens of \(Self.device(device).name)"
+        case .bridge(let device): "Guest of \(Self.device(device).name)"
         }
     }
 }

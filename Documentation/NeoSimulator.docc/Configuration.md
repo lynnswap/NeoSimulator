@@ -69,8 +69,6 @@ Per-device location choices use `DeviceLocationPreset.<UDID>` in
 
 | Preference | Effect |
 | --- | --- |
-| `AttachBootedOnStart` | Attach devices that are already booted when another app, such as Xcode, opens a renderer by itself. NeoSimulator itself attaches none at launch. |
-| `SessionOnLaunch`, `StartLastDeviceOnLaunch`, `CurrentDeviceUDID` | Start the last simulator when another app opens a renderer by itself without naming a device. Both launch flags must be on. |
 | `DetachOnWindowClose`, `DetachOnAppQuit` | Leave devices running when closing or quitting. |
 | `ShowSingleTouches`, `ShowPinches` | Show touch indicators; initially off and on respectively. |
 | `ScreenShotSaveLocation`, `ScreenShotUseMask` | Screenshot folder and capture mask. |

@@ -116,7 +116,8 @@ Neo observes the default set and, when enabled and present, Xcode's parallel
 testing set. It does not create the testing set. The manager attaches no device
 by itself, whether it was booted at launch or later: only a request opens a
 screen. Xcode launching an app moves an open screen to that Xcode. A renderer
-that another app opens by itself follows `AttachBootedOnStart` instead.
+that another app opens by itself also attaches no device that is running at its
+launch, and starts none; it shows the devices that start later.
 
 Sessions discover the integrated screen rather than assuming screen ID zero.
 A failed connection affects only that device. Teardown cancels commands and

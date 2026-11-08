@@ -315,8 +315,21 @@ package final class SimulatorScreenRouter {
                                    record: CoreDeviceSimulatorRecord, runtime: SimulatorPresentationRuntime,
                                    services: DeviceOptionalServices) {
         guard plan != .canvas, plan != .simulatorKit else { return }
-        let connect: @MainActor () async throws -> NativeInputServices? = {
-            try await connectInput(of: device, plan: plan, record: record, runtime: runtime)
+        let connect: @MainActor () async throws -> NativeInputServices? = { [weak services] in
+            if case .guest = plan {
+                // The guest's own services take its input, and until it has started they may not be there to look up.
+                do {
+                    try await device.waitForStartup { services?.setStartup(.starting($0)) }
+                    services?.setStartup(nil)
+                } catch let failure as UnfinishedDeviceStartup {
+                    services?.setStartup(.unfinished)
+                    throw failure
+                } catch {
+                    services?.setStartup(nil)
+                    throw error
+                }
+            }
+            return try await connectInput(of: device, plan: plan, record: record, runtime: runtime)
         }
         let activate: @MainActor (NativeInputServices) async throws -> Void = { [weak connection] connected in
             guard let connection else { throw CancellationError() }

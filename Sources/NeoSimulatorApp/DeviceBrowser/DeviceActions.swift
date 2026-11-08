@@ -46,27 +46,25 @@ final class DeviceActions: NSObject {
             menu.addItem(item)
         }
         let name = devices.first?.name ?? ""
-        let operations: [(String, DeviceManagementAction)] = [
-            ("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy")),
-            ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown), ("Restart", .restart),
-            ("Pause", .pause), ("Resume", .resume),
-            ("Pair Simulators", .pair), ("Unpair", .unpair),
-            ("Erase Content and Settings…", .erase), ("Remove…", .remove),
+        let sections: [[(String, DeviceManagementAction)]] = [
+            [("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy"))],
+            [
+                ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown), ("Restart", .restart),
+                ("Pause", .pause), ("Resume", .resume), ("Pair Simulators", .pair),
+            ],
+            [("Unpair", .unpair), ("Erase Content and Settings…", .erase), ("Remove…", .remove)],
         ]
-        var addedDestructiveSection = false
-        for (title, action) in operations where model.supports(action, devices: devices) {
-            if !menu.items.isEmpty, case .rename = action { menu.addItem(.separator()) }
-            switch action {
-            case .unpair, .erase, .remove:
-                if !addedDestructiveSection && !menu.items.isEmpty { menu.addItem(.separator()) }
-                addedDestructiveSection = true
-            default: break
+        for section in sections {
+            let operations = section.filter { model.supports($0.1, devices: devices) }
+            guard !operations.isEmpty else { continue }
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            for (title, action) in operations {
+                let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
+                item.isEnabled = model.canManage(action, deviceIDs: identifiers)
+                menu.addItem(item)
             }
-            let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
-            item.isEnabled = model.canManage(action, deviceIDs: identifiers)
-            menu.addItem(item)
         }
         if menu.items.isEmpty {
             let item = NSMenuItem(title: devices.isEmpty ? "No Devices Selected" : "No Actions Available", action: nil, keyEquivalent: "")

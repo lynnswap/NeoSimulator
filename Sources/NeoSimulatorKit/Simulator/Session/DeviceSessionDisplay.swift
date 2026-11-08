@@ -6,6 +6,9 @@ import NeoSimulatorDeviceIO
 @MainActor
 package protocol DeviceSessionDisplay: AnyObject {
     var isBooted: Bool { get }
+    /// Returns once the device reports that its guest has finished starting, which is when the guest's own services
+    /// answer. Throws if the device stops or its boot ends unfinished; cancellation ends the wait.
+    func waitForGuestStartup() async throws
     var captureDisplayID: UInt32? { get throws }
     func connectAppDisplay(uniqueID: String) async throws -> any DeviceSessionDisplay
     /// Current CoreSimulator backlight state: 2 on, 1 always-on dimmed, 0 off.
@@ -94,6 +97,8 @@ package protocol DeviceSessionDisplay: AnyObject {
 
 extension DeviceSessionDisplay {
     package var captureDisplayID: UInt32? { nil }
+    /// A display that does not report its guest's startup has nothing to wait for.
+    package func waitForGuestStartup() async throws {}
     package func connectAppDisplay(uniqueID: String) async throws -> any DeviceSessionDisplay {
         throw SimulatorError.unavailable("This display cannot connect to the app resizing screen.")
     }

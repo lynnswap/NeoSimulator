@@ -124,7 +124,6 @@ public enum SimulatorButton: Sendable {
 package struct SimulatorContextConfiguration {
     package var pasteboardSync: PasteboardSync?
     package var offersLifetimeChoice = false
-    package var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
     package var onError: ((any Error) -> Void)?
     package var guestLifetime: ManagedGuestLifetime?
     package var onHostConflictBegan: ((SimulatorContext, String) -> Void)?
@@ -370,7 +369,6 @@ public final class SimulatorContext {
         self.engine = engine
         guestLifetime = configuration.guestLifetime
         onError = configuration.onError
-        engine.onOpen = configuration.onOpen
         engine.onChange = { [weak self] in self?.reconcileScreens() }
         engine.onClose = { [weak self] id, choice, finishing in
             guard let self else { return }
