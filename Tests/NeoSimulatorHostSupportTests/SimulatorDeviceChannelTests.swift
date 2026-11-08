@@ -221,6 +221,8 @@ struct SimulatorDeviceChannelTests {
         #expect(hub.channel(for: .device(DeviceAddress(identifier: "ABC", deviceSetPath: link.path + "/"))) === channel)
         #expect(hub.channel(for: .device(DeviceAddress(identifier: "ABC", deviceSetPath: nil))) !== channel)
         #expect(hub.channel(for: .device(DeviceAddress(identifier: "OTHER", deviceSetPath: directory.path))) !== channel)
+        // A device's screen registrations wait for nothing that its requests wait for.
+        #expect(hub.channel(for: .screens(DeviceAddress(identifier: "abc", deviceSetPath: directory.path))) !== channel)
     }
 
     @Test func everyPathToADeviceSetFindsTheSameChannelWithinItsDeveloperDirectory() throws {

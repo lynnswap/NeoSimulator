@@ -36,11 +36,15 @@ package struct DeviceSetAddress: Hashable, Sendable {
 package enum DeviceChannelScope: Hashable, Sendable {
     case device(DeviceAddress)
     case deviceSet(DeviceSetAddress)
+    /// SimulatorKit's registrations for a device's screens, which wait for the screens' queues and not for
+    /// CoreSimulator.
+    case screens(DeviceAddress)
 
     fileprivate var workerLabel: String {
         switch self {
         case .device(let device): "dev.lynnswap.NeoSimulator.device-worker.\(device.identifier)"
         case .deviceSet(let set): "dev.lynnswap.NeoSimulator.device-set-worker.\(set.path ?? "default")"
+        case .screens(let device): "dev.lynnswap.NeoSimulator.screen-worker.\(device.identifier)"
         }
     }
 
@@ -48,6 +52,7 @@ package enum DeviceChannelScope: Hashable, Sendable {
         switch self {
         case .device(let device): "\(device.identifier)\(device.deviceSetPath.map { " in \($0)" } ?? "")"
         case .deviceSet(let set): set.path.map { "Device set \($0)" } ?? "Default device set"
+        case .screens(let device): "Screens of \(Self.device(device).name)"
         }
     }
 }

@@ -560,6 +560,9 @@ package final class SimulatorDevice {
     package var deviceSetPath: String? { record.deviceSetPath }
     /// The owner of this device's requests, which every object made for the device shares.
     package let channel: SimulatorDeviceChannel
+    /// The owner of SimulatorKit's registrations for this device's screens. They wait for a screen's queue rather than
+    /// for CoreSimulator, so a request that `channel` is still waiting for does not hold them back.
+    package let screenChannel: SimulatorDeviceChannel
     private let interface: CoreSimulatorInterface
     private let client: NativeDeviceClient
     private let logPath: String?
@@ -567,7 +570,8 @@ package final class SimulatorDevice {
     private let dataPath: String?
     private var guest: GuestBridge { GuestBridge(client: client, messages: interface.guest) }
 
-    fileprivate init(_ opened: NativeDeviceClient.OpenedDevice, client: NativeDeviceClient, interface: CoreSimulatorInterface) {
+    fileprivate init(_ opened: NativeDeviceClient.OpenedDevice, client: NativeDeviceClient,
+                     interface: CoreSimulatorInterface, screenChannel: SimulatorDeviceChannel) {
         record = opened.record
         object = opened.object
         serviceContext = opened.context
@@ -577,6 +581,7 @@ package final class SimulatorDevice {
         self.client = client
         self.interface = interface
         channel = client.channel
+        self.screenChannel = screenChannel
     }
 
     /// Its set holds it until it ends, so this comes only after that.
@@ -976,7 +981,9 @@ package final class SimulatorDeviceSet {
                 clients[key] = nil
                 return nil
             }
-            let device = SimulatorDevice(opened, client: client, interface: interface)
+            let screens = DeviceAddress(identifier: key, deviceSetPath: address.path)
+            let device = SimulatorDevice(opened, client: client, interface: interface,
+                                         screenChannel: DeviceIOHub.shared.channel(for: .screens(screens)))
             clients[key]?.device = device
             return device
         }

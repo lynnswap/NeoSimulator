@@ -167,6 +167,26 @@ struct NativeConnectionOwnershipTests {
         try await waitUntil { released.withLock { $0 } != nil }
         #expect(released.withLock { $0 } == workerLabel)
     }
+
+    @Test func aRegistrationWaitsOnTheWorkerSoTheMainQueueCanAnswerTheQueueThatItWaitsFor() async throws {
+        // As a SimulatorKit screen's queue waits for a display on the main queue while it reports a disconnection.
+        let observed = DispatchQueue(label: "observed")
+        let answered = Mutex(false)
+        await withCheckedContinuation { reporting in
+            observed.async {
+                // The main queue goes on with this test before it answers.
+                reporting.resume()
+                let answer = DispatchSemaphore(value: 0)
+                DispatchQueue.main.async { answer.signal() }
+                let result = answer.wait(timeout: .now() + 5)
+                answered.withLock { $0 = result == .success }
+            }
+        }
+        _ = try await SimulatorDisplayInterface.register("register an observer", on: makeChannel()) {
+            observed.sync { NSObject() }
+        }
+        #expect(answered.withLock { $0 })
+    }
 }
 
 func waitUntil(sourceLocation: SourceLocation = #_sourceLocation,
