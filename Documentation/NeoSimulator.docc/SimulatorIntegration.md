@@ -62,10 +62,6 @@ Simulator.app's device manager, and Apple-only input capture are unavailable.
 
 ## Verification scope
 
-Unit and host tests validate isolated state, command handling, private-interface
-lookup, and native window/input behavior; they do not establish simulator E2E
-compatibility. See <doc:Development> for the commands.
-
 Live checks have covered rendering, input, capture, pasteboards, audio, external
-displays, and platform controls. Recheck the affected device and runtime when
-changing a private interface; past checks do not cover every Xcode/runtime combination.
+displays, and platform controls. They do not cover every Xcode and runtime
+combination.

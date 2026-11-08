@@ -1,6 +1,6 @@
 # NeoSimulator Guide
 
-Use the app, build with the SDK, and contribute to NeoSimulator.
+Use the app and build with the SDK.
 
 @Metadata {
     @TechnologyRoot
@@ -26,8 +26,8 @@ and [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosi
 ### Build simulator apps
 
 - <doc:UsingTheSDK>
-### Contribute to NeoSimulator
+
+### Understand how NeoSimulator works
 
 - <doc:Architecture>
 - <doc:SimulatorIntegration>
-- <doc:Development>
