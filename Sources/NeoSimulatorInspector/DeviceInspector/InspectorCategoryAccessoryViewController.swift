@@ -1,11 +1,9 @@
-import NeoSimulatorKit
-import NeoSimulatorHostSupport
-import NeoSimulatorManager
 import AppKit
 
 @MainActor
 final class InspectorCategoryAccessoryViewController: NSSplitViewItemAccessoryViewController {
-    let picker = NSSegmentedControl(labels: ["Info", "Apps", "Profiles"], trackingMode: .selectOne, target: nil, action: nil)
+    let picker = NSSegmentedControl(
+        labels: ["Info", "Apps", "Profiles"], trackingMode: .selectOne, target: nil, action: nil)
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -23,35 +21,9 @@ final class InspectorCategoryAccessoryViewController: NSSplitViewItemAccessoryVi
 }
 
 #if DEBUG
-import SwiftUI
-
-#Preview("Info Categories") {
-    InspectorCategoryPreview().frame(width: 320, height: 450)
-}
-
-private struct InspectorCategoryPreview: NSViewControllerRepresentable {
-    func makeNSViewController(context: Context) -> NSSplitViewController {
-        let manager = SimulatorManagerModel(rendererApplicationURL: Bundle.main.bundleURL)
-        let inspection = DeviceInspectorModel()
-        inspection.device = DeviceModel(inventory: .simulator(SimulatorHostDevice(
-            identifier: "A1840638-6397-40C7-8BB8-B8223DE937CC", name: "iPad Pro 11-inch (M5)",
-            descriptiveName: "iPad Pro 11-inch (M5)", runtimeIdentifier: "preview",
-            runtimeName: "iPadOS 27.2", productFamily: "iPad", state: "Booted")), source: manager.registry.source)
-        let info = NSHostingController(rootView: DeviceInformationView(model: DeviceInformationModel(
-            manager: manager, inspection: inspection,
-            visibility: DeviceInfoVisibility(defaults: UserDefaults(suiteName: "dev.lynnswap.NeoSimulator.InspectorPreview")!),
-            pairingMenu: { _ in NSMenu() }, deviceMenu: { _ in NSMenu() }, unpair: { _ in })))
-        info.sizingOptions = []
+    #Preview("Info Categories", traits: .sizeThatFitsLayout) {
         let accessory = InspectorCategoryAccessoryViewController()
         accessory.picker.selectedSegment = 0
-        let item = NSSplitViewItem(inspectorWithViewController: info)
-        item.addTopAlignedAccessoryViewController(accessory)
-        let split = NSSplitViewController()
-        split.splitView.isVertical = true
-        split.addSplitViewItem(item)
-        return split
+        return accessory
     }
-
-    func updateNSViewController(_ controller: NSSplitViewController, context: Context) {}
-}
 #endif

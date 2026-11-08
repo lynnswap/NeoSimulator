@@ -708,3 +708,45 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
         update(animated: true)
     }
 }
+
+#if DEBUG
+    #Preview("Devices", traits: .fixedLayout(width: 280, height: 600)) {
+        let source = PreviewManagerSource(otherDevices: [
+            .simulator(
+                SimulatorHostDevice(
+                    identifier: "preview-ipad",
+                    name: "iPad Pro 11-inch (M5)",
+                    descriptiveName: "iPad Pro 11-inch (M5)",
+                    runtimeIdentifier: "preview-runtime",
+                    runtimeName: "iPadOS 27.2",
+                    productFamily: "iPad",
+                    state: "Shutdown"
+                )),
+            .simulator(
+                SimulatorHostDevice(
+                    identifier: "preview-watch",
+                    name: "Apple Watch Ultra 3 (49mm)",
+                    descriptiveName: "Apple Watch Ultra 3 (49mm)",
+                    runtimeIdentifier: "preview-watch-runtime",
+                    runtimeName: "watchOS 27.2",
+                    productFamily: "Apple Watch",
+                    state: "Shutdown"
+                )),
+        ])
+        let manager = SimulatorManagerModel(
+            source: source, serviceProfiles: .preview(named: "NeoSimulator.SidebarPreview"))
+        let sidebar = DeviceSidebarViewController(
+            model: DeviceSidebarModel(
+                manager: manager, defaults: UserDefaults(suiteName: "NeoSimulator.SidebarPreview")!),
+            screens: DeviceScreens(model: manager),
+            artworkCache: DeviceArtworkCache()
+        )
+        let split = NSSplitViewController()
+        split.splitView.isVertical = true
+        split.addSplitViewItem(sidebar.makeSplitViewItem())
+        Task {
+            await manager.refresh()
+        }
+        return split
+    }
+#endif

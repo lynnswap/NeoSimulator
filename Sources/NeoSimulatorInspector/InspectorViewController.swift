@@ -148,3 +148,53 @@ package final class InspectorViewController: NSViewController {
         ])
     }
 }
+
+#if DEBUG
+    import NeoSimulatorDeviceScreens
+
+    #Preview("Settings", traits: .fixedLayout(width: 320, height: 820)) {
+        InspectorViewController.preview(showing: .settings)
+    }
+
+    #Preview("Info", traits: .fixedLayout(width: 320, height: 820)) {
+        InspectorViewController.preview(showing: .info)
+    }
+
+    #Preview("Background Services", traits: .fixedLayout(width: 320, height: 820)) {
+        InspectorViewController.preview(showing: .services)
+    }
+
+    extension InspectorViewController {
+        /// The inspector in its split view item, describing a simulator that in-memory host responses supply.
+        fileprivate static func preview(showing page: InspectorModel.Page) -> NSSplitViewController {
+            let source = PreviewManagerSource(settings: SimulatorDeviceSettings())
+            let manager = SimulatorManagerModel(
+                source: source,
+                serviceProfiles: .preview(named: "NeoSimulator.InspectorPreview.\(page.rawValue)")
+            )
+            let model = InspectorModel(
+                manager: manager,
+                screens: DeviceScreens(model: manager),
+                defaults: UserDefaults(suiteName: "NeoSimulator.InspectorPreview")!,
+                showProfileSettings: { _ in },
+                showCustomLocation: {}
+            )
+            model.toggle(page)
+            let inspector = InspectorViewController(
+                model: model,
+                manager: manager,
+                pairingMenu: { _ in NSMenu() },
+                deviceMenu: { _ in NSMenu() }
+            )
+            let split = NSSplitViewController()
+            split.splitView.isVertical = true
+            split.addSplitViewItem(inspector.makeSplitViewItem())
+            Task {
+                await manager.refresh()
+                manager.inspect(source.device, selectionCount: 1)
+                await manager.registry.finishReading()
+            }
+            return split
+        }
+    }
+#endif

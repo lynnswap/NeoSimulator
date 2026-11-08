@@ -518,3 +518,37 @@ package final class DeviceScreenViewController: NSViewController, NSMenuItemVali
     @objc private func requestScreen(_ sender: Any?) { onViewScreen?() }
 
 }
+
+#if DEBUG
+    #Preview("Selected Device", traits: .fixedLayout(width: 600, height: 700)) {
+        DeviceScreenViewController.preview(showsDevice: true)
+    }
+
+    #Preview("No Selection", traits: .fixedLayout(width: 600, height: 700)) {
+        DeviceScreenViewController.preview(showsDevice: false)
+    }
+
+    extension DeviceScreenViewController {
+        /// The device pane in its split view item, previewing a simulator that in-memory host responses supply.
+        fileprivate static func preview(showsDevice: Bool) -> NSSplitViewController {
+            let source = PreviewManagerSource()
+            let manager = SimulatorManagerModel(
+                source: source,
+                serviceProfiles: .preview(named: "NeoSimulator.DeviceScreenPreview")
+            )
+            let screen = DeviceScreenViewController(
+                model: manager,
+                screens: DeviceScreens(model: manager),
+                artworkCache: DeviceArtworkCache()
+            )
+            let split = NSSplitViewController()
+            split.splitView.isVertical = true
+            split.addSplitViewItem(screen.makeSplitViewItem())
+            Task {
+                await manager.refresh()
+                screen.showPreview(of: showsDevice ? source.device : nil, selectionCount: showsDevice ? 1 : 0)
+            }
+            return split
+        }
+    }
+#endif

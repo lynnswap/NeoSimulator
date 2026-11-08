@@ -298,7 +298,7 @@ private struct DeviceSlowAnimationsSetting: View {
     }
 
     private struct DeviceSettingsPreview: View {
-        private let source: BackgroundServicesPreviewSource
+        private let source: PreviewManagerSource
         private let manager: SimulatorManagerModel
         private let panel: DeviceSettingsPanelModel
 
@@ -330,7 +330,7 @@ private struct DeviceSlowAnimationsSetting: View {
                     SimulatorLocationScenario(name: "city-bicycle", displayName: "City Bicycle")
                 ]
             }
-            let source = BackgroundServicesPreviewSource(
+            let source = PreviewManagerSource(
                 configuration: ServiceConfiguration(),
                 stopped: false,
                 settings: settings

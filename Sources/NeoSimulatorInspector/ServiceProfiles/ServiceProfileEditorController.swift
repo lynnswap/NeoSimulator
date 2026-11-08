@@ -75,3 +75,11 @@ final class ServiceProfileEditorController: NSViewController, NSTextFieldDelegat
         if let onClose { onClose() } else { dismiss(self) }
     }
 }
+
+#if DEBUG
+    #Preview("Save Profile", traits: .sizeThatFitsLayout) {
+        let model = ServiceProfileEditorModel(name: "", configuration: ServiceConfiguration())
+        model.save = { _ in }
+        return ServiceProfileEditorController(model: model)
+    }
+#endif

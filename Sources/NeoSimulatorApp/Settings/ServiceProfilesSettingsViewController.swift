@@ -376,25 +376,17 @@ final class OpaqueSettingsPane: NSView {
 }
 
 #if DEBUG
-#Preview("Service Profiles", traits: .sizeThatFitsLayout) {
-    PreviewViewController {
-        let store = ServiceProfileStore(fileURL: URL.temporaryDirectory
-            .appending(path: "NeoSimulator.ServiceProfilesPreview", directoryHint: .isDirectory)
-            .appending(path: "ServiceProfiles.json"), legacyDefaults: nil)
-        if store.profiles.isEmpty {
-            let _ = try? store.create(name: "Development", configuration: ServiceConfiguration())
-            let _ = try? store.create(name: "Lightweight", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
-        }
-        let controller = ServiceProfilesSettingsViewController(store: store)
-        controller.model.selectedProfileID = store.profiles.first?.id
-        return controller
-    }.frame(width: 720, height: 520)
+#Preview("Service Profiles", traits: .fixedLayout(width: 720, height: 520)) {
+    let store = ServiceProfileStore.preview(named: "NeoSimulator.ServiceProfilesPreview")
+    _ = try? store.create(name: "Development", configuration: ServiceConfiguration())
+    _ = try? store.create(
+        name: "Lightweight", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+    let controller = ServiceProfilesSettingsViewController(store: store)
+    controller.model.selectedProfileID = store.profiles.first?.id
+    return controller
 }
-#Preview("All Services", traits: .sizeThatFitsLayout) {
-    PreviewViewController {
-        ServiceProfilesSettingsViewController(store: ServiceProfileStore(fileURL: URL.temporaryDirectory
-            .appending(path: "NeoSimulator.DefaultServiceProfilePreview", directoryHint: .isDirectory)
-            .appending(path: "ServiceProfiles.json"), legacyDefaults: nil))
-    }.frame(width: 720, height: 520)
+
+#Preview("All Services", traits: .fixedLayout(width: 720, height: 520)) {
+    ServiceProfilesSettingsViewController(store: .preview(named: "NeoSimulator.DefaultServiceProfilePreview"))
 }
 #endif

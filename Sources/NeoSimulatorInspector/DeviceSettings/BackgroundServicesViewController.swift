@@ -154,23 +154,19 @@ private struct BackgroundServicesUnavailable: View {
 }
 
 #if DEBUG
-    #Preview("Profile + Overrides", traits: .sizeThatFitsLayout) {
-        BackgroundServicesPreview(.overrides).frame(width: 320, height: 820)
+    #Preview("Profile + Overrides", traits: .fixedLayout(width: 320, height: 820)) {
+        BackgroundServicesPreview.make(.overrides)
     }
-    #Preview("Use Default", traits: .sizeThatFitsLayout) {
-        BackgroundServicesPreview(.defaultProfile).frame(width: 320, height: 820)
+
+    #Preview("Use Default", traits: .fixedLayout(width: 320, height: 820)) {
+        BackgroundServicesPreview.make(.defaultProfile)
     }
-    #Preview("Use Default (Modified)", traits: .sizeThatFitsLayout) {
-        BackgroundServicesPreview(.defaultModified).frame(width: 320, height: 820)
+
+    #Preview("Use Default (Modified)", traits: .fixedLayout(width: 320, height: 820)) {
+        BackgroundServicesPreview.make(.defaultModified)
     }
-    #Preview("Stopped Simulator", traits: .sizeThatFitsLayout) {
-        BackgroundServicesPreview(.stopped).frame(width: 320, height: 820)
-    }
-    #Preview("Save Profile", traits: .sizeThatFitsLayout) {
-        PreviewViewController {
-            let model = ServiceProfileEditorModel(name: "", configuration: ServiceConfiguration())
-            model.save = { _ in }
-            return ServiceProfileEditorController(model: model)
-        }.frame(width: 360, height: 160)
+
+    #Preview("Stopped Simulator", traits: .fixedLayout(width: 320, height: 820)) {
+        BackgroundServicesPreview.make(.stopped)
     }
 #endif
