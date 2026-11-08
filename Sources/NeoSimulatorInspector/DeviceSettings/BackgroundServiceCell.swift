@@ -10,7 +10,7 @@ package final class BackgroundServiceCell: NSTableCellView {
     private let detail = LiteralTextField(wrappingLabelWithString: "")
     private let toggle = NSSwitch()
     private var observation: PortableObservationTracking.Token?
-    private var change: ((Bool) throws -> Void)?
+    private var change: ((Bool) throws -> Bool)?
     private weak var representedItem: AnyObject?
     private var showsDetails = false
     /// The switch position that the represented model has.
@@ -58,7 +58,10 @@ package final class BackgroundServiceCell: NSTableCellView {
         observation?.cancel()
         if let category = item as? BackgroundServiceCategoryModel {
             title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-            change = { [weak category] in category?.setEnabled($0) }
+            change = { [weak category] enabled in
+                category?.setEnabled(enabled)
+                return category?.isEnabled == true
+            }
             observation = withPortableContinuousObservation { [weak self, category] _ in
                 guard let self else { return }
                 isOn = category.isEnabled
@@ -74,7 +77,10 @@ package final class BackgroundServiceCell: NSTableCellView {
             title.stringValue = service.label
             title.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
             toggle.setAccessibilityLabel(service.label)
-            change = { [weak service] in try service?.setEnabled($0) }
+            change = { [weak service] enabled in
+                try service?.setEnabled(enabled)
+                return service?.isEnabled == true
+            }
             observation = withPortableContinuousObservation { [weak self, service] _ in
                 guard let self else { return }
                 isOn = service.isEnabled
@@ -104,7 +110,7 @@ package final class BackgroundServiceCell: NSTableCellView {
 
     @objc private func toggleChanged() {
         do {
-            try change?(toggle.state == .on)
+            if let change { isOn = try change(toggle.state == .on) }
         } catch {
             // The model kept its state, so the switch goes back to it.
             showState()

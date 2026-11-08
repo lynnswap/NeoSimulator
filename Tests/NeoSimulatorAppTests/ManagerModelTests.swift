@@ -5423,6 +5423,25 @@ struct ManagerModelTests {
         }
         #expect(first.configuration.disabledLabels == even)
         #expect(second.configuration.disabledLabels == labels.subtracting(even))
+
+        let sharedLabel = try #require(category.services.first?.label)
+        let sharedID = try store.createCategory(named: "Shared Service")
+        try store.addService(sharedLabel, to: sharedID)
+        let sharedProfile = try store.create(name: "Shared")
+        let sharedCategory = try #require(sharedProfile.categories.first { $0.id == sharedID })
+        let cell = BackgroundServiceCell()
+        window.contentView?.addSubview(cell)
+        cell.configure(item: sharedCategory, showsDetails: false)
+        let toggle = try #require(cell.subviews.compactMap { $0 as? NSSwitch }.first)
+        #expect(sharedCategory.isEnabled && toggle.state == .on)
+        // Another enabled category keeps this shared service on without changing the profile.
+        toggle.performClick(nil)
+        #expect(sharedProfile.configuration.disabledLabels.isEmpty && toggle.state == .on)
+
+        let item = try #require(sharedCategory.items.first)
+        cell.configure(item: item, showsDetails: false)
+        toggle.performClick(nil)
+        #expect(sharedProfile.configuration.disabledLabels == [sharedLabel] && toggle.state == .off)
     }
 
     @Test func selectingDefaultEnablesEveryServiceExceptTheOverriddenOnes() async throws {
