@@ -2,6 +2,7 @@ import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import Foundation
 import Observation
+import NeoSimulatorManager
 
 @MainActor @Observable
 final class ServiceProfilesSettingsModel {

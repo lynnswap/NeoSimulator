@@ -3,16 +3,16 @@ import Observation
 
 /// Retains read interest for the selected device. Device state stays in its shared model.
 @MainActor @Observable
-final class ManagerSelection {
-    private(set) var device: DeviceModel?
-    private(set) var count = 0
-    private(set) var showsServices = false
+package final class ManagerSelection {
+    package private(set) var device: DeviceModel?
+    package private(set) var count = 0
+    package private(set) var showsServices = false
     @ObservationIgnored private var settingsInterest: DeviceReadInterest?
     @ObservationIgnored private var servicesInterest: DeviceReadInterest?
     @ObservationIgnored private var inspectionGroups: DeviceStateGroups = []
     @ObservationIgnored private var inspectionInterest: DeviceReadInterest?
 
-    func select(_ device: DeviceModel?, count: Int) {
+    package func select(_ device: DeviceModel?, count: Int) {
         if self.count != count { self.count = count }
         guard self.device !== device else { return }
         settingsInterest?.release()
@@ -25,7 +25,7 @@ final class ManagerSelection {
     }
 
     /// launchd is read only while the Background Services page shows.
-    func setServicesVisible(_ visible: Bool) {
+    package func setServicesVisible(_ visible: Bool) {
         guard showsServices != visible else { return }
         showsServices = visible
         servicesInterest?.release()
@@ -33,7 +33,7 @@ final class ManagerSelection {
     }
 
     /// What the device inspector shows is read only while it does.
-    func setInspection(_ groups: DeviceStateGroups) {
+    package func setInspection(_ groups: DeviceStateGroups) {
         guard inspectionGroups != groups else { return }
         inspectionGroups = groups
         inspectionInterest?.release()

@@ -4,27 +4,27 @@ import Foundation
 import Observation
 
 @MainActor @Observable
-final class ServiceProfile: Identifiable, BackgroundServiceEditing {
-    struct Record: Codable, Equatable, Sendable {
-        let id: UUID
-        var name: String
-        var configuration: ServiceConfiguration
+package final class ServiceProfile: Identifiable, BackgroundServiceEditing {
+    package struct Record: Codable, Equatable, Sendable {
+        package let id: UUID
+        package var name: String
+        package var configuration: ServiceConfiguration
     }
 
-    let id: UUID
-    private(set) var name: String
-    private(set) var configuration: ServiceConfiguration
-    private(set) var serviceState: SimulatorBackgroundServices?
-    var issue: String?
+    package let id: UUID
+    package private(set) var name: String
+    package private(set) var configuration: ServiceConfiguration
+    package private(set) var serviceState: SimulatorBackgroundServices?
+    package var issue: String?
     @ObservationIgnored fileprivate weak var store: ServiceProfileStore?
-    var canEdit: Bool { store != nil && id != Self.allServices.id }
-    @ObservationIgnored lazy var categories = SimulatorBackgroundServiceCategory.all.map {
+    package var canEdit: Bool { store != nil && id != Self.allServices.id }
+    @ObservationIgnored package lazy var categories = SimulatorBackgroundServiceCategory.all.map {
         BackgroundServiceCategoryModel($0, source: self)
     }
 
-    nonisolated static let allServicesID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-    static let allServices = ServiceProfile(record: Record(
-        id: allServicesID, name: String(localized: "All Services", bundle: #bundle), configuration: ServiceConfiguration()))
+    package nonisolated static let allServicesID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    package static let allServices = ServiceProfile(record: Record(
+        id: allServicesID, name: String(localized: "All Services"), configuration: ServiceConfiguration()))
 
     fileprivate var record: Record { Record(id: id, name: name, configuration: configuration) }
 
@@ -35,7 +35,7 @@ final class ServiceProfile: Identifiable, BackgroundServiceEditing {
         serviceState = record.configuration.state()
     }
 
-    func setServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) {
+    package func setServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) {
         guard canEdit, let store else { return }
         var updated = configuration
         updated.set(targets, enabled: enabled)
@@ -53,22 +53,22 @@ final class ServiceProfile: Identifiable, BackgroundServiceEditing {
 }
 
 /// Which profile a device takes at each boot.
-enum ServiceProfileSelection: Codable, Hashable, Sendable {
+package enum ServiceProfileSelection: Codable, Hashable, Sendable {
     /// The app-wide default profile, whichever it is at the next boot.
     case inheritDefault
     case profile(UUID)
 }
 
 /// A device's choice and its explicit per-service changes, which apply above whatever the choice resolves to.
-struct DeviceServiceProfile: Codable, Equatable, Sendable {
-    var selection: ServiceProfileSelection
-    var overrides: [String: Bool]
+package struct DeviceServiceProfile: Codable, Equatable, Sendable {
+    package var selection: ServiceProfileSelection
+    package var overrides: [String: Bool]
 
     private enum LegacyCodingKeys: String, CodingKey { case profileID, pendingApplication }
     private enum StoredSelection: Decodable {
         case inheritDefault, profile(UUID), doNotApply
 
-        var selection: ServiceProfileSelection {
+        package var selection: ServiceProfileSelection {
             switch self {
             case .inheritDefault, .doNotApply: .inheritDefault
             case .profile(let id): .profile(id)
@@ -76,14 +76,14 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
         }
     }
 
-    init(selection: ServiceProfileSelection = .inheritDefault, overrides: [String: Bool] = [:]) {
+    package init(selection: ServiceProfileSelection = .inheritDefault, overrides: [String: Bool] = [:]) {
         self.selection = selection
         self.overrides = overrides
     }
 
     /// Existing opt-outs become inherited selections without losing per-service overrides.
     /// Legacy all-services requests remain explicit; unnamed choices inherit the app default.
-    init(from decoder: any Decoder) throws {
+    package init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         overrides = try values.decode([String: Bool].self, forKey: .overrides)
         if let selection = try values.decodeIfPresent(StoredSelection.self, forKey: .selection) {
@@ -99,21 +99,21 @@ struct DeviceServiceProfile: Codable, Equatable, Sendable {
 
 /// Owns reusable definitions and device-specific intent. Live launchd state stays in each device's `BackgroundServicesState`.
 @MainActor @Observable
-final class ServiceProfileStore {
+package final class ServiceProfileStore {
     private struct State: Codable, Equatable {
-        var profiles: [ServiceProfile.Record] = []
-        var defaultProfileID: UUID? = ServiceProfile.allServicesID
+        package var profiles: [ServiceProfile.Record] = []
+        package var defaultProfileID: UUID? = ServiceProfile.allServicesID
         private enum CodingKeys: String, CodingKey {
             case profiles, devices
             case defaultProfileID = "commonProfileID"
         }
-        var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
+        package var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
     }
 
-    enum Failure: Error, LocalizedError {
+    package enum Failure: Error, LocalizedError {
         case emptyName, missingProfile
 
-        var errorDescription: String? {
+        package var errorDescription: String? {
             switch self {
             case .emptyName: "Enter a name for the service profile."
             case .missingProfile: "This service profile no longer exists."
@@ -121,37 +121,37 @@ final class ServiceProfileStore {
         }
     }
 
-    static let defaultsKey = "BackgroundServiceProfiles"
-    private(set) var profiles: [ServiceProfile] = []
+    package static let defaultsKey = "BackgroundServiceProfiles"
+    package private(set) var profiles: [ServiceProfile] = []
     /// What devices that inherit take at each boot.
-    private(set) var defaultProfileID = ServiceProfile.allServicesID
+    package private(set) var defaultProfileID = ServiceProfile.allServicesID
     private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
     private var state: State { State(profiles: profiles.map(\.record), defaultProfileID: defaultProfileID, devices: devices) }
-    private(set) var issue: String?
-    let fileURL: URL
+    package private(set) var issue: String?
+    package let fileURL: URL
     @ObservationIgnored private let legacyDefaults: UserDefaults?
     @ObservationIgnored private var loadFailure: (any Error)?
 
-    static var defaultFileURL: URL {
+    package static var defaultFileURL: URL {
         let identifier = Bundle(for: ServiceProfileStore.self).bundleIdentifier ?? "dev.lynnswap.NeoSimulator"
         return URL.applicationSupportDirectory.appending(path: identifier, directoryHint: .isDirectory)
             .appending(path: "ServiceProfiles.json")
     }
 
-    init(fileURL: URL = ServiceProfileStore.defaultFileURL, legacyDefaults: UserDefaults? = .standard) {
+    package init(fileURL: URL = ServiceProfileStore.defaultFileURL, legacyDefaults: UserDefaults? = .standard) {
         self.fileURL = fileURL
         self.legacyDefaults = legacyDefaults
         reload()
     }
 
-    var availableProfiles: [ServiceProfile] { [.allServices] + profiles }
-    func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.allServices.id ? .allServices : profiles.first { $0.id == id } }
-    func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { devices[device] }
-    var defaultProfile: ServiceProfile { profile(defaultProfileID) ?? .allServices }
-    func selection(for device: DeviceInventoryID) -> ServiceProfileSelection { devices[device]?.selection ?? .inheritDefault }
+    package var availableProfiles: [ServiceProfile] { [.allServices] + profiles }
+    package func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.allServices.id ? .allServices : profiles.first { $0.id == id } }
+    package func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { devices[device] }
+    package var defaultProfile: ServiceProfile { profile(defaultProfileID) ?? .allServices }
+    package func selection(for device: DeviceInventoryID) -> ServiceProfileSelection { devices[device]?.selection ?? .inheritDefault }
 
     /// The profile that applies to the device now, if any.
-    func resolvedProfile(for device: DeviceInventoryID) -> ServiceProfile? {
+    package func resolvedProfile(for device: DeviceInventoryID) -> ServiceProfile? {
         switch selection(for: device) {
         case .inheritDefault: defaultProfile
         case .profile(let id): profile(id)
@@ -160,12 +160,12 @@ final class ServiceProfileStore {
 
     /// What applying to the device writes now: the latest definition of its profile, with its overrides.
     /// A failed store read or missing profile cannot supply a configuration.
-    func configuration(for device: DeviceInventoryID) -> ServiceConfiguration? {
+    package func configuration(for device: DeviceInventoryID) -> ServiceConfiguration? {
         guard loadFailure == nil else { return nil }
         return resolvedProfile(for: device)?.configuration.applying(devices[device]?.overrides ?? [:])
     }
 
-    func reload() {
+    package func reload() {
         do {
             let loaded = try readState()
             apply(loaded)
@@ -178,7 +178,7 @@ final class ServiceProfileStore {
     }
 
     @discardableResult
-    func create(name: String, configuration: ServiceConfiguration, assigningTo device: DeviceInventoryID? = nil) throws -> ServiceProfile {
+    package func create(name: String, configuration: ServiceConfiguration, assigningTo device: DeviceInventoryID? = nil) throws -> ServiceProfile {
         let profile = ServiceProfile(record: .init(id: UUID(), name: try validName(name), configuration: configuration))
         var updated = state
         updated.profiles.append(profile.record)
@@ -187,7 +187,7 @@ final class ServiceProfileStore {
         return profile
     }
 
-    func update(_ id: UUID, name: String? = nil, configuration: ServiceConfiguration,
+    package func update(_ id: UUID, name: String? = nil, configuration: ServiceConfiguration,
                 assigningTo device: DeviceInventoryID? = nil) throws {
         guard let index = state.profiles.firstIndex(where: { $0.id == id }) else { throw Failure.missingProfile }
         var updated = state
@@ -200,7 +200,7 @@ final class ServiceProfileStore {
         try save(updated)
     }
 
-    func move(_ id: UUID, before nextID: UUID?) throws {
+    package func move(_ id: UUID, before nextID: UUID?) throws {
         var updated = state
         guard let index = updated.profiles.firstIndex(where: { $0.id == id }) else { throw Failure.missingProfile }
         if id == nextID { return }
@@ -214,7 +214,7 @@ final class ServiceProfileStore {
         try save(updated)
     }
 
-    func delete(_ id: UUID) throws {
+    package func delete(_ id: UUID) throws {
         var updated = state
         updated.profiles.removeAll { $0.id == id }
         if updated.defaultProfileID == id { updated.defaultProfileID = ServiceProfile.allServicesID }
@@ -225,7 +225,7 @@ final class ServiceProfileStore {
         try save(updated)
     }
 
-    func setDefaultProfile(_ id: UUID) throws {
+    package func setDefaultProfile(_ id: UUID) throws {
         if profile(id) == nil { throw Failure.missingProfile }
         var updated = state
         updated.defaultProfileID = id
@@ -233,7 +233,7 @@ final class ServiceProfileStore {
     }
 
     @discardableResult
-    func assign(_ selection: ServiceProfileSelection, to device: DeviceInventoryID,
+    package func assign(_ selection: ServiceProfileSelection, to device: DeviceInventoryID,
                 preservingOverrides: Bool = true) throws -> DeviceServiceProfile {
         if case .profile(let id) = selection, profile(id) == nil { throw Failure.missingProfile }
         var updated = state
@@ -243,13 +243,13 @@ final class ServiceProfileStore {
         return binding
     }
 
-    func removeBinding(for device: DeviceInventoryID) throws {
+    package func removeBinding(for device: DeviceInventoryID) throws {
         var updated = state
         updated.devices.removeValue(forKey: device)
         try save(updated)
     }
 
-    func record(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for device: DeviceInventoryID,
+    package func record(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for device: DeviceInventoryID,
                 productFamily: String, currentConfiguration: ServiceConfiguration? = nil) throws {
         var configuration = currentConfiguration ?? self.configuration(for: device)
             ?? ServiceConfiguration().applying(devices[device]?.overrides ?? [:])

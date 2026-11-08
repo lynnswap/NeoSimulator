@@ -3,6 +3,7 @@ import NeoSimulatorHostSupport
 #if DEBUG
 import AppKit
 import SwiftUI
+import NeoSimulatorManager
 
 struct BackgroundServicesPreview: NSViewControllerRepresentable {
     enum Scenario { case overrides, defaultProfile, defaultModified, stopped }

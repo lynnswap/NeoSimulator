@@ -3,6 +3,7 @@ import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class SettingsViewController: NSTabViewController {

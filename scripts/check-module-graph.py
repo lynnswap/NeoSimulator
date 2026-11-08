@@ -26,14 +26,17 @@ GRAPH = {
     "NeoSimulatorHostSupport": {
         "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO", "ObservationBridge",
     },
+    "NeoSimulatorManager": {
+        "NeoSimulatorHostSupport", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+    },
     "NeoSimulatorApp": {
-        "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
+        "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
         "NeoSimulatorDeviceIO", "ObservationBridge",
     },
     "NeoSimulatorService": {"NeoSimulatorHostSupport", "NeoSimulatorKit"},
     "CoreDeviceInventoryProbe": {"NeoSimulatorKit"},
 }
-PRESENTATION_FREE = {"NeoSimulatorNative", "NeoSimulatorDeviceIO", "NeoSimulatorKit"}
+PRESENTATION_FREE = {"NeoSimulatorNative", "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorManager"}
 PRESENTATION_FRAMEWORKS = {"AppKit", "SwiftUI"}
 
 

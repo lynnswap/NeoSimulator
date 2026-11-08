@@ -1,4 +1,5 @@
 import SwiftUI
+import NeoSimulatorManager
 
 struct BackgroundServicesProfileForm: View {
     @Bindable var model: BackgroundServicesInspectorModel

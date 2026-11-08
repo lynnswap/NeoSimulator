@@ -3,6 +3,7 @@ import NeoSimulatorHostSupport
 import AppKit
 import ObservationBridge
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {

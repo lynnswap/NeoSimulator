@@ -3,6 +3,7 @@ import NeoSimulatorHostSupport
 import AppKit
 import Observation
 import ObservationBridge
+import NeoSimulatorManager
 
 @MainActor @Observable
 final class DeviceInformationModel {

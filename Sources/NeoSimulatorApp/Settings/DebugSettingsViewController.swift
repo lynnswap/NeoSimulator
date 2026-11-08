@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class DebugSettingsViewController: NSHostingController<DebugSettingsView> {

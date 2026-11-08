@@ -2,6 +2,7 @@ import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import AppKit
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class GeneralSettingsViewController: NSHostingController<GeneralSettingsView> {

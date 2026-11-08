@@ -3,6 +3,7 @@ import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import Observation
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor @Observable
 final class DeviceSettingsPanelModel {

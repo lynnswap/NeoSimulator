@@ -5,19 +5,19 @@ import NeoSimulatorKit
 import NeoSimulatorPresentationAdapters
 import Observation
 
-struct SimulatorScreenRestoration: Equatable {
-    enum Presentation: String {
+package struct SimulatorScreenRestoration: Equatable {
+    package enum Presentation: String {
         case hidden, compact, main
-        var restorationOrder: Int {
+        package var restorationOrder: Int {
             switch self { case .hidden: 0; case .compact: 1; case .main: 2 }
         }
     }
-    let device: SimulatorDeviceIdentifier
-    let xcodeURL: URL
-    let presentation: Presentation
-    var deviceID: DeviceInventoryID { .simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath) }
+    package let device: SimulatorDeviceIdentifier
+    package let xcodeURL: URL
+    package let presentation: Presentation
+    package var deviceID: DeviceInventoryID { .simulator(udid: device.identifier, deviceSetPath: device.deviceSetPath) }
 
-    var url: URL {
+    package var url: URL {
         var items = [URLQueryItem(name: "udid", value: device.identifier),
                      URLQueryItem(name: "xcode", value: xcodeURL.path),
                      URLQueryItem(name: "presentation", value: presentation.rawValue)]
@@ -25,13 +25,13 @@ struct SimulatorScreenRestoration: Equatable {
         return URL(string: "neosimulator://restore-screen")!.appending(queryItems: items)
     }
 
-    init(device: SimulatorDeviceIdentifier, xcodeURL: URL, presentation: Presentation) {
+    package init(device: SimulatorDeviceIdentifier, xcodeURL: URL, presentation: Presentation) {
         self.device = device
         self.xcodeURL = xcodeURL
         self.presentation = presentation
     }
 
-    init?(url: URL) {
+    package init?(url: URL) {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard let udid = items.first(where: { $0.name == "udid" })?.value,
               let xcode = items.first(where: { $0.name == "xcode" })?.value,
@@ -43,22 +43,22 @@ struct SimulatorScreenRestoration: Equatable {
 }
 
 @MainActor @Observable
-final class UIFrameworkSettings {
-    static let preferenceKey = "UIFrameworkXcodePath"
+package final class UIFrameworkSettings {
+    package static let preferenceKey = "UIFrameworkXcodePath"
     private let defaults: UserDefaults
     private let selectionAtLaunch: URL?
-    private(set) var selectedXcodeURL: URL?
-    private(set) var installations: [SimulatorXcode] = []
-    private(set) var isLoading = false
-    private(set) var issue: String?
+    package private(set) var selectedXcodeURL: URL?
+    package private(set) var installations: [SimulatorXcode] = []
+    package private(set) var isLoading = false
+    package private(set) var issue: String?
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private let discover: () async throws -> [SimulatorXcode]
 
-    static func selection(in defaults: UserDefaults) -> URL? {
+    package static func selection(in defaults: UserDefaults) -> URL? {
         defaults.string(forKey: preferenceKey).map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
-    init(defaults: UserDefaults = .standard, discover: @escaping () async throws -> [SimulatorXcode]) {
+    package init(defaults: UserDefaults = .standard, discover: @escaping () async throws -> [SimulatorXcode]) {
         self.defaults = defaults
         self.discover = discover
         let selection = Self.selection(in: defaults)
@@ -66,15 +66,15 @@ final class UIFrameworkSettings {
         selectionAtLaunch = selection
     }
 
-    var needsRestart: Bool { selectedXcodeURL != selectionAtLaunch }
+    package var needsRestart: Bool { selectedXcodeURL != selectionAtLaunch }
 
-    func select(_ url: URL?) {
+    package func select(_ url: URL?) {
         selectedXcodeURL = url
         if let url { defaults.set(url.path, forKey: Self.preferenceKey) }
         else { defaults.removeObject(forKey: Self.preferenceKey) }
     }
 
-    func reload() {
+    package func reload() {
         guard loading == nil else { return }
         isLoading = true
         issue = nil
@@ -92,7 +92,7 @@ final class UIFrameworkSettings {
     isolated deinit { loading?.cancel() }
 }
 
-protocol SimulatorManagerSource: DeviceStateSource {
+package protocol SimulatorManagerSource: DeviceStateSource {
     func status() async throws -> SimulatorHostStatus
     func beginSession() async throws
     func endSession() async throws
@@ -117,62 +117,62 @@ protocol SimulatorManagerSource: DeviceStateSource {
 extension SimulatorHostController: SimulatorManagerSource {}
 
 @MainActor @Observable
-final class SimulatorManagerModel {
+package final class SimulatorManagerModel {
     @ObservationIgnored private let controller: any SimulatorManagerSource
-    private(set) var status: SimulatorHostStatus?
+    package private(set) var status: SimulatorHostStatus?
     /// The devices the registry lists, as the inventory last described them.
-    var inventory: [InventoryDevice] { registry.devices.map(\.inventory) }
+    package var inventory: [InventoryDevice] { registry.devices.map(\.inventory) }
     /// DeviceKit's sidebar Active values in this process; a device without one is unknown.
-    private(set) var activeStates = DeviceActiveStates()
-    var devices: [SimulatorHostDevice] {
+    package private(set) var activeStates = DeviceActiveStates()
+    package var devices: [SimulatorHostDevice] {
         inventory.compactMap { item in
             guard case .simulator(let device) = item, device.isAvailable else { return nil }
             return device
         }
     }
-    var managingDeviceIDs: Set<DeviceInventoryID> {
+    package var managingDeviceIDs: Set<DeviceInventoryID> {
         Set(managementRequests.values.flatMap(\.identifiers))
     }
     private struct ManagementRequest {
-        let action: DeviceManagementAction?
-        let identifiers: Set<DeviceInventoryID>
-        var task: Task<Void, Never>?
+        package let action: DeviceManagementAction?
+        package let identifiers: Set<DeviceInventoryID>
+        package var task: Task<Void, Never>?
     }
     private var managementRequests: [UUID: ManagementRequest] = [:]
-    private(set) var isBusy = false
+    package private(set) var isBusy = false
     /// Whether queued work holds later edits of every device. A running device's screen that is attaching does not.
-    private(set) var holdsAllEdits = false
+    package private(set) var holdsAllEdits = false
     /// The devices whose later edits queued work holds.
     private var heldEditDeviceIDs: Set<DeviceInventoryID> = []
     /// The devices that queued work concerns, including one whose screen is only attaching.
-    private(set) var queuedDeviceIDs: Set<DeviceInventoryID> = []
-    private(set) var activity = ""
-    var globalActivity: String? { runningOperation?.activity }
-    var progressingDeviceIDs: Set<DeviceInventoryID> {
+    package private(set) var queuedDeviceIDs: Set<DeviceInventoryID> = []
+    package private(set) var activity = ""
+    package var globalActivity: String? { runningOperation?.activity }
+    package var progressingDeviceIDs: Set<DeviceInventoryID> {
         managingDeviceIDs.union(openingDeviceIDs).union(queuedDeviceIDs)
     }
-    private(set) var backgroundIssue: String?
+    package private(set) var backgroundIssue: String?
     /// What is known of each device, which this process's screens also use.
-    let registry: DeviceRegistry
-    let selection = ManagerSelection()
-    let serviceProfiles: ServiceProfileStore
+    package let registry: DeviceRegistry
+    package let selection = ManagerSelection()
+    package let serviceProfiles: ServiceProfileStore
     @ObservationIgnored private var bootTracker = SimulatorBootTracker()
-    private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
+    package private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored private var postureStops: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored private var openDeviceScreens: Set<DeviceInventoryID> = []
     @ObservationIgnored private let makeDevicePosture: @MainActor (DeviceInventoryID) -> DevicePostureModel
-    let frameworks: UIFrameworkSettings
-    @ObservationIgnored var onError: ((any Error) -> Void)?
-    @ObservationIgnored var onDeviceOpenRequested: ((DeviceInventoryID) -> Void)?
-    @ObservationIgnored var onOpenRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
-    @ObservationIgnored var requestHostPreferenceAccess: (() async throws -> Void)?
-    @ObservationIgnored var retryDeviceObservation: (@MainActor () async -> Void)?
-    @ObservationIgnored var beforeStoppingScreens: (() async throws -> Void)?
-    @ObservationIgnored var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
-    @ObservationIgnored var beforeManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
-    @ObservationIgnored var afterManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
-    private(set) var isRefreshingInventory = false
+    package let frameworks: UIFrameworkSettings
+    @ObservationIgnored package var onError: ((any Error) -> Void)?
+    @ObservationIgnored package var onDeviceOpenRequested: ((DeviceInventoryID) -> Void)?
+    @ObservationIgnored package var onOpenRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
+    @ObservationIgnored package var requestHostPreferenceAccess: (() async throws -> Void)?
+    @ObservationIgnored package var retryDeviceObservation: (@MainActor () async -> Void)?
+    @ObservationIgnored package var beforeStoppingScreens: (() async throws -> Void)?
+    @ObservationIgnored package var beforeManagingRemoteDevices: ((Set<DeviceInventoryID>) async throws -> Void)?
+    @ObservationIgnored package var beforeManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
+    @ObservationIgnored package var afterManagingSimulators: ((DeviceManagementAction, [InventoryDevice]) async throws -> Void)?
+    package private(set) var isRefreshingInventory = false
     @ObservationIgnored private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var statusRefreshTask: Task<Void, Never>?
     private var statusIssue: (any Error)?
@@ -180,7 +180,7 @@ final class SimulatorManagerModel {
     private var activeStateIssue: String?
     private var processObservationIssue: String?
     private var inventoryIssues: [DeviceInventoryIssue] = []
-    var isRemoteInventoryComplete: Bool { !inventoryIssues.contains { $0.source == .coreDevice } }
+    package var isRemoteInventoryComplete: Bool { !inventoryIssues.contains { $0.source == .coreDevice } }
     @ObservationIgnored private var synchronizing = false
     @ObservationIgnored private var synchronizationRequested = false
     @ObservationIgnored private var connectionRetry: Task<Void, Never>?
@@ -190,51 +190,51 @@ final class SimulatorManagerModel {
     /// The wait for accepted work that the first step of a quit starts and later steps join, until the quit is cancelled.
     @ObservationIgnored private var quitPreparation: Task<(any Error)?, Never>?
     /// How long accepted work has before a quit stops it. Nil uses `TerminationTimeout`.
-    @ObservationIgnored var terminationLimit: Duration?
+    @ObservationIgnored package var terminationLimit: Duration?
     /// How long what quitting stopped has to finish.
-    @ObservationIgnored var terminationGrace = DeviceOperationLimit.terminationGrace
-    @ObservationIgnored var uninterruptedCommands = UninterruptedCommands.shared
+    @ObservationIgnored package var terminationGrace = DeviceOperationLimit.terminationGrace
+    @ObservationIgnored package var uninterruptedCommands = UninterruptedCommands.shared
     @ObservationIgnored private var operationTask: Task<Void, Never>?
     private struct PendingOperation {
-        let id = UUID()
-        let activity: String
+        package let id = UUID()
+        package let activity: String
         /// The device whose changes this follows and holds; nil means every device's.
-        let deviceID: DeviceInventoryID?
-        let openDevice: SimulatorScreenOpenRequest?
+        package let deviceID: DeviceInventoryID?
+        package let openDevice: SimulatorScreenOpenRequest?
         /// Whether the open only attaches the screen, without booting, if the device is running when the queue admits it.
         /// Other opens and settings that do not depend on the connection can run alongside it.
-        var attachesRunningDevice = false
+        package var attachesRunningDevice = false
         /// The accepted changes that this must follow.
-        var followsWrites: [Task<Void, any Error>] = []
+        package var followsWrites: [Task<Void, any Error>] = []
         /// Receives whether the admitted open only attaches.
-        let run: @MainActor (_ attaches: Bool) async throws -> Void
+        package let run: @MainActor (_ attaches: Bool) async throws -> Void
     }
     /// A change accepted for one device, which runs in that device's order.
     private struct AcceptedWrite {
-        let write: DeviceWrite
-        let activity: String
-        let deviceID: DeviceInventoryID
+        package let write: DeviceWrite
+        package let activity: String
+        package let deviceID: DeviceInventoryID
     }
     @ObservationIgnored private var acceptedWrites: [AcceptedWrite] = []
     /// Changes that a quit stopped before their turn.
     @ObservationIgnored private var abandonedWrites: Set<UUID> = []
     /// Accepted operations that have not ended, with what waits for them.
     @ObservationIgnored private var unfinishedOperations: [UUID: [CheckedContinuation<Void, Never>]] = [:]
-    private(set) var openingDeviceIDs: Set<DeviceInventoryID> = []
+    package private(set) var openingDeviceIDs: Set<DeviceInventoryID> = []
     private struct ActiveDeviceOperation {
-        let id: UUID
+        package let id: UUID
         /// The screen open that this operation is, which can be cancelled.
-        let request: SimulatorScreenOpenRequest?
-        var task: Task<Void, any Error>?
-        let activity: String
-        let attaches: Bool
+        package let request: SimulatorScreenOpenRequest?
+        package var task: Task<Void, any Error>?
+        package let activity: String
+        package let attaches: Bool
     }
     @ObservationIgnored private var activeDeviceOperations: [DeviceInventoryID: ActiveDeviceOperation] = [:]
     @ObservationIgnored private var pendingOperations: [PendingOperation] = []
     private var runningOperation: PendingOperation?
     @ObservationIgnored private var operationsChanged: CheckedContinuation<Void, Never>?
 
-    func cancelOpening(_ identifier: DeviceInventoryID) {
+    package func cancelOpening(_ identifier: DeviceInventoryID) {
         pendingOperations.removeAll { operation in
             guard operation.openDevice?.deviceID == identifier else { return false }
             operation.openDevice?.cancel()
@@ -249,15 +249,15 @@ final class SimulatorManagerModel {
         resumeOperations()
     }
 
-    func cancelPendingOpens() {
+    package func cancelPendingOpens() {
         for identifier in openingDeviceIDs { cancelOpening(identifier) }
     }
 
-    func cancelPendingSimulatorOpens() {
+    package func cancelPendingSimulatorOpens() {
         for identifier in openingDeviceIDs where identifier.isSimulator { cancelOpening(identifier) }
     }
 
-    init(rendererApplicationURL: URL,
+    package init(rendererApplicationURL: URL,
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil,
          serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
         let controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator)
@@ -268,7 +268,7 @@ final class SimulatorManagerModel {
         self.serviceProfiles = serviceProfiles
     }
 
-    init(source: any SimulatorManagerSource,
+    package init(source: any SimulatorManagerSource,
          makeDevicePosture: @escaping @MainActor (DeviceInventoryID) -> DevicePostureModel = { DevicePostureModel(deviceID: $0) },
          serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
         controller = source
@@ -278,7 +278,7 @@ final class SimulatorManagerModel {
         self.serviceProfiles = serviceProfiles
     }
 
-    func start() {
+    package func start() {
         perform("Loading devices…") {
             do {
                 try await self.requestHostPreferenceAccess?()
@@ -293,7 +293,7 @@ final class SimulatorManagerModel {
         }
     }
 
-    func select(_ host: SimulatorHost) {
+    package func select(_ host: SimulatorHost) {
         perform("Switching simulator app…") {
             try await self.requestHostPreferenceAccess?()
             if host == .deviceHub { try await self.beforeStoppingScreens?() }
@@ -301,7 +301,7 @@ final class SimulatorManagerModel {
         }
     }
 
-    func artworkXcodeURLs(for device: InventoryDevice) async -> [URL] {
+    package func artworkXcodeURLs(for device: InventoryDevice) async -> [URL] {
         if case .simulator(let simulator) = device {
             if let owner = simulator.ownerXcodeURL { return [owner] }
             if let url = try? await controller.xcodeURL(forDevice: device.id) { return [url] }
@@ -310,7 +310,7 @@ final class SimulatorManagerModel {
         return (try? await controller.installedXcodes())?.map(\.url) ?? []
     }
 
-    func openDevice(_ identifier: DeviceInventoryID) {
+    package func openDevice(_ identifier: DeviceInventoryID) {
         guard !stopping, !openingDeviceIDs.contains(identifier) else { return }
         onDeviceOpenRequested?(identifier)
         openingDeviceIDs.insert(identifier)
@@ -323,7 +323,7 @@ final class SimulatorManagerModel {
         })
     }
 
-    func restoreScreen(_ restoration: SimulatorScreenRestoration,
+    package func restoreScreen(_ restoration: SimulatorScreenRestoration,
                        present: @escaping @MainActor () async throws -> Void) {
         guard !stopping else { return }
         if restoration.presentation == .main { onDeviceOpenRequested?(restoration.deviceID) }
@@ -338,7 +338,7 @@ final class SimulatorManagerModel {
         }
     }
 
-    func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, any Error>) {
+    package func closeDevice(_ identifier: DeviceInventoryID, keepingDeviceRunning: Bool, after finishing: Task<Void, any Error>) {
         // Accept the close before waiting, so a later open cannot overtake it.
         perform("Closing simulator…", device: identifier) {
             await self.stopDevicePosture(for: identifier)
@@ -353,7 +353,7 @@ final class SimulatorManagerModel {
         }
     }
 
-    func openScreen(for device: InventoryDevice) {
+    package func openScreen(for device: InventoryDevice) {
         guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
         switch device {
         case .simulator(let simulator): openDevice(simulator.inventoryID)
@@ -367,12 +367,12 @@ final class SimulatorManagerModel {
         }
     }
 
-    func setOpenDeviceScreens(_ identifiers: Set<DeviceInventoryID>) {
+    package func setOpenDeviceScreens(_ identifiers: Set<DeviceInventoryID>) {
         openDeviceScreens = identifiers
         reconcileDevicePostures()
     }
 
-    func deviceScreenDidConnect(_ identifier: DeviceInventoryID) async {
+    package func deviceScreenDidConnect(_ identifier: DeviceInventoryID) async {
         guard openDeviceScreens.contains(identifier), devicePostures[identifier]?.state == .failed else { return }
         await stopDevicePosture(for: identifier)
         reconcileDevicePostures()
@@ -422,39 +422,39 @@ final class SimulatorManagerModel {
         await postureStops[identifier]?.value
     }
 
-    func stopDevicePostures() async {
+    package func stopDevicePostures() async {
         openDeviceScreens.removeAll()
         for identifier in Array(devicePostures.keys) { beginStoppingDevicePosture(for: identifier) }
         for task in Array(postureStops.values) { await task.value }
     }
 
-    func creationCatalog() async throws -> SimulatorCreationContext {
+    package func creationCatalog() async throws -> SimulatorCreationContext {
         try await controller.creationCatalog()
     }
 
-    func creationCatalog(for deviceID: DeviceInventoryID) async throws -> SimulatorCreationContext {
+    package func creationCatalog(for deviceID: DeviceInventoryID) async throws -> SimulatorCreationContext {
         try await controller.creationCatalog(for: deviceID)
     }
 
-    func activePairedDevice(for identifier: DeviceInventoryID) -> SimulatorHostDevice? {
+    package func activePairedDevice(for identifier: DeviceInventoryID) -> SimulatorHostDevice? {
         guard case .simulator(let device)? = inventory.first(where: { $0.id == identifier }),
               device.state == "Booted", let pairedID = device.activePairedDeviceID,
               case .simulator(let paired)? = inventory.first(where: { $0.id == pairedID }) else { return nil }
         return paired
     }
 
-    func openActivePairedDevice(for identifier: DeviceInventoryID) {
+    package func openActivePairedDevice(for identifier: DeviceInventoryID) {
         guard let paired = activePairedDevice(for: identifier) else { return }
         openScreen(for: .simulator(paired))
     }
 
-    func canAddPairing(for device: SimulatorHostDevice) -> Bool {
+    package func canAddPairing(for device: SimulatorHostDevice) -> Bool {
         device.isAvailable && (device.productFamily == "iPhone" ||
             (device.productFamily == "Apple Watch" && device.pairIdentifiers.isEmpty))
     }
 
     /// Device Hub pairs opposite roles exposed by CoreDevice; a Watch can have only one phone.
-    func pairingCandidates(for device: SimulatorHostDevice) -> [SimulatorHostDevice] {
+    package func pairingCandidates(for device: SimulatorHostDevice) -> [SimulatorHostDevice] {
         let feature = "com.apple.coredevice.feature.companiondevicepairing"
         guard canAddPairing(for: device), device.capabilities.contains(feature) else { return [] }
         let family = device.productFamily == "iPhone" ? "Apple Watch" : "iPhone"
@@ -465,7 +465,7 @@ final class SimulatorManagerModel {
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    func createSimulator(named name: String, deviceType: String, runtime: String,
+    package func createSimulator(named name: String, deviceType: String, runtime: String,
                          context: SimulatorCreationContext) async throws -> String {
         guard !stopping else { throw CancellationError() }
         let identifier = try await controller.createSimulator(named: name, deviceType: deviceType, runtime: runtime,
@@ -474,14 +474,14 @@ final class SimulatorManagerModel {
         return identifier
     }
 
-    func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
+    package func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws {
         guard !stopping else { throw CancellationError() }
         try await controller.pairSimulators(watch: watch, phone: phone, context: context)
         await refresh()
     }
 
     /// Whether the device's screen can open now, or is opening and can be cancelled.
-    func canViewScreen(_ device: InventoryDevice) -> Bool {
+    package func canViewScreen(_ device: InventoryDevice) -> Bool {
         if openingDeviceIDs.contains(device.id) { return true }
         guard !managingDeviceIDs.contains(device.id) else { return false }
         switch device {
@@ -494,7 +494,7 @@ final class SimulatorManagerModel {
     }
 
     /// Whether `action` applies to this selection, whatever is running now.
-    func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
+    package func supports(_ action: DeviceManagementAction, devices: [InventoryDevice]) -> Bool {
         guard !devices.isEmpty, devices.allSatisfy({ $0.supports(action) }) else { return false }
         switch action {
         case .rename, .clone: return devices.count == 1
@@ -507,7 +507,7 @@ final class SimulatorManagerModel {
         }
     }
 
-    func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
+    package func canManage(_ action: DeviceManagementAction, deviceIDs: Set<DeviceInventoryID>) -> Bool {
         guard !stopping, !deviceIDs.isEmpty else { return false }
         // A background service change spans many launchctl calls; only Force Shut Down may interrupt it.
         guard action == .forceShutdown || !deviceIDs.contains(where: { registry.device(for: $0)?.backgroundServices.isChanging == true }) else { return false }
@@ -519,7 +519,7 @@ final class SimulatorManagerModel {
         return shutdown.identifiers.allSatisfy(\.isSimulator)
     }
 
-    func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
+    package func manage(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
         var identifiers = Set<DeviceInventoryID>()
         let targets = devices.filter { identifiers.insert($0.id).inserted }
         guard canManage(action, deviceIDs: identifiers) else { return }
@@ -592,7 +592,7 @@ final class SimulatorManagerModel {
 
     /// Queues an inspector change for `device`, marks it busy, then invalidates `groups`.
     /// Quit reports a change that has not started as not run.
-    func performInspectorChange(on device: DeviceModel, affecting groups: DeviceStateGroups,
+    package func performInspectorChange(on device: DeviceModel, affecting groups: DeviceStateGroups,
                                 operation: @escaping @Sendable (DeviceInspector) async throws -> Void) {
         guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
         let request = UUID()
@@ -615,20 +615,20 @@ final class SimulatorManagerModel {
     }
 
     /// Whether the Apps inspector's installer can accept applications for the device now.
-    func canInstallApplications(on identifier: DeviceInventoryID) -> Bool {
+    package func canInstallApplications(on identifier: DeviceInventoryID) -> Bool {
         guard !stopping, !managingDeviceIDs.contains(identifier) else { return false }
         return inventory.first { $0.id == identifier }?.canInstallApplications == true
     }
 
     /// Installs applications requested outside the inspector, such as by a screen drop.
-    func installApplications(at urls: [URL], on identifier: DeviceInventoryID) {
+    package func installApplications(at urls: [URL], on identifier: DeviceInventoryID) {
         guard canInstallApplications(on: identifier), let device = registry.device(for: identifier) else { return }
         performInspectorChange(on: device, affecting: .applications) { inspector in
             try await SimulatorFileImport.perform(urls) { url, _ in try await inspector.installApplication(at: url) }
         }
     }
 
-    func restoreDefaults(force: Bool = false) {
+    package func restoreDefaults(force: Bool = false) {
         perform("Restoring original settings…") {
             try await self.requestHostPreferenceAccess?()
             try await self.beforeStoppingScreens?()
@@ -636,7 +636,7 @@ final class SimulatorManagerModel {
         }
     }
 
-    func refresh() async {
+    package func refresh() async {
         guard !stopping else { return }
         if isBusy || isRefreshingInventory {
             inventoryRefreshRequested = true
@@ -645,7 +645,7 @@ final class SimulatorManagerModel {
         await refreshCatalog()
     }
 
-    func retryInventory() async {
+    package func retryInventory() async {
         guard !stopping else { return }
         if observationIssue != nil || activeStateIssue != nil || processObservationIssue != nil {
             async let recovery: Void? = retryDeviceObservation?()
@@ -709,19 +709,19 @@ final class SimulatorManagerModel {
         }
     }
 
-    func inventoryDidChange() async {
+    package func inventoryDidChange() async {
         guard !stopping else { return }
         inventoryRefreshRequested = true
         await refresh()
     }
 
-    func inventoryObservationRecovered() {
+    package func inventoryObservationRecovered() {
         guard !stopping else { return }
         observationIssue = nil
         updateInventoryIssue()
     }
 
-    func inventoryObservationFailed(_ error: any Error) {
+    package func inventoryObservationFailed(_ error: any Error) {
         guard !stopping else { return }
         NSLog("NeoSimulator automatic device updates: %@", String(describing: error))
         observationIssue = "Live device updates are unavailable. The list will update when you return to NeoSimulator."
@@ -729,14 +729,14 @@ final class SimulatorManagerModel {
 
     }
 
-    func processObservationFailed(_ error: any Error) {
+    package func processObservationFailed(_ error: any Error) {
         guard !stopping else { return }
         NSLog("NeoSimulator automatic connections: %@", String(describing: error))
         processObservationIssue = "Automatic simulator connections are temporarily unavailable."
         updateInventoryIssue()
     }
 
-    func processObservationRecovered() {
+    package func processObservationRecovered() {
         guard !stopping, processObservationIssue != nil else { return }
         processObservationIssue = nil
         updateInventoryIssue()
@@ -744,7 +744,7 @@ final class SimulatorManagerModel {
 
     // Unlike the inventory callbacks, these also apply while quitting. The observation reports only changes, so a
     // value dropped during a quit that is then cancelled would not arrive again.
-    func activeStatesDidChange(_ states: DeviceActiveStates) {
+    package func activeStatesDidChange(_ states: DeviceActiveStates) {
         activeStates = states
         if activeStateIssue != nil {
             activeStateIssue = nil
@@ -753,14 +753,14 @@ final class SimulatorManagerModel {
     }
 
     /// Earlier values could be stale, so every device becomes unknown.
-    func activeStateObservationFailed(_ error: any Error) {
+    package func activeStateObservationFailed(_ error: any Error) {
         NSLog("NeoSimulator active device states: %@", String(describing: error))
         activeStates = DeviceActiveStates()
         activeStateIssue = "Active devices are unavailable. The list does not show which devices are active."
         updateInventoryIssue()
     }
 
-    func synchronizeConnections() async {
+    package func synchronizeConnections() async {
         guard !stopping else { return }
         connectionRetry?.cancel()
         connectionRetry = nil
@@ -803,7 +803,7 @@ final class SimulatorManagerModel {
         Task { await self.synchronizeConnections() }
     }
 
-    func rendererDevicesDidChange(testingVisibilityChanged: Bool) async {
+    package func rendererDevicesDidChange(testingVisibilityChanged: Bool) async {
         guard !stopping else { return }
         if testingVisibilityChanged {
             do { try await controller.testingDeviceVisibilityDidChange() }
@@ -815,22 +815,22 @@ final class SimulatorManagerModel {
         await refresh()
     }
 
-    func setLocation(latitude: Double, longitude: Double, for identifier: DeviceInventoryID) {
+    package func setLocation(latitude: Double, longitude: Double, for identifier: DeviceInventoryID) {
         setDeviceSetting(.location(latitude: latitude, longitude: longitude), for: identifier)
     }
 
     /// Shows which device the manager window presents. `device` comes from the current inventory.
-    func inspect(_ device: InventoryDevice?, selectionCount: Int) {
+    package func inspect(_ device: InventoryDevice?, selectionCount: Int) {
         selection.select(device.flatMap { registry.device(for: $0.id) }, count: selectionCount)
     }
 
     /// Marks what is known of every device as out of date, when something outside NeoSimulator may have changed it without a signal.
-    func revalidateDevices() {
+    package func revalidateDevices() {
         guard !stopping else { return }
         registry.revalidate()
     }
 
-    func setDeviceSetting(_ setting: DeviceSettingChange, for identifier: DeviceInventoryID) {
+    package func setDeviceSetting(_ setting: DeviceSettingChange, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier), inventory.contains(where: { $0.id == identifier }),
               let device = registry.device(for: identifier) else { return }
         do {
@@ -839,7 +839,7 @@ final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
-    func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for identifier: DeviceInventoryID) {
+    package func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier), let device = inventory.first(where: { $0.id == identifier }),
               let model = registry.device(for: identifier) else { return }
         do {
@@ -850,11 +850,11 @@ final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
-    func canEditSettings(for identifier: DeviceInventoryID) -> Bool {
+    package func canEditSettings(for identifier: DeviceInventoryID) -> Bool {
         !stopping && !holdsAllEdits && !heldEditDeviceIDs.contains(identifier) && !managingDeviceIDs.contains(identifier)
     }
 
-    func selectServiceProfile(_ selection: ServiceProfileSelection, for identifier: DeviceInventoryID) {
+    package func selectServiceProfile(_ selection: ServiceProfileSelection, for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier),
               let device = inventory.first(where: { $0.id == identifier }), case .simulator = device else { return }
         do {
@@ -863,7 +863,7 @@ final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
-    func revertServiceProfile(for identifier: DeviceInventoryID) {
+    package func revertServiceProfile(for identifier: DeviceInventoryID) {
         guard !stopping, !managingDeviceIDs.contains(identifier),
               let device = inventory.first(where: { $0.id == identifier }) else { return }
         do {
@@ -931,7 +931,7 @@ final class SimulatorManagerModel {
         }
     }
 
-    func prepareForQuit() async throws {
+    package func prepareForQuit() async throws {
         stopping = true
         if connectionRetry != nil { synchronizationRequested = true }
         connectionRetry?.cancel()
@@ -1013,7 +1013,7 @@ final class SimulatorManagerModel {
         return held
     }
 
-    func quitRenderer(keepingDevicesRunning: Bool?, beforeEndingSession: () async throws -> Void = {}) async throws {
+    package func quitRenderer(keepingDevicesRunning: Bool?, beforeEndingSession: () async throws -> Void = {}) async throws {
         do {
             try await prepareForQuit()
             try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
@@ -1022,7 +1022,7 @@ final class SimulatorManagerModel {
         } catch { resumeAfterCancelledQuit(); throw error }
     }
 
-    func resumeAfterCancelledQuit() {
+    package func resumeAfterCancelledQuit() {
         stopping = false
         quitPreparation = nil
         uninterruptedCommands.resumeAfterCancelledQuit()
@@ -1160,10 +1160,10 @@ final class SimulatorManagerModel {
 /// Finds the simulator boots that successive inventories show, whether or not NeoSimulator started them.
 private struct SimulatorBootTracker {
     private struct Observed {
-        var isRunning: Bool
+        package var isRunning: Bool
         /// Last reported date, retained while waiting for the new boot's date.
-        var bootDate: Date?
-        var bootAwaitingDateObservedAt: Date?
+        package var bootDate: Date?
+        package var bootAwaitingDateObservedAt: Date?
     }
 
     private var observed: [DeviceInventoryID: Observed] = [:]
@@ -1171,10 +1171,10 @@ private struct SimulatorBootTracker {
     private let observationStartedAt = Date()
     /// Boots that no profile has been queued for. A device that stopped again keeps its entry until it next boots, which
     /// asks for the same one application.
-    var unappliedBoots: Set<DeviceInventoryID> = []
+    package var unappliedBoots: Set<DeviceInventoryID> = []
 
     /// A device that an incomplete inventory retains keeps its last values here, so it shows no boot.
-    mutating func observe(_ inventory: [InventoryDevice]) {
+    package mutating func observe(_ inventory: [InventoryDevice]) {
         var current: [DeviceInventoryID: Observed] = [:]
         for item in inventory {
             guard case .simulator(let device) = item else { continue }
@@ -1212,7 +1212,7 @@ private struct SimulatorBootTracker {
 
     /// Counts a restart or erase that NeoSimulator ran, which an inventory may show no difference for.
     /// An inventory may already have recorded that boot while management held its application.
-    mutating func noteBoot(of identifier: DeviceInventoryID) {
+    package mutating func noteBoot(of identifier: DeviceInventoryID) {
         guard identifier.isSimulator, unappliedBoots.insert(identifier).inserted else { return }
         observed[identifier, default: Observed(isRunning: true, bootDate: nil)].bootAwaitingDateObservedAt = .now
     }
@@ -1221,7 +1221,7 @@ private struct SimulatorBootTracker {
 private extension DeviceSettingChange {
     /// A connecting screen restores the device's saved audio routes and location, and Display Zoom changes the
     /// framebuffer and relaunches the guest's interface, so these writes wait for a screen that is attaching.
-    var waitsForScreenAttach: Bool {
+    package var waitsForScreenAttach: Bool {
         switch self {
         case .displayZoom, .audioInputDevice, .audioOutputDevice, .location, .locationScenario, .clearLocation: true
         case .appearance, .contentSize, .boldText, .increaseContrast, .lookAndFeel, .liquidGlassOpacity, .colorFilter,
@@ -1231,12 +1231,12 @@ private extension DeviceSettingChange {
 }
 
 private struct InventoryReadError: LocalizedError {
-    let issues: [DeviceInventoryIssue]
-    let statusError: (any Error)?
-    let observationIssue: String?
-    let activeStateIssue: String?
+    package let issues: [DeviceInventoryIssue]
+    package let statusError: (any Error)?
+    package let observationIssue: String?
+    package let activeStateIssue: String?
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         let messages = issues.map { issue in
             let source: String = switch issue.source {
             case .coreDevice: "Devices"
@@ -1256,7 +1256,7 @@ private enum QuitOutcome: LocalizedError {
     case notRun(String)
     case unknown(String)
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .notRun(let activity): "\(activity) did not run, because NeoSimulator quit first."
         case .unknown(let activity): "\(activity) had not finished when NeoSimulator quit, so what it changed is unknown."
@@ -1265,13 +1265,13 @@ private enum QuitOutcome: LocalizedError {
 }
 
 private struct DeviceManagementFailure: LocalizedError {
-    let devices: [InventoryDevice]
-    let report: DeviceManagementReport
-    var presentationError: (any Error)? = nil
+    package let devices: [InventoryDevice]
+    package let report: DeviceManagementReport
+    package var presentationError: (any Error)? = nil
 
-    var errorDescription: String? { "Some device operations could not be completed." }
+    package var errorDescription: String? { "Some device operations could not be completed." }
 
-    var recoverySuggestion: String? {
+    package var recoverySuggestion: String? {
         let failures = report.results.compactMap { result -> String? in
             guard let error = result.error else { return nil }
             let name = devices.first { $0.id == result.deviceID }?.name ?? "Device"
@@ -1290,11 +1290,15 @@ private struct DeviceManagementFailure: LocalizedError {
     }
 }
 
-struct InspectorOperationFailure: LocalizedError {
-    let deviceName: String
-    let error: any Error
-    var errorDescription: String? { "\(deviceName): \(error.localizedDescription)" }
-    var recoverySuggestion: String? {
+package struct InspectorOperationFailure: LocalizedError {
+    package let deviceName: String
+    package let error: any Error
+    package init(deviceName: String, error: any Error) {
+        self.deviceName = deviceName
+        self.error = error
+    }
+    package var errorDescription: String? { "\(deviceName): \(error.localizedDescription)" }
+    package var recoverySuggestion: String? {
         guard let failure = error as? DeviceInspectorFailure else { return nil }
         switch failure.partialCompletion {
         case .applicationDataDownload(let destination):

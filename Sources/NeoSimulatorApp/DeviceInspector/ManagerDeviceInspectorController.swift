@@ -6,6 +6,7 @@ import Observation
 import ObservationBridge
 import SwiftUI
 import UniformTypeIdentifiers
+import NeoSimulatorManager
 
 @MainActor
 final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataSource, NSTableViewDelegate,

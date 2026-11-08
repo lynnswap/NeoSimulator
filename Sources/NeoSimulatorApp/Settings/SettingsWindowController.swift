@@ -1,6 +1,7 @@
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import AppKit
+import NeoSimulatorManager
 
 @MainActor
 final class SettingsWindowController: NSWindowController {

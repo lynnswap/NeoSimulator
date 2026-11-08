@@ -5,6 +5,7 @@ import NeoSimulatorKit
 import NeoSimulatorUI
 import Observation
 import ObservationBridge
+import NeoSimulatorManager
 
 /// Indexes open screens by inventory identity and owns their contexts and remote connections.
 /// `SimulatorScreens` owns simulator screen lifetimes; this registry owns remote lifetimes.

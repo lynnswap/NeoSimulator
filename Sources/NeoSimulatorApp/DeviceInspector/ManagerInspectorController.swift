@@ -3,6 +3,7 @@ import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import ObservationBridge
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class ManagerInspectorController: NSViewController {

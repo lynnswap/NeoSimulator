@@ -5,6 +5,7 @@ import NeoSimulatorPresentationAdapters
 import NeoSimulatorUI
 import Observation
 import ObservationBridge
+import NeoSimulatorManager
 
 /// An open manager screen's canvas controls, actions, and presentation.
 /// The controller retains its connection; `DeviceScreens` registers and ends the screen.

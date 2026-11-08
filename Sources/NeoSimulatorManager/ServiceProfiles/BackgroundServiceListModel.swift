@@ -4,42 +4,42 @@ import Foundation
 import Observation
 
 @MainActor @Observable
-final class BackgroundServiceListModel {
-    struct Section {
-        let category: BackgroundServiceCategoryModel
-        let items: [BackgroundServiceItem]
+package final class BackgroundServiceListModel {
+    package struct Section {
+        package let category: BackgroundServiceCategoryModel
+        package let items: [BackgroundServiceItem]
     }
 
-    private(set) var categories: [BackgroundServiceCategoryModel]
-    private(set) var sections: [Section] = []
-    var query = "" {
+    package private(set) var categories: [BackgroundServiceCategoryModel]
+    package private(set) var sections: [Section] = []
+    package var query = "" {
         didSet {
             guard query != oldValue else { return }
             collapsedResults = []
             updateResults()
         }
     }
-    var isFiltering: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    package var isFiltering: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// Results open every matching category; collapsing one lasts until the query changes.
     private var collapsedResults: Set<String> = []
 
-    init(categories: [BackgroundServiceCategoryModel]) {
+    package init(categories: [BackgroundServiceCategoryModel]) {
         self.categories = categories
         updateResults()
     }
 
-    func setCategories(_ categories: [BackgroundServiceCategoryModel]) {
+    package func setCategories(_ categories: [BackgroundServiceCategoryModel]) {
         guard self.categories.map(\.id) != categories.map(\.id)
             || zip(self.categories, categories).contains(where: { pair in pair.0 !== pair.1 }) else { return }
         self.categories = categories
         updateResults()
     }
 
-    func isExpanded(_ category: BackgroundServiceCategoryModel) -> Bool {
+    package func isExpanded(_ category: BackgroundServiceCategoryModel) -> Bool {
         isFiltering ? !collapsedResults.contains(category.id) : category.isExpanded
     }
 
-    func setExpanded(_ expanded: Bool, for category: BackgroundServiceCategoryModel) {
+    package func setExpanded(_ expanded: Bool, for category: BackgroundServiceCategoryModel) {
         if isFiltering {
             if expanded { collapsedResults.remove(category.id) } else { collapsedResults.insert(category.id) }
         } else {

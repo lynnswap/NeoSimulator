@@ -48,8 +48,12 @@ let package = Package(
             "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ], swiftSettings: memberImportVisibility),
+        // The manager's shared state and operations, below every pane of its window.
+        .target(name: "NeoSimulatorManager", dependencies: [
+            "NeoSimulatorHostSupport", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+        ], swiftSettings: memberImportVisibility),
         .target(name: "NeoSimulatorApp", dependencies: [
-            "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+            "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ], resources: [.process("Resources")], swiftSettings: memberImportVisibility),
         .target(name: "NeoSimulatorService", dependencies: [
@@ -57,7 +61,7 @@ let package = Package(
         ], swiftSettings: memberImportVisibility),
         .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorKit"], swiftSettings: memberImportVisibility),
         .testTarget(name: "NeoSimulatorAppTests", dependencies: [
-            "NeoSimulatorApp", "NeoSimulatorService", "NeoSimulatorHostSupport", "NeoSimulatorUI",
+            "NeoSimulatorApp", "NeoSimulatorManager", "NeoSimulatorService", "NeoSimulatorHostSupport", "NeoSimulatorUI",
             "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ABIBridge", package: "ABIBridge"),
         ], swiftSettings: [

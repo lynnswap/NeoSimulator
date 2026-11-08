@@ -1,5 +1,6 @@
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
+import NeoSimulatorManager
 import AppKit
 
 @MainActor

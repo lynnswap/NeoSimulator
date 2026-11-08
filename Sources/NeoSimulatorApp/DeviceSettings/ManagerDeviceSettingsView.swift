@@ -1,6 +1,7 @@
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import SwiftUI
+import NeoSimulatorManager
 
 struct ManagerDeviceSettingsView: View {
     let model: DeviceSettingsPanelModel

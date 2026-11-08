@@ -2,6 +2,7 @@ import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import AppKit
 import ObservationBridge
+import NeoSimulatorManager
 
 @MainActor
 final class BackgroundServiceSearchField: NSSearchField {

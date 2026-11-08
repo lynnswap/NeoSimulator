@@ -5,6 +5,7 @@ import NeoSimulatorKit
 import NeoSimulatorUI
 import ObservationBridge
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {

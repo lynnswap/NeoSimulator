@@ -11,6 +11,7 @@ import SwiftUI
 import Synchronization
 import Testing
 import IOSurface
+@testable import NeoSimulatorManager
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {

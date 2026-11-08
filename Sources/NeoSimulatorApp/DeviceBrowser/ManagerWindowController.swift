@@ -6,6 +6,7 @@ import NeoSimulatorUI
 import Observation
 import ObservationBridge
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,

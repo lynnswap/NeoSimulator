@@ -18,6 +18,7 @@ import XCTest
 import Synchronization
 import IOKit.hidsystem
 import XPC
+@testable import NeoSimulatorManager
 
 /// Waits for rendered state without relying on XCTest's run-loop predicate timer.
 @MainActor
