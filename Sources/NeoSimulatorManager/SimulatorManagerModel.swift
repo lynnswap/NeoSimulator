@@ -110,7 +110,6 @@ package protocol SimulatorManagerSource: DeviceStateSource {
                 preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport
     func restore(force: Bool) async throws
     func synchronizeXcodeConnections() async throws -> Bool
-    func testingDeviceVisibilityDidChange() async throws
     func quitRenderer(keepingDevicesRunning: Bool?) async throws
 }
 
@@ -810,15 +809,8 @@ package final class SimulatorManagerModel {
         Task { await self.synchronizeConnections() }
     }
 
-    package func rendererDevicesDidChange(testingVisibilityChanged: Bool) async {
+    package func rendererDevicesDidChange() async {
         guard !stopping else { return }
-        if testingVisibilityChanged {
-            do { try await controller.testingDeviceVisibilityDidChange() }
-            catch {
-                reportBackgroundError(error)
-
-            }
-        }
         await refresh()
     }
 

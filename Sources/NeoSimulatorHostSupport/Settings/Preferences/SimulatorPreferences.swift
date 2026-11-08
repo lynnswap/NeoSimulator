@@ -9,14 +9,6 @@ package final class SimulatorPreferences {
     @ObservationIgnored private var observations: [DefaultsObservation] = []
     @ObservationIgnored private var isReloading = false
     private static let categoryKey = "NewSimulatorCategory"
-    package var startLastDevice = true {
-        didSet {
-            guard !isReloading else { return }
-            let enabled = startLastDevice
-            defaults.set(enabled, forKey: HostPreferences.startLastDeviceOnLaunch)
-            defaults.set(enabled, forKey: HostPreferences.sessionOnLaunch)
-        }
-    }
     package var keepRunningOnWindowClose = false { didSet { save(keepRunningOnWindowClose, forKey: HostPreferences.detachOnWindowClose) } }
     package var keepRunningOnQuit = false { didSet { save(keepRunningOnQuit, forKey: HostPreferences.detachOnAppQuit) } }
     package var showSingleTouches = false { didSet { save(showSingleTouches, forKey: HostPreferences.showSingleTouches) } }
@@ -49,7 +41,6 @@ package final class SimulatorPreferences {
         self.defaults = defaults
         self.creationDefaults = creationDefaults
         defaults.register(defaults: [
-            HostPreferences.startLastDeviceOnLaunch: true, HostPreferences.sessionOnLaunch: true,
             HostPreferences.detachOnWindowClose: false, HostPreferences.detachOnAppQuit: false,
             HostPreferences.showSingleTouches: false, HostPreferences.showPinches: true,
             HostPreferences.screenShotUseMask: false, HostPreferences.gifMaxFrameSize: 640,
@@ -57,7 +48,6 @@ package final class SimulatorPreferences {
         ])
         reload()
         observations.append(DefaultsObservation(defaults, keys: [
-            HostPreferences.startLastDeviceOnLaunch, HostPreferences.sessionOnLaunch,
             HostPreferences.detachOnWindowClose, HostPreferences.detachOnAppQuit,
             HostPreferences.showSingleTouches, HostPreferences.showPinches, HostPreferences.slowMotionAnimation,
             HostPreferences.screenShotUseMask, HostPreferences.gifMaxFrameSize, HostPreferences.gifMaxFramerate,
@@ -74,7 +64,6 @@ package final class SimulatorPreferences {
     private func reload() {
         isReloading = true
         defer { isReloading = false }
-        startLastDevice = defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch)
         keepRunningOnWindowClose = defaults.bool(forKey: HostPreferences.detachOnWindowClose)
         keepRunningOnQuit = defaults.bool(forKey: HostPreferences.detachOnAppQuit)
         showSingleTouches = defaults.bool(forKey: HostPreferences.showSingleTouches)

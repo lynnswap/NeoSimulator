@@ -58,8 +58,8 @@ do not select another host.
 
 **NeoSimulator → Settings…** (Command-,) contains General, Devices, and Capture
 settings.
-General controls the preferred display host, UI framework installation, reopening the last simulator, keeping devices
-running when closing or quitting, and touch indicators. Capture controls the
+General controls the preferred display host, UI framework installation, keeping devices running when closing or
+quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
 
 Renderer preferences use `dev.lynnswap.NeoSimulator.Renderer`. Existing values
@@ -69,8 +69,8 @@ Per-device location choices use `DeviceLocationPreset.<UDID>` in
 
 | Preference | Effect |
 | --- | --- |
-| `AttachBootedOnStart` | Attach devices that are already booted at launch. |
-| `SessionOnLaunch`, `StartLastDeviceOnLaunch`, `CurrentDeviceUDID` | Reopen the last simulator when launch restoration is enabled. The Settings checkbox updates both launch flags. |
+| `AttachBootedOnStart` | Attach devices that are already booted when another app, such as Xcode, opens a renderer by itself. NeoSimulator itself attaches none at launch. |
+| `SessionOnLaunch`, `StartLastDeviceOnLaunch`, `CurrentDeviceUDID` | Start the last simulator when another app opens a renderer by itself without naming a device. Both launch flags must be on. |
 | `DetachOnWindowClose`, `DetachOnAppQuit` | Leave devices running when closing or quitting. |
 | `ShowSingleTouches`, `ShowPinches` | Show touch indicators; initially off and on respectively. |
 | `ScreenShotSaveLocation`, `ScreenShotUseMask` | Screenshot folder and capture mask. |

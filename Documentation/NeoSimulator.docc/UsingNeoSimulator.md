@@ -159,9 +159,10 @@ defaults. Switching the display host leaves devices running so the next host can
 and reconnect after boot. An active recording is saved first. **Shut Down**
 stops the device and removes its window.
 
-**Start the last used simulator on launch** in Settings controls launch
-restoration. The `AttachBootedOnStart` preference controls attachment of devices
-that are already booted when the manager starts. See <doc:Configuration>.
+Launching NeoSimulator lists simulators without connecting to any of them,
+including ones that are already running. **Start** or **Open** connects one.
+When Xcode launches an app in a simulator whose screen is open, the screen
+moves to that Xcode.
 
 ## Arrange windows
 

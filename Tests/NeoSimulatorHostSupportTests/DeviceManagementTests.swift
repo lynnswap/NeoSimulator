@@ -171,7 +171,6 @@ struct DeviceManagementTests {
             return { @Sendable in }
         }
         #expect(open != nil)
-        try await controller.testingDeviceVisibilityDidChange()
         #expect(try await controller.operation(.devices([second.inventoryID])) { @Sendable in true })
         #expect(try await controller.operation(.independent) { @Sendable in true })
 
@@ -383,78 +382,6 @@ struct DeviceManagementTests {
         await fixture.completeShutdown("B")
         #expect(await events.next() == .command("boot", "B"))
         #expect(await restarting.value.results[0].error == nil)
-    }
-
-    @Test(.timeLimit(.minutes(1))) func aCatalogReadDuringAChangeAttachesNothingFromThatChange() async throws {
-        @Sendable func device(_ identifier: String, _ state: String) -> SimulatorHostDevice {
-            SimulatorHostDevice(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime",
-                                runtimeName: "iOS", productFamily: "iPhone", state: state)
-        }
-        let xcode = XcodeInstallation(applicationURL: URL(fileURLWithPath: "/Xcode.app"), version: try ToolVersion("27.2"), buildVersion: "fixture")
-        let (a, b) = (device("A", "Booted").inventoryID, device("B", "Booted").inventoryID)
-        let fixture = ManagementFixture(holdsShutdown: true)
-        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
-        let opened = Mutex<[DeviceInventoryID]>([])
-        @Sendable func synchronize(_ catalog: ScreenOpenCatalogObservation) async throws {
-            _ = try await controller.synchronizeBootedDevices(catalog, attachInitially: false, ownedIdentifiers: { [] }) { identifier in
-                opened.withLock { $0.append(identifier) }
-            }
-        }
-        @Sendable func poll(_ devices: [SimulatorHostDevice]) async throws {
-            try await synchronize(controller.readScreenOpenCatalog { [(xcode, devices)] })
-        }
-        try await poll([device("A", "Booted"), device("B", "Shutdown")])
-
-        // The steps of A's restart are not a stop and a new boot. B, which nothing is changing, attaches meanwhile.
-        var events = fixture.events.makeAsyncIterator()
-        let restarting = Task { await controller.manage(.restart, devices: [.simulator(device("A", "Booted"))], using: fixture.backend) }
-        #expect(await events.next() == .command("shutdown", "A"))
-        try await poll([device("A", "Shutdown"), device("B", "Shutdown")])
-        try await poll([device("A", "Booted"), device("B", "Booted")])
-        #expect(opened.withLock { $0 } == [b])
-
-        // A read that began during the change is a step of it even when the change has ended by the time the read returns.
-        let (entered, enteredContinuation) = AsyncStream<Void>.makeStream()
-        let (release, releaseContinuation) = AsyncStream<Void>.makeStream()
-        let reading = Task {
-            try await controller.readScreenOpenCatalog {
-                enteredContinuation.yield(())
-                for await _ in release { break }
-                return [(xcode, [device("A", "Shutdown"), device("B", "Booted")])]
-            }
-        }
-        var started = entered.makeAsyncIterator()
-        await started.next()
-        await fixture.completeShutdown("A")
-        #expect(await events.next() == .command("boot", "A"))
-        #expect(await restarting.value.results[0].error == nil)
-        releaseContinuation.yield(())
-        try await synchronize(reading.value)
-        try await poll([device("A", "Booted"), device("B", "Booted")])
-        #expect(opened.withLock { $0 } == [b])
-
-        // So is a read during which a change started and ended.
-        let (restarted, restartedContinuation) = AsyncStream<Void>.makeStream()
-        let (finish, finishContinuation) = AsyncStream<Void>.makeStream()
-        let spanning = Task {
-            try await controller.readScreenOpenCatalog {
-                restartedContinuation.yield(())
-                for await _ in finish { break }
-                return [(xcode, [device("A", "Shutdown"), device("B", "Booted")])]
-            }
-        }
-        var spanned = restarted.makeAsyncIterator()
-        await spanned.next()
-        try await controller.operation(.devices([a])) { @Sendable in }
-        finishContinuation.yield(())
-        try await synchronize(spanning.value)
-        try await poll([device("A", "Booted"), device("B", "Booted")])
-        #expect(opened.withLock { $0 } == [b])
-
-        // A stop that no change explains is still one, and the next boot attaches.
-        try await poll([device("A", "Shutdown"), device("B", "Booted")])
-        try await poll([device("A", "Booted"), device("B", "Booted")])
-        #expect(opened.withLock { $0 } == [b, a])
     }
 
     @Test(.timeLimit(.minutes(1))) func aChangeFollowsTheOperationRunningWhenItArrives() async throws {

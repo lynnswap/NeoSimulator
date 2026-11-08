@@ -127,11 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installMenu()
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
-        ) { [weak self] notification in
-            let testingVisibilityChanged = notification.userInfo?["testingVisibilityChanged"] as? Bool == true
+        ) { [weak self] _ in
             Task { @MainActor in
                 self?.processObservation.refresh()
-                await self?.model.rendererDevicesDidChange(testingVisibilityChanged: testingVisibilityChanged)
+                await self?.model.rendererDevicesDidChange()
             }
         }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(

@@ -95,7 +95,6 @@
         }
         package func restore(force: Bool) throws { throw CocoaError(.featureUnsupported) }
         package func synchronizeXcodeConnections() -> Bool { false }
-        package func testingDeviceVisibilityDidChange() {}
         package func quitRenderer(keepingDevicesRunning: Bool?) {}
         package func readSettings(
             _ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,

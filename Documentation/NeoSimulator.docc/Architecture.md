@@ -134,16 +134,17 @@ Concurrent preparation joins the existing task.
 Operations on different devices can overlap; operations on one device retain
 acceptance order. Host, preference, and renderer-lifetime changes wait for all
 prior operations and hold later ones. A screen open becomes such a barrier only
-when it must start a renderer. Catalog reads defer attachment of a device that
-is being changed. The active command target comes from `NSApp.keyWindow`;
+when it must start a renderer. Catalog reads keep a device that is being
+changed in its earlier state until the change ends. The active command target comes from `NSApp.keyWindow`;
 sidebar selection independently chooses the inspector target.
 
 ## Device lifecycle
 
 Neo observes the default set and, when enabled and present, Xcode's parallel
-testing set. It does not create the testing set. `AttachBootedOnStart` controls
-initial attachment; later boot transitions can attach new devices. Explicitly
-detached devices stay closed until reopened or until they leave the booted state.
+testing set. It does not create the testing set. The manager attaches no device
+by itself, whether it was booted at launch or later: only a request opens a
+screen. Xcode launching an app moves an open screen to that Xcode. A renderer
+that another app opens by itself follows `AttachBootedOnStart` instead.
 
 Sessions discover the integrated screen rather than assuming screen ID zero.
 A failed connection affects only that device. Teardown cancels commands and

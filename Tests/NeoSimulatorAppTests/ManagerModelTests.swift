@@ -505,15 +505,11 @@ struct ManagerModelTests {
         await form.waitForCreation()
         #expect(created == ["My Phone", "phone", "ios"])
         preferences.showSingleTouches = true
-        preferences.startLastDevice = false
         #expect(defaults.bool(forKey: "ShowSingleTouches"))
-        #expect(!defaults.bool(forKey: "StartLastDeviceOnLaunch") && !defaults.bool(forKey: "SessionOnLaunch"))
         #expect(preferences.gifImageSize == 640)
         let externalDefaults = try #require(UserDefaults(suiteName: domain))
         externalDefaults.set(true, forKey: HostPreferences.screenShotUseMask)
         #expect(preferences.includeDeviceMask)
-        preferences.startLastDevice = true
-        #expect(defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch))
     }
 
     @Test func deviceFilterShowsNativeSelectionWithoutChangingItsSymbol() throws {
@@ -1452,7 +1448,7 @@ struct ManagerModelTests {
             presentCompactWindow: { _ in compactPresentations += 1 })
         app.screens.attach(controller)
         if !initial { main.selectDevice(bID) }
-        try await main.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
+        try await main.presentConnectedScreen(aID, purpose: .automatic)
         let selected = initial ? aID : bID
         #expect(main.selectedIdentifiers == [selected] && model.selection.device?.id == selected)
         // The inspector follows the selection through observation, whose changes arrive after this turn.
@@ -6696,7 +6692,6 @@ actor ManagerModelSource: SimulatorManagerSource {
         if failsSynchronization { failsSynchronization = false; throw HostOperationError.temporary("connection", "Try again") }
         return false
     }
-    func testingDeviceVisibilityDidChange() {}
 }
 
 @MainActor
