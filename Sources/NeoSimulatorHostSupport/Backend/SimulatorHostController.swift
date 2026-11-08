@@ -1214,21 +1214,29 @@ package final class XcodeConnectionTracker {
 
 package enum SimulatorProcessConnections {
     package static func read() throws -> [XcodeSimulatorConnection] {
-        let testingDeviceSetPath = SimulatorDeviceSets.testingPath()
-        let capacity = Int(proc_listallpids(nil, 0)) + 128
+        let user = getuid()
+        let capacity = Int(proc_listpids(UInt32(PROC_UID_ONLY), user, nil, 0)) / MemoryLayout<pid_t>.stride + 128
         guard capacity > 128 else { throw HostOperationError.io("process-list", "Could not enumerate simulator application processes.") }
         var processes = [pid_t](repeating: 0, count: capacity)
-        let count = processes.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
-        guard count >= 0 else { throw HostOperationError.io("process-list", "Could not enumerate simulator application processes.") }
+        let bytes = processes.withUnsafeMutableBytes {
+            proc_listpids(UInt32(PROC_UID_ONLY), user, $0.baseAddress, Int32($0.count))
+        }
+        guard bytes > 0 else { throw HostOperationError.io("process-list", "Could not enumerate simulator application processes.") }
+        return try read(processIdentifiers: Array(processes.prefix(Int(bytes) / MemoryLayout<pid_t>.stride)))
+    }
+
+    package static func read(processIdentifiers: [pid_t]) throws -> [XcodeSimulatorConnection] {
+        let testingDeviceSetPath = SimulatorDeviceSets.testingPath()
+        let user = getuid()
         var result: [XcodeSimulatorConnection] = []
-        for pid in processes.prefix(Int(count)) where pid > 0 {
-            var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        for pid in processIdentifiers where pid > 0 {
             guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { continue }
-            let executable = String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            let executable = path.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
             guard executable.contains("/data/Containers/Bundle/Application/") else { continue }
             var info = proc_bsdinfo()
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
-                  info.pbi_uid == getuid() else { continue }
+                  info.pbi_uid == user else { continue }
             var query = [CTL_KERN, KERN_PROCARGS2, pid]
             var size = 0
             guard sysctl(&query, UInt32(query.count), nil, &size, nil, 0) == 0, size > 4 else { continue }

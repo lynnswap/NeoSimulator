@@ -10,8 +10,10 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     private let table = NSTableView()
     private let defaultProfileMenu = NSPopUpButton(frame: .zero, pullsDown: false)
     private static let profileDragType = NSPasteboard.PasteboardType("dev.lynnswap.NeoSimulator.service-profile")
-    private let remove = NSButton(image: NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
-                                  target: nil, action: nil)
+    private let profileActions = NSSegmentedControl(images: [
+        NSImage(systemSymbolName: "plus", accessibilityDescription: "New Service Profile")!,
+        NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
+    ], trackingMode: .momentary, target: nil, action: nil)
     private let detailsController = NSViewController()
     private lazy var outline = BackgroundServiceOutlineController(categories: model.selectedProfile.categories, showsDetails: true)
     private var displayedProfile: ServiceProfile?
@@ -55,19 +57,6 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Service Profile")!,
-                           target: self, action: #selector(addProfile))
-        remove.target = self
-        remove.action = #selector(removeProfile)
-        remove.hasDestructiveAction = true
-        for button in [add, remove] { button.isBordered = false }
-        let controls = NSStackView(views: [add, remove, NSView()])
-        controls.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        controls.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        let sidebar = NSStackView(views: [scroll, controls])
-        sidebar.orientation = .vertical
-        sidebar.alignment = .width
-        sidebar.spacing = 0
         let details = OpaqueSettingsPane()
         detailsController.view = details
         unavailable.sizingOptions = []
@@ -81,13 +70,13 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             unavailable.bottomAnchor.constraint(equalTo: details.bottomAnchor),
         ])
         let sidebarBackground = OpaqueSettingsPane()
-        sidebarBackground.addSubview(sidebar)
-        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        sidebarBackground.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            sidebar.topAnchor.constraint(equalTo: sidebarBackground.topAnchor),
-            sidebar.bottomAnchor.constraint(equalTo: sidebarBackground.bottomAnchor),
-            sidebar.leadingAnchor.constraint(equalTo: sidebarBackground.leadingAnchor),
-            sidebar.trailingAnchor.constraint(equalTo: sidebarBackground.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: sidebarBackground.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: sidebarBackground.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: sidebarBackground.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: sidebarBackground.trailingAnchor),
         ])
         let sidebarController = NSViewController()
         sidebarController.view = sidebarBackground
@@ -129,6 +118,15 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         defaultControls.frame.size = NSSize(width: 180, height: defaultControls.fittingSize.height)
         defaults.view = defaultControls
         splitViewItems[0].addTopAlignedAccessoryViewController(defaults)
+        let actions = NSSplitViewItemAccessoryViewController()
+        actions.preferredScrollEdgeEffectStyle = .hard
+        profileActions.target = self
+        profileActions.action = #selector(performProfileAction(_:))
+        profileActions.segmentStyle = .smallSquare
+        let controls = NSStackView(views: [profileActions, NSView()])
+        controls.frame.size = NSSize(width: 180, height: controls.fittingSize.height)
+        actions.view = controls
+        splitViewItems[0].addBottomAlignedAccessoryViewController(actions)
         let search = NSSplitViewItemAccessoryViewController()
         search.preferredScrollEdgeEffectStyle = .hard
         let searchControls = NSStackView(views: [searchField])
@@ -171,7 +169,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         } else { unavailable.isHidden = true }
         let profile = model.selectedProfile
         showProfile(profile)
-        remove.isEnabled = model.canDelete
+        profileActions.setEnabled(model.canDelete, forSegment: 1)
         beginRenaming()
         if let issue = model.issue ?? profile.issue, let window = view.window {
             model.issue = nil
@@ -280,14 +278,19 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             menu.addItem(delete)
         }
     }
-    @objc private func addProfile() { model.create() }
+    @objc private func performProfileAction(_ sender: NSSegmentedControl) {
+        switch sender.selectedSegment {
+        case 0: model.create()
+        case 1: confirmDeletion(model.selectedProfile)
+        default: break
+        }
+    }
     @objc private func renameProfile(_ sender: NSMenuItem) {
         if let profile = sender.representedObject as? ServiceProfile {
             model.selectedProfileID = profile.id
             model.editingProfileID = profile.id
         }
     }
-    @objc private func removeProfile() { confirmDeletion(model.selectedProfile) }
     @objc private func duplicateProfile(_ sender: NSMenuItem) {
         if let profile = sender.representedObject as? ServiceProfile { model.duplicate(profile) }
     }

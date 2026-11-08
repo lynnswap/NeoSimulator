@@ -2,18 +2,19 @@ import Foundation
 
 extension XcodeInstallationInspector {
     package nonisolated(nonsending) func discoverXcodes() async throws -> [XcodeInstallation] {
-        var urls = Set<URL>()
-        if let selected = try await selectedXcodeIfUsable() { urls.insert(selected.applicationURL) }
+        var discovered: [URL: XcodeInstallation] = [:]
+        if let selected = try await selectedXcodeIfUsable() { discovered[selected.applicationURL] = selected }
         for root in [URL(fileURLWithPath: "/Applications"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")] {
             let entries: [URL]
             do { entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) }
             catch CocoaError.fileReadNoSuchFile { continue }
             for entry in entries where entry.pathExtension == "app" {
-                if let xcode = try? xcode(at: entry) { urls.insert(xcode.applicationURL) }
+                let url = entry.resolvingSymlinksInPath().standardizedFileURL
+                guard discovered[url] == nil, let xcode = try? xcode(at: url) else { continue }
+                discovered[xcode.applicationURL] = xcode
             }
         }
-        let discovered: [XcodeInstallation] = try urls.map { try xcode(at: $0) }
-        let installations = discovered.sorted { lhs, rhs in
+        let installations = discovered.values.sorted { lhs, rhs in
             if lhs.version == rhs.version { return lhs.applicationURL.path < rhs.applicationURL.path }
             return rhs.version < lhs.version
         }

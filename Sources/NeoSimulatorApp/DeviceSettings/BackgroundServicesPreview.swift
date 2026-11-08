@@ -112,11 +112,13 @@ final class BackgroundServicesPreviewController: NSViewController {
 }
 
 /// Supplies in-memory host responses so previews use the same read and write paths as the inspector.
-private actor BackgroundServicesPreviewSource: SimulatorManagerSource {
+actor BackgroundServicesPreviewSource: SimulatorManagerSource {
     let device: InventoryDevice
     private var configuration: ServiceConfiguration
+    private var settings: SimulatorDeviceSettings?
 
-    init(configuration: ServiceConfiguration, stopped: Bool) {
+    init(configuration: ServiceConfiguration, stopped: Bool, settings: SimulatorDeviceSettings? = nil) {
+        self.settings = settings
         self.configuration = configuration
         device = .simulator(SimulatorHostDevice(identifier: "preview-iphone", name: "iPhone 18 Pro",
             descriptiveName: "iPhone 18 Pro", runtimeIdentifier: "preview-runtime", runtimeName: "iOS 27.2",
@@ -174,8 +176,17 @@ private actor BackgroundServicesPreviewSource: SimulatorManagerSource {
     func quitRenderer(keepingDevicesRunning: Bool?) {}
     func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
                       publish: @escaping @Sendable (DeviceSettingsGroupRead) async -> Void) async {
-        for group in groups { await publish(.unsupported(group)) }
+        for group in groups {
+            if let settings {
+                await publish(.values(group) { $0.replace(group, with: settings) })
+            } else {
+                await publish(.unsupported(group))
+            }
+        }
     }
-    func write(_ change: DeviceSettingChange, to device: InventoryDevice) throws { throw CocoaError(.featureUnsupported) }
+    func write(_ change: DeviceSettingChange, to device: InventoryDevice) throws {
+        guard let settings else { throw CocoaError(.featureUnsupported) }
+        self.settings = settings.applying(change)
+    }
 }
 #endif
