@@ -5427,7 +5427,7 @@ struct ManagerModelTests {
         let sharedLabel = try #require(category.services.first?.label)
         let sharedID = try store.createCategory(named: "Shared Service")
         try store.addService(sharedLabel, to: sharedID)
-        let sharedProfile = try store.create(name: "Shared")
+        let sharedProfile = try store.create(name: "Shared", configuration: ServiceConfiguration(disabledLabels: []))
         let sharedCategory = try #require(sharedProfile.categories.first { $0.id == sharedID })
         let cell = BackgroundServiceCell()
         window.contentView?.addSubview(cell)
