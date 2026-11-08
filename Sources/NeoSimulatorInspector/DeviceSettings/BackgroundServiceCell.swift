@@ -64,10 +64,11 @@ package final class BackgroundServiceCell: NSTableCellView {
                 isOn = category.isEnabled
                 // A custom category's name changes in place.
                 title.stringValue = category.category.name
-                showDetail(self.showsDetails ? "When off: " + category.category.consequence : "")
-                toolTip = category.category.consequence
+                let consequence = category.category.consequence
+                showDetail(self.showsDetails && !consequence.isEmpty ? "When off: " + consequence : "")
+                toolTip = consequence.isEmpty ? nil : consequence
                 toggle.setAccessibilityLabel(category.category.name)
-                toggle.setAccessibilityHelp(category.category.consequence)
+                toggle.setAccessibilityHelp(toolTip)
             }
         } else if let service = item as? BackgroundServiceItem {
             title.stringValue = service.label
@@ -84,7 +85,7 @@ package final class BackgroundServiceCell: NSTableCellView {
         }
     }
 
-    /// A service that the app added has no description, and its title centers without one.
+    /// A category or service that the app added can have no description, and its title centers without one.
     private func showDetail(_ text: String) {
         detail.stringValue = text
         detail.isHidden = text.isEmpty

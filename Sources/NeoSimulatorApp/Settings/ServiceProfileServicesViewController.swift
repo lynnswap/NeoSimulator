@@ -162,7 +162,11 @@ private final class ServiceCategoriesViewController: NSViewController, NSTableVi
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].category != nil }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        rows[row].category == nil ? 28 : tableView.rowHeight
+        switch rows[row] {
+        case .header: 28
+        // A category that the app added shows its name without a description.
+        case .category(let category): category.category.consequence.isEmpty ? 32 : tableView.rowHeight
+        }
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

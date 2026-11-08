@@ -83,11 +83,10 @@ package struct CustomServiceCategory: Codable, Equatable, Sendable {
     }
 
     /// A service that simulators need, which a profile file can group in a category of its own, stays on as it
-    /// does in the built-in categories.
+    /// does in the built-in categories. The category describes nothing beyond its name.
     fileprivate var category: SimulatorBackgroundServiceCategory {
         SimulatorBackgroundServiceCategory(
-            id: categoryID, name: name, summary: String(localized: "Services that you added."),
-            consequence: String(localized: "The services that you added to this category stop."),
+            id: categoryID, name: name, summary: "", consequence: "",
             services: labels.filter { requiredReasons[$0] == nil }.map {
                 SimulatorBackgroundService($0, summaries[$0] ?? "")
             },
