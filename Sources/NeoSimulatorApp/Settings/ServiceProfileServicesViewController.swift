@@ -19,7 +19,9 @@ final class ServiceProfileServicesViewController: NSSplitViewController {
         splitView.dividerStyle = .thin
         let categoriesItem = NSSplitViewItem(viewController: categories)
         categoriesItem.minimumThickness = 220
-        categoriesItem.holdingPriority = .defaultHigh
+        // Resizing the window resizes the services first. A priority above dragging would fix the divider.
+        categoriesItem.holdingPriority = NSLayoutConstraint.Priority(
+            NSLayoutConstraint.Priority.defaultLow.rawValue + 1)
         addSplitViewItem(categoriesItem)
         let servicesItem = NSSplitViewItem(viewController: services)
         servicesItem.minimumThickness = 260

@@ -24,7 +24,7 @@ final class ServiceProfilesSettingsModel {
         }
     }
 
-    func create() { create(configuration: ServiceConfiguration()) }
+    /// Adds a profile with `profile`'s services and starts naming it.
     func duplicate(_ profile: ServiceProfile) { create(configuration: profile.configuration) }
 
     private func create(configuration: ServiceConfiguration) {

@@ -5020,9 +5020,32 @@ struct ManagerModelTests {
         try await wait(timeout: .seconds(5)) {
             shownServices() == other.items.map(\.label)
         }
-        controller.model.create()
-        #expect(controller.model.selectedProfile.name == "Profile (1)")
-        controller.model.create()
+        let otherLabel = try #require(other.items.first?.label)
+        search.stringValue = otherLabel
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        try await wait(timeout: .seconds(5)) {
+            shownServices().contains(otherLabel) && categories.selectedRow >= 0
+        }
+        // Moving the divider between the categories and the services resizes both and keeps what they show.
+        let shown = shownServices()
+        let selectedRow = categories.selectedRow
+        let panes = controller.services.splitView
+        let categoriesPane = controller.services.splitViewItems[0].viewController.view
+        let servicesPane = controller.services.splitViewItems[1].viewController.view
+        let widths = (categories: categoriesPane.frame.width, services: servicesPane.frame.width)
+        panes.setPosition(categoriesPane.convert(categoriesPane.bounds, to: panes).maxX + 40, ofDividerAt: 0)
+        panes.layoutSubtreeIfNeeded()
+        #expect(categoriesPane.frame.width > widths.categories && servicesPane.frame.width < widths.services)
+        #expect(search.stringValue == otherLabel && categories.selectedRow == selectedRow)
+        #expect(controller.services.list.selectedSection?.category === other.category && shownServices() == shown)
+        // Adding copies the selected profile into a new one and keeps the default.
+        _ = add.accessibilityPerformPress()
+        let copy = controller.model.selectedProfile
+        #expect(copy.name == "Profile (1)" && copy.id != first.id)
+        #expect(
+            copy.configuration == first.configuration && first.configuration.disabledLabels == ["com.apple.searchd"])
+        #expect(store.defaultProfileID == ServiceProfile.allServicesID)
+        _ = add.accessibilityPerformPress()
         #expect(controller.model.selectedProfile.name == "Profile (2)")
     }
 

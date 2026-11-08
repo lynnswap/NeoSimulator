@@ -274,7 +274,8 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
     @objc private func performProfileAction(_ sender: NSSegmentedControl) {
         switch sender.selectedSegment {
-        case 0: model.create()
+        // A new profile starts from the selected one, which can be the built-in profile.
+        case 0: model.duplicate(model.selectedProfile)
         case 1: confirmDeletion(model.selectedProfile)
         default: break
         }
