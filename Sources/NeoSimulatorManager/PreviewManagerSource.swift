@@ -33,18 +33,21 @@
         package func status() -> SimulatorHostStatus {
             .init(host: .neo, preferredHost: .neo, restorationAvailable: false, rendererRunning: false)
         }
-        package func backgroundServices(for device: InventoryDevice) -> SimulatorBackgroundServices {
+        package func backgroundServices(
+            for device: InventoryDevice, catalog: BackgroundServiceCatalog
+        ) -> SimulatorBackgroundServices {
             SimulatorBackgroundServices(
                 disabled: configuration.disabledLabels,
-                loaded: ServiceConfiguration.labels.subtracting(configuration.disabledLabels), productFamily: "iPhone")
+                loaded: catalog.slimmable.subtracting(configuration.disabledLabels), productFamily: "iPhone",
+                catalog: catalog)
         }
         package func setBackgroundServices(
-            _ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
+            _ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, catalog: BackgroundServiceCatalog,
             for device: InventoryDevice
         ) -> SimulatorBackgroundServicesUpdate {
-            configuration.set(targets, enabled: enabled, productFamily: "iPhone")
-            let state = backgroundServices(for: device)
-            let categories = SimulatorBackgroundServiceCategory.all.filter { targets.contains(.category($0.id)) }
+            configuration.set(targets, enabled: enabled, productFamily: "iPhone", catalog: catalog)
+            let state = backgroundServices(for: device, catalog: catalog)
+            let categories = catalog.categories.filter { targets.contains(.category($0.id)) }
             let labels = Set(categories.flatMap { $0.services.map(\.label) }).union(
                 targets.compactMap {
                     if case .service(let label) = $0 { return label }

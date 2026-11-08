@@ -131,6 +131,13 @@ package final class BackgroundServiceOutlineController: NSViewController, NSOutl
             if !inserted.isEmpty { outline.insertItems(at: inserted, inParent: section.category, withAnimation: []) }
         }
         outline.endUpdates()
+        // A category that gains its first service or loses its last one changes whether it expands.
+        for section in current {
+            guard let old = previous.first(where: { $0.category === section.category }),
+                old.items.isEmpty != section.items.isEmpty
+            else { continue }
+            outline.reloadItem(section.category)
+        }
     }
 
     private func items(in category: BackgroundServiceCategoryModel) -> [BackgroundServiceItem] {

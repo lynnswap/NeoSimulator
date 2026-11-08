@@ -16,19 +16,60 @@ extension BackgroundServiceEditing {
 
 @MainActor @Observable
 package final class BackgroundServiceCategoryModel: Identifiable {
-    package let category: SimulatorBackgroundServiceCategory
-    package let items: [BackgroundServiceItem]
+    package private(set) var category: SimulatorBackgroundServiceCategory
+    package private(set) var items: [BackgroundServiceItem]
+    /// Whether the app added the category, which lets it gain and lose services.
+    package let isCustom: Bool
     package var isExpanded = false
     @ObservationIgnored private weak var source: (any BackgroundServiceEditing)?
-    package nonisolated var id: String { category.id }
+    package nonisolated let id: String
 
-    package init(_ category: SimulatorBackgroundServiceCategory, source: any BackgroundServiceEditing) {
+    package init(
+        _ category: SimulatorBackgroundServiceCategory, isCustom: Bool = false, source: any BackgroundServiceEditing
+    ) {
+        id = category.id
         self.category = category
+        self.isCustom = isCustom
         self.source = source
-        items =
-            category.services.map { BackgroundServiceItem(label: $0.label, detail: $0.summary, source: source) }
+        items = Self.items(of: category, reusing: [], source: source)
+    }
+
+    /// Models for `catalog`'s categories, which keep the models in `existing` whose categories it still lists. Their
+    /// identity holds what a list selects and expands, and the identity of their services' rows.
+    /// - Parameter custom: The identifiers of the categories that the app added.
+    package static func models(
+        for catalog: BackgroundServiceCatalog, custom: Set<String>, reusing existing: [BackgroundServiceCategoryModel],
+        source: any BackgroundServiceEditing
+    ) -> [BackgroundServiceCategoryModel] {
+        let models = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return catalog.categories.map { category in
+            guard let model = models[category.id] else {
+                return BackgroundServiceCategoryModel(category, isCustom: custom.contains(category.id), source: source)
+            }
+            model.update(category)
+            return model
+        }
+    }
+
+    private func update(_ category: SimulatorBackgroundServiceCategory) {
+        guard category != self.category, let source else { return }
+        self.category = category
+        let items = Self.items(of: category, reusing: self.items, source: source)
+        if items.map(ObjectIdentifier.init) != self.items.map(ObjectIdentifier.init) { self.items = items }
+    }
+
+    private static func items(
+        of category: SimulatorBackgroundServiceCategory, reusing existing: [BackgroundServiceItem],
+        source: any BackgroundServiceEditing
+    ) -> [BackgroundServiceItem] {
+        let items = Dictionary(existing.map { ($0.label, $0) }, uniquingKeysWith: { first, _ in first })
+        return category.services.map {
+            items[$0.label] ?? BackgroundServiceItem(label: $0.label, detail: $0.summary, source: source)
+        }
             + category.requiredServices.map {
-                BackgroundServiceItem(label: $0.label, detail: $0.reason, requiredReason: $0.reason, source: source)
+                items[$0.label]
+                    ?? BackgroundServiceItem(
+                        label: $0.label, detail: $0.reason, requiredReason: $0.reason, source: source)
             }
     }
 

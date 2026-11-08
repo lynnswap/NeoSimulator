@@ -265,6 +265,7 @@ package final class SimulatorManagerModel {
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
         registry = DeviceRegistry(source: controller)
         self.serviceProfiles = serviceProfiles
+        followServiceCatalog()
     }
 
     package init(source: any SimulatorManagerSource,
@@ -275,6 +276,13 @@ package final class SimulatorManagerModel {
         frameworks = UIFrameworkSettings { try await source.installedXcodes() }
         registry = DeviceRegistry(source: source)
         self.serviceProfiles = serviceProfiles
+        followServiceCatalog()
+    }
+
+    /// The profiles own the categories, which the devices read and change.
+    private func followServiceCatalog() {
+        registry.backgroundServiceCatalog = serviceProfiles.catalog
+        serviceProfiles.catalogDidChange = { [weak registry] in registry?.backgroundServiceCatalog = $0 }
     }
 
     package func start() {

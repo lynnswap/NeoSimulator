@@ -597,7 +597,7 @@ struct ManagerModelTests {
             reportFailure: { _ in Issue.record("Unexpected failure") })
         let window = try #require(controller.window)
         defer { window.close() }
-        #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.allServices.id)
+        #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.allServicesID)
         window.makeKeyAndOrderFront(nil)
         window.layoutIfNeeded()
         let samples = SettingsWindowFrameSamples()
@@ -4444,9 +4444,11 @@ struct ManagerModelTests {
         let data = try JSONEncoder().encode(LegacyServiceProfiles(profiles: [first, second], devices: [
             device: .init(profileID: second.id, base: ServiceConfiguration(disabledLabels: ["com.apple.searchtoold"]),
                           overrides: ["com.apple.searchd": true], requestID: UUID(), pendingApplication: true),
-            unchosen: .init(profileID: ServiceProfile.allServices.id, base: ServiceConfiguration(),
+                    unchosen: .init(
+                        profileID: ServiceProfile.allServicesID, base: ServiceConfiguration(),
                             overrides: ["com.apple.searchd": false], requestID: UUID(), pendingApplication: false),
-            pendingDefault: .init(profileID: ServiceProfile.allServices.id, base: ServiceConfiguration(),
+                    pendingDefault: .init(
+                        profileID: ServiceProfile.allServicesID, base: ServiceConfiguration(),
                                   overrides: [:], requestID: UUID(), pendingApplication: true),
         ]))
         defaults.set(data, forKey: ServiceProfileStore.defaultsKey)
@@ -4465,9 +4467,9 @@ struct ManagerModelTests {
         #expect(store.binding(for: unchosen) == DeviceServiceProfile(selection: .inheritDefault, overrides: ["com.apple.searchd": false]))
         #expect(store.defaultProfileID == ServiceProfile.allServicesID)
         #expect(store.configuration(for: unchosen)?.disabledLabels == ["com.apple.searchd"])
-        #expect(store.selection(for: pendingDefault) == .profile(ServiceProfile.allServices.id))
+        #expect(store.selection(for: pendingDefault) == .profile(ServiceProfile.allServicesID))
         #expect(store.configuration(for: pendingDefault) == ServiceConfiguration())
-        #expect(store.availableProfiles.first === ServiceProfile.allServices)
+        #expect(store.availableProfiles.first === store.allServices)
         defaults.set(Data("obsolete".utf8), forKey: ServiceProfileStore.defaultsKey)
         let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
         #expect(restored.issue == nil && restored.binding(for: device) == binding)
@@ -4565,8 +4567,8 @@ struct ManagerModelTests {
         drag.draggingSource = nil
         #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above).isEmpty)
 
-        try store.update(first.id, name: ServiceProfile.allServices.name, configuration: first.configuration)
-        try store.update(third.id, name: ServiceProfile.allServices.name, configuration: third.configuration)
+        try store.update(first.id, name: store.allServices.name, configuration: first.configuration)
+        try store.update(third.id, name: store.allServices.name, configuration: third.configuration)
         try await wait(timeout: .seconds(5)) {
             defaultMenu.itemArray.compactMap { $0.representedObject as? UUID } == store.availableProfiles.map(\.id)
                 && defaultMenu.itemTitles == store.availableProfiles.map(\.name)
@@ -4614,13 +4616,13 @@ struct ManagerModelTests {
         let device = simulator().id
         let label = "com.apple.searchd"
         let other = "com.apple.searchtoold"
-        #expect(store.defaultProfile === ServiceProfile.allServices && store.selection(for: device) == .inheritDefault)
+        #expect(store.defaultProfile === store.allServices && store.selection(for: device) == .inheritDefault)
         #expect(store.defaultProfile.name == "All Services")
 
         // All Services is the default; an individual change stays an inherited override.
         try store.record([.service(label)], enabled: false, for: device, productFamily: "iPhone")
         #expect(store.binding(for: device) == DeviceServiceProfile(selection: .inheritDefault, overrides: [label: false]))
-        #expect(store.resolvedProfile(for: device) === ServiceProfile.allServices)
+        #expect(store.resolvedProfile(for: device) === store.allServices)
         #expect(store.configuration(for: device)?.disabledLabels == [label])
 
         let common = try store.create(name: "Common", configuration: ServiceConfiguration())
@@ -4702,8 +4704,8 @@ struct ManagerModelTests {
         let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let device = simulator().id
         let label = "com.apple.searchd"
-        #expect(store.profile(ServiceProfile.allServices.id)?.configuration.disabledLabels.isEmpty == true)
-        #expect(store.availableProfiles.count == 1 && store.availableProfiles.first === ServiceProfile.allServices)
+        #expect(store.profile(ServiceProfile.allServicesID)?.configuration.disabledLabels.isEmpty == true)
+        #expect(store.availableProfiles.count == 1 && store.availableProfiles.first === store.allServices)
         try store.record([.service(label)], enabled: false, for: device, productFamily: "iPhone")
         let changed = try #require(store.binding(for: device))
         #expect(changed.selection == .inheritDefault)
@@ -4712,7 +4714,7 @@ struct ManagerModelTests {
         let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         #expect(restored.binding(for: device) == DeviceServiceProfile(selection: .profile(saved.id)))
         #expect(restored.configuration(for: device)?.disabledLabels == [label])
-        try restored.assign(.profile(ServiceProfile.allServices.id), to: device)
+        try restored.assign(.profile(ServiceProfile.allServicesID), to: device)
         #expect(restored.configuration(for: device)?.disabledLabels.isEmpty == true)
         #expect(restored.binding(for: device)?.overrides.isEmpty == true)
         #expect(restored.profile(saved.id)?.configuration.disabledLabels == [label])
@@ -5022,7 +5024,7 @@ struct ManagerModelTests {
         let filtered = try #require(controller.services.list.selectedSection?.items.first)
         try filtered.setEnabled(false)
         #expect(first.configuration.disabledLabels == ["com.apple.searchd"])
-        #expect(ServiceProfile.allServices.configuration.disabledLabels.isEmpty)
+        #expect(store.allServices.configuration.disabledLabels.isEmpty)
         search.stringValue = ""
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
         let other = try #require(controller.services.list.sections.dropFirst().first)
@@ -5084,6 +5086,94 @@ struct ManagerModelTests {
         #expect(store.defaultProfileID == ServiceProfile.allServicesID)
         _ = add.accessibilityPerformPress()
         #expect(controller.model.selectedProfile.name == "Profile (2)")
+    }
+
+    @Test func customCategoriesShowAboveTheBuiltInOnesAndTakeTheirFirstService() async throws {
+        let domain = "NeoSimulator.CustomCategoryPanes.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let profile = try store.create(name: "Agents Off", configuration: ServiceConfiguration())
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let list = controller.services.list
+        let lists = inspectorViews(controller.services.view).compactMap { $0 as? NSTableView }
+        let categories = try #require(lists.first { $0.accessibilityLabel() == "Service Categories" })
+        let services = try #require(lists.first { $0.accessibilityLabel() == "Services" })
+        func titles(_ table: NSTableView) -> [String] {
+            (0..<table.numberOfRows).compactMap { row in
+                table.view(atColumn: 0, row: row, makeIfNecessary: true).flatMap {
+                    inspectorViews($0).compactMap { $0 as? NSTextField }.first?.stringValue
+                }
+            }
+        }
+        let actions = try (0..<2).map { pane in
+            let accessory = try #require(
+                controller.services.splitViewItems[pane].bottomAlignedAccessoryViewControllers.first)
+            return try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
+        }
+        // The categories' delete and the services' add work on a selected category that the app added.
+        func editsCustomCategory() -> Bool {
+            actions[0].isEnabled(forSegment: 1) && actions[1].isEnabled(forSegment: 0)
+        }
+        func press(_ control: NSSegmentedControl, answering text: String) async throws {
+            let add = try #require(
+                (control.cell as? NSSegmentedCell)?.accessibilityChildren()?.first as? any NSAccessibilityProtocol)
+            _ = add.accessibilityPerformPress()
+            try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+            let sheet = inspectorViews(try #require(window.attachedSheet?.contentView))
+            try #require(sheet.compactMap { $0 as? NSTextField }.first { $0.isEditable }).stringValue = text
+            try #require(sheet.compactMap { $0 as? NSButton }.first { $0.title == "Add" }).performClick(nil)
+            try await wait(timeout: .seconds(5)) { window.attachedSheet == nil }
+        }
+        // The built-in profile shows its fixed categories, which gain nothing beside it.
+        let builtIn = SimulatorBackgroundServiceCategory.all.map(\.name)
+        try await wait(timeout: .seconds(5)) { titles(categories) == builtIn }
+        #expect(!actions[0].isEnabled(forSegment: 0) && !editsCustomCategory())
+        try controller.model.addCategory(named: "Agents")
+        #expect(store.customCategories.isEmpty)
+        controller.model.selectedProfileID = profile.id
+        try await wait(timeout: .seconds(5)) { actions[0].isEnabled(forSegment: 0) }
+        #expect(titles(categories) == builtIn && !editsCustomCategory())
+
+        // A new category shows and stays selected without services, above the built-in ones.
+        try await press(actions[0], answering: "Agents")
+        try await wait(timeout: .seconds(5)) {
+            titles(categories) == ["Custom", "Agents", "Built-in"] + builtIn && categories.selectedRow == 1
+        }
+        let agents = try #require(list.selectedSection?.category)
+        #expect(categories.delegate?.tableView?(categories, shouldSelectRow: 0) == false)
+        #expect(editsCustomCategory())
+        let servicesPane = controller.services.splitViewItems[1].viewController.view
+        func showsNoServices() -> Bool {
+            services.numberOfRows == 0
+                && inspectorViews(servicesPane).contains {
+                    String(describing: type(of: $0)).hasPrefix("NSHostingView") && !$0.isHidden
+                }
+        }
+        #expect(showsNoServices())
+        list.query = "agents"
+        try await wait(timeout: .seconds(5)) {
+            titles(categories) == ["Custom", "Agents"] && categories.selectedRow == 1 && showsNoServices()
+        }
+
+        // Its first service shows beside it once the filter clears for it.
+        try await press(actions[1], answering: " com.example.agent ")
+        try await wait(timeout: .seconds(5)) {
+            list.query.isEmpty && titles(services) == ["com.example.agent"] && !showsNoServices()
+        }
+        #expect(list.selectedSection?.category === agents && categories.selectedRow == 1)
+        categories.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+        try await wait(timeout: .seconds(5)) {
+            list.selectedSection?.category.isCustom == false && !editsCustomCategory()
+        }
+        controller.model.selectedProfileID = ServiceProfile.allServicesID
+        try await wait(timeout: .seconds(5)) { titles(categories) == builtIn && !actions[0].isEnabled(forSegment: 0) }
     }
 
     @Test func reusedServiceSwitchesShowTheirProfileWithoutMoving() async throws {
@@ -5180,16 +5270,79 @@ struct ManagerModelTests {
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
         await manager.refresh()
         manager.inspect(device, selectionCount: 1)
-        manager.selectServiceProfile(.profile(ServiceProfile.allServices.id), for: device.id)
+        manager.selectServiceProfile(.profile(ServiceProfile.allServicesID), for: device.id)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: [label, other])
         #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: [label])
         try await awaitServiceOperations(manager)
-        #expect(store.binding(for: device.id) == DeviceServiceProfile(selection: .profile(ServiceProfile.allServices.id), overrides: [label: false]))
+        #expect(
+            store.binding(for: device.id)
+                == DeviceServiceProfile(selection: .profile(ServiceProfile.allServicesID), overrides: [label: false]))
         #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels == [label])
         #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: true)])
         try await manager.prepareForQuit()
+    }
+
+    @Test func customCategoriesSwitchEveryProfileUntilTheyAreRemoved() async throws {
+        let domain = "NeoSimulator.CustomServiceCategory.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let label = "com.example.agent"
+        let categoryID = try store.createCategory(named: "Agents")
+        try store.addService(label, to: categoryID)
+        for refused in [label, "com.apple.sharingd", "com.apple.nanoregistryd"] {
+            #expect(throws: ServiceProfileStore.Failure.self) { try store.addService(refused, to: categoryID) }
+        }
+        let profile = try store.create(name: "Agents Off", configuration: ServiceConfiguration())
+        let other = try store.create(name: "Other", configuration: ServiceConfiguration())
+        let category = try #require(profile.categories.first)
+        #expect(category.id == categoryID && category.isCustom && category.items.map(\.label) == [label])
+        category.setEnabled(false)
+        #expect(profile.configuration.disabledLabels == [label])
+        #expect(other.categories.first?.id == categoryID && other.categories.first?.isEnabled == true)
+        let copy = try store.create(name: "Copy", configuration: profile.configuration)
+
+        // Simulators read and change the custom services, which another profile turns on again.
+        let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        manager.selectServiceProfile(.profile(profile.id), for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [label])
+        try await awaitServiceOperations(manager)
+        manager.selectServiceProfile(.profile(ServiceProfile.allServicesID), for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [])
+        try await awaitServiceOperations(manager)
+        #expect(
+            await source.serviceChanges == [
+                .init(targets: [.service(label)], enabled: false),
+                .init(targets: [.service(label)], enabled: true),
+            ])
+        try store.record([.service(label)], enabled: false, for: device.id, productFamily: "iPhone")
+        try await manager.prepareForQuit()
+
+        // The definitions last, and removing a service takes it out of every profile and device.
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        #expect(restored.customCategories.map(\.labels) == [[label]])
+        #expect(restored.profile(copy.id)?.configuration.disabledLabels == [label])
+        try restored.removeService(label, from: categoryID)
+        for saved in [restored, ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)] {
+            #expect(saved.profiles.allSatisfy { $0.configuration.disabledLabels.isEmpty })
+            #expect(saved.binding(for: device.id)?.overrides == [:])
+            #expect(saved.catalog.category(categoryID)?.services.isEmpty == true)
+        }
+        try restored.deleteCategory(categoryID)
+        #expect(ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil).catalog == .builtIn)
     }
 
     @Test func profileEditsUseTheSameSharedServiceAndPlatformRulesAsLiveControls() throws {
@@ -5603,7 +5756,7 @@ struct ManagerModelTests {
 
         manager.selectServiceProfile(.inheritDefault, for: device.id)
         try await awaitServiceOperations(manager)
-        #expect(!services.isChanging && store.defaultProfile === ServiceProfile.allServices)
+        #expect(!services.isChanging && store.defaultProfile === store.allServices)
         let common = try store.create(name: "Common", configuration: ServiceConfiguration(disabledLabels: [label]))
         try store.setDefaultProfile(common.id)
         await manager.refresh()
@@ -6347,10 +6500,20 @@ private struct ServiceChangeSource: DeviceStateSource {
     func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
                       publish: @escaping @concurrent @Sendable (DeviceSettingsGroupRead) async -> Void) async {}
     func write(_ change: DeviceSettingChange, to device: InventoryDevice) async throws {}
-    func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices { try await backend.read() }
+    func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServices
+    { try await backend(catalog).read() }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                               for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
-        try await backend.update(targets, enabled: enabled)
+        catalog: BackgroundServiceCatalog, for device: InventoryDevice
+    ) async throws
+        -> SimulatorBackgroundServicesUpdate
+    {
+        try await backend(catalog).update(targets, enabled: enabled)
+    }
+    private func backend(_ catalog: BackgroundServiceCatalog) -> SimulatorBackgroundServiceBackend {
+        var backend = backend
+        backend.catalog = catalog
+        return backend
     }
     func inspector(for device: InventoryDevice) -> DeviceInspector { DeviceInspector(device: device, simulatorXcodeURL: nil) }
     func stopReads() {}
@@ -6403,6 +6566,8 @@ actor ManagerModelSource: SimulatorManagerSource {
     private(set) var writtenChanges: [DeviceSettingChange] = []
     private var holdsServiceReads = false
     private var serviceReads: [(device: DeviceInventoryID, finished: CheckedContinuation<SimulatorBackgroundServices, any Error>)] = []
+    /// The categories that the last read or change covered, which the states it answers with cover.
+    private var serviceCatalog = BackgroundServiceCatalog.builtIn
     private var serviceChange: CheckedContinuation<SimulatorBackgroundServicesUpdate, any Error>?
     private(set) var serviceChanges: [ServiceChange] = []
     private(set) var readCount = 0
@@ -6527,8 +6692,11 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     /// Background service reads return no overrides at once unless a test holds them.
     func holdServiceReads() { holdsServiceReads = true }
-    func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices {
-        guard holdsServiceReads else { return SimulatorBackgroundServices(disabled: [], loaded: [], productFamily: "iPhone") }
+    func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServices
+    {
+        serviceCatalog = catalog
+        guard holdsServiceReads else { return services(disabled: []) }
         return try await withCheckedThrowingContinuation { waiting in
             serviceReads.append((device.id, waiting))
             continuation.yield(.readServices(device.id))
@@ -6536,14 +6704,18 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     func completeServiceRead(disabled: Set<String>, loaded: Set<String> = [], for device: DeviceInventoryID? = nil) {
         guard let index = serviceReads.firstIndex(where: { device == nil || $0.device == device }) else { return }
-        serviceReads.remove(at: index).finished.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"))
+        serviceReads.remove(at: index).finished.resume(returning: services(disabled: disabled, loaded: loaded))
     }
     func failServiceRead() {
         guard !serviceReads.isEmpty else { return }
         serviceReads.removeFirst().finished.resume(throwing: Failure.unavailable)
     }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                               for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
+        catalog: BackgroundServiceCatalog, for device: InventoryDevice
+    ) async throws
+        -> SimulatorBackgroundServicesUpdate
+    {
+        serviceCatalog = catalog
         serviceChanges.append(ServiceChange(targets: targets, enabled: enabled))
         return try await withCheckedThrowingContinuation { waiting in
             serviceChange = waiting
@@ -6554,15 +6726,18 @@ actor ManagerModelSource: SimulatorManagerSource {
         let waiting = serviceChange
         serviceChange = nil
         waiting?.resume(returning: SimulatorBackgroundServicesUpdate(
-            services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
-            stillEnabledLabels: [], notStartedLabels: notStarted))
+                services: services(disabled: disabled), stillEnabledLabels: [], notStartedLabels: notStarted))
     }
     func failServiceChange(disabled: Set<String>, loaded: Set<String> = []) {
         let waiting = serviceChange
         serviceChange = nil
         waiting?.resume(throwing: SimulatorBackgroundServicesUpdateFailure(
-            services: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"),
+                services: services(disabled: disabled, loaded: loaded),
             underlyingError: SimulatorHostFailure(Failure.unavailable)))
+    }
+    private func services(disabled: Set<String>, loaded: Set<String> = []) -> SimulatorBackgroundServices {
+        SimulatorBackgroundServices(
+            disabled: disabled, loaded: loaded, productFamily: "iPhone", catalog: serviceCatalog)
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }

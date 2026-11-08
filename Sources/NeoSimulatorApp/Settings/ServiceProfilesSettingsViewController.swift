@@ -17,8 +17,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
     ], trackingMode: .momentary, target: nil, action: nil)
     private let detailsController = NSViewController()
-    let services = ServiceProfileServicesViewController()
-    private var displayedProfile: ServiceProfile?
+    let services: ServiceProfileServicesViewController
     private var observation: PortableObservationTracking.Token?
     private var profiles: [ServiceProfile] = []
     private var selecting = false
@@ -26,6 +25,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
 
     init(store: ServiceProfileStore) {
         model = ServiceProfilesSettingsModel(store: store)
+        services = ServiceProfileServicesViewController(model: model)
         super.init(nibName: nil, bundle: nil)
         title = "Service Profiles"
         preferredContentSize = NSSize(width: 860, height: 520)
@@ -163,7 +163,8 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             unavailable.isHidden = false
         } else { unavailable.isHidden = true }
         let profile = model.selectedProfile
-        showProfile(profile)
+        // A profile's categories change when a custom category is added or removed.
+        services.show(profile)
         profileActions.setEnabled(model.canDelete, forSegment: 1)
         beginRenaming()
         if let issue = model.issue ?? profile.issue, let window = view.window {
@@ -174,12 +175,6 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             alert.informativeText = issue
             alert.beginSheetModal(for: window)
         }
-    }
-
-    private func showProfile(_ profile: ServiceProfile) {
-        guard displayedProfile !== profile else { return }
-        displayedProfile = profile
-        services.show(profile)
     }
 
     override func viewDidAppear() {
@@ -219,7 +214,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-        guard profiles.indices.contains(row), profiles[row].id != ServiceProfile.allServices.id else { return nil }
+        guard profiles.indices.contains(row), profiles[row].id != ServiceProfile.allServicesID else { return nil }
         let item = NSPasteboardItem()
         item.setString(profiles[row].id.uuidString, forType: Self.profileDragType)
         return item
@@ -229,7 +224,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         guard let source = info.draggingSource as? NSTableView, source === table,
               let value = info.draggingPasteboard.string(forType: Self.profileDragType),
               let id = UUID(uuidString: value),
-              id != ServiceProfile.allServices.id,
+            id != ServiceProfile.allServicesID,
               profiles.contains(where: { $0.id == id }) else { return nil }
         return id
     }
@@ -260,7 +255,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         duplicate.target = self
         duplicate.representedObject = profile
         menu.addItem(duplicate)
-        if profile.id != ServiceProfile.allServices.id {
+        if profile.id != ServiceProfile.allServicesID {
             let rename = NSMenuItem(title: "Rename…", action: #selector(renameProfile(_:)), keyEquivalent: "")
             rename.target = self
             rename.representedObject = profile
@@ -293,7 +288,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         if let profile = sender.representedObject as? ServiceProfile { confirmDeletion(profile) }
     }
     private func confirmDeletion(_ profile: ServiceProfile) {
-        guard profile.id != ServiceProfile.allServices.id, let window = view.window else { return }
+        guard profile.id != ServiceProfile.allServicesID, let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "Delete Service Profile?"
         alert.informativeText = "The simulators keep their current services. Devices using this profile will follow the default profile at their next start."
@@ -357,7 +352,7 @@ private final class ServiceProfileCell: NSTableCellView {
     required init?(coder: NSCoder) { nil }
 
     func configure(profile: ServiceProfile) {
-        subtitle.isHidden = profile.id != ServiceProfile.allServices.id
+        subtitle.isHidden = profile.id != ServiceProfile.allServicesID
         textField?.identifier = NSUserInterfaceItemIdentifier(profile.id.uuidString)
         textField?.isEditable = profile.canEdit
         textField?.isSelectable = profile.canEdit

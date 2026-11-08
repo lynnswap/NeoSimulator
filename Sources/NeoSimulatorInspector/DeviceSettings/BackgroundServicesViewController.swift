@@ -1,5 +1,6 @@
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
+import NeoSimulatorManager
 import AppKit
 import ObservationBridge
 import SwiftUI
@@ -77,6 +78,7 @@ final class BackgroundServicesViewController: NSViewController {
     }
 
     private func update() {
+        outline.model.setCategories(model.categories)
         outline.view.isHidden = !model.canFilter
         unavailable.isHidden = model.canFilter
         outline.isEnabled = !model.holdsChanges

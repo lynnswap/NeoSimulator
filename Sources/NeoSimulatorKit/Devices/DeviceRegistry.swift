@@ -17,6 +17,14 @@ public final class DeviceRegistry {
     package private(set) var inventoryIssues: [DeviceInventoryIssue] = []
 
     @ObservationIgnored package let source: any DeviceStateSource
+    /// The categories whose services each device's ``DeviceModel/backgroundServices`` reads and changes. Devices read
+    /// their services again when this changes, because what they read covers the earlier categories.
+    @ObservationIgnored package var backgroundServiceCatalog = BackgroundServiceCatalog.builtIn {
+        didSet {
+            guard backgroundServiceCatalog != oldValue else { return }
+            for model in models.values { model.backgroundServices.catalogDidChange() }
+        }
+    }
     @ObservationIgnored private var models: [DeviceInventoryID: DeviceModel] = [:]
     @ObservationIgnored private var readsStopped = false
     @ObservationIgnored private var runningRead: Task<Void, any Error>?

@@ -325,13 +325,13 @@ background services, such as Spotlight indexing, iCloud sync, and Siri,
 without restarting it. Each category says what stops working while it is
 off; expand it to switch its services one at a time.
 
-Services the system needs are marked **Always On**. After a change, the
-inspector lists services it kept on because another enabled category uses them
-or, on watchOS and visionOS, the platform needs them, and services that cannot
-start again until the next boot. While a change runs, the simulator's
-management actions other than **Force Shut Down** are unavailable. Start a
-simulator to change its background services; physical devices and virtual
-machines do not offer them.
+Services that simulators need stay on: turning one off says why and leaves it
+on. After a change, the inspector lists services it kept on because another
+enabled category uses them or, on watchOS and visionOS, the platform needs them,
+and services that cannot start again until the next boot. While a change runs,
+the simulator's management actions other than **Force Shut Down** are
+unavailable. Start a simulator to change its background services; physical
+devices and virtual machines do not offer them.
 
 Choose the **Default Profile** in **Settings → Service Profiles**. It starts as
 **All Services**, the built-in preset that enables all managed services. Each
@@ -349,3 +349,14 @@ simulator start. Selecting a simulator's Startup Profile also applies it
 immediately when that simulator is running. Automatic application works while
 NeoSimulator is open, including starts from Xcode. Opening NeoSimulator leaves
 already-running simulators unchanged.
+
+To switch services that the built-in categories don't list, add categories of
+your own in **Settings → Service Profiles**. The **+** below the categories adds
+one, and the **+** below its services adds a service by its launchd label. Your
+categories appear above the built-in ones in every profile and in the
+inspector, and each profile turns their services on and off. Control-click one
+of your categories to rename or delete it, or one of its services to remove it.
+Removing a service leaves running simulators as they are, so a service that is
+off stays off. Built-in categories can't be changed, and NeoSimulator doesn't
+add services that simulators need or that stop a simulator from working while
+they're off.

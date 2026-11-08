@@ -104,6 +104,8 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
     public var loadedLabels: Set<String>
     /// Labels this simulator's platform keeps enabled although a category lists them.
     public var platformRequiredLabels: Set<String>
+    /// The categories that decide which labels this state covers.
+    package var catalog: BackgroundServiceCatalog
 
     /// Creates a service-state snapshot, retaining the labels managed by this Kit.
     /// - Parameters:
@@ -111,9 +113,15 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
     ///   - loaded: Launchd labels loaded in the current boot session.
     ///   - productFamily: The simulator's CoreSimulator family name, such as `iPhone` or `iPad`.
     public init(disabled: Set<String>, loaded: Set<String>, productFamily: String) {
-        disabledLabels = disabled.intersection(BackgroundServiceCatalog.managed)
-        loadedLabels = loaded.intersection(BackgroundServiceCatalog.managed)
+        self.init(disabled: disabled, loaded: loaded, productFamily: productFamily, catalog: .builtIn)
+    }
+
+    /// Creates a service-state snapshot that retains the labels `catalog` manages.
+    package init(disabled: Set<String>, loaded: Set<String>, productFamily: String, catalog: BackgroundServiceCatalog) {
+        disabledLabels = disabled.intersection(catalog.managed)
+        loadedLabels = loaded.intersection(catalog.managed)
         platformRequiredLabels = BackgroundServiceCatalog.platformRequired(productFamily: productFamily)
+        self.catalog = catalog
     }
 
     /// Returns whether the service named `label` has no disable override.
@@ -127,7 +135,7 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
     /// - Parameter label: The service's launchd label.
     /// - Returns: `true` if a category lists the service and this simulator's platform does not keep it enabled.
     public func canDisable(_ label: String) -> Bool {
-        BackgroundServiceCatalog.slimmable.contains(label) && !platformRequiredLabels.contains(label)
+        catalog.slimmable.contains(label) && !platformRequiredLabels.contains(label)
     }
 
     /// Returns how much of `category` is disabled.
@@ -141,7 +149,8 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
         let labels = category.services.map(\.label).filter(canDisable)
         guard labels.contains(where: disabledLabels.contains) else { return .enabled }
         let settled = labels.allSatisfy { label in
-            disabledLabels.contains(label) || SimulatorBackgroundServiceCategory.all.contains {
+            disabledLabels.contains(label)
+                || catalog.categories.contains {
                 $0.id != category.id && $0.services.contains { $0.label == label } && isFullyEnabled($0)
             }
         }
@@ -161,7 +170,8 @@ public struct SimulatorBackgroundServices: Sendable, Equatable {
         let covered = Set(categories.flatMap { $0.services.map(\.label) }).subtracting(named)
         let disabledCategoryIDs = Set(categories.map(\.id))
         var kept = Set<String>()
-        for category in SimulatorBackgroundServiceCategory.all where !disabledCategoryIDs.contains(category.id) && isFullyEnabled(category) {
+        for category in catalog.categories where !disabledCategoryIDs.contains(category.id) && isFullyEnabled(category)
+        {
             kept.formUnion(category.services.map(\.label).filter(covered.contains))
         }
         return kept
@@ -211,7 +221,13 @@ public struct ServiceConfiguration: Codable, Equatable, Sendable {
     ///   that its platform keeps enabled. An empty name keeps none.
     /// - Returns: The state, for evaluating categories without a simulator.
     public func state(productFamily: String = "") -> SimulatorBackgroundServices {
-        SimulatorBackgroundServices(disabled: disabledLabels, loaded: [], productFamily: productFamily)
+        state(productFamily: productFamily, catalog: .builtIn)
+    }
+
+    /// Returns the state that this configuration describes among `catalog`'s services, with no service loaded.
+    package func state(productFamily: String = "", catalog: BackgroundServiceCatalog) -> SimulatorBackgroundServices {
+        SimulatorBackgroundServices(
+            disabled: disabledLabels, loaded: [], productFamily: productFamily, catalog: catalog)
     }
 
     /// Returns a copy of this configuration with per-label choices applied.
@@ -241,16 +257,26 @@ public struct ServiceConfiguration: Codable, Equatable, Sendable {
     @discardableResult
     public mutating func set(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
                              productFamily: String = "") -> Set<String> {
-        let categories = SimulatorBackgroundServiceCategory.all.filter { targets.contains(.category($0.id)) }
+        set(targets, enabled: enabled, productFamily: productFamily, catalog: .builtIn)
+    }
+
+    /// Enables or disables `targets` among `catalog`'s services, as ``set(_:enabled:productFamily:)`` does among
+    /// ``labels``.
+    @discardableResult
+    package mutating func set(
+        _ targets: [SimulatorBackgroundServiceTarget], enabled: Bool, productFamily: String = "",
+        catalog: BackgroundServiceCatalog
+    ) -> Set<String> {
+        let categories = catalog.categories.filter { targets.contains(.category($0.id)) }
         let named = targets.compactMap { target -> String? in
             if case .service(let label) = target { return label }
             return nil
         }
-        var affected = Set(categories.flatMap { $0.services.map(\.label) }).union(named).intersection(Self.labels)
+        var affected = Set(categories.flatMap { $0.services.map(\.label) }).union(named).intersection(catalog.slimmable)
         if enabled {
             disabledLabels.subtract(affected)
         } else {
-            let before = state(productFamily: productFamily)
+            let before = state(productFamily: productFamily, catalog: catalog)
             affected.subtract(before.labelsKeptEnabled(disabling: categories, named: named))
             affected = affected.filter { before.canDisable($0) }
             disabledLabels.formUnion(affected)
@@ -269,13 +295,33 @@ package struct SimulatorBackgroundServicesUpdateFailure: Error, LocalizedError, 
     package var recoverySuggestion: String? { underlyingError.recoverySuggestion }
 }
 
-package enum BackgroundServiceCatalog {
-    package static let slimmable = Set(SimulatorBackgroundServiceCategory.all.flatMap { $0.services.map(\.label) })
-    /// The only labels NeoSimulator ever changes: required services may only be enabled again.
-    package static let managed = slimmable.union(SimulatorBackgroundServiceCategory.all.flatMap { $0.requiredServices.map(\.label) })
+/// The categories whose services NeoSimulator reads and changes: the built-in ones, and those that the app adds.
+package struct BackgroundServiceCatalog: Sendable, Equatable {
+    package static let builtIn = BackgroundServiceCatalog(SimulatorBackgroundServiceCategory.all)
+    /// Labels that wedge a simulator while disabled, which no category may list, because their disable override
+    /// outlives the boot. nanoregistryd hangs every simctl operation; sleepd makes SpringBoard retry itself to death;
+    /// the rest were observed to break boot in simslim.
+    package static let wedgingLabels: Set<String> = [
+        "com.apple.nanoregistryd", "com.apple.nanoregistrylaunchd", "com.apple.nanoprefsyncd.2",
+        "com.apple.nanotimekitcompaniond", "com.apple.nanobackupd", "com.apple.sleepd", "com.apple.appprotectiond",
+        "com.apple.ManagedSettingsAgent", "com.apple.managedconfiguration.profiled", "com.apple.mobiletimerd",
+        "com.apple.routined", "com.apple.biomed", "com.apple.biomesyncd", "com.apple.dmd", "com.apple.donotdisturbd",
+    ]
 
-    package static func category(_ identifier: String) -> SimulatorBackgroundServiceCategory? {
-        SimulatorBackgroundServiceCategory.all.first { $0.id == identifier }
+    package let categories: [SimulatorBackgroundServiceCategory]
+    /// The labels that the categories list, which disabling may stop.
+    package let slimmable: Set<String>
+    /// The only labels NeoSimulator ever changes: required services may only be enabled again.
+    package let managed: Set<String>
+
+    package init(_ categories: [SimulatorBackgroundServiceCategory]) {
+        self.categories = categories
+        slimmable = Set(categories.flatMap { $0.services.map(\.label) })
+        managed = slimmable.union(categories.flatMap { $0.requiredServices.map(\.label) })
+    }
+
+    package func category(_ identifier: String) -> SimulatorBackgroundServiceCategory? {
+        categories.first { $0.id == identifier }
     }
 
     package static func platformRequired(productFamily: String) -> Set<String> {
@@ -299,6 +345,8 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
     package var jobPlists: @Sendable ([String]) async -> [String: String]?
     package var pause: @Sendable (Duration) async throws -> Void
     package let productFamily: String
+    /// The categories and services that this reads and changes.
+    package var catalog = BackgroundServiceCatalog.builtIn
 
     /// launchd_sim answers error 124 for a few seconds around a boot; reads and later passes wait on these.
     package static let retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
@@ -311,7 +359,8 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
         async let disabled = readLaunchd(["print-disabled", "system"])
         async let loaded = readLaunchd(["list"])
         return SimulatorBackgroundServices(disabled: Self.parseDisabled(try await disabled),
-                                           loaded: Self.parseLoaded(try await loaded), productFamily: productFamily)
+            loaded: Self.parseLoaded(try await loaded), productFamily: productFamily,
+            catalog: catalog)
     }
 
     /// Cancellation before any launchctl change ran throws `CancellationError`, since nothing changed. Any other failure,
@@ -336,12 +385,12 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
         for target in targets {
             switch target {
             case .category(let identifier):
-                guard let category = BackgroundServiceCatalog.category(identifier) else {
+                guard let category = catalog.category(identifier) else {
                     throw DeviceDomainError.configuration("background-service-unknown", "“\(identifier)” is not a background service category.")
                 }
                 if !categories.contains(category) { categories.append(category) }
             case .service(let label):
-                guard BackgroundServiceCatalog.managed.contains(label) else {
+                guard catalog.managed.contains(label) else {
                     throw DeviceDomainError.configuration("background-service-unknown", "“\(label)” is not a managed background service.")
                 }
                 if !labels.contains(label) { labels.append(label) }
@@ -578,7 +627,7 @@ private final class ServiceChangeAttempt: Sendable {
 }
 
 extension SimulatorBackgroundServiceBackend {
-    package static func live(device: SimulatorHostDevice, xcodeURL: URL) -> Self {
+    package static func live(device: SimulatorHostDevice, xcodeURL: URL, catalog: BackgroundServiceCatalog) -> Self {
         let simctl = { @Sendable (arguments: [String]) async throws -> CommandOutput in
             try await SystemCommandRunner().run(.simctl(xcodeURL: xcodeURL, arguments: arguments,
                                                         deviceSetPath: device.deviceSetPath, policy: .backgroundServiceCommand))
@@ -589,7 +638,7 @@ extension SimulatorBackgroundServiceBackend {
                               let root = Self.runtimeRoot(output.stdout, identifier: device.runtimeIdentifier) else { return nil }
                         return Self.jobPlists(labels, runtimeRoot: root)
                     },
-                    pause: { try await Task.sleep(for: $0) }, productFamily: device.productFamily)
+            pause: { try await Task.sleep(for: $0) }, productFamily: device.productFamily, catalog: catalog)
     }
 
     package static func runtimeRoot(_ data: Data, identifier: String) -> URL? {

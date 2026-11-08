@@ -94,9 +94,11 @@ AppKit controllers retain observable models. `ObservationBridge` updates control
 and `DeviceBrowserState` saves pane visibility, inspector tabs, and device selection.
 `DeviceModel` owns device state; selection and inspector models own presentation.
 
-`ServiceProfileStore` owns profile definitions, the default profile, and each device's
-selection and overrides. A device resolves its profile by reference, so a later boot
-uses the latest definition. Settings edit the selected profile directly. Saving a
+`ServiceProfileStore` owns profile definitions, the default profile, each device's
+selection and overrides, and the categories added in settings. It passes the built-in
+and added categories to `DeviceRegistry` as the catalog that devices read and change,
+and devices read their services again when it changes. A device resolves its profile
+by reference, so a later boot uses the latest definition. Settings edit the selected profile directly. Saving a
 modified All Services profile asks for a name and includes accepted changes still being
 applied. Profile edits do not change running devices.
 
@@ -106,8 +108,12 @@ Initial running devices are left alone, and a failed automatic change is reporte
 once rather than retried by every inventory refresh. This behavior belongs to the
 manager and store, independent of inspector visibility.
 
-Service profiles and device assignments are stored together in
-`Application Support/<app bundle identifier>/ServiceProfiles.json`. Writes are
+Service profiles, added categories, and device assignments are stored together in
+`Application Support/<app bundle identifier>/ServiceProfiles.json`. Added categories
+are app-wide; a profile stores only the services it turns off. Removing a service from
+every category removes it from each profile and device override too, since nothing
+could show or change those choices. Files without added categories load with none.
+Writes are
 atomic. The first load migrates the former `BackgroundServiceProfiles` defaults
 value only when the file is absent, and removes that value after a successful
 write. A read failure preserves the existing data and prevents further writes

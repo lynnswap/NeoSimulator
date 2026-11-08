@@ -15,16 +15,18 @@ package final class ServiceProfile: Identifiable, BackgroundServiceEditing {
     package private(set) var name: String
     package private(set) var configuration: ServiceConfiguration
     package private(set) var serviceState: SimulatorBackgroundServices?
+    /// The categories that this profile shows, whose switches change it.
+    package private(set) var categories: [BackgroundServiceCategoryModel] = []
     package var issue: String?
     @ObservationIgnored fileprivate weak var store: ServiceProfileStore?
-    package var canEdit: Bool { store != nil && id != Self.allServices.id }
-    @ObservationIgnored package lazy var categories = SimulatorBackgroundServiceCategory.all.map {
-        BackgroundServiceCategoryModel($0, source: self)
+    package var canEdit: Bool { store != nil && id != Self.allServicesID }
+    /// The built-in profile keeps to the built-in categories, which nothing adds to.
+    private var catalog: BackgroundServiceCatalog {
+        guard let store, canEdit else { return .builtIn }
+        return store.catalog
     }
 
     package nonisolated static let allServicesID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-    package static let allServices = ServiceProfile(record: Record(
-        id: allServicesID, name: String(localized: "All Services"), configuration: ServiceConfiguration()))
 
     fileprivate var record: Record { Record(id: id, name: name, configuration: configuration) }
 
@@ -32,13 +34,12 @@ package final class ServiceProfile: Identifiable, BackgroundServiceEditing {
         id = record.id
         name = record.name
         configuration = record.configuration
-        serviceState = record.configuration.state()
     }
 
     package func setServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) {
         guard canEdit, let store else { return }
         var updated = configuration
-        updated.set(targets, enabled: enabled)
+        updated.set(targets, enabled: enabled, catalog: store.catalog)
         do { try store.update(id, configuration: updated) }
         catch { issue = error.localizedDescription }
     }
@@ -47,8 +48,35 @@ package final class ServiceProfile: Identifiable, BackgroundServiceEditing {
         if name != record.name { name = record.name }
         if configuration != record.configuration {
             configuration = record.configuration
-            serviceState = record.configuration.state()
+            serviceState = record.configuration.state(catalog: catalog)
         }
+    }
+
+    /// Shows the categories of ``catalog``, keeping the models of those that remain.
+    fileprivate func showCatalog() {
+        guard let store else { return }
+        categories = BackgroundServiceCategoryModel.models(
+            for: catalog, custom: store.customCategoryIDs, reusing: categories, source: self)
+        serviceState = configuration.state(catalog: catalog)
+    }
+}
+
+/// A category that the app adds beside the built-in ones. Its definition is app-wide, and each profile turns its
+/// services on and off.
+package struct CustomServiceCategory: Codable, Equatable, Sendable {
+    package let id: UUID
+    package var name: String
+    /// The launchd labels of the category's services.
+    package var labels: [String]
+
+    /// The identifier that ``SimulatorBackgroundServiceTarget/category(_:)`` takes for the category.
+    package var categoryID: String { "custom." + id.uuidString }
+
+    fileprivate var category: SimulatorBackgroundServiceCategory {
+        SimulatorBackgroundServiceCategory(
+            id: categoryID, name: name, summary: String(localized: "Services that you added."),
+            consequence: String(localized: "The services that you added to this category stop."),
+            services: labels.map { SimulatorBackgroundService($0, "") })
     }
 }
 
@@ -101,32 +129,85 @@ package struct DeviceServiceProfile: Codable, Equatable, Sendable {
 @MainActor @Observable
 package final class ServiceProfileStore {
     private struct State: Codable, Equatable {
-        package var profiles: [ServiceProfile.Record] = []
-        package var defaultProfileID: UUID? = ServiceProfile.allServicesID
+        package var profiles: [ServiceProfile.Record]
+        package var defaultProfileID: UUID?
+        package var devices: [DeviceInventoryID: DeviceServiceProfile]
+        package var customCategories: [CustomServiceCategory]
         private enum CodingKeys: String, CodingKey {
-            case profiles, devices
+            case profiles, devices, customCategories
             case defaultProfileID = "commonProfileID"
         }
-        package var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
+
+        init(
+            profiles: [ServiceProfile.Record] = [], defaultProfileID: UUID? = ServiceProfile.allServicesID,
+            devices: [DeviceInventoryID: DeviceServiceProfile] = [:], customCategories: [CustomServiceCategory] = []
+        ) {
+            self.profiles = profiles
+            self.defaultProfileID = defaultProfileID
+            self.devices = devices
+            self.customCategories = customCategories
+        }
+
+        /// Files from before custom categories have none.
+        init(from decoder: any Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            profiles = try values.decode([ServiceProfile.Record].self, forKey: .profiles)
+            defaultProfileID = try values.decodeIfPresent(UUID.self, forKey: .defaultProfileID)
+            devices = try values.decode([DeviceInventoryID: DeviceServiceProfile].self, forKey: .devices)
+            customCategories = try values.decodeIfPresent([CustomServiceCategory].self, forKey: .customCategories) ?? []
+        }
+
+        /// The built-in categories below the custom ones.
+        var catalog: BackgroundServiceCatalog {
+            BackgroundServiceCatalog(customCategories.map(\.category) + SimulatorBackgroundServiceCategory.all)
+        }
     }
 
     package enum Failure: Error, LocalizedError {
         case emptyName, missingProfile
+        case emptyCategoryName, missingCategory, emptyLabel
+        case listedService(String)
+        case requiredService(String, reason: String)
+        case wedgingService(String)
 
         package var errorDescription: String? {
             switch self {
             case .emptyName: "Enter a name for the service profile."
             case .missingProfile: "This service profile no longer exists."
+            case .emptyCategoryName: "Enter a name for the category."
+            case .missingCategory: "This category no longer exists."
+            case .emptyLabel: "Enter the launchd label of a service."
+            case .listedService(let label): "The category already lists “\(label)”."
+            case .requiredService(let label, let reason): "“\(label)” stays on because simulators need it. \(reason)"
+            case .wedgingService(let label):
+                "Turning off “\(label)” stops simulators from working, even after they restart."
             }
         }
     }
 
     package static let defaultsKey = "BackgroundServiceProfiles"
     package private(set) var profiles: [ServiceProfile] = []
+    /// The built-in profile, which turns on every service that the categories list, including those in the custom
+    /// categories that it doesn't show.
+    package let allServices = ServiceProfile(
+        record: .init(
+            id: ServiceProfile.allServicesID, name: String(localized: "All Services"),
+            configuration: ServiceConfiguration()))
     /// What devices that inherit take at each boot.
     package private(set) var defaultProfileID = ServiceProfile.allServicesID
     private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
-    private var state: State { State(profiles: profiles.map(\.record), defaultProfileID: defaultProfileID, devices: devices) }
+    /// The categories that the app added, above the built-in ones.
+    package private(set) var customCategories: [CustomServiceCategory] = []
+    /// The custom categories above the built-in ones, which every profile and simulator switches.
+    package private(set) var catalog = BackgroundServiceCatalog.builtIn
+    package var customCategoryIDs: Set<String> { Set(customCategories.map(\.categoryID)) }
+    /// Receives each change to ``catalog``, so that what reads and changes simulators can take it in.
+    @ObservationIgnored package var catalogDidChange: (@MainActor (BackgroundServiceCatalog) -> Void)?
+    private var state: State {
+        State(
+            profiles: profiles.map(\.record), defaultProfileID: defaultProfileID, devices: devices,
+            customCategories: customCategories)
+    }
     package private(set) var issue: String?
     package let fileURL: URL
     @ObservationIgnored private let legacyDefaults: UserDefaults?
@@ -141,13 +222,17 @@ package final class ServiceProfileStore {
     package init(fileURL: URL = ServiceProfileStore.defaultFileURL, legacyDefaults: UserDefaults? = .standard) {
         self.fileURL = fileURL
         self.legacyDefaults = legacyDefaults
+        allServices.store = self
+        allServices.showCatalog()
         reload()
     }
 
-    package var availableProfiles: [ServiceProfile] { [.allServices] + profiles }
-    package func profile(_ id: UUID) -> ServiceProfile? { id == ServiceProfile.allServices.id ? .allServices : profiles.first { $0.id == id } }
+    package var availableProfiles: [ServiceProfile] { [allServices] + profiles }
+    package func profile(_ id: UUID) -> ServiceProfile? {
+        id == allServices.id ? allServices : profiles.first { $0.id == id }
+    }
     package func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { devices[device] }
-    package var defaultProfile: ServiceProfile { profile(defaultProfileID) ?? .allServices }
+    package var defaultProfile: ServiceProfile { profile(defaultProfileID) ?? allServices }
     package func selection(for device: DeviceInventoryID) -> ServiceProfileSelection { devices[device]?.selection ?? .inheritDefault }
 
     /// The profile that applies to the device now, if any.
@@ -253,7 +338,7 @@ package final class ServiceProfileStore {
                 productFamily: String, currentConfiguration: ServiceConfiguration? = nil) throws {
         var configuration = currentConfiguration ?? self.configuration(for: device)
             ?? ServiceConfiguration().applying(devices[device]?.overrides ?? [:])
-        let affected = configuration.set(targets, enabled: enabled, productFamily: productFamily)
+        let affected = configuration.set(targets, enabled: enabled, productFamily: productFamily, catalog: catalog)
         guard !affected.isEmpty else { return }
         var updated = state
         // A change stays explicit even if it matches the profile now, because the profile can change later.
@@ -261,9 +346,84 @@ package final class ServiceProfileStore {
         try save(updated)
     }
 
-    private func validName(_ name: String) throws -> String {
+    /// Adds a category without services, which every profile lists.
+    /// - Returns: The category's identifier.
+    @discardableResult
+    package func createCategory(named name: String) throws -> String {
+        let category = CustomServiceCategory(
+            id: UUID(), name: try validName(name, empty: .emptyCategoryName), labels: [])
+        var updated = state
+        updated.customCategories.append(category)
+        try save(updated)
+        return category.categoryID
+    }
+
+    package func renameCategory(_ id: String, to name: String) throws {
+        var updated = state
+        let index = try customCategoryIndex(id, in: updated)
+        updated.customCategories[index].name = try validName(name, empty: .emptyCategoryName)
+        try save(updated)
+    }
+
+    /// Removes a custom category from every profile. Profiles and simulators forget their choices for services that no
+    /// other category lists, and a simulator keeps each of those services as it is.
+    package func deleteCategory(_ id: String) throws {
+        var updated = state
+        updated.customCategories.remove(at: try customCategoryIndex(id, in: updated))
+        try save(forgettingUnlistedServices(updated))
+    }
+
+    /// Adds the service with this launchd label to a custom category, which starts on in every profile.
+    ///
+    /// The label need not exist in every runtime, since enabling one without a job only lifts its override.
+    /// - Throws: ``Failure`` if the label is empty, the category lists it, or turning it off would break simulators.
+    package func addService(_ label: String, to categoryID: String) throws {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { throw Failure.emptyLabel }
+        var updated = state
+        let index = try customCategoryIndex(categoryID, in: updated)
+        guard !updated.customCategories[index].labels.contains(label) else { throw Failure.listedService(label) }
+        if let required = SimulatorBackgroundServiceCategory.all.lazy.flatMap(\.requiredServices)
+            .first(where: { $0.label == label })
+        {
+            throw Failure.requiredService(label, reason: required.reason)
+        }
+        guard !BackgroundServiceCatalog.wedgingLabels.contains(label) else { throw Failure.wedgingService(label) }
+        updated.customCategories[index].labels.append(label)
+        try save(updated)
+    }
+
+    /// Removes a service from a custom category, as ``deleteCategory(_:)`` does for each of its services.
+    package func removeService(_ label: String, from categoryID: String) throws {
+        var updated = state
+        let index = try customCategoryIndex(categoryID, in: updated)
+        updated.customCategories[index].labels.removeAll { $0 == label }
+        try save(forgettingUnlistedServices(updated))
+    }
+
+    private func customCategoryIndex(_ id: String, in state: State) throws -> Int {
+        guard let index = state.customCategories.firstIndex(where: { $0.categoryID == id }) else {
+            throw Failure.missingCategory
+        }
+        return index
+    }
+
+    /// Drops what profiles and devices choose for services that `updated`'s categories no longer list. Nothing could
+    /// change or show those choices, and a profile that kept one would never match its simulator.
+    private func forgettingUnlistedServices(_ updated: State) -> State {
+        let unlisted = catalog.slimmable.subtracting(updated.catalog.slimmable)
+        guard !unlisted.isEmpty else { return updated }
+        var result = updated
+        for index in result.profiles.indices { result.profiles[index].configuration.disabledLabels.subtract(unlisted) }
+        for (device, binding) in result.devices {
+            result.devices[device]?.overrides = binding.overrides.filter { !unlisted.contains($0.key) }
+        }
+        return result
+    }
+
+    private func validName(_ name: String, empty: Failure = .emptyName) throws -> String {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { throw Failure.emptyName }
+        guard !name.isEmpty else { throw empty }
         return name
     }
 
@@ -294,17 +454,24 @@ package final class ServiceProfileStore {
     }
 
     private func apply(_ loaded: State, adding profile: ServiceProfile? = nil) {
+        if customCategories != loaded.customCategories { customCategories = loaded.customCategories }
+        let catalog = loaded.catalog
+        let catalogChanged = catalog != self.catalog
+        if catalogChanged { self.catalog = catalog }
         var existing = Dictionary(profiles.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         if let profile { existing[profile.id] = profile }
         let updated = loaded.profiles.map { record in
             let profile = existing[record.id] ?? ServiceProfile(record: record)
+            let attaching = profile.store !== self
             profile.store = self
             profile.update(from: record)
+            if attaching || catalogChanged { profile.showCatalog() }
             return profile
         }
         if profiles.map(\.id) != updated.map(\.id) { profiles = updated }
         let defaultID = loaded.defaultProfileID ?? ServiceProfile.allServicesID
         if defaultProfileID != defaultID { defaultProfileID = defaultID }
         if devices != loaded.devices { devices = loaded.devices }
+        if catalogChanged { catalogDidChange?(catalog) }
     }
 }

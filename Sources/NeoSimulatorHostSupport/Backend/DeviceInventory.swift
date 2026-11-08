@@ -51,13 +51,18 @@ extension SimulatorHostController: DeviceStateSource {
         try await liveState.write(change, to: device)
     }
 
-    package func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices {
-        try await liveState.backgroundServices(for: device)
+    package func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServices
+    {
+        try await liveState.backgroundServices(for: device, catalog: catalog)
     }
 
     package func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                                       for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
-        try await liveState.setBackgroundServices(targets, enabled: enabled, for: device)
+        catalog: BackgroundServiceCatalog, for device: InventoryDevice
+    ) async throws
+        -> SimulatorBackgroundServicesUpdate
+    {
+        try await liveState.setBackgroundServices(targets, enabled: enabled, catalog: catalog, for: device)
     }
 }
 

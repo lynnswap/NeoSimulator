@@ -11,12 +11,10 @@ package final class BackgroundServiceListModel {
     }
 
     package private(set) var categories: [BackgroundServiceCategoryModel]
-    package private(set) var sections: [Section] = []
     package var query = "" {
         didSet {
             guard query != oldValue else { return }
             collapsedResults = []
-            updateResults()
         }
     }
     package var isFiltering: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -31,14 +29,12 @@ package final class BackgroundServiceListModel {
 
     package init(categories: [BackgroundServiceCategoryModel]) {
         self.categories = categories
-        updateResults()
     }
 
     package func setCategories(_ categories: [BackgroundServiceCategoryModel]) {
         guard self.categories.map(\.id) != categories.map(\.id)
             || zip(self.categories, categories).contains(where: { pair in pair.0 !== pair.1 }) else { return }
         self.categories = categories
-        updateResults()
     }
 
     package func isExpanded(_ category: BackgroundServiceCategoryModel) -> Bool {
@@ -53,16 +49,18 @@ package final class BackgroundServiceListModel {
         }
     }
 
-    private func updateResults() {
+    /// The categories that match the filter, with their services that match it.
+    ///
+    /// A category shows all its services while nothing is filtered or its name matches, even when it has none, so that
+    /// one just added can be selected to add its first service.
+    package var sections: [Section] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        sections = categories.compactMap { category in
-            let items: [BackgroundServiceItem]
+        return categories.compactMap { category in
             if term.isEmpty || category.category.name.localizedStandardContains(term) {
-                items = category.items
-            } else {
-                items = category.items.filter {
-                    $0.label.localizedStandardContains(term) || $0.detail.localizedStandardContains(term)
-                }
+                return Section(category: category, items: category.items)
+            }
+            let items = category.items.filter {
+                $0.label.localizedStandardContains(term) || $0.detail.localizedStandardContains(term)
             }
             return items.isEmpty ? nil : Section(category: category, items: items)
         }

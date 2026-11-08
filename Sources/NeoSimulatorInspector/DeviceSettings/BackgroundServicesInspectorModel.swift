@@ -2,6 +2,7 @@ import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import Foundation
 import Observation
+import ObservationBridge
 import NeoSimulatorManager
 
 @MainActor @Observable
@@ -16,9 +17,12 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     @ObservationIgnored private let manager: SimulatorManagerModel
     @ObservationIgnored private let selection: ManagerSelection
     @ObservationIgnored private let showProfileSettings: (UUID) -> Void
-    @ObservationIgnored lazy var categories = SimulatorBackgroundServiceCategory.all.map {
-        BackgroundServiceCategoryModel($0, source: self)
-    }
+    /// The store's categories, whose switches change the selected simulator.
+    private(set) var categories: [BackgroundServiceCategoryModel] = []
+    /// The catalog and models that ``categories`` shows, which taking in a change reads without observing them.
+    @ObservationIgnored private var shown:
+        (catalog: BackgroundServiceCatalog, models: [BackgroundServiceCategoryModel])?
+    @ObservationIgnored private var catalogObservation: PortableObservationTracking.Token?
     var profileEditor: ServiceProfileEditorModel?
     var actionIssue: String?
 
@@ -27,6 +31,19 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         self.showProfileSettings = showProfileSettings
         selection = manager.selection
         profiles = manager.serviceProfiles
+        // The list takes the categories when it loads, which can come before the observation's first pass.
+        showCatalog()
+        catalogObservation = withPortableContinuousObservation { [weak self] _ in self?.showCatalog() }
+    }
+
+    private func showCatalog() {
+        let catalog = profiles.catalog
+        guard catalog != shown?.catalog else { return }
+        let previous = shown?.models ?? []
+        let models = BackgroundServiceCategoryModel.models(
+            for: catalog, custom: profiles.customCategoryIDs, reusing: previous, source: self)
+        shown = (catalog, models)
+        if models.map(ObjectIdentifier.init) != previous.map(ObjectIdentifier.init) { categories = models }
     }
 
     private var services: BackgroundServicesState? { selection.device?.backgroundServices }
@@ -55,7 +72,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     }
     var pendingRestartLabels: Set<String> { services?.pendingRestartLabels ?? [] }
     var selectedProfile: ServiceProfile {
-        selection.device.flatMap { profiles.resolvedProfile(for: $0.id) } ?? .allServices
+        selection.device.flatMap { profiles.resolvedProfile(for: $0.id) } ?? profiles.allServices
     }
     struct ProfileChoice: Equatable {
         let id: ServiceProfileSelection
@@ -69,7 +86,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         let allServices = ServiceProfileSelection.profile(ServiceProfile.allServicesID)
         let named =
             selectedProfileSelection == allServices
-            ? [profileChoice(allServices, title: ServiceProfile.allServices.name)] : []
+            ? [profileChoice(allServices, title: profiles.allServices.name)] : []
         return named + profiles.profiles.map { profileChoice(.profile($0.id), title: $0.name) }
     }
     private func profileChoice(_ selection: ServiceProfileSelection, title: String) -> ProfileChoice {
@@ -110,7 +127,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     func saveProfile() {
         guard canSaveProfile, let device = selection.device, let configuration = services?.configuration else { return }
         let profile = selectedProfile
-        if profile.id == ServiceProfile.allServices.id {
+        if profile.id == ServiceProfile.allServicesID {
             let editor = ServiceProfileEditorModel(name: "", configuration: configuration)
             editor.save = { [profiles, deviceID = device.id] editor in
                 try profiles.create(name: editor.name, configuration: editor.configuration, assigningTo: deviceID)

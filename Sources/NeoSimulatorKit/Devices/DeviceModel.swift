@@ -121,6 +121,8 @@ public final class DeviceModel: Identifiable {
 
     @ObservationIgnored package let source: any DeviceStateSource
     @ObservationIgnored private weak var registry: DeviceRegistry?
+    /// The categories whose services ``backgroundServices`` reads and changes.
+    package var backgroundServiceCatalog: BackgroundServiceCatalog { registry?.backgroundServiceCatalog ?? .builtIn }
     /// The inventory sources that last listed the device, which decide when its absence means that it has gone.
     @ObservationIgnored package private(set) var sources: Set<DeviceInventoryIssue.Source> = []
     /// Results of reads from before this changes describe a device that no longer exists, so they are dropped.

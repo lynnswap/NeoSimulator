@@ -56,9 +56,9 @@ public final class BackgroundServicesState {
 
     package init() {}
 
-    /// The disabled services among ``ServiceConfiguration/labels``, or `nil` until ``services`` is known.
+    /// The disabled services among those that the categories list, or `nil` until ``services`` is known.
     public var configuration: ServiceConfiguration? {
-        services.map { ServiceConfiguration(disabledLabels: $0.disabledLabels.intersection(ServiceConfiguration.labels)) }
+        services.map { ServiceConfiguration(disabledLabels: $0.disabledLabels.intersection($0.catalog.slimmable)) }
     }
 
     /// Returns whether every service in `category` is enabled.
@@ -95,7 +95,7 @@ public final class BackgroundServicesState {
 
     /// Makes the services that a configuration covers match it.
     ///
-    /// Labels outside ``ServiceConfiguration/labels`` are not changed, and a service that this simulator cannot disable
+    /// Labels that no category lists are not changed, and a service that this simulator cannot disable
     /// stays enabled. Changes to one device run in the order they are accepted. Cancellation before the change starts
     /// sends nothing.
     ///
@@ -138,7 +138,8 @@ public final class BackgroundServicesState {
         guard let owner else { throw CancellationError() }
         let device = owner.inventory
         do {
-            let (updated, outcome) = try await perform(change, on: device, source: owner.source)
+            let (updated, outcome) = try await perform(
+                change, on: device, source: owner.source, catalog: owner.backgroundServiceCatalog)
             pendingRestartLabels.formUnion(outcome.notStartedLabels)
             confirm(updated)
             self.outcome = outcome.stillEnabledLabels.isEmpty && outcome.notStartedLabels.isEmpty ? nil : outcome
@@ -148,26 +149,31 @@ public final class BackgroundServicesState {
         }
     }
 
-    private func perform(_ change: Change, on device: InventoryDevice, source: any DeviceStateSource) async throws
-        -> (SimulatorBackgroundServices, Outcome) {
+    private func perform(
+        _ change: Change, on device: InventoryDevice, source: any DeviceStateSource,
+        catalog: BackgroundServiceCatalog
+    ) async throws -> (SimulatorBackgroundServices, Outcome) {
         switch change {
         case .services(let targets, let enabled):
-            let update = try await source.setBackgroundServices(targets, enabled: enabled, for: device)
+            let update = try await source.setBackgroundServices(
+                targets, enabled: enabled, catalog: catalog, for: device)
             return (update.services, Outcome(stillEnabledLabels: update.stillEnabledLabels, notStartedLabels: update.notStartedLabels))
         case .configuration(let configuration):
-            var current = try await source.backgroundServices(for: device)
-            let labels = ServiceConfiguration.labels
+            var current = try await source.backgroundServices(for: device, catalog: catalog)
+            let labels = catalog.slimmable
             let disabled = configuration.disabledLabels.intersection(labels).filter { current.canDisable($0) }
             let enabling = current.disabledLabels.intersection(labels).subtracting(disabled)
             let disabling = disabled.subtracting(current.disabledLabels).union(disabled.intersection(current.loadedLabels))
             var notStarted: [String] = []
             if !enabling.isEmpty {
-                let update = try await source.setBackgroundServices(enabling.sorted().map { .service($0) }, enabled: true, for: device)
+                let update = try await source.setBackgroundServices(
+                    enabling.sorted().map { .service($0) }, enabled: true, catalog: catalog, for: device)
                 current = update.services
                 notStarted = update.notStartedLabels
             }
             if !disabling.isEmpty {
-                let update = try await source.setBackgroundServices(disabling.sorted().map { .service($0) }, enabled: false, for: device)
+                let update = try await source.setBackgroundServices(
+                    disabling.sorted().map { .service($0) }, enabled: false, catalog: catalog, for: device)
                 current = update.services
             }
             return (current, Outcome(stillEnabledLabels: [], notStartedLabels: notStarted))
@@ -177,6 +183,16 @@ public final class BackgroundServicesState {
     // MARK: Reading
 
     package func markDirty() { dirty = true }
+
+    /// The registry's categories changed. What was read covers the earlier ones, so it shows only what both manage
+    /// until a read of the new ones answers.
+    package func catalogDidChange() {
+        // A read that began before this covers the earlier categories.
+        serial += 1
+        dirty = true
+        updateServices()
+        scheduleReads()
+    }
 
     /// Coalesces reads, waiting for pending changes before read-back.
     package func scheduleReads() {
@@ -190,9 +206,10 @@ public final class BackgroundServicesState {
         let request = serial
         let source = owner.source
         let device = owner.inventory
+        let catalog = owner.backgroundServiceCatalog
         readTask = Task { [weak self] in
             let result: Result<SimulatorBackgroundServices, any Error>
-            do { result = .success(try await source.backgroundServices(for: device)) }
+            do { result = .success(try await source.backgroundServices(for: device, catalog: catalog)) }
             catch { result = .failure(error) }
             self?.receive(result, epoch: epoch, serial: request, identifier: identifier)
         }
@@ -263,16 +280,19 @@ public final class BackgroundServicesState {
             return
         }
         let family = owner.inventory.serviceProductFamily
+        let catalog = owner.backgroundServiceCatalog
         var configuration = ServiceConfiguration(disabledLabels: confirmed.disabledLabels)
         for edit in pending {
             switch edit.change {
             case .configuration(let pending):
                 configuration = ServiceConfiguration(disabledLabels: pending.disabledLabels.subtracting(confirmed.platformRequiredLabels))
             case .services(let targets, let enabled):
-                configuration.set(targets, enabled: enabled, productFamily: family)
+                configuration.set(targets, enabled: enabled, productFamily: family, catalog: catalog)
             }
         }
-        let updated = SimulatorBackgroundServices(disabled: configuration.disabledLabels, loaded: confirmed.loadedLabels, productFamily: family)
+        let updated = SimulatorBackgroundServices(
+            disabled: configuration.disabledLabels, loaded: confirmed.loadedLabels, productFamily: family,
+            catalog: catalog)
         if services != updated { services = updated }
     }
 }

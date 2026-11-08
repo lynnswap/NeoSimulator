@@ -57,15 +57,17 @@ package final class BackgroundServiceCell: NSTableCellView {
         self.showsDetails = showsDetails
         observation?.cancel()
         if let category = item as? BackgroundServiceCategoryModel {
-            title.stringValue = category.category.name
             title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-            detail.stringValue = showsDetails ? "When off: " + category.category.consequence : ""
-            toolTip = category.category.consequence
-            toggle.setAccessibilityLabel(category.category.name)
-            toggle.setAccessibilityHelp(category.category.consequence)
             change = { [weak category] in category?.setEnabled($0) }
             observation = withPortableContinuousObservation { [weak self, category] _ in
-                self?.isOn = category.isEnabled
+                guard let self else { return }
+                isOn = category.isEnabled
+                // A custom category's name changes in place.
+                title.stringValue = category.category.name
+                showDetail(self.showsDetails ? "When off: " + category.category.consequence : "")
+                toolTip = category.category.consequence
+                toggle.setAccessibilityLabel(category.category.name)
+                toggle.setAccessibilityHelp(category.category.consequence)
             }
         } else if let service = item as? BackgroundServiceItem {
             title.stringValue = service.label
@@ -75,12 +77,17 @@ package final class BackgroundServiceCell: NSTableCellView {
             observation = withPortableContinuousObservation { [weak self, service] _ in
                 guard let self else { return }
                 isOn = service.isEnabled
-                detail.stringValue = self.showsDetails ? service.summary : ""
+                showDetail(self.showsDetails ? service.summary : "")
                 toolTip = service.help
                 toggle.setAccessibilityHelp(service.help)
             }
         }
-        detail.isHidden = !showsDetails
+    }
+
+    /// A service that the app added has no description, and its title centers without one.
+    private func showDetail(_ text: String) {
+        detail.stringValue = text
+        detail.isHidden = text.isEmpty
     }
 
     package override func viewDidMoveToWindow() {

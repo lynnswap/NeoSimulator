@@ -24,8 +24,9 @@ struct BackgroundServicesTests {
         /// Jobs whose override launchctl refuses to change.
         let refusing: Set<String>
 
-        init(loaded: Set<String> = BackgroundServiceCatalog.slimmable, disabled: Set<String> = [],
-             plists: Set<String> = BackgroundServiceCatalog.managed, loadsAtNextBoot: Set<String> = [],
+        init(
+            loaded: Set<String> = BackgroundServiceCatalog.builtIn.slimmable, disabled: Set<String> = [],
+            plists: Set<String> = BackgroundServiceCatalog.builtIn.managed, loadsAtNextBoot: Set<String> = [],
              refusing: Set<String> = [], settlingReads: Int = 0) {
             state = Mutex(State(disabled: disabled, loaded: loaded, settlingReads: settlingReads))
             self.plists = Dictionary(uniqueKeysWithValues: plists.map { ($0, "/Runtime/System/Library/LaunchDaemons/\($0).plist") })
@@ -33,10 +34,13 @@ struct BackgroundServicesTests {
             self.refusing = refusing
         }
 
-        func backend(productFamily: String = "iPhone") -> SimulatorBackgroundServiceBackend {
+        func backend(productFamily: String = "iPhone", catalog: BackgroundServiceCatalog = .builtIn)
+            -> SimulatorBackgroundServiceBackend
+        {
             SimulatorBackgroundServiceBackend(launchctl: { self.run($0) }, jobPlists: { labels in
                 self.plists.filter { labels.contains($0.key) }
-            }, pause: { delay in self.state.withLock { $0.pauses.append(delay) } }, productFamily: productFamily)
+                }, pause: { delay in self.state.withLock { $0.pauses.append(delay) } }, productFamily: productFamily,
+                catalog: catalog)
         }
 
         var disabled: Set<String> { state.withLock(\.disabled) }
@@ -92,20 +96,13 @@ struct BackgroundServicesTests {
     }
 
     private func category(_ identifier: String) throws -> SimulatorBackgroundServiceCategory {
-        try #require(BackgroundServiceCatalog.category(identifier))
+        try #require(BackgroundServiceCatalog.builtIn.category(identifier))
     }
 
     private static let sharedWithStore: Set<String> = ["com.apple.amsaccountsd", "com.apple.amsengagementd", "com.apple.amsondevicestoraged"]
 
     @Test func catalogNeverManagesServicesThatWedgeASimulator() {
-        // These deadlock or wedge a simulator when disabled. nanoregistryd hangs every simctl operation;
-        // sleepd makes SpringBoard retry itself to death; the rest were observed to break boot in simslim.
-        let forbidden = ["com.apple.nanoregistryd", "com.apple.nanoregistrylaunchd", "com.apple.nanoprefsyncd.2",
-                         "com.apple.nanotimekitcompaniond", "com.apple.nanobackupd", "com.apple.sleepd",
-                         "com.apple.appprotectiond", "com.apple.ManagedSettingsAgent", "com.apple.managedconfiguration.profiled",
-                         "com.apple.mobiletimerd", "com.apple.routined", "com.apple.biomed", "com.apple.biomesyncd",
-                         "com.apple.dmd", "com.apple.donotdisturbd"]
-        #expect(BackgroundServiceCatalog.managed.isDisjoint(with: forbidden))
+        #expect(BackgroundServiceCatalog.builtIn.managed.isDisjoint(with: BackgroundServiceCatalog.wedgingLabels))
         for category in SimulatorBackgroundServiceCategory.all {
             let labels = category.services.map(\.label)
             #expect(Set(labels).count == labels.count, "\(category.id) lists a service twice")
@@ -115,7 +112,9 @@ struct BackgroundServicesTests {
                         "\(service.label) needs a short one-line summary")
             }
             for required in category.requiredServices {
-                #expect(!BackgroundServiceCatalog.slimmable.contains(required.label), "\(required.label) is required")
+                #expect(
+                    !BackgroundServiceCatalog.builtIn.slimmable.contains(required.label),
+                    "\(required.label) is required")
             }
         }
     }
@@ -143,7 +142,7 @@ struct BackgroundServicesTests {
     @Test func disablingACategoryKeepsServicesAnotherEnabledCategoryNeeds() async throws {
         let icloud = try category("icloud")
         let withoutPlist = "com.apple.cloudd"
-        let launchd = FakeLaunchd(plists: BackgroundServiceCatalog.managed.subtracting([withoutPlist]))
+        let launchd = FakeLaunchd(plists: BackgroundServiceCatalog.builtIn.managed.subtracting([withoutPlist]))
         let update = try await launchd.backend().update([.category("icloud")], enabled: false)
 
         #expect(Set(update.stillEnabledLabels) == Self.sharedWithStore)
@@ -158,6 +157,20 @@ struct BackgroundServicesTests {
         let named = try await launchd.backend().update([.service("com.apple.amsaccountsd")], enabled: false)
         #expect(named.stillEnabledLabels.isEmpty)
         #expect(launchd.disabled.contains("com.apple.amsaccountsd"))
+    }
+
+    @Test func aCatalogWithAnAddedCategoryChangesAndReadsItsServices() async throws {
+        let label = "com.example.agent"
+        let added = SimulatorBackgroundServiceCategory(
+            id: "custom.agents", name: "Agents", summary: "", consequence: "",
+            services: [.init(label, "")])
+        let catalog = BackgroundServiceCatalog([added] + SimulatorBackgroundServiceCategory.all)
+        let launchd = FakeLaunchd(
+            loaded: BackgroundServiceCatalog.builtIn.slimmable.union([label]),
+            plists: catalog.managed)
+        let update = try await launchd.backend(catalog: catalog).update([.category(added.id)], enabled: false)
+        #expect(launchd.disabled == [label] && update.services.disabledLabels == [label])
+        #expect(update.services.state(of: added) == .disabled)
     }
 
     @Test func requiredServicesAreKeptRunningWhenNamed() async throws {
