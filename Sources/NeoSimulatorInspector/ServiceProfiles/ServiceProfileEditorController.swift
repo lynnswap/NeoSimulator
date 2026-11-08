@@ -14,43 +14,37 @@ final class ServiceProfileEditorController: NSViewController, NSTextFieldDelegat
     init(model: ServiceProfileEditorModel) {
         self.model = model
         super.init(nibName: nil, bundle: nil)
-        preferredContentSize = NSSize(width: 360, height: 160)
     }
     required init?(coder: NSCoder) { nil }
 
     override func loadView() {
-        view = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-        nameField.delegate = self
-        nameField.placeholderString = "Name"
         let heading = NSTextField(labelWithString: "Service Profile")
         heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        let nameRow = NSGridView(views: [[NSTextField(labelWithString: "Name"), nameField]])
-        nameRow.column(at: 1).width = 240
+        nameField.delegate = self
+        nameField.placeholderString = "Name"
+        let label = NSTextField(labelWithString: "Name")
+        label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        let name = NSStackView(views: [label, nameField])
+        name.distribution = .fill
+        name.alignment = .firstBaseline
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
         saveButton.target = self
         saveButton.action = #selector(save)
         saveButton.keyEquivalent = "\r"
-        let buttons = NSStackView(views: [cancel, NSView(), saveButton])
-        let stack = NSStackView(views: [heading, nameRow])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 14
-        stack.setContentHuggingPriority(.required, for: .vertical)
-        buttons.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        for child in [stack, buttons] {
-            child.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(child)
-        }
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            buttons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            buttons.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            buttons.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
-        ])
-
+        let buttons = NSStackView()
+        buttons.addView(cancel, in: .leading)
+        buttons.addView(saveButton, in: .trailing)
+        let content = NSStackView(views: [heading, name, buttons])
+        content.orientation = .vertical
+        content.alignment = .width
+        content.spacing = 14
+        content.setCustomSpacing(20, after: name)
+        content.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        // The sheet keeps its width and takes the height of its contents.
+        content.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        content.frame.size = content.fittingSize
+        view = content
     }
 
     override func viewDidLoad() {
@@ -68,8 +62,9 @@ final class ServiceProfileEditorController: NSViewController, NSTextFieldDelegat
     func controlTextDidChange(_ notification: Notification) { model.name = nameField.stringValue }
     @objc private func cancel() { close() }
     @objc private func save() {
-        if model.commit() { close() }
-        else if let issue = model.issue, let window = view.window {
+        if model.commit() {
+            close()
+        } else if let issue = model.issue, let window = view.window {
             let alert = NSAlert()
             alert.messageText = "Unable to Save Service Profile"
             alert.informativeText = issue
@@ -77,7 +72,6 @@ final class ServiceProfileEditorController: NSViewController, NSTextFieldDelegat
         }
     }
     private func close() {
-        if let onClose { onClose() }
-        else { dismiss(self) }
+        if let onClose { onClose() } else { dismiss(self) }
     }
 }

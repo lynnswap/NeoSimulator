@@ -4874,6 +4874,12 @@ struct ManagerModelTests {
         try await wait(timeout: .seconds(5)) {
             window.attachedSheet != nil
         }
+        let sheet = try #require(window.attachedSheet)
+        // The sheet takes the height of its name field and buttons, and starts editing the name.
+        #expect(abs(sheet.contentLayoutRect.height - (sheet.contentView?.fittingSize.height ?? 0)) < 1)
+        try await wait(timeout: .seconds(5)) {
+            sheet.firstResponder is NSTextView
+        }
         let expandedWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.collapseItem(category)
         view.layoutSubtreeIfNeeded()
