@@ -8,26 +8,34 @@ struct ManagerDeviceSettingsView: View {
     let model: DeviceSettingsPanelModel
 
     var body: some View {
-        switch model.content {
-        case .noSelection:
-            ContentUnavailableView(
-                "Select a Device", systemImage: "slider.horizontal.3",
-                description: Text("Select one device to adjust its settings."))
-        case .multipleSelection:
-            ContentUnavailableView(
-                "Multiple Devices Selected", systemImage: "slider.horizontal.3",
-                description: Text("Select one device to adjust its settings."))
-        case .unavailable:
-            ContentUnavailableView(
-                "Settings Unavailable", systemImage: "slider.horizontal.3",
-                description: Text(model.message ?? "No settings are available for this device.")
-            )
-            .help(model.issue)
-        case .settings:
-            if let form = model.form {
-                ManagerDeviceSettingsForm(model: form)
-                    .disabled(model.holdsEdits)
+        Group {
+            switch model.content {
+            case .noSelection:
+                ContentUnavailableView(
+                    "Select a Device", systemImage: "slider.horizontal.3",
+                    description: Text("Select one device to adjust its settings."))
+            case .multipleSelection:
+                ContentUnavailableView(
+                    "Multiple Devices Selected", systemImage: "slider.horizontal.3",
+                    description: Text("Select one device to adjust its settings."))
+            case .unavailable:
+                ContentUnavailableView(
+                    "Settings Unavailable", systemImage: "slider.horizontal.3",
+                    description: Text(model.message ?? "No settings are available for this device.")
+                )
+                .help(model.issue)
+                .transition(.blurReplace)
+            case .settings:
+                if let form = model.form {
+                    ManagerDeviceSettingsForm(model: form)
+                        .disabled(model.holdsEdits)
+                }
             }
+        }
+        .animation(.easeInOut(duration: 0.22), value: model.content)
+        .transaction(value: model.form?.device.id) { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
         }
     }
 }
@@ -60,10 +68,6 @@ private struct ManagerDeviceSettingsForm: View {
             DeviceAudioSettingsSection(model: model)
         }
         .animation(deviceSettingsAnimation, value: model.showsColorFilterIntensity)
-        .transaction(value: model.device.id) { transaction in
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-        }
         .formStyle(.grouped)
         .toggleStyle(.switch)
         .labelStyle(.titleAndIcon)
