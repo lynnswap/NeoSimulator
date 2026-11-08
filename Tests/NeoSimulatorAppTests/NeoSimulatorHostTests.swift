@@ -166,7 +166,7 @@ struct InputFocusTests {
         let selected = showsCompactDeviceInMain ? devices[1].id : devices[2].id
         let pane = main.deviceScreenViewController
         #expect(main.selectedIdentifiers == [selected] && pane.liveDeviceIdentifier == selected)
-        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(model.selection.device?.id == selected && main.inspectorController.deviceInspector.inspection.device?.id == selected)
         #expect(main.window?.isVisible == true)
         #expect(compactPresentations == (showsCompactDeviceInMain ? [] : [ids[1]]))
         #expect(controllers[0].window?.isVisible == false && !controllers[0].isEmbedded)

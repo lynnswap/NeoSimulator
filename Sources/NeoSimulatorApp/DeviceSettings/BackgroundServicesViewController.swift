@@ -8,16 +8,19 @@ import SwiftUI
 final class BackgroundServicesViewController: NSViewController {
     let model: BackgroundServicesInspectorModel
     private lazy var outline = BackgroundServiceOutlineController(categories: model.categories, showsDetails: false)
+    private lazy var content = NSHostingController(rootView: BackgroundServicesView(model: model, outline: outline))
     var searchAccessory: BackgroundServiceSearchAccessoryViewController { outline.searchAccessory }
-    var isVisible = false { didSet { updateSearchVisibility() } }
+    var isVisible = false { didSet { updateVisibility() } }
 
-    private func updateSearchVisibility() {
-        if case .simulator = model.content { searchAccessory.isHidden = !isVisible }
-        else { searchAccessory.isHidden = true }
+    private func updateVisibility() {
+        if case .simulator = model.content {
+            searchAccessory.isHidden = !isVisible
+        } else {
+            searchAccessory.isHidden = true
+        }
     }
-    private let placeholder = NSHostingView(rootView: BackgroundServicesUnavailable(content: .noSelection))
     private var observation: PortableObservationTracking.Token?
-    private var shownContent: BackgroundServicesInspectorModel.Content?
+    private var editor: ServiceProfileEditorController?
 
     init(model: BackgroundServicesInspectorModel) {
         self.model = model
@@ -26,19 +29,9 @@ final class BackgroundServicesViewController: NSViewController {
     required init?(coder: NSCoder) { nil }
 
     override func loadView() {
-        view = NSView()
-        placeholder.sizingOptions = []
-        addChild(outline)
-        for child in [outline.view, placeholder] {
-            child.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(child)
-            NSLayoutConstraint.activate([
-                child.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                child.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                child.topAnchor.constraint(equalTo: view.topAnchor),
-                child.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
-        }
+        content.sizingOptions = []
+        addChild(content)
+        view = content.view
     }
 
     override func viewDidLoad() {
@@ -47,17 +40,57 @@ final class BackgroundServicesViewController: NSViewController {
     }
 
     private func update() {
-        updateSearchVisibility()
-        let current = model.content
-        if shownContent != current {
-            shownContent = current
-            placeholder.rootView = BackgroundServicesUnavailable(content: current, retry: model.requestRefresh)
-        }
-        let hasServices = current == .simulator(.services)
+        updateVisibility()
+        let hasServices = model.content == .simulator(.services)
         outline.view.isHidden = !hasServices
-        placeholder.isHidden = hasServices
         outline.isEnabled = !model.holdsChanges
         searchAccessory.searchField.isEnabled = hasServices
+        showEditor(model.profileEditor)
+    }
+
+    private func showEditor(_ model: ServiceProfileEditorModel?) {
+        guard editor?.model !== model else { return }
+        if let editor { dismiss(editor); self.editor = nil }
+        guard let model else { return }
+        let editor = ServiceProfileEditorController(model: model)
+        editor.onClose = { [weak self] in self?.model.profileEditor = nil }
+        self.editor = editor
+        presentAsSheet(editor)
+    }
+}
+
+private struct BackgroundServicesView: View {
+    let model: BackgroundServicesInspectorModel
+    let outline: BackgroundServiceOutlineController
+    @State private var profileHeight: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            BackgroundServicesOutline(controller: outline, profileHeight: showsProfile ? profileHeight : 0)
+                .ignoresSafeArea(.container)
+            BackgroundServicesUnavailable(content: model.content, retry: model.requestRefresh)
+        }
+        .safeAreaBar(edge: .top, spacing: 0) {
+            if showsProfile {
+                BackgroundServicesProfileForm(model: model)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { profileHeight = $0 }
+            }
+        }
+    }
+
+    private var showsProfile: Bool {
+        if case .simulator = model.content { true } else { false }
+    }
+}
+
+private struct BackgroundServicesOutline: NSViewControllerRepresentable {
+    let controller: BackgroundServiceOutlineController
+    let profileHeight: CGFloat
+
+    func makeNSViewController(context: Context) -> BackgroundServiceOutlineController { controller }
+    func updateNSViewController(_ controller: BackgroundServiceOutlineController, context: Context) {
+        // The AppKit scroll view needs the bar inset that SwiftUI applies to its own scroll views.
+        controller.view.additionalSafeAreaInsets.top = profileHeight
     }
 }
 

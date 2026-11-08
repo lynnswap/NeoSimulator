@@ -17,7 +17,6 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     private let detailsController = NSViewController()
     private lazy var outline = BackgroundServiceOutlineController(categories: model.selectedProfile.categories, showsDetails: true)
     private var displayedProfile: ServiceProfile?
-    private lazy var searchField = BackgroundServiceSearchField(model: outline.model)
     private var observation: PortableObservationTracking.Token?
     private var profiles: [ServiceProfile] = []
     private var selecting = false
@@ -127,14 +126,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         controls.frame.size = NSSize(width: 180, height: controls.fittingSize.height)
         actions.view = controls
         splitViewItems[0].addBottomAlignedAccessoryViewController(actions)
-        let search = NSSplitViewItemAccessoryViewController()
-        search.preferredScrollEdgeEffectStyle = .hard
-        let searchControls = NSStackView(views: [searchField])
-        searchControls.orientation = .vertical
-        searchControls.alignment = .width
-        searchControls.frame.size = searchControls.fittingSize
-        search.view = searchControls
-        splitViewItems[1].addTopAlignedAccessoryViewController(search)
+        splitViewItems[1].addBottomAlignedAccessoryViewController(outline.searchAccessory)
         observation = withPortableContinuousObservation { [weak self] _ in self?.update() }
     }
 

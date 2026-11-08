@@ -16,8 +16,8 @@ final class BackgroundServiceSearchField: NSSearchField {
     init(model: BackgroundServiceListModel) {
         self.model = model
         super.init(frame: .zero)
-        placeholderString = "Search Services"
-        setAccessibilityLabel("Search Services")
+        placeholderString = "Filter"
+        setAccessibilityLabel("Filter")
         sendsSearchStringImmediately = false
         sendsWholeSearchString = false
         target = self
@@ -45,7 +45,7 @@ final class BackgroundServiceSearchAccessoryViewController: NSSplitViewItemAcces
         let controls = NSStackView(views: [searchField])
         controls.orientation = .horizontal
         controls.distribution = .fill
-        controls.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 8, right: 16)
+        controls.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         controls.frame.size = controls.fittingSize
         view = controls
     }

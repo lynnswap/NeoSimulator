@@ -99,7 +99,7 @@ final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewD
             if initial { outline.reloadData() }
             else { updateRows(from: previous, to: sections) }
             for section in sections {
-                let expanded = model.isFiltering || section.category.isExpanded
+                let expanded = model.isExpanded(section.category)
                 if expanded != outline.isItemExpanded(section.category) {
                     if expanded { outline.expandItem(section.category) }
                     else { outline.collapseItem(section.category) }
@@ -155,13 +155,13 @@ final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewD
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { false }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
-        guard !updatingRows, !model.isFiltering else { return }
-        (notification.userInfo?["NSObject"] as? BackgroundServiceCategoryModel)?.isExpanded = true
+        guard !updatingRows, let category = notification.userInfo?["NSObject"] as? BackgroundServiceCategoryModel else { return }
+        model.setExpanded(true, for: category)
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard !updatingRows, !model.isFiltering else { return }
-        (notification.userInfo?["NSObject"] as? BackgroundServiceCategoryModel)?.isExpanded = false
+        guard !updatingRows, let category = notification.userInfo?["NSObject"] as? BackgroundServiceCategoryModel else { return }
+        model.setExpanded(false, for: category)
     }
 
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
@@ -239,7 +239,7 @@ private final class BackgroundServiceCell: NSTableCellView {
             toggle.setAccessibilityHelp(category.category.consequence)
             change = { [weak category] in category?.setEnabled($0) }
             observation = withPortableContinuousObservation { [weak self, category] _ in
-                self?.toggle.state = category.state
+                self?.toggle.state = category.isEnabled ? .on : .off
             }
             editable = true
         } else if let service = item as? BackgroundServiceItem {

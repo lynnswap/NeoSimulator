@@ -1,6 +1,5 @@
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
-import AppKit
 import Observation
 
 @MainActor
@@ -29,11 +28,11 @@ final class BackgroundServiceCategoryModel: Identifiable {
             + category.requiredServices.map { BackgroundServiceItem(label: $0.label, detail: $0.reason, required: true, source: source) }
     }
 
-    var state: NSControl.StateValue {
+    /// A partially disabled category stays on, as a switch shows a mixed state.
+    var isEnabled: Bool {
         switch source?.serviceState?.state(of: category) {
-        case .enabled: .on
-        case .partiallyDisabled: .mixed
-        default: .off
+        case .enabled, .partiallyDisabled: true
+        case .disabled, nil: false
         }
     }
 

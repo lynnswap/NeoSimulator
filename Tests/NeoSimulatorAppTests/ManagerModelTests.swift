@@ -1127,7 +1127,7 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == rendered && renderedController.presentationViewController.parent === pane.liveScreenContainer
         }
         #expect(main.selectedIdentifiers == [selected])
-        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(model.selection.device?.id == selected && main.inspectorController.deviceInspector.inspection.device?.id == selected)
         #expect((mode == "new-selection" ? aController : bController).presentationViewController.parent == nil)
         #expect(aSession.state == .connected && app.screens.screen(for: aID)?.commandTarget === aController)
         try await aSession.stop()
@@ -1237,7 +1237,7 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == aID && aController.presentationViewController.parent === pane.liveScreenContainer
         }
         #expect(main.selectedIdentifiers == [aID])
-        #expect(model.selection.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
+        #expect(model.selection.device?.id == aID && main.inspectorController.deviceInspector.inspection.device?.id == aID)
         #expect(!bController.isEmbedded && aSession.state == .connected)
         try await aSession.stop()
         try await bSession.stop()
@@ -1355,7 +1355,7 @@ struct ManagerModelTests {
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         #expect(main.selectedIdentifiers == [aID] && outline.selectedRow == aRow)
         #expect(pane.liveDeviceIdentifier == nil && !bController.isEmbedded)
-        #expect(model.selection.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
+        #expect(model.selection.device?.id == aID && main.inspectorController.deviceInspector.inspection.device?.id == aID)
         try await aSession.stop()
         try await bSession.stop()
     }
@@ -1449,7 +1449,7 @@ struct ManagerModelTests {
         try await main.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
         let selected = initial ? aID : bID
         #expect(main.selectedIdentifiers == [selected])
-        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(model.selection.device?.id == selected && main.inspectorController.deviceInspector.inspection.device?.id == selected)
         #expect(pane.liveDeviceIdentifier == (initial ? aID : nil))
         #expect((controller.presentationViewController.parent === pane.liveScreenContainer) == initial)
         #expect(session.state == .connected && app.screens.screen(for: aID)?.commandTarget === controller)
@@ -1743,9 +1743,8 @@ struct ManagerModelTests {
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
-        let servicesAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServicesAccessoryViewController }.first)
-        let searchAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
-        #expect(servicesAccessory.isHidden)
+        let searchAccessory = try #require(inspector.bottomAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
+        #expect(searchAccessory.isHidden)
         #expect((0..<tabs.segmentCount).map { tabs.toolTip(forSegment: $0) } == ["Settings", "Reports", "Info", "Background Services"])
         window.setContentSize(NSSize(width: 1200, height: 800))
         split.view.layoutSubtreeIfNeeded()
@@ -1772,9 +1771,9 @@ struct ManagerModelTests {
             #expect(!tabs.isHidden)
             #expect(inspector.topAlignedAccessoryViewControllers.first === accessory)
             #expect(window.frame == frame, "Tab \(index), collapsed \(collapsed): frame \(window.frame), original \(frame)")
-            #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && (index == 1 || index == 2)))
+            #expect(controller.inspectorController.deviceInspector.inspection.isVisible == (!collapsed && (index == 1 || index == 2)))
             #expect(model.selection.showsServices == (!collapsed && index == 3))
-            if let page { #expect(controller.deviceInspector.inspection.page == page) }
+            if let page { #expect(controller.inspectorController.deviceInspector.inspection.page == page) }
         }
 
         #expect(!inspector.isCollapsed && tabs.selectedSegment == 0)
@@ -1793,38 +1792,39 @@ struct ManagerModelTests {
 
         inspector.isCollapsed = true
         #expect((0..<tabs.segmentCount).allSatisfy { !tabs.isSelected(forSegment: $0) })
-        #expect(!controller.deviceInspector.inspection.isVisible)
+        #expect(!controller.inspectorController.deviceInspector.inspection.isVisible)
         inspector.isCollapsed = false
-        #expect(tabs.selectedSegment == 2 && controller.deviceInspector.inspection.isVisible)
+        #expect(tabs.selectedSegment == 2 && controller.inspectorController.deviceInspector.inspection.isVisible)
         try click(0, collapsed: false)
         #expect(accessory.isHidden)
         let device = simulator()
         let deviceModel = DeviceModel(inventory: device, source: model.registry.source)
-        controller.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
+        controller.inspectorController.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
         try click(2, collapsed: false, page: .info)
-        controller.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
+        controller.inspectorController.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
         window.layoutIfNeeded()
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
         #expect((0..<categories.segmentCount).map { categories.label(forSegment: $0) } == ["Info", "Apps", "Profiles"])
-        #expect(!categories.isDescendant(of: controller.deviceInspector.view))
-        let informationScroll = try #require(inspectorViews(controller.deviceInspector.view)
+        #expect(!categories.isDescendant(of: controller.inspectorController.deviceInspector.view))
+        let informationScroll = try #require(inspectorViews(controller.inspectorController.deviceInspector.view)
             .compactMap { $0 as? NSScrollView }.first { !$0.isHiddenOrHasHiddenAncestor })
         let viewport = informationScroll.convert(informationScroll.bounds, to: nil)
         let accessoryFrame = accessory.view.convert(accessory.view.bounds, to: nil)
         #expect(viewport.maxY > accessoryFrame.minY)
         categories.selectedSegment = 1
         #expect(NSApp.sendAction(try #require(categories.action), to: categories.target, from: categories))
-        #expect(controller.deviceInspector.inspection.content == .applications)
+        #expect(controller.inspectorController.deviceInspector.inspection.content == .applications)
         try click(1, collapsed: false, page: .reports)
         #expect(accessory.isHidden)
         model.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
         model.inspect(device, selectionCount: 1)
         try click(3, collapsed: false)
         window.layoutIfNeeded()
-        #expect(!servicesAccessory.isHidden && !searchAccessory.isHidden)
-        #expect(servicesAccessory.view.convert(servicesAccessory.view.bounds, to: nil).maxY <= window.contentLayoutRect.maxY)
+        let services = try #require(inspector.viewController.children.compactMap { $0 as? BackgroundServicesViewController }.first)
+        #expect(!searchAccessory.isHidden)
+        #expect(inspectorViews(services.view).contains { $0 is NSOutlineView })
         try click(0, collapsed: false)
-        #expect(servicesAccessory.isHidden && searchAccessory.isHidden)
+        #expect(services.parent == nil && services.view.window == nil && searchAccessory.isHidden)
         controller.stopInspectorReads()
     }
 
@@ -4771,13 +4771,10 @@ struct ManagerModelTests {
         let item = try #require(category.items.first { $0.label == "com.apple.searchd" })
         let controller = BackgroundServicesViewController(model: model)
         controller.isVisible = true
-        let accessory = BackgroundServicesAccessoryViewController(model: model)
-        accessory.isActive = true
         let pane = NSSplitViewItem(inspectorWithViewController: controller)
         pane.minimumThickness = 280
         pane.maximumThickness = 440
-        pane.addTopAlignedAccessoryViewController(accessory)
-        pane.addTopAlignedAccessoryViewController(controller.searchAccessory)
+        pane.addBottomAlignedAccessoryViewController(controller.searchAccessory)
         let split = NSSplitViewController()
         split.splitView.isVertical = true
         split.addSplitViewItem(pane)
@@ -4789,12 +4786,31 @@ struct ManagerModelTests {
         defer { window.close() }
         let view = split.view
         view.layoutSubtreeIfNeeded()
-        let outline = try #require(controller.children.compactMap { $0 as? BackgroundServiceOutlineController }.first)
-        #expect(pane.topAlignedAccessoryViewControllers.first === accessory)
-        #expect(!accessory.isHidden && accessory.view.frame.height > 0)
-        #expect(accessory.view.window === window)
-        #expect(!accessory.view.isDescendant(of: controller.view))
+        let outlineView = try #require(inspectorViews(controller.view).compactMap { $0 as? NSOutlineView }.first)
+        let outline = try #require(outlineView.delegate as? BackgroundServiceOutlineController)
+        let scroll = try #require(outlineView.enclosingScrollView)
+        #expect(pane.topAlignedAccessoryViewControllers.isEmpty)
+        window.makeKeyAndOrderFront(nil)
+        try await wait(timeout: .seconds(5)) {
+            view.layoutSubtreeIfNeeded()
+            return scroll.contentInsets.top > 0
+        }
+        let scrollFrame = scroll.convert(scroll.bounds, to: controller.view)
+        #expect(scrollFrame == controller.view.bounds)
+        #expect(scroll.contentInsets.top == scroll.safeAreaInsets.top)
+        #expect(scroll.contentInsets.bottom > 0)
+        let origin = scroll.contentView.bounds.origin
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: -scroll.contentInsets.top / 2))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        let firstRow = outlineView.convert(outlineView.rect(ofRow: 0), to: controller.view)
+        #expect(firstRow.maxY > scrollFrame.maxY - scroll.contentInsets.top)
+        #expect(firstRow.minY < scrollFrame.maxY)
+        scroll.contentView.scroll(to: origin)
+        scroll.reflectScrolledClipView(scroll.contentView)
         #expect(outline.view.bounds.height > 100)
+        #expect(pane.bottomAlignedAccessoryViewControllers.first === controller.searchAccessory)
+        let searchFrame = controller.searchAccessory.view.convert(controller.searchAccessory.view.bounds, to: nil)
+        #expect(searchFrame.minY == window.contentLayoutRect.minY)
         let columnWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.expandItem(category)
         view.layoutSubtreeIfNeeded()
@@ -4916,7 +4932,7 @@ struct ManagerModelTests {
         window.contentViewController = controller
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
-        let searchAccessory = try #require(controller.splitViewItems[1].topAlignedAccessoryViewControllers.first)
+        let searchAccessory = try #require(controller.splitViewItems[1].bottomAlignedAccessoryViewControllers.first)
         let search = try #require(inspectorViews(searchAccessory.view).compactMap { $0 as? BackgroundServiceSearchField }.first)
         search.stringValue = "com.apple.searchd"
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))

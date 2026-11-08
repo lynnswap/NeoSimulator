@@ -59,27 +59,22 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
-    private var inspectorHost: NSHostingController<ManagerDeviceSettingsView>?
-    private var backgroundServicesHost: BackgroundServicesViewController?
-    private var backgroundServicesAccessory: BackgroundServicesAccessoryViewController?
-    private let inspectorContainer = NSViewController()
-    private weak var inspectorContent: NSViewController?
-    private(set) lazy var deviceInspector: ManagerDeviceInspectorController = {
-        let inspector = ManagerDeviceInspectorController(model: model)
-        inspector.inspection.select(presentationState.inspectorContent)
-        inspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
-        inspector.onDeviceMenu = { [weak self] device in
+    private(set) lazy var inspectorController: ManagerInspectorController = {
+        let inspector = ManagerInspectorController(model: model, screens: screens, presentationState: presentationState,
+            showCustomLocation: { [weak self] in
+                guard let self, let identifier = self.model.selection.device?.id else { return }
+                self.presentLocationEditor(for: identifier)
+            })
+        inspector.deviceInspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
+        inspector.deviceInspector.onDeviceMenu = { [weak self] device in
             let menu = NSMenu(title: "Device Actions")
             self?.populateDeviceMenu(menu, devices: [.simulator(device)])
             return menu
         }
+        inspector.onShowServiceProfile = { [weak self] in self?.onShowServiceProfile?($0) }
         return inspector
     }()
-    private var inspectorMode: Int {
-        get { presentationState.inspectorTab }
-        set { presentationState.inspectorTab = newValue }
-    }
-    private let inspectorIdentifier = NSToolbarItem.Identifier("DeviceInspector")
+    private let inspectorIdentifier = ManagerInspectorController.toolbarIdentifier
     private var updatingSelection = false
     private var rows: [DeviceRow] = []
     private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
@@ -95,7 +90,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     }
     private let defaults: UserDefaults
     private let presentationState: DeviceBrowserState
-    private var inspectorSelectionObservation: PortableObservationTracking.Token?
     private var collapsedGroups: Set<String>
     private var options: DeviceBrowserPresentation.Options
     private var loadedRows = false
@@ -188,7 +182,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         thumbnails.onChange = { [weak self] in self?.refreshThumbnail(for: $0) }
         buildSidebar()
         buildDevicePane()
-        buildInspector()
+        splitController.addSplitViewItem(inspectorController.makeSplitViewItem())
         splitController.splitView.autosaveName = splitViewAutosaveName
         splitController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
         window.contentViewController = splitController
@@ -221,14 +215,8 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
         inspectorObservation = splitController.splitViewItems[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                self.updateInspectorSelection()
-                self.updateDeviceSettings()
+                self?.inspectorController.updateVisibility()
             }
-        }
-        inspectorSelectionObservation = withPortableContinuousObservation { [weak self] _ in
-            guard let self else { return }
-            presentationState.inspectorContent = deviceInspector.inspection.content
         }
         window.setContentSize(NSSize(width: 1040, height: 700))
         window.center()
@@ -580,91 +568,9 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         splitController.addSplitViewItem(content)
     }
 
-    private func buildInspector() {
-        let host = NSHostingController(rootView: makeDeviceSettingsView())
-        // AppKit owns the pane size; content-derived bounds must not constrain the window.
-        host.sizingOptions = []
-        inspectorHost = host
-        let servicesModel = BackgroundServicesInspectorModel(manager: model, showProfileSettings: { [weak self] in
-            self?.onShowServiceProfile?($0)
-        })
-        let backgroundServices = BackgroundServicesViewController(model: servicesModel)
-        let servicesAccessory = BackgroundServicesAccessoryViewController(model: servicesModel)
-        backgroundServicesHost = backgroundServices
-        backgroundServicesAccessory = servicesAccessory
-        inspectorContainer.view = NSView()
-        let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)
-        inspector.minimumThickness = 280
-        inspector.maximumThickness = 440
-        inspector.canCollapse = true
-        inspector.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
-        inspector.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
-        inspector.addTopAlignedAccessoryViewController(servicesAccessory)
-        backgroundServices.searchAccessory.isHidden = true
-        inspector.addTopAlignedAccessoryViewController(backgroundServices.searchAccessory)
-        splitController.addSplitViewItem(inspector)
-        showSelectedInspector()
-    }
-
-    private func showInspectorController(_ controller: NSViewController) {
-        guard inspectorContent !== controller else { return }
-        // Split-view accessories are also children of the container; replace only its content page.
-        inspectorContent?.view.removeFromSuperview()
-        inspectorContent?.removeFromParent()
-        inspectorContainer.addChild(controller)
-        inspectorContent = controller
-        let view = controller.view
-        view.translatesAutoresizingMaskIntoConstraints = false
-        inspectorContainer.view.addSubview(view)
-        NSLayoutConstraint.activate([
-            view.leadingAnchor.constraint(equalTo: inspectorContainer.view.leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: inspectorContainer.view.trailingAnchor),
-            view.topAnchor.constraint(equalTo: inspectorContainer.view.topAnchor),
-            view.bottomAnchor.constraint(equalTo: inspectorContainer.view.bottomAnchor),
-        ])
-    }
-
-    @objc private func changeInspector(_ sender: NSSegmentedControl) {
-        toggleInspector(at: sender.selectedSegment)
-    }
-
-    @objc private func changeInspectorFromMenu(_ sender: NSMenuItem) {
-        toggleInspector(at: sender.tag)
-    }
-
-    private func toggleInspector(at index: Int) {
-        let inspector = splitController.splitViewItems[2]
-        if index == inspectorMode && !inspector.isCollapsed {
-            inspector.animator().isCollapsed = true
-            return
-        }
-        inspectorMode = index
-        showSelectedInspector()
-        inspector.animator().isCollapsed = false
-        updateInspectorSelection()
-        updateDeviceSettings()
-    }
-
-    private func showSelectedInspector() {
-        switch inspectorMode {
-        case 0: if let inspectorHost { showInspectorController(inspectorHost) }
-        case 3: if let backgroundServicesHost { showInspectorController(backgroundServicesHost) }
-        default:
-            deviceInspector.setPage(inspectorMode == 1 ? .reports : .info)
-            showInspectorController(deviceInspector)
-        }
-    }
-
-    func stopInspectorReads() { deviceInspector.stopReading() }
-    func finishInspectorPreviews() async throws { try await deviceInspector.finishPreviews() }
-    func resumeInspectorAfterCancelledQuit() { deviceInspector.resumeAfterCancelledQuit() }
-
-    private func makeDeviceSettingsView() -> ManagerDeviceSettingsView {
-        ManagerDeviceSettingsView(model: DeviceSettingsPanelModel(manager: model, screens: screens, preferences: SimulatorPreferences(), customLocation: { [weak self] in
-            guard let self, let identifier = self.model.selection.device?.id else { return }
-            self.presentLocationEditor(for: identifier)
-        }))
-    }
+    func stopInspectorReads() { inspectorController.stopReading() }
+    func finishInspectorPreviews() async throws { try await inspectorController.finishPreviews() }
+    func resumeInspectorAfterCancelledQuit() { inspectorController.resumeAfterCancelledQuit() }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if let group = item as? DeviceGroup { return group.rows.count }
@@ -828,7 +734,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         } else {
             deviceScreenViewController.updatePreview(selectionCount: selections.count)
         }
-        updateDeviceSettings()
+        updateInspector()
         model.inspect(selectedDevice, selectionCount: selections.count)
     }
 
@@ -1114,14 +1020,10 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         return true
     }
 
-    func updateDeviceSettings() {
+    private func updateInspector() {
         let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
-        let showsInspector = !splitController.splitViewItems[2].isCollapsed
-        deviceInspector.update(device: selection.flatMap { model.registry.device(for: $0.id) }, isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true,
-                               isVisible: showsInspector && (inspectorMode == 1 || inspectorMode == 2))
-        model.selection.setServicesVisible(showsInspector && inspectorMode == 3)
-        backgroundServicesAccessory?.isActive = showsInspector && inspectorMode == 3
-        backgroundServicesHost?.isVisible = showsInspector && inspectorMode == 3
+        inspectorController.update(device: selection.flatMap { model.registry.device(for: $0.id) },
+                                   isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true)
     }
 
     private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {
@@ -1257,16 +1159,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         }
     }
 
-    private func updateInspectorSelection() {
-        let collapsed = splitController.splitViewItems[2].isCollapsed
-        guard let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == inspectorIdentifier }),
-              let tabs = item.view as? NSSegmentedControl else { return }
-        tabs.selectedSegment = collapsed ? -1 : inspectorMode
-        for action in item.menuFormRepresentation?.submenu?.items ?? [] {
-            action.state = !collapsed && action.tag == inspectorMode ? .on : .off
-        }
-    }
-
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, settingsIdentifier, filterIdentifier, .sidebarTrackingSeparator,
          .flexibleSpace, captureKeyboardIdentifier, resizeAppIdentifier, canvasZoomIdentifier, compactIdentifier, moreIdentifier, .inspectorTrackingSeparator, .flexibleSpace, inspectorIdentifier]
@@ -1369,32 +1261,7 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
             return item
         }
-        if itemIdentifier == inspectorIdentifier {
-            let labels = ["Settings", "Reports", "Info", "Background Services"]
-            let images = zip(["slider.horizontal.3", "text.document", "info", "cpu"], labels).map {
-                NSImage(systemSymbolName: $0.0, accessibilityDescription: $0.1)!
-            }
-            let tabs = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(changeInspector(_:)))
-            tabs.selectedSegment = splitController.splitViewItems[2].isCollapsed ? -1 : inspectorMode
-            tabs.setAccessibilityLabel("Device Inspector")
-            for (index, label) in labels.enumerated() { tabs.setToolTip(label, forSegment: index) }
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "Device Inspector"
-            item.view = tabs
-            item.visibilityPriority = .high
-            let menu = NSMenu(title: item.label)
-            for (index, label) in labels.enumerated() {
-                let action = NSMenuItem(title: label, action: #selector(changeInspectorFromMenu(_:)), keyEquivalent: "")
-                action.target = self
-                action.tag = index
-                action.state = tabs.selectedSegment == index ? .on : .off
-                menu.addItem(action)
-            }
-            let representation = NSMenuItem(title: item.label, action: nil, keyEquivalent: "")
-            representation.submenu = menu
-            item.menuFormRepresentation = representation
-            return item
-        }
+        if itemIdentifier == inspectorIdentifier { return inspectorController.makeToolbarItem() }
         if itemIdentifier == settingsIdentifier {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.label = "Settings"
