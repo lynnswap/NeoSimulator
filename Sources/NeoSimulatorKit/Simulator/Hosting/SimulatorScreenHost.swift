@@ -53,6 +53,7 @@ package final class SimulatorScreenHost {
     private var testingSetNeedsOpening = false
     private var sessions: [SimulatorDeviceIdentifier: any DevicePresentation] = [:]
     private var connections: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
+    private var stateWaits: [SimulatorDeviceIdentifier: [UUID: (task: Task<SimulatorDeviceRecord?, any Error>, cancelsOnRelease: Bool)]] = [:]
     private var bootOperations: [SimulatorDeviceIdentifier: DeviceTools] = [:]
     private var restarting: [SimulatorDeviceIdentifier: Task<Void, Never>] = [:]
     private var awaitingReconnect: [SimulatorDeviceIdentifier: any DevicePresentation] = [:]
@@ -176,6 +177,7 @@ package final class SimulatorScreenHost {
         restart?.cancel()
         closing?.cancel()
         bootOperations[identifier]?.cancel()
+        cancelStateWaits(for: identifier, openingsOnly: true)
         await connection?.value
         await restart?.value
         await closing?.value
@@ -270,6 +272,41 @@ package final class SimulatorScreenHost {
         return isShown ? device : nil
     }
 
+    package func waitForDevice(_ identifier: SimulatorDeviceIdentifier, until predicate: @escaping (SimulatorDeviceRecord) -> Bool,
+                               deadline: ContinuousClock.Instant) async throws -> SimulatorDeviceRecord? {
+        try await waitForDevice(identifier, until: predicate, deadline: deadline, cancelsOnRelease: false)
+    }
+
+    private func waitForDevice(_ identifier: SimulatorDeviceIdentifier, until predicate: @escaping (SimulatorDeviceRecord) -> Bool,
+                               deadline: ContinuousClock.Instant, cancelsOnRelease: Bool) async throws -> SimulatorDeviceRecord? {
+        var isShown: Bool { identifier.deviceSetPath == nil || showsTestingDevices }
+        guard isShown, let set = identifier.deviceSetPath == nil ? deviceSet : testingSet else { return nil }
+        let id = UUID()
+        let task = Task { try await set.waitForDevice(identifier.identifier, until: predicate, deadline: deadline) }
+        stateWaits[identifier, default: [:]][id] = (task, cancelsOnRelease)
+        defer {
+            stateWaits[identifier]?[id] = nil
+            if stateWaits[identifier]?.isEmpty == true { stateWaits[identifier] = nil }
+        }
+        do {
+            let device = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            return isShown ? device : nil
+        } catch {
+            if !isShown { return nil }
+            throw error
+        }
+    }
+
+    private func waitForOpeningState(_ identifier: SimulatorDeviceIdentifier, deadline: ContinuousClock.Instant) async throws -> SimulatorDeviceRecord? {
+        try await waitForDevice(identifier, until: { $0.state != 2 }, deadline: deadline, cancelsOnRelease: true)
+    }
+
+    private func cancelStateWaits(for identifier: SimulatorDeviceIdentifier? = nil, openingsOnly: Bool = false) {
+        for (device, waits) in stateWaits where identifier == nil || identifier == device {
+            for wait in waits.values where !openingsOnly || wait.cancelsOnRelease { wait.task.cancel() }
+        }
+    }
+
     /// Updates the preference and every open window, including restarting devices.
     package func toggleShowDeviceBezels() {
         let shows = !HostPreferences.defaults.showsDeviceBezels
@@ -294,6 +331,7 @@ package final class SimulatorScreenHost {
             // Reattach every booted testing device, including previously closed windows.
             if let testingSet { suppressed.subtract(testingSet.devices.map(\.identity)) }
         } else {
+            for identifier in stateWaits.keys where identifier.deviceSetPath != nil { cancelStateWaits(for: identifier) }
             let hadDeviceWindows = !sessions.isEmpty
             if let testingSet { ownedDeviceIdentifiers.subtract(testingSet.devices.map(\.identity)) }
             // A restart keeps running without its window.
@@ -446,6 +484,7 @@ package final class SimulatorScreenHost {
     package func cancelOpeningResources(_ identifier: SimulatorDeviceIdentifier) {
         connections[identifier]?.cancel()
         bootOperations[identifier]?.cancel()
+        cancelStateWaits(for: identifier, openingsOnly: true)
     }
 
     package func releasePresentation(for identifier: SimulatorDeviceIdentifier) async throws {
@@ -481,17 +520,16 @@ package final class SimulatorScreenHost {
         guard presentationRestarts.contains(identifier) else { return }
         defer { presentationRestarts.remove(identifier) }
         let deadline = ContinuousClock.now + .seconds(120)
-        while true {
-            try Task.checkCancellation()
+        do {
+            let state = try await waitForOpeningState(identifier, deadline: deadline)?.state
             guard !stopped, !isTerminating else { throw CancellationError() }
-            let state = try await readDevice(identifier)?.state
-            if state == 3 { break }
-            guard state == 2, ContinuousClock.now < deadline else {
-                presentationRestarts.remove(identifier)
-                try await scanDevices()
+            guard state == 3 else {
                 throw SimulatorError.operation("The simulator is not running, so its display could not reconnect.")
             }
-            try await Task.sleep(for: .milliseconds(100))
+        } catch {
+            presentationRestarts.remove(identifier)
+            await performRescan(testingVisibilityChanged: false)
+            throw error
         }
         presentationRestarts.remove(identifier)
         try await openSimulatorLocally(withIdentifier: identifier, bootIfNeeded: false, presents: false)
@@ -534,18 +572,15 @@ package final class SimulatorScreenHost {
         }
         let deadline = ContinuousClock.now + .seconds(120)
         if isHeadless {
-            while true {
-                try Task.checkCancellation()
-                guard !stopped, !isTerminating, !releasingDevices.contains(identifier) else { throw CancellationError() }
-                guard let device = try await readDevice(identifier) else {
-                    throw SimulatorError.operation("The selected simulator is no longer available")
-                }
-                if device.state == 3 { return }
-                guard device.state == 2, ContinuousClock.now < deadline else {
-                    throw SimulatorError.operation("The simulator did not finish starting.")
-                }
-                try await Task.sleep(for: .milliseconds(100))
+            guard !stopped, !isTerminating, ownedDeviceIdentifiers.contains(identifier),
+                  !suppressed.contains(identifier), !releasingDevices.contains(identifier) else { throw CancellationError() }
+            let device = try await waitForOpeningState(identifier, deadline: deadline)
+            guard !stopped, !isTerminating, ownedDeviceIdentifiers.contains(identifier),
+                  !suppressed.contains(identifier), !releasingDevices.contains(identifier) else { throw CancellationError() }
+            guard device?.state == 3 else {
+                throw SimulatorError.operation("The simulator did not finish starting.")
             }
+            return
         }
         while sessions[identifier] == nil || awaitingReconnect[identifier] != nil {
             try Task.checkCancellation()
@@ -1075,6 +1110,7 @@ package final class SimulatorScreenHost {
         yieldToAnotherHost()
         guard !isTerminating else { return }
         isTerminating = true
+        cancelStateWaits()
         onConflictBegan?(name)
         Task {
             var failure: (any Error)?
@@ -1100,6 +1136,7 @@ package final class SimulatorScreenHost {
     package func beginStopping(keepingDevicesRunning: Bool? = nil) -> Task<Void, any Error> {
         if let stoppingTask { return stoppingTask }
         isTerminating = true
+        cancelStateWaits()
         // Thumbnails end before this returns; what they hold is saved while the rest of stopping goes on.
         presenter?.beginFinishingCaptures()
         let retryingCleanup = stopped
@@ -1172,6 +1209,7 @@ package final class SimulatorScreenHost {
     package func shutdown() {
         guard !stopped else { return }
         stopped = true
+        cancelStateWaits()
         conflicts.onConflict = nil
         touchIndicatorObservation = nil
         testingDevicesObservation = nil

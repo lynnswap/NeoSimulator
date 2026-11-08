@@ -358,6 +358,17 @@ struct HostModeControllerTests {
         }
     }
 
+    @Test func startupWaitObservesAnAtomicallyCreatedResult() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let result = directory.appendingPathComponent("result")
+        let wait = Task.immediate { try await WorkspaceClient.waitForNeoHostStartup(resultURL: result, isTerminated: { false }) }
+        defer { wait.cancel() }
+        try JSONEncoder().encode(RendererStartupResult.ready).write(to: result, options: .atomic)
+        try await wait.value
+    }
+
     @Test func managedRendererLaunchIncludesTheManagersExactIdentity() async throws {
         let owner = RendererOwnerIdentity(processIdentifier: 321, launchDate: Date(timeIntervalSinceReferenceDate: 123456.125))
         let arguments = WorkspaceClient.rendererLaunchArguments(owner: owner,

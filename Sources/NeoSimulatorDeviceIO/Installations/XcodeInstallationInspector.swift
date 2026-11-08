@@ -2,8 +2,29 @@ import ABIBridge
 import Darwin
 import Foundation
 import NeoSimulatorNative
+import Synchronization
 
 package struct XcodeInstallationInspector {
+    private struct FileRevision: Equatable, Sendable {
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let size: off_t
+        let fileNumber: ino_t
+        let systemNumber: dev_t
+    }
+
+    private struct BundleMetadata: Sendable {
+        let bundleIdentifier: String?
+        let version: String?
+        let build: String?
+    }
+
+    private struct CachedMetadata: Sendable {
+        let revision: FileRevision
+        let metadata: BundleMetadata
+    }
+
+    private static let metadataCache = Mutex<[URL: CachedMetadata]>([:])
     private let environment: [String: String]
     private let readSelection: @Sendable () async throws -> URL
 
@@ -73,11 +94,11 @@ package struct XcodeInstallationInspector {
     }
 
     private func inspectXcode(at applicationURL: URL) throws -> XcodeInstallation {
-        let info = try propertyList(
+        let info = try bundleMetadata(
             at: applicationURL.appendingPathComponent("Contents/Info.plist")
         )
-        guard info["CFBundleIdentifier"] as? String == ToolConstants.xcodeBundleIdentifier,
-              let versionString = info["CFBundleShortVersionString"] as? String
+        guard info.bundleIdentifier == ToolConstants.xcodeBundleIdentifier,
+              let versionString = info.version
         else {
             throw DeviceIOError.unavailable(
                 "xcode-bundle",
@@ -86,10 +107,10 @@ package struct XcodeInstallationInspector {
         }
         let version = try ToolVersion(versionString)
 
-        let versionInfo = try propertyList(
+        let versionInfo = try bundleMetadata(
             at: applicationURL.appendingPathComponent("Contents/version.plist")
         )
-        guard let buildVersion = versionInfo["ProductBuildVersion"] as? String else {
+        guard let buildVersion = versionInfo.build else {
             throw DeviceIOError.unavailable(
                 "xcode-build-version",
                 "\(applicationURL.path) has no ProductBuildVersion"
@@ -100,6 +121,28 @@ package struct XcodeInstallationInspector {
             version: version,
             buildVersion: buildVersion
         )
+    }
+
+    private func bundleMetadata(at url: URL) throws -> BundleMetadata {
+        var attributes = stat()
+        guard stat(url.path, &attributes) == 0 else {
+            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            throw DeviceIOError.unavailable("bundle-property-list", "could not read \(url.path): \(error.localizedDescription)")
+        }
+        let revision = FileRevision(modifiedSeconds: attributes.st_mtimespec.tv_sec,
+                                    modifiedNanoseconds: attributes.st_mtimespec.tv_nsec,
+                                    size: attributes.st_size,
+                                    fileNumber: attributes.st_ino,
+                                    systemNumber: attributes.st_dev)
+        if let cached = Self.metadataCache.withLock({ $0[url] }), cached.revision == revision {
+            return cached.metadata
+        }
+        let info = try propertyList(at: url)
+        let metadata = BundleMetadata(bundleIdentifier: info["CFBundleIdentifier"] as? String,
+                                      version: info["CFBundleShortVersionString"] as? String,
+                                      build: info["ProductBuildVersion"] as? String)
+        Self.metadataCache.withLock { $0[url] = CachedMetadata(revision: revision, metadata: metadata) }
+        return metadata
     }
 
     package func propertyList(at url: URL) throws -> [String: Any] {
