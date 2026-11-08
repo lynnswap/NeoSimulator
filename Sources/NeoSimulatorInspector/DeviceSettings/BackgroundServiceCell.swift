@@ -10,11 +10,12 @@ package final class BackgroundServiceCell: NSTableCellView {
     private let detail = LiteralTextField(wrappingLabelWithString: "")
     private let toggle = NSSwitch()
     private var observation: PortableObservationTracking.Token?
-    private var change: ((Bool) -> Void)?
-    private var editable = true
+    private var change: ((Bool) throws -> Void)?
     private weak var representedItem: AnyObject?
     private var showsDetails = false
-    package var controlsEnabled = true { didSet { toggle.isEnabled = controlsEnabled && editable } }
+    /// The switch position that the represented model has.
+    private var isOn = false { didSet { showState() } }
+    package var controlsEnabled = true { didSet { toggle.isEnabled = controlsEnabled } }
 
     package override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -64,27 +65,42 @@ package final class BackgroundServiceCell: NSTableCellView {
             toggle.setAccessibilityHelp(category.category.consequence)
             change = { [weak category] in category?.setEnabled($0) }
             observation = withPortableContinuousObservation { [weak self, category] _ in
-                self?.toggle.state = category.isEnabled ? .on : .off
+                self?.isOn = category.isEnabled
             }
-            editable = true
         } else if let service = item as? BackgroundServiceItem {
             title.stringValue = service.label
             title.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-            detail.stringValue = showsDetails ? service.detail : ""
             toggle.setAccessibilityLabel(service.label)
-            change = { [weak service] in service?.setEnabled($0) }
+            change = { [weak service] in try service?.setEnabled($0) }
             observation = withPortableContinuousObservation { [weak self, service] _ in
                 guard let self else { return }
-                toggle.state = service.isEnabled ? .on : .off
+                isOn = service.isEnabled
+                detail.stringValue = self.showsDetails ? service.summary : ""
                 toolTip = service.help
                 toggle.setAccessibilityHelp(service.help)
-                editable = service.canChange
-                toggle.isEnabled = controlsEnabled && editable
             }
         }
         detail.isHidden = !showsDetails
-        toggle.isEnabled = controlsEnabled && editable
     }
 
-    @objc private func toggleChanged() { change?(toggle.state == .on) }
+    package override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        showState()
+    }
+
+    // NSSwitch animates to a state set outside a window once it shows, as it does in a cell that a table reuses.
+    private func showState() {
+        guard window != nil else { return }
+        toggle.state = isOn ? .on : .off
+    }
+
+    @objc private func toggleChanged() {
+        do {
+            try change?(toggle.state == .on)
+        } catch {
+            // The model kept its state, so the switch goes back to it.
+            showState()
+            if let window { presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil) }
+        }
+    }
 }

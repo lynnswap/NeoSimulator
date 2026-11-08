@@ -5007,7 +5007,7 @@ struct ManagerModelTests {
                 && shownServices() == ["com.apple.searchd"]
         }
         let filtered = try #require(controller.services.list.selectedSection?.items.first)
-        filtered.setEnabled(false)
+        try filtered.setEnabled(false)
         #expect(first.configuration.disabledLabels == ["com.apple.searchd"])
         #expect(ServiceProfile.allServices.configuration.disabledLabels.isEmpty)
         search.stringValue = ""
@@ -5016,6 +5016,30 @@ struct ManagerModelTests {
         try await wait(timeout: .seconds(5)) {
             categories.numberOfRows == controller.services.list.sections.count
         }
+        // Turning off a service that keeps running says why and leaves the profile and the switch as they were.
+        let connectivity = try #require(
+            controller.services.list.sections.firstIndex { $0.category.id == "connectivity" })
+        categories.selectRowIndexes(IndexSet(integer: connectivity), byExtendingSelection: false)
+        let required = try #require(
+            controller.services.list.selectedSection?.items.first { $0.label == "com.apple.sharingd" })
+        let reason = try #require(required.keptRunningReason)
+        try await wait(timeout: .seconds(5)) { shownServices().contains(required.label) }
+        let requiredRow = try #require(controller.services.list.selectedSection?.items.firstIndex { $0 === required })
+        services.scrollRowToVisible(requiredRow)
+        let requiredSwitch = try #require(
+            services.view(atColumn: 0, row: requiredRow, makeIfNecessary: false).flatMap {
+                inspectorViews($0).compactMap { $0 as? NSSwitch }.first
+            })
+        #expect(required.isEnabled && requiredSwitch.state == .on && requiredSwitch.isEnabled)
+        requiredSwitch.performClick(nil)
+        try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+        let refusal = try #require(window.attachedSheet)
+        let refusalText = inspectorViews(try #require(refusal.contentView)).compactMap {
+            ($0 as? NSTextField)?.stringValue
+        }
+        #expect(refusalText.contains(reason) && refusalText.contains { $0.contains(required.label) })
+        #expect(first.configuration.disabledLabels == ["com.apple.searchd"] && requiredSwitch.state == .on)
+        window.endSheet(refusal)
         categories.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         try await wait(timeout: .seconds(5)) {
             shownServices() == other.items.map(\.label)
@@ -5047,6 +5071,79 @@ struct ManagerModelTests {
         #expect(store.defaultProfileID == ServiceProfile.allServicesID)
         _ = add.accessibilityPerformPress()
         #expect(controller.model.selectedProfile.name == "Profile (2)")
+    }
+
+    @Test func reusedServiceSwitchesShowTheirProfileWithoutMoving() async throws {
+        let domain = "NeoSimulator.ServiceSwitchReuse.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let category = try #require(
+            SimulatorBackgroundServiceCategory.all.max { $0.services.count < $1.services.count })
+        let labels = Set(category.services.map(\.label))
+        let even = Set(category.services.enumerated().filter { $0.offset.isMultiple(of: 2) }.map(\.element.label))
+        let first = try store.create(name: "Even", configuration: ServiceConfiguration(disabledLabels: even))
+        let second = try store.create(
+            name: "Odd", configuration: ServiceConfiguration(disabledLabels: labels.subtracting(even)))
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 360),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let lists = inspectorViews(controller.services.view).compactMap { $0 as? NSTableView }
+        let categories = try #require(lists.first { $0.accessibilityLabel() == "Service Categories" })
+        let services = try #require(lists.first { $0.accessibilityLabel() == "Services" })
+        let scroll = try #require(services.enclosingScrollView)
+        // The switches in view, by the position that their layers draw and the item that their row shows.
+        func shownSwitches() -> [(drawing: String, isOn: Bool, item: BackgroundServiceItem)] {
+            let items = controller.services.list.selectedSection?.items ?? []
+            let rows = services.rows(in: services.visibleRect)
+            return (rows.location..<rows.location + rows.length).compactMap { row in
+                guard
+                    let toggle = services.view(atColumn: 0, row: row, makeIfNecessary: false)
+                        .flatMap({ inspectorViews($0).compactMap { $0 as? NSSwitch }.first })
+                else { return nil }
+                var drawing: [String] = []
+                func visit(_ layer: CALayer) {
+                    drawing.append("\(layer.frame) \(layer.transform.m41) \(layer.opacity)")
+                    layer.sublayers?.forEach(visit)
+                }
+                toggle.layer.map(visit)
+                return (drawing.joined(separator: "|"), toggle.state == .on, items[row])
+            }
+        }
+        for profile in [first, second, first] {
+            controller.model.selectedProfileID = profile.id
+            try await wait(timeout: .seconds(5)) {
+                controller.services.list.categories.first === profile.categories.first
+                    && categories.numberOfRows == controller.services.list.sections.count
+            }
+            let index = try #require(controller.services.list.sections.firstIndex { $0.category.id == category.id })
+            categories.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+            try await wait(timeout: .seconds(5)) {
+                controller.services.list.selectedSection?.category.category == category
+                    && services.numberOfRows == controller.services.list.selectedSection?.items.count
+            }
+            var offset: CGFloat = 0
+            while offset < services.frame.height {
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: offset - scroll.contentInsets.top))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                window.displayIfNeeded()
+                try await Task.sleep(for: .milliseconds(30))
+                let shown = shownSwitches()
+                #expect(!shown.isEmpty && shown.allSatisfy { $0.isOn == $0.item.isEnabled })
+                // A switch that animated to its row's state would still be moving.
+                for _ in 0..<3 {
+                    try await Task.sleep(for: .milliseconds(40))
+                    #expect(shownSwitches().map(\.drawing) == shown.map(\.drawing))
+                }
+                offset += scroll.contentView.bounds.height / 2
+            }
+        }
+        #expect(first.configuration.disabledLabels == even)
+        #expect(second.configuration.disabledLabels == labels.subtracting(even))
     }
 
     @Test func selectingDefaultEnablesEveryServiceExceptTheOverriddenOnes() async throws {
@@ -5572,13 +5669,28 @@ struct ManagerModelTests {
         manager.inspect(device, selectionCount: 1)
         manager.selection.setServicesVisible(true)
         #expect(await events.next() == .readServices(device.id))
-        await source.completeServiceRead(disabled: ["com.apple.bird"])
+        await source.completeServiceRead(disabled: ["com.apple.bird", "com.apple.sharingd"])
         await manager.registry.finishReading()
+        // A required service that something disabled shows as off, and only turning it on reaches the simulator.
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        let required = try #require(inspector.categories.flatMap(\.items).first { $0.label == "com.apple.sharingd" })
+        #expect(!required.isEnabled && required.keptRunningReason != nil)
+        #expect(throws: BackgroundServiceKeptRunning.self) { try required.setEnabled(false) }
 
         manager.setBackgroundServices([.category("store")], enabled: false, for: device.id)
         #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: ["com.apple.bird", "com.apple.amsaccountsd", "com.apple.sharingd"])
+        try await awaitServiceOperations(manager)
+        try required.setEnabled(true)
+        #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: ["com.apple.bird", "com.apple.amsaccountsd"])
         try await awaitServiceOperations(manager)
+        #expect(required.isEnabled)
+        #expect(
+            await source.serviceChanges == [
+                .init(targets: [.category("store")], enabled: false),
+                .init(targets: [.service("com.apple.sharingd")], enabled: true),
+            ])
         let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
         try store.assign(.profile(profile.id), to: device.id)
         #expect(store.configuration(for: device.id)?.disabledLabels.contains("com.apple.amsaccountsd") == true)
