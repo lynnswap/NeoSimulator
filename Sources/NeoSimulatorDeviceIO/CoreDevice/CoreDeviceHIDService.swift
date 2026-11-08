@@ -55,29 +55,32 @@ package final class CoreDeviceHIDService {
         let runtime = remote.runtime
         let implementation = try await remote.implementation(capability: "UniversalHIDServiceCapability",
                                                              feature: universalHIDFeature)
-        let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
-        let serviceIDType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
         try await loadUniversalHID()
-        let report = try await runtime.prepare { try reportABI(runtime: $0) }
-        let abis: [NativeSwiftType: NativeType] = [
-            report.type: report.abi,
-            descriptorType: try .opaque(named: descriptorType.name),
-            serviceIDType: try .opaque(named: serviceIDType.name),
-        ]
-        // CoreDevice also declares `Swift.UInt64` service-ID overloads of `send` and `resetGestureState`, which runtime-value
-        // arguments cannot tell apart by labels. Every requirement names the `HIDServiceID` declaration that `createService` returns.
-        let create = try await implementation.type.resolve(.swift(.method(
-            "CoreDevice.UniversalHIDService.createService(descriptor: CoreDevice.HIDServiceDescriptor) async throws(CoreDevice.CoreDeviceError) -> CoreDevice.HIDServiceID",
-            as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
-        let send = try await implementation.type.resolve(.swift(.method(
-            "CoreDevice.UniversalHIDService.send(report: UniversalHID.HIDReport, to: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
-            as: ((NativeSwiftValue, NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
-        let reset = try await implementation.type.resolve(.swift(.method(
-            "CoreDevice.UniversalHIDService.resetGestureState(service: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
-            as: ((NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
-        let remove = try await implementation.type.resolve(.swift(.method(
-            "CoreDevice.UniversalHIDService.remove(service: CoreDevice.HIDServiceID) async throws(CoreDevice.CoreDeviceError) -> ()",
-            as: ((NativeSwiftValue) async throws(Failure) -> Void).self, valueABIs: abis)))
+        let (create, send, reset, remove) = try await runtime.prepare { runtime in
+            let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
+            let serviceIDType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
+            let report = try await runtime.prepare { try reportABI(runtime: $0) }
+            let abis: [NativeSwiftType: NativeType] = [
+                report.type: report.abi,
+                descriptorType: try .opaque(named: descriptorType.name),
+                serviceIDType: try .opaque(named: serviceIDType.name),
+            ]
+            // CoreDevice also declares `Swift.UInt64` service-ID overloads of `send` and `resetGestureState`, which runtime-value
+            // arguments cannot tell apart by labels. Every requirement names the `HIDServiceID` declaration that `createService` returns.
+            let create = try await implementation.type.resolve(.swift(.method(
+                "CoreDevice.UniversalHIDService.createService(descriptor: CoreDevice.HIDServiceDescriptor) async throws(CoreDevice.CoreDeviceError) -> CoreDevice.HIDServiceID",
+                as: ((NativeSwiftValue) async throws(Failure) -> NativeSwiftValue).self, valueABIs: abis)))
+            let send = try await implementation.type.resolve(.swift(.method(
+                "CoreDevice.UniversalHIDService.send(report: UniversalHID.HIDReport, to: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
+                as: ((NativeSwiftValue, NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
+            let reset = try await implementation.type.resolve(.swift(.method(
+                "CoreDevice.UniversalHIDService.resetGestureState(service: CoreDevice.HIDServiceID) throws(CoreDevice.CoreDeviceError) -> ()",
+                as: ((NativeSwiftValue) throws(Failure) -> Void).self, valueABIs: abis)))
+            let remove = try await implementation.type.resolve(.swift(.method(
+                "CoreDevice.UniversalHIDService.remove(service: CoreDevice.HIDServiceID) async throws(CoreDevice.CoreDeviceError) -> ()",
+                as: ((NativeSwiftValue) async throws(Failure) -> Void).self, valueABIs: abis)))
+            return (create, send, reset, remove)
+        }
         let serviceID = try await unsafe create.unsafeInvoke(on: implementation, nativeDescriptor)
         // The returned service has an owner before cancellation can abandon it.
         return CoreDeviceHIDService(send: { report in

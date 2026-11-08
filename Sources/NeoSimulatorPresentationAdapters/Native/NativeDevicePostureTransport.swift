@@ -49,7 +49,9 @@ package final class NativeDevicePostureTransport: DevicePostureTransport {
         let motion = try await unsafe getMotion.unsafeInvoke(on: implementation)
         let supportsHinge = try await motion.type.resolve(.swift(.getter("supportsHingeAngle", as: (() -> Bool).self)))
         guard try unsafe supportsHinge.unsafeInvoke(on: motion) else { return nil }
-        return try await NativeDevicePostureTransport(remote: remote, motion: motion, failure: failure)
+        return try await remote.runtime.prepare { _ in
+            try await NativeDevicePostureTransport(remote: remote, motion: motion, failure: failure)
+        }
     }
 
     private init<Failure: Error>(remote: CoreDeviceRemoteScreenDevice, motion: NativeSwiftValue, failure: Failure) async throws {

@@ -104,7 +104,7 @@ package final class NativeDevicePoseControls {
 
     private func connect(deviceIdentifier: UUID) async throws {
         let runtime = ABIRuntime.shared
-        let bindings = try await Bindings(runtime: runtime)
+        let bindings = try await runtime.prepare { try await Bindings(runtime: $0) }
         let plugins = try unsafe bindings.shared.unsafeInvoke()
         typealias Failure = NativeSwiftClosure<@MainActor @Sendable (any Error) -> Void>
         let errorBody: @MainActor @Sendable (any Error) -> Void = { [weak self] error in self?.report(error) }

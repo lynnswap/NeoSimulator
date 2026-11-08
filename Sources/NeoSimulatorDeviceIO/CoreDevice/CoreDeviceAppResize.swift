@@ -105,7 +105,7 @@ package final class CoreDeviceAppResizeTransport: AppResizeTransport {
         self.implementation = implementation
         self.runtime = runtime
         self.failure = failure
-        bindings = try await Bindings(runtime: runtime)
+        bindings = try await runtime.prepare { try await Bindings(runtime: $0) }
     }
 
     package func eligibility() async throws -> AsyncThrowingStream<AppResizeEligibility, any Error> {

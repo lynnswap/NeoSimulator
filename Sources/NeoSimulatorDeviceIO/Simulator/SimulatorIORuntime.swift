@@ -33,7 +33,7 @@ package final class SimulatorIORuntime {
     private init(xcodeURL: URL) async throws {
         self.xcodeURL = xcodeURL
         coreSimulator = try await .load()
-        audio = try await SimulatorAudioInterface(runtime: .shared)
+        audio = try await ABIRuntime.shared.prepare { try await SimulatorAudioInterface(runtime: $0) }
     }
 
     package static func creationCatalog(xcodeURL: URL) async throws -> SimulatorCatalog.Snapshot {

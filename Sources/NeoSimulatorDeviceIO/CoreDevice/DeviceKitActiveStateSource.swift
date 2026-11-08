@@ -38,7 +38,7 @@ package final class DeviceKitActiveStateSource: DeviceActiveStateSource {
 
     package func prepare() async throws {
         try await CoreDeviceRuntime.loadDeviceKit()
-        let bindings = try await Bindings(runtime: .shared)
+        let bindings = try await ABIRuntime.shared.prepare { try await Bindings(runtime: $0) }
         try Task.checkCancellation()
         prepared = (bindings, try unsafe bindings.shared.unsafeInvoke())
     }

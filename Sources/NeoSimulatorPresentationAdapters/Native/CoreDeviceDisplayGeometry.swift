@@ -82,7 +82,7 @@ package final class CoreDeviceDisplayGeometry {
     package init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) async throws {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
-        bindings = try await Bindings(runtime: remote.runtime)
+        bindings = try await remote.runtime.prepare { try await Bindings(runtime: $0) }
     }
 
     package func start(update: @escaping @MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void) async throws {
@@ -143,8 +143,11 @@ package final class CoreDeviceDisplayGeometry {
     /// Reads the primary display's size and DeviceKit chrome identity, without observing its orientation.
     package static func primaryDisplay(of remote: CoreDeviceRemoteScreenDevice) async throws -> RemoteDeviceDisplay? {
         try await loadRuntime()
-        let bindings = try await Bindings(runtime: remote.runtime)
-        let frame = try await FrameBindings(runtime: remote.runtime, abis: bindings.abis)
+        let (bindings, frame) = try await remote.runtime.prepare { runtime in
+            let bindings = try await Bindings(runtime: runtime)
+            let frame = try await FrameBindings(runtime: runtime, abis: bindings.abis)
+            return (bindings, frame)
+        }
         let info = try await unsafe bindings.readInitialDisplayInfo.unsafeInvoke(on: remote.object)
         guard let display = try unsafe bindings.displays.unsafeInvoke(on: info).first(where: {
             try unsafe bindings.primary.unsafeInvoke(on: $0)
@@ -252,7 +255,7 @@ package final class NativeDeviceCanvas {
         guard let uuid = UUID(uuidString: remote.identifier) else {
             throw RemoteScreenError.unavailable("native-device-canvas", "CoreDevice's record of this simulator has no device identifier for DeviceKit.")
         }
-        let bindings = try await Bindings(runtime: ABIRuntime.shared)
+        let bindings = try await ABIRuntime.shared.prepare { try await Bindings(runtime: $0) }
         let base = try unsafe bindings.make.unsafeInvoke(uuid)
         let activation = try unsafe bindings.start.unsafeInvoke(on: base, bindings.behavior)
         let shown = try unsafe bindings.chrome.unsafeInvoke(on: base, bindings.visible)
@@ -292,8 +295,11 @@ package final class NativeDeviceCanvas {
     /// Reserve the installed artwork's bezel and physical buttons around each projected screen.
     /// Zero means no chrome is declared. Nil preserves the full canvas if declared artwork cannot be measured.
     private static func frameMargin(remote: CoreDeviceRemoteScreenDevice) async throws -> CGFloat? {
-        let bindings = try await CoreDeviceDisplayGeometry.Bindings(runtime: remote.runtime)
-        let frame = try await CoreDeviceDisplayGeometry.FrameBindings(runtime: remote.runtime, abis: bindings.abis)
+        let (bindings, frame) = try await remote.runtime.prepare { runtime in
+            let bindings = try await CoreDeviceDisplayGeometry.Bindings(runtime: runtime)
+            let frame = try await CoreDeviceDisplayGeometry.FrameBindings(runtime: runtime, abis: bindings.abis)
+            return (bindings, frame)
+        }
         let (changes, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         defer { continuation.finish() }
         var iterator = changes.makeAsyncIterator()

@@ -16,7 +16,7 @@ package struct SimulatorGuestHID {
     /// to the guest's Mach service of a name, as the simulator's `SimDevice` looks it up.
     package init(lookUp: @escaping @MainActor (String) async throws -> UInt32) async throws {
         let runtime = ABIRuntime.shared
-        codec = try await GuestHIDCodec(runtime: runtime)
+        codec = try await runtime.prepare { try await GuestHIDCodec(runtime: $0) }
         // SimulatorCoreDevicePlugin connects CoreDevice to a simulator's guest services with these.
         let makeEndpoint = try await runtime.resolve(.c(.function("xpc_endpoint_create_mach_port_4sim",
             as: ((UInt32) -> Unmanaged<AnyObject>?).self)))

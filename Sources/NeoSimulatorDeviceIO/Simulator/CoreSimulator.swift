@@ -14,7 +14,7 @@ package final class CoreSimulatorInterface: @unchecked Sendable {
     /// Loads CoreSimulator and prepares its messages, which neither selects nor loads a UI toolkit.
     package static func load() async throws -> CoreSimulatorInterface {
         try await CoreDeviceRuntime.loading("simulator-runtime") { try await NativeFrameworks.loadCoreSimulator() }
-        return try await CoreSimulatorInterface(runtime: .shared)
+        return try await ABIRuntime.shared.prepare { try await CoreSimulatorInterface(runtime: $0) }
     }
 
     let serviceClass: AnyClass
