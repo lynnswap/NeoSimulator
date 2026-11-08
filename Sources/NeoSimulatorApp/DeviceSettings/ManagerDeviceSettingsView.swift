@@ -30,6 +30,24 @@ struct ManagerDeviceSettingsView: View {
     }
 }
 
+private let deviceSettingsAnimation = Animation.easeInOut(duration: 0.22)
+
+private struct DeviceSettingsOpacity: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content.animation(deviceSettingsAnimation) { view in
+            view.opacity(isEnabled ? 1 : 0.5)
+        }
+    }
+}
+
+private extension View {
+    func deviceSettingsOpacity() -> some View {
+        modifier(DeviceSettingsOpacity())
+    }
+}
+
 private struct ManagerDeviceSettingsForm: View {
     let model: DeviceSettingsFormModel
 
@@ -39,7 +57,13 @@ private struct ManagerDeviceSettingsForm: View {
             DeviceLocationSettingsSection(model: model)
             DeviceAudioSettingsSection(model: model)
         }
+        .animation(deviceSettingsAnimation, value: model.showsColorFilterIntensity)
+        .transaction(value: model.device.id) { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
         .formStyle(.grouped)
+        .toggleStyle(.switch)
         .labelStyle(.titleAndIcon)
         .labelReservedIconWidth(20)
     }
@@ -51,32 +75,29 @@ private struct DeviceAppearanceSettingsSection: View {
     var body: some View {
         Section {
             Picker(selection: $model.appearance) {
-                if !model.appearanceAvailable {
-                    Text("Unavailable").tag(Optional<DeviceAppearance>.none)
+                if model.appearance == nil {
+                    Text("Unavailable").tag(Optional<DeviceAppearance>.none).disabled(true)
                 }
                 Text("Light").tag(DeviceAppearance.light)
                 Text("Dark").tag(DeviceAppearance.dark)
             } label: {
                 Label("Appearance", systemImage: "circle.lefthalf.filled")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.appearanceAvailable)
             .buttonStyle(.borderless)
             LabeledContent {
-                ManagerSettingSlider(
-                    value: $model.liquidGlassOpacity,
-                    range: 0...1,
-                    tickMarks: 0,
-                    label: "Liquid Glass"
-                )
-                .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
+                ManagerSettingSlider(model: model.liquidGlassOpacitySlider)
+                    .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
             } label: {
                 Label("Liquid Glass", systemImage: "drop.halffull")
                     .layoutPriority(1)
             }
-            .disabled(!model.liquidGlassOpacityAvailable)
+            .deviceSettingsOpacity()
+            .disabled(!model.liquidGlassOpacitySlider.isEnabled)
             Picker(selection: $model.colorFilter) {
-                if !model.colorFilterAvailable {
-                    Text("Unavailable").tag(Optional<SimulatorColorFilter>.none)
+                if model.colorFilter == nil {
+                    Text("Unavailable").tag(Optional<SimulatorColorFilter>.none).disabled(true)
                 }
                 Text("None").tag(SimulatorColorFilter.none)
                 Text("Grayscale").tag(SimulatorColorFilter.grayscale)
@@ -86,28 +107,24 @@ private struct DeviceAppearanceSettingsSection: View {
             } label: {
                 Label("Color Filter", systemImage: "camera.filters")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.colorFilterAvailable)
             .buttonStyle(.borderless)
             .help(Text(verbatim: model.colorFilterRequirement))
             if model.showsColorFilterIntensity {
                 LabeledContent {
-                    ManagerSettingSlider(
-                        value: $model.colorFilterIntensity,
-                        range: 0.25...1,
-                        tickMarks: 0,
-                        label: "Intensity"
-                    )
-                    .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
+                    ManagerSettingSlider(model: model.colorFilterIntensitySlider)
+                        .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
                 } label: {
                     Label("Intensity", systemImage: "slider.horizontal.3")
                         .layoutPriority(1)
                 }
+                .deviceSettingsOpacity()
+                .disabled(!model.colorFilterIntensitySlider.isEnabled)
             }
             Picker(selection: $model.displayZoom) {
-                if !model.displayZoomAvailable {
-                    Text("Unavailable").tag(Optional<UInt64>.none)
-                } else if model.displayZoom == nil {
-                    Text("None").tag(Optional<UInt64>.none)
+                if model.displayZoom == nil {
+                    Text("Unavailable").tag(Optional<UInt64>.none).disabled(true)
                 }
                 ForEach(model.displayZoomModes, id: \.rawMode) { mode in
                     Text(mode.nativeName).tag(mode.rawMode)
@@ -115,50 +132,51 @@ private struct DeviceAppearanceSettingsSection: View {
             } label: {
                 Label("Display Zoom", systemImage: "rectangle.inset.filled")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.displayZoomAvailable)
             .buttonStyle(.borderless)
             .help("Applying Display Zoom restarts the device's interface.")
             LabeledContent {
-                ManagerSettingSlider(
-                    value: $model.textSize,
-                    range: 0...11,
-                    tickMarks: 12,
-                    label: "Text Size"
-                )
-                .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
-                .help(model.textSizeDescription)
+                ManagerSettingSlider(model: model.textSizeSlider)
+                    .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
             } label: {
                 Label("Text Size", systemImage: "textformat.size")
                     .layoutPriority(1)
             }
-            .disabled(!model.textSizeAvailable)
+            .deviceSettingsOpacity()
+            .disabled(!model.textSizeSlider.isEnabled)
             Toggle(isOn: $model.boldText) {
                 Label("Bold Text", systemImage: "bold")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.boldTextAvailable)
             Toggle(isOn: $model.reduceMotion) {
                 Label("Reduce Motion", systemImage: "figure.walk.motion")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.reduceMotionAvailable)
             DeviceSlowAnimationsSetting(model: model)
             Toggle(isOn: $model.increaseContrast) {
                 Label("Increase Contrast", systemImage: "circle.lefthalf.striped.horizontal")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.increaseContrastAvailable)
             Toggle(isOn: $model.showBorders) {
                 Label("Show Borders", systemImage: "square.dashed")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.showBordersAvailable)
             Toggle(isOn: $model.reduceTransparency) {
                 Label("Reduce Transparency", systemImage: "square.on.square")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.reduceTransparencyAvailable)
             Toggle(isOn: $model.voiceOver) {
                 Label("VoiceOver", systemImage: "person.wave.2")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.voiceOverAvailable)
         }
-        .toggleStyle(.switch)
     }
 }
 
@@ -168,14 +186,9 @@ private struct DeviceLocationSettingsSection: View {
     var body: some View {
         Section {
             Picker(selection: $model.locationSelection) {
-                if model.locationSelection == nil {
+                if model.locationSelection == nil || model.unavailableLocationScenario != nil {
                     Text("Unavailable")
-                        .tag(Optional<LocationSelection>.none)
-                        .disabled(true)
-                }
-                if let name = model.unavailableLocationScenario {
-                    Text("Unavailable")
-                        .tag(LocationSelection.scenario(name))
+                        .tag(model.locationSelection)
                         .disabled(true)
                 }
                 Section {
@@ -191,6 +204,7 @@ private struct DeviceLocationSettingsSection: View {
             }
             .pickerStyle(.menu)
             .buttonStyle(.borderless)
+            .deviceSettingsOpacity()
             .disabled(!model.locationAvailable)
         }
     }
@@ -202,23 +216,17 @@ private struct DeviceAudioSettingsSection: View {
     var body: some View {
         Section {
             LabeledContent {
-                ManagerSettingSlider(
-                    value: $model.volume,
-                    range: 0...100,
-                    tickMarks: 0,
-                    label: "Sound"
-                )
-                .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
+                ManagerSettingSlider(model: model.volumeSlider)
+                    .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22)
             } label: {
                 Label("Sound", systemImage: "speaker.wave.2")
                     .layoutPriority(1)
             }
-            .disabled(!model.volumeAvailable)
+            .deviceSettingsOpacity()
+            .disabled(!model.volumeSlider.isEnabled)
             Picker(selection: $model.audioOutput) {
-                if !model.audioOutputAvailable {
-                    Text("Unavailable").tag(Optional<String>.none)
-                } else if model.audioOutput == nil {
-                    Text("None").tag(Optional<String>.none)
+                if model.audioOutput == nil {
+                    Text("Unavailable").tag(Optional<String>.none).disabled(true)
                 }
                 ForEach(model.audioOutputDevices, id: \.identifier) { device in
                     Text(device.name).tag(device.identifier)
@@ -226,13 +234,12 @@ private struct DeviceAudioSettingsSection: View {
             } label: {
                 Label("Output", systemImage: "speaker")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.audioOutputAvailable)
             .buttonStyle(.borderless)
             Picker(selection: $model.audioInput) {
-                if !model.audioInputAvailable {
-                    Text("Unavailable").tag(Optional<String>.none)
-                } else if model.audioInput == nil {
-                    Text("None").tag(Optional<String>.none)
+                if model.audioInput == nil {
+                    Text("Unavailable").tag(Optional<String>.none).disabled(true)
                 }
                 ForEach(model.audioInputDevices, id: \.identifier) { device in
                     Text(device.name).tag(device.identifier)
@@ -240,6 +247,7 @@ private struct DeviceAudioSettingsSection: View {
             } label: {
                 Label("Input", systemImage: "mic")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.audioInputAvailable)
             .buttonStyle(.borderless)
         }
@@ -257,14 +265,16 @@ private struct DeviceSlowAnimationsSetting: View {
             Toggle(isOn: $model.slowAnimations) {
                 Label("Slow Animations", systemImage: "tortoise")
             }
+            .deviceSettingsOpacity()
             .disabled(!model.canChangeSlowAnimations)
         case .button:
             LabeledContent {
                 Button("Toggle", action: model.toggleSlowAnimations)
-                    .disabled(!model.canChangeSlowAnimations)
             } label: {
                 Label("Slow Animations", systemImage: "tortoise")
             }
+            .deviceSettingsOpacity()
+            .disabled(!model.canChangeSlowAnimations)
             .help("Toggle slow animations in the frontmost app.")
         }
     }
@@ -272,7 +282,12 @@ private struct DeviceSlowAnimationsSetting: View {
 
 #if DEBUG
     #Preview("Device Settings") {
-        DeviceSettingsPreview()
+        DeviceSettingsPreview(available: true)
+            .frame(width: 360, height: 820)
+    }
+
+    #Preview("Unavailable") {
+        DeviceSettingsPreview(available: false)
             .frame(width: 360, height: 820)
     }
 
@@ -281,12 +296,38 @@ private struct DeviceSlowAnimationsSetting: View {
         private let manager: SimulatorManagerModel
         private let panel: DeviceSettingsPanelModel
 
-        init() {
+        init(available: Bool) {
+            var settings = SimulatorDeviceSettings()
+            if available {
+                settings = SimulatorDeviceSettings(
+                    appearance: .light, contentSize: .large, boldText: false,
+                    increaseContrast: false, liquidGlassOpacity: 0.5, colorFilter: .protanopia,
+                    reduceMotion: false, showBorders: false, reduceTransparency: false,
+                    voiceOver: false, volume: 75
+                )
+                settings.colorFilterIntensity = 0.5
+                let zoom = SimulatorDisplayZoomMode(
+                    rawMode: 0, nativeName: "Default", width: 402, height: 874)
+                settings.displayZoom = zoom
+                settings.supportedDisplayZoomModes = [
+                    zoom,
+                    SimulatorDisplayZoomMode(rawMode: 1, nativeName: "Larger Text", width: 375, height: 812),
+                ]
+                let audio = SimulatorAudioDevice(identifier: "systemDefault", name: "System Default")
+                settings.audioInputDevice = audio.identifier
+                settings.audioOutputDevice = audio.identifier
+                settings.audioInputDevices = [audio]
+                settings.audioOutputDevices = [audio]
+                settings.locationAvailable = true
+                settings.locationMode = DeviceLocationMode.none
+                settings.locationScenarios = [
+                    SimulatorLocationScenario(name: "city-bicycle", displayName: "City Bicycle")
+                ]
+            }
             let source = BackgroundServicesPreviewSource(
                 configuration: ServiceConfiguration(),
                 stopped: false,
-                settings: SimulatorDeviceSettings(
-                    appearance: .light, contentSize: .large, boldText: false)
+                settings: settings
             )
             let store = ServiceProfileStore(
                 fileURL: URL.temporaryDirectory.appending(
@@ -305,12 +346,17 @@ private struct DeviceSlowAnimationsSetting: View {
         }
 
         var body: some View {
-            ManagerDeviceSettingsView(model: panel)
-                .task {
-                    await manager.refresh()
-                    manager.inspect(source.device, selectionCount: 1)
-                    await manager.registry.finishReading()
+            ZStack {
+                if let form = panel.form {
+                    ManagerDeviceSettingsForm(model: form)
+                        .disabled(panel.holdsEdits)
                 }
+            }
+            .task {
+                await manager.refresh()
+                manager.inspect(source.device, selectionCount: 1)
+                await manager.registry.finishReading()
+            }
         }
     }
 #endif

@@ -96,6 +96,10 @@ final class DeviceSettingsPanelModel {
 @MainActor @Observable
 final class DeviceSettingsFormModel {
     let device: DeviceModel
+    @ObservationIgnored lazy var liquidGlassOpacitySlider = DeviceSettingSliderModel(form: self, setting: .liquidGlassOpacity)
+    @ObservationIgnored lazy var colorFilterIntensitySlider = DeviceSettingSliderModel(form: self, setting: .colorFilterIntensity)
+    @ObservationIgnored lazy var textSizeSlider = DeviceSettingSliderModel(form: self, setting: .textSize)
+    @ObservationIgnored lazy var volumeSlider = DeviceSettingSliderModel(form: self, setting: .volume)
     private let manager: SimulatorManagerModel
     private let screens: DeviceScreens
     private let preferences: SimulatorPreferences
@@ -117,7 +121,7 @@ final class DeviceSettingsFormModel {
 
     private var values: DeviceSettingsState { device.settings }
     private var screen: DeviceScreen? { screens.screen(for: device.id) }
-    private var acceptsEdits: Bool {
+    fileprivate var acceptsEdits: Bool {
         manager.selection.device === device && manager.selection.count == 1
             && device.canInspectSettings && manager.canEditSettings(for: device.id)
     }
@@ -347,5 +351,66 @@ final class DeviceSettingsFormModel {
     func toggleSlowAnimations() {
         guard canChangeSlowAnimations else { return }
         screen?.perform("slowAnimations")
+    }
+}
+
+@MainActor @Observable
+final class DeviceSettingSliderModel {
+    enum Setting { case liquidGlassOpacity, colorFilterIntensity, textSize, volume }
+    @ObservationIgnored private weak var form: DeviceSettingsFormModel?
+    private let setting: Setting
+
+    init(form: DeviceSettingsFormModel, setting: Setting) {
+        self.form = form
+        self.setting = setting
+    }
+
+    var label: LocalizedStringResource {
+        switch setting {
+        case .liquidGlassOpacity: "Liquid Glass"
+        case .colorFilterIntensity: "Intensity"
+        case .textSize: "Text Size"
+        case .volume: "Sound"
+        }
+    }
+    var range: ClosedRange<Double> {
+        switch setting {
+        case .liquidGlassOpacity: 0...1
+        case .colorFilterIntensity: 0.25...1
+        case .textSize: 0...11
+        case .volume: 0...100
+        }
+    }
+    var tickMarks: Int { setting == .textSize ? 12 : 0 }
+    var help: String? { setting == .textSize ? form?.textSizeDescription : nil }
+    var isAvailable: Bool {
+        guard let form else { return false }
+        switch setting {
+        case .liquidGlassOpacity: return form.liquidGlassOpacityAvailable
+        case .colorFilterIntensity: return form.showsColorFilterIntensity
+        case .textSize: return form.textSizeAvailable
+        case .volume: return form.volumeAvailable
+        }
+    }
+    var isEnabled: Bool { isAvailable && form?.acceptsEdits == true }
+    var value: Double {
+        get {
+            guard let form else { return range.lowerBound }
+            switch setting {
+            case .liquidGlassOpacity: return form.liquidGlassOpacity
+            case .colorFilterIntensity: return form.colorFilterIntensity
+            case .textSize: return form.textSize
+            case .volume: return form.volume
+            }
+        }
+        set {
+            guard isEnabled, let form else { return }
+            switch setting {
+            case .liquidGlassOpacity: form.liquidGlassOpacity = newValue
+            case .colorFilterIntensity: form.colorFilterIntensity = newValue
+            case .textSize: form.textSize = newValue
+            case .volume: form.volume = newValue
+            }
+        }
     }
 }

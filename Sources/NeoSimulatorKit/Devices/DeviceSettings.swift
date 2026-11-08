@@ -104,6 +104,13 @@ public struct SimulatorDisplayZoomMode: Sendable, Equatable, Codable {
     public var width: Double
     /// The height that the guest reports for this mode.
     public var height: Double
+
+    package init(rawMode: UInt64, nativeName: String, width: Double, height: Double) {
+        self.rawMode = rawMode
+        self.nativeName = nativeName
+        self.width = width
+        self.height = height
+    }
 }
 
 /// The device's saved desired location. External live changes may differ.
