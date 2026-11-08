@@ -170,6 +170,11 @@ final class DeviceActions: NSObject {
         case .rename: presentNameEditor(for: devices[0], cloning: false)
         case .clone: presentNameEditor(for: devices[0], cloning: true)
         case .erase, .remove: confirmManagement(request.action, devices: devices)
+        case .start:
+            // A simulator starts as its screen opens, as Start on a stopped simulator's screen does.
+            for device in devices where device.id.isSimulator { model.openScreen(for: device) }
+            let others = devices.filter { !$0.id.isSimulator }
+            if !others.isEmpty { model.manage(.start, devices: others) }
         default: model.manage(request.action, devices: devices)
         }
     }

@@ -1422,6 +1422,42 @@ struct ManagerModelTests {
         try await model.quitRenderer(keepingDevicesRunning: true)
     }
 
+    @Test func startingSimulatorsFromTheSidebarOpensTheScreenOfEach() async throws {
+        _ = NSApplication.shared
+        let first = simulator(deviceSet: "/first", name: "First", state: "Shutdown")
+        let second = simulator(deviceSet: "/second", name: "Second", state: "Shutdown")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let model = SimulatorManagerModel(source: source)
+        model.registry.stopReading()
+        await model.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        defer { main.window?.close() }
+        main.sidebar.update()
+        let content = try #require(main.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let menu = try #require(outline.menu)
+        let rows = (0..<outline.numberOfRows).filter { row in
+            outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
+        }
+        outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
+        #expect(main.selectedIdentifiers == [first.id, second.id])
+
+        main.sidebar.updateDeviceMenu(for: -1)
+        menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Start" }))
+        let opened = [await events.next(), await events.next()]
+        #expect(opened.contains(.open(first.id)) && opened.contains(.open(second.id)))
+        #expect(await source.lastOpenBootIfNeeded == true)
+        await source.completeOpen(for: first.id)
+        await source.completeOpen(for: second.id)
+        try await wait { !model.isBusy }
+        try await model.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test(arguments: [false, true])
     func automaticPresentationPreservesSelectionAndInitialPresentation(_ initial: Bool) async throws {
         _ = NSApplication.shared
