@@ -2,13 +2,14 @@ import AppKit
 import NeoSimulatorManager
 import ObservationBridge
 
-/// Chooses, saves, and reverts the selected simulator's service profile above its services.
+/// Chooses the selected simulator's service profile above its services, and saves or reverts their changes.
 @MainActor
 final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAccessoryViewController {
     let model: BackgroundServicesInspectorModel
     let profileButton = NSPopUpButton()
     let revertButton = NSButton(title: "Revert", target: nil, action: nil)
     let saveButton = NSButton(title: "Save", target: nil, action: nil)
+    private let actions = NSStackView()
     private var observation: PortableObservationTracking.Token?
 
     init(model: BackgroundServicesInspectorModel) {
@@ -35,7 +36,6 @@ final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAcc
         saveButton.target = self
         saveButton.action = #selector(save)
         saveButton.tintProminence = .primary
-        let actions = NSStackView()
         actions.addView(revertButton, in: .leading)
         actions.addView(saveButton, in: .trailing)
         let controls = NSStackView(views: [profile, actions])
@@ -69,6 +69,8 @@ final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAcc
         profileButton.menu = menu
         selectProfile()
         profileButton.isEnabled = !model.holdsChanges && model.profiles.issue == nil
+        // The actions show while the simulator's services differ from its profile, even while they cannot run.
+        actions.isHidden = !model.hasProfileChanges
         revertButton.isEnabled = model.canRevertProfile
         saveButton.isEnabled = model.canSaveProfile
     }

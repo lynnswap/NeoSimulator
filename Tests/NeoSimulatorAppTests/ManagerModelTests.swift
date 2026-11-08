@@ -4808,12 +4808,22 @@ struct ManagerModelTests {
             view.layoutSubtreeIfNeeded()
             return scroll.contentInsets.top > 0
         }
+        // Saving and reverting show only while the services differ from the profile.
+        let accessory = controller.profileAccessory
+        func shownActions() -> (shown: Bool, height: CGFloat, inset: CGFloat) {
+            view.layoutSubtreeIfNeeded()
+            let hidden = accessory.saveButton.isHiddenOrHasHiddenAncestor
+            #expect(accessory.revertButton.isHiddenOrHasHiddenAncestor == hidden)
+            return (!hidden, accessory.view.frame.height, scroll.contentInsets.top)
+        }
+        let unchanged = shownActions()
+        #expect(!unchanged.shown && !model.hasProfileChanges)
         let scrollFrame = scroll.convert(scroll.bounds, to: controller.view)
         #expect(scrollFrame == controller.view.bounds)
         #expect(scroll.contentInsets.top == scroll.safeAreaInsets.top)
         #expect(scroll.contentInsets.bottom > 0)
         let origin = scroll.contentView.bounds.origin
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: -scroll.contentInsets.top / 2))
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: outlineView.rect(ofRow: 0).minY - scroll.contentInsets.top / 2))
         scroll.reflectScrolledClipView(scroll.contentView)
         let firstRow = outlineView.convert(outlineView.rect(ofRow: 0), to: controller.view)
         #expect(firstRow.maxY > scrollFrame.maxY - scroll.contentInsets.top)
@@ -4862,6 +4872,10 @@ struct ManagerModelTests {
         let action = try #require(toggle.action)
         #expect(NSApp.sendAction(action, to: toggle.target, from: toggle))
         #expect(await events.next() == .changeServices(device.id))
+        try await wait(timeout: .seconds(5)) {
+            let changed = shownActions()
+            return changed.shown && changed.height > unchanged.height && changed.inset > unchanged.inset
+        }
 
         view.frame.size.width = 440
         view.layoutSubtreeIfNeeded()
@@ -4893,6 +4907,7 @@ struct ManagerModelTests {
         let saved = try #require(store.profiles.first)
         #expect(saved.configuration.disabledLabels == [item.label])
         #expect(!model.hasProfileChanges)
+        try await wait(timeout: .seconds(5)) { shownActions() == unchanged }
         #expect(model.profileChoices.map(\.id) == [.profile(saved.id)])
         #expect(settings.settings.serviceProfiles.model.store.profile(saved.id) === saved)
         let profiles = controller.profileAccessory.profileButton
@@ -4907,10 +4922,12 @@ struct ManagerModelTests {
         try await wait(timeout: .seconds(5)) {
             profiles.titleOfSelectedItem == "Development (Modified)"
         }
+        #expect(shownActions().shown)
         model.saveProfile()
         #expect(store.profiles.count == 1 && store.profiles.first?.id == saved.id)
         #expect(store.profiles.first?.configuration.disabledLabels.isEmpty == true)
         #expect(!model.hasProfileChanges)
+        try await wait(timeout: .seconds(5)) { shownActions() == unchanged }
         let binding = store.binding(for: device.id)
         model.profileEditor = nil
         try await wait(timeout: .seconds(5)) {
