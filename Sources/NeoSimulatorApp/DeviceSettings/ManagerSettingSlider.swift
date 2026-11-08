@@ -1,46 +1,73 @@
 import AppKit
-import NeoSimulatorHostSupport
-import NeoSimulatorKit
+import Foundation
+import ObservationBridge
 import SwiftUI
 
 @MainActor
 struct ManagerSettingSlider: NSViewRepresentable {
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let tickMarks: Int
-    let label: String
+    let model: DeviceSettingSliderModel
 
-    func makeCoordinator() -> Coordinator { Coordinator(value: $value) }
-
-    func makeNSView(context: Context) -> NSSlider {
-        let slider = NSSlider()
-        slider.isContinuous = false
-        slider.controlSize = .regular
-        slider.target = context.coordinator
-        slider.action = #selector(Coordinator.change(_:))
-        return slider
+    func makeNSView(context: Context) -> Control { Control(model: model) }
+    func updateNSView(_ slider: Control, context: Context) {
+        slider.setModel(model)
+        slider.controlsEnabled = context.environment.isEnabled
     }
+    static func dismantleNSView(_ slider: Control, coordinator: ()) { slider.stopObserving() }
 
-    func updateNSView(_ slider: NSSlider, context: Context) {
-        context.coordinator.value = $value
-        slider.minValue = range.lowerBound
-        slider.maxValue = range.upperBound
-        slider.doubleValue = value
-        slider.numberOfTickMarks = tickMarks
-        slider.allowsTickMarkValuesOnly = tickMarks > 0
-        slider.isEnabled = context.environment.isEnabled
-        slider.setAccessibilityLabel(label)
-    }
+    @MainActor final class Control: NSSlider {
+        private(set) var model: DeviceSettingSliderModel
+        private var observation: PortableObservationTracking.Token?
+        var controlsEnabled = true { didSet { if controlsEnabled != oldValue { refresh() } } }
 
-    @MainActor final class Coordinator: NSObject {
-        var value: Binding<Double>
-
-        init(value: Binding<Double>) {
-            self.value = value
+        init(model: DeviceSettingSliderModel) {
+            self.model = model
+            super.init(frame: .zero)
+            isContinuous = false
+            controlSize = .regular
+            target = self
+            action = #selector(change)
+            observeModel()
         }
 
-        @objc func change(_ sender: NSSlider) {
-            value.wrappedValue = sender.doubleValue
+        required init?(coder: NSCoder) { nil }
+
+        func setModel(_ model: DeviceSettingSliderModel) {
+            guard self.model !== model else { return }
+            stopObserving()
+            self.model = model
+            observeModel()
         }
+
+        private func observeModel() {
+            minValue = model.range.lowerBound
+            maxValue = model.range.upperBound
+            numberOfTickMarks = model.tickMarks
+            allowsTickMarkValuesOnly = model.tickMarks > 0
+            setAccessibilityLabel(String(localized: model.label))
+            refresh()
+            observation = withPortableContinuousObservation { [weak self] _ in self?.refresh() }
+        }
+
+        func stopObserving() {
+            observation?.cancel()
+            observation = nil
+            isEnabled = false
+        }
+
+        private func refresh() {
+            doubleValue = model.value
+            isEnabled = controlsEnabled && model.isEnabled
+            toolTip = model.help
+        }
+
+        @objc private func change() {
+            guard isEnabled && model.isEnabled else {
+                doubleValue = model.value
+                return
+            }
+            model.value = doubleValue
+        }
+
+        isolated deinit { observation?.cancel() }
     }
 }

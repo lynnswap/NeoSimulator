@@ -3531,6 +3531,9 @@ struct ManagerModelTests {
         let zoom = $form.displayZoom
         let output = $form.audioOutput
         let input = $form.audioInput
+        let control = ManagerSettingSlider.Control(model: form.liquidGlassOpacitySlider)
+        defer { control.stopObserving() }
+        #expect(control.doubleValue == 0.5)
         #expect(zoom.wrappedValue == 3 && output.wrappedValue == "speakers" && input.wrappedValue == "microphone")
 
         manager.inspect(deselect ? nil : second, selectionCount: deselect ? 0 : 1)
@@ -3556,6 +3559,8 @@ struct ManagerModelTests {
             slider.wrappedValue = 0
             let selected = try #require(panel.form)
             #expect(selected.boldText && selected.appearance == .dark && selected.liquidGlassOpacity == 1)
+            control.setModel(selected.liquidGlassOpacitySlider)
+            #expect(control.doubleValue == 1 && control.model === selected.liquidGlassOpacitySlider)
         }
         try await manager.prepareForQuit()
         #expect(await source.writtenChanges.isEmpty)
@@ -3579,10 +3584,25 @@ struct ManagerModelTests {
         let slider = $form.textSize
         let medium = Double(try #require(DeviceContentSize.allCases.firstIndex(of: .medium)))
         let large = Double(try #require(DeviceContentSize.allCases.firstIndex(of: .large)))
+        let control = ManagerSettingSlider.Control(model: form.textSizeSlider)
+        defer { control.stopObserving() }
+        #expect(control.isEnabled && control.doubleValue == medium)
+        let disabledView = NSHostingView(rootView: ManagerSettingSlider(model: form.textSizeSlider).disabled(true))
+        disabledView.frame = NSRect(x: 0, y: 0, width: 200, height: 30)
+        try await wait {
+            disabledView.layoutSubtreeIfNeeded()
+            return inspectorViews(disabledView).contains { $0 is ManagerSettingSlider.Control }
+        }
+        let disabledControl = try #require(inspectorViews(disabledView).compactMap { $0 as? ManagerSettingSlider.Control }.first)
+        #expect(!disabledControl.isEnabled)
+        disabledControl.doubleValue = large
+        disabledControl.sendAction(disabledControl.action, to: disabledControl.target)
+        #expect(form.textSize == medium && disabledControl.doubleValue == medium)
 
         toggle.wrappedValue = true
         picker.wrappedValue = .dark
-        slider.wrappedValue = large
+        control.doubleValue = large
+        control.sendAction(control.action, to: control.target)
         #expect(toggle.wrappedValue == true && picker.wrappedValue == .dark && slider.wrappedValue == large)
         // Each edit changes its own group, so each is read back at its own outcome, however far the next has got.
         var writes = 0
@@ -3598,11 +3618,13 @@ struct ManagerModelTests {
             }
         }
         for _ in 0..<reads {
-            await source.completeRead(SimulatorDeviceSettings(appearance: .dark, contentSize: .large, boldText: true))
+            await source.completeRead(SimulatorDeviceSettings(appearance: .dark, contentSize: .extraLarge, boldText: true))
         }
         try await awaitServiceOperations(manager)
         await manager.registry.finishReading()
-        #expect(form.boldText && form.appearance == .dark && form.textSize == large)
+        let confirmedSize = Double(try #require(DeviceContentSize.allCases.firstIndex(of: .extraLarge)))
+        #expect(form.boldText && form.appearance == .dark && form.textSize == confirmedSize)
+        try await wait { control.doubleValue == confirmedSize }
 
         await source.setDevices([simulator(state: "Shutdown")])
         await manager.refresh()
@@ -3620,6 +3642,10 @@ struct ManagerModelTests {
         #expect(toggle.wrappedValue == false && picker.wrappedValue == nil && slider.wrappedValue == 0)
         #expect(form.displayZoom == nil && form.audioOutput == nil && form.audioInput == nil)
         #expect(form.colorFilter == nil && form.locationSelection == nil)
+        try await wait { !control.isEnabled }
+        control.doubleValue = large
+        control.sendAction(control.action, to: control.target)
+        #expect(control.doubleValue == 0 && form.textSize == 0)
         toggle.wrappedValue = true
         picker.wrappedValue = .dark
         slider.wrappedValue = large
