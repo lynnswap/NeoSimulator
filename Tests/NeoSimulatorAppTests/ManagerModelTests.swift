@@ -1751,7 +1751,11 @@ struct ManagerModelTests {
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
         let searchAccessory = try #require(inspector.bottomAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
-        #expect(searchAccessory.isHidden)
+        let profileAccessory = try #require(
+            inspector.topAlignedAccessoryViewControllers.compactMap {
+                $0 as? BackgroundServicesProfileAccessoryViewController
+            }.first)
+        #expect(searchAccessory.isHidden && profileAccessory.isHidden)
         #expect((0..<tabs.segmentCount).map { tabs.toolTip(forSegment: $0) } == ["Settings", "Reports", "Info", "Background Services"])
         window.setContentSize(NSSize(width: 1200, height: 800))
         split.view.layoutSubtreeIfNeeded()
@@ -1825,10 +1829,12 @@ struct ManagerModelTests {
         try click(3, collapsed: false)
         window.layoutIfNeeded()
         let services = try #require(inspector.viewController.children.compactMap { $0 as? BackgroundServicesViewController }.first)
-        #expect(!searchAccessory.isHidden)
+        #expect(!searchAccessory.isHidden && !profileAccessory.isHidden)
         #expect(inspectorViews(services.view).contains { $0 is NSOutlineView })
         try click(0, collapsed: false)
-        #expect(services.parent == nil && services.view.window == nil && searchAccessory.isHidden)
+        #expect(
+            services.parent == nil && services.view.window == nil && searchAccessory.isHidden
+                && profileAccessory.isHidden)
         controller.stopInspectorReads()
     }
 
@@ -4549,7 +4555,8 @@ struct ManagerModelTests {
         #expect(NSApp.sendAction(try #require(defaultMenu.action), to: defaultMenu.target, from: defaultMenu))
         #expect(inspector.defaultProfileChoice.title == "Use Default: Third")
         #expect(controller.model.selectedProfile === second)
-        #expect(inspector.savedProfileChoices.map(\.id) == [.profile(third.id), .profile(first.id), .profile(second.id)])
+        #expect(
+            inspector.profileChoices.map(\.id) == [.profile(third.id), .profile(first.id), .profile(second.id)])
 
         let downwardWriter = try #require(controller.tableView(table, pasteboardWriterForRow: 2))
         let downward = TestDraggingInfo(item: downwardWriter, source: table)
@@ -4777,7 +4784,7 @@ struct ManagerModelTests {
         let pane = NSSplitViewItem(inspectorWithViewController: controller)
         pane.minimumThickness = 280
         pane.maximumThickness = 440
-        pane.addBottomAlignedAccessoryViewController(controller.searchAccessory)
+        controller.addAccessories(to: pane)
         let split = NSSplitViewController()
         split.splitView.isVertical = true
         split.addSplitViewItem(pane)
@@ -4792,7 +4799,9 @@ struct ManagerModelTests {
         let outlineView = try #require(inspectorViews(controller.view).compactMap { $0 as? NSOutlineView }.first)
         let outline = try #require(outlineView.delegate as? BackgroundServiceOutlineController)
         let scroll = try #require(outlineView.enclosingScrollView)
-        #expect(pane.topAlignedAccessoryViewControllers.isEmpty)
+        #expect(pane.topAlignedAccessoryViewControllers.first === controller.profileAccessory)
+        // Only the list scrolls; the profile controls stay above it.
+        #expect(!inspectorViews(controller.profileAccessory.view).contains { $0 is NSScrollView })
         window.makeKeyAndOrderFront(nil)
         try await wait(timeout: .seconds(5)) {
             view.layoutSubtreeIfNeeded()
@@ -4877,22 +4886,33 @@ struct ManagerModelTests {
         let saved = try #require(store.profiles.first)
         #expect(saved.configuration.disabledLabels == [item.label])
         #expect(!model.hasProfileChanges)
-        #expect(model.savedProfileChoices.map(\.id) == [.profile(saved.id)])
+        #expect(model.profileChoices.map(\.id) == [.profile(saved.id)])
         #expect(settings.settings.serviceProfiles.model.store.profile(saved.id) === saved)
-        #expect(model.selectedProfileTitle == "Development")
+        let profiles = controller.profileAccessory.profileButton
+        try await wait(timeout: .seconds(5)) {
+            profiles.titleOfSelectedItem == "Development"
+        }
 
         model.setServices([.service(item.label)], enabled: true)
         #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: [])
         try await awaitServiceOperations(manager)
-        #expect(model.selectedProfileTitle == "Development (Modified)")
+        try await wait(timeout: .seconds(5)) {
+            profiles.titleOfSelectedItem == "Development (Modified)"
+        }
         model.saveProfile()
         #expect(store.profiles.count == 1 && store.profiles.first?.id == saved.id)
         #expect(store.profiles.first?.configuration.disabledLabels.isEmpty == true)
         #expect(!model.hasProfileChanges)
         let binding = store.binding(for: device.id)
         model.profileEditor = nil
-        model.openProfileSettings()
+        try await wait(timeout: .seconds(5)) {
+            profiles.titleOfSelectedItem == "Development"
+        }
+        let openSettings = try #require(profiles.itemArray.last)
+        profiles.select(openSettings)
+        #expect(NSApp.sendAction(try #require(openSettings.action), to: openSettings.target, from: openSettings))
+        #expect(profiles.titleOfSelectedItem == "Development")
         #expect(settings.settings.selectedTabViewItemIndex == 3)
         #expect(settings.settings.serviceProfiles.model.selectedProfile === saved)
         #expect(store.binding(for: device.id) == binding)

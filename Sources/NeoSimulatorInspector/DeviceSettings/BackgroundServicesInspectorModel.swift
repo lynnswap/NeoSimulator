@@ -42,8 +42,8 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         if let issue { return .simulator(.failure(issue)) }
         return .simulator(.loading)
     }
-    /// The filter belongs to a simulator's services, while their page shows.
-    var showsFilter: Bool {
+    /// The profile controls and the filter belong to a simulator's services, while their page shows.
+    var showsAccessories: Bool {
         guard selection.showsServices, case .simulator = content else { return false }
         return true
     }
@@ -54,10 +54,6 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         if case .stale(let reason) = services?.status { reason } else { nil }
     }
     var pendingRestartLabels: Set<String> { services?.pendingRestartLabels ?? [] }
-    var showsActionIssue: Bool {
-        get { actionIssue != nil }
-        set { if !newValue { actionIssue = nil } }
-    }
     var selectedProfile: ServiceProfile {
         selection.device.flatMap { profiles.resolvedProfile(for: $0.id) } ?? .allServices
     }
@@ -68,18 +64,19 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     var defaultProfileChoice: ProfileChoice {
         profileChoice(.inheritDefault, title: String(localized: "Use Default: \(profiles.defaultProfile.name)"))
     }
-    var savedProfileChoices: [ProfileChoice] {
-        profiles.profiles.map { profileChoice(.profile($0.id), title: $0.name) }
-    }
-    var selectedProfileTitle: String {
-        switch selectedProfileSelection {
-        case .inheritDefault: defaultProfileChoice.title
-        case .profile: profileChoice(selectedProfileSelection, title: selectedProfile.name).title
-        }
+    /// The choices after the default: All Services while the simulator names it, then the saved profiles.
+    var profileChoices: [ProfileChoice] {
+        let allServices = ServiceProfileSelection.profile(ServiceProfile.allServicesID)
+        let named =
+            selectedProfileSelection == allServices
+            ? [profileChoice(allServices, title: ServiceProfile.allServices.name)] : []
+        return named + profiles.profiles.map { profileChoice(.profile($0.id), title: $0.name) }
     }
     private func profileChoice(_ selection: ServiceProfileSelection, title: String) -> ProfileChoice {
-        ProfileChoice(id: selection, title: selection == selectedProfileSelection && hasProfileChanges
-            ? String(localized: "\(title) (Modified)") : title)
+        ProfileChoice(
+            id: selection,
+            title: selection == selectedProfileSelection && hasProfileChanges
+                ? String(localized: "\(title) (Modified)") : title)
     }
 
     var selectedProfileSelection: ServiceProfileSelection {
@@ -91,9 +88,12 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     }
     var hasProfileChanges: Bool {
         if let device = selection.device, profiles.binding(for: device.id)?.overrides.isEmpty == false { return true }
-        let current = services?.configuration ?? selection.device.flatMap { profiles.configuration(for: $0.id) } ?? ServiceConfiguration()
+        let current =
+            services?.configuration ?? selection.device.flatMap { profiles.configuration(for: $0.id) }
+            ?? ServiceConfiguration()
         let required = serviceState?.platformRequiredLabels ?? []
-        return current.disabledLabels.subtracting(required) != selectedProfile.configuration.disabledLabels.subtracting(required)
+        return current.disabledLabels.subtracting(required)
+            != selectedProfile.configuration.disabledLabels.subtracting(required)
     }
     var canSaveProfile: Bool {
         !holdsChanges && selection.device?.canInspectBackgroundServices == true && serviceState != nil
@@ -101,7 +101,8 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     }
     var canRevertProfile: Bool {
         guard !holdsChanges, hasProfileChanges, let device = selection.device else { return false }
-        return profiles.binding(for: device.id)?.overrides.isEmpty == false || profiles.resolvedProfile(for: device.id) != nil
+        return profiles.binding(for: device.id)?.overrides.isEmpty == false
+            || profiles.resolvedProfile(for: device.id) != nil
     }
 
     func openProfileSettings() { showProfileSettings(selectedProfile.id) }
@@ -116,8 +117,9 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
             }
             profileEditor = editor
         } else {
-            do { try profiles.update(profile.id, configuration: configuration, assigningTo: device.id) }
-            catch { actionIssue = error.localizedDescription }
+            do { try profiles.update(profile.id, configuration: configuration, assigningTo: device.id) } catch {
+                actionIssue = error.localizedDescription
+            }
         }
     }
     func revertProfile() {

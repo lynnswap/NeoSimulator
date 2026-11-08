@@ -4,125 +4,140 @@ import AppKit
 import ObservationBridge
 import SwiftUI
 
+/// Lists the selected simulator's background services, with the profile controls above and the filter below.
 @MainActor
 final class BackgroundServicesViewController: NSViewController {
     let model: BackgroundServicesInspectorModel
+    let profileAccessory: BackgroundServicesProfileAccessoryViewController
     private lazy var outline = BackgroundServiceOutlineController(categories: model.categories, showsDetails: false)
-    private lazy var content = NSHostingController(rootView: BackgroundServicesView(model: model, outline: outline))
     var searchAccessory: BackgroundServiceSearchAccessoryViewController { outline.searchAccessory }
-    private var filterObservation: PortableObservationTracking.Token?
+    private lazy var unavailable = NSHostingView(rootView: BackgroundServicesUnavailable(model: model))
+    private var accessoriesObservation: PortableObservationTracking.Token?
     private var observation: PortableObservationTracking.Token?
     private var editor: ServiceProfileEditorController?
+    private var issueAlert: NSAlert?
 
     init(model: BackgroundServicesInspectorModel) {
         self.model = model
+        profileAccessory = BackgroundServicesProfileAccessoryViewController(model: model)
         super.init(nibName: nil, bundle: nil)
-        // The split view item shows the filter whether or not this page has loaded.
-        filterObservation = withPortableContinuousObservation { [weak self] _ in self?.updateFilter() }
+        // The split view item shows the accessories whether or not this page has loaded.
+        accessoriesObservation = withPortableContinuousObservation { [weak self] _ in
+            self?.updateAccessories()
+        }
     }
+
     required init?(coder: NSCoder) { nil }
 
+    /// Adds this page's accessories to the split view item that shows the page.
+    func addAccessories(to item: NSSplitViewItem) {
+        item.addTopAlignedAccessoryViewController(profileAccessory)
+        item.addBottomAlignedAccessoryViewController(searchAccessory)
+    }
+
     override func loadView() {
-        content.sizingOptions = []
-        addChild(content)
-        view = content.view
+        view = NSView()
+        unavailable.sizingOptions = []
+        addChild(outline)
+        // The list fills the page so that it scrolls behind the accessories, which inset it.
+        for child in [outline.view, unavailable] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(child)
+            NSLayoutConstraint.activate([
+                child.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                child.topAnchor.constraint(equalTo: view.topAnchor),
+                child.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        }
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        observation = withPortableContinuousObservation { [weak self] _ in self?.update() }
+        observation = withPortableContinuousObservation { [weak self] _ in
+            self?.update()
+        }
     }
 
-    // Observed changes arrive after the turn that swaps pages, and the filter shows and hides with the page.
+    // Observed changes arrive after the turn that swaps pages, and the accessories show and hide with the page.
     override func viewWillAppear() {
         super.viewWillAppear()
-        updateFilter()
+        updateAccessories()
     }
 
     override func viewDidDisappear() {
         super.viewDidDisappear()
-        updateFilter()
+        updateAccessories()
     }
 
-    private func updateFilter() {
-        searchAccessory.isHidden = !model.showsFilter
+    private func updateAccessories() {
+        profileAccessory.isHidden = !model.showsAccessories
+        searchAccessory.isHidden = !model.showsAccessories
         searchAccessory.searchField.isEnabled = model.canFilter
     }
 
     private func update() {
         outline.view.isHidden = !model.canFilter
+        unavailable.isHidden = model.canFilter
         outline.isEnabled = !model.holdsChanges
         showEditor(model.profileEditor)
+        showIssue(model.actionIssue)
     }
 
     private func showEditor(_ model: ServiceProfileEditorModel?) {
         guard editor?.model !== model else { return }
-        if let editor { dismiss(editor); self.editor = nil }
+        if let editor {
+            dismiss(editor)
+            self.editor = nil
+        }
         guard let model else { return }
         let editor = ServiceProfileEditorController(model: model)
-        editor.onClose = { [weak self] in self?.model.profileEditor = nil }
+        editor.onClose = { [weak self] in
+            self?.model.profileEditor = nil
+        }
         self.editor = editor
         presentAsSheet(editor)
     }
-}
 
-private struct BackgroundServicesView: View {
-    let model: BackgroundServicesInspectorModel
-    let outline: BackgroundServiceOutlineController
-    @State private var profileHeight: CGFloat = 0
-
-    var body: some View {
-        ZStack {
-            BackgroundServicesOutline(controller: outline, profileHeight: showsProfile ? profileHeight : 0)
-                .ignoresSafeArea(.container)
-            BackgroundServicesUnavailable(content: model.content, retry: model.requestRefresh)
+    private func showIssue(_ issue: String?) {
+        guard let issue, issueAlert == nil, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Unable to Save Service Profile"
+        alert.informativeText = issue
+        issueAlert = alert
+        alert.beginSheetModal(for: window) { [weak self] _ in
+            self?.issueAlert = nil
+            self?.model.actionIssue = nil
         }
-        .safeAreaBar(edge: .top, spacing: 0) {
-            if showsProfile {
-                BackgroundServicesProfileForm(model: model)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { profileHeight = $0 }
-            }
-        }
-    }
-
-    private var showsProfile: Bool {
-        if case .simulator = model.content { true } else { false }
-    }
-}
-
-private struct BackgroundServicesOutline: NSViewControllerRepresentable {
-    let controller: BackgroundServiceOutlineController
-    let profileHeight: CGFloat
-
-    func makeNSViewController(context: Context) -> BackgroundServiceOutlineController { controller }
-    func updateNSViewController(_ controller: BackgroundServiceOutlineController, context: Context) {
-        // The AppKit scroll view needs the bar inset that SwiftUI applies to its own scroll views.
-        controller.view.additionalSafeAreaInsets.top = profileHeight
     }
 }
 
 private struct BackgroundServicesUnavailable: View {
-    let content: BackgroundServicesInspectorModel.Content
-    var retry: () -> Void = {}
+    let model: BackgroundServicesInspectorModel
 
     var body: some View {
-        switch content {
+        switch model.content {
         case .noSelection:
-            ContentUnavailableView("Select a Device", systemImage: "cpu",
+            ContentUnavailableView(
+                "Select a Device", systemImage: "cpu",
                 description: Text("Select one simulator to change its background services."))
         case .multipleSelection:
-            ContentUnavailableView("Multiple Devices Selected", systemImage: "cpu",
+            ContentUnavailableView(
+                "Multiple Devices Selected", systemImage: "cpu",
                 description: Text("Select one simulator to change its background services."))
         case .unsupportedDevice:
-            ContentUnavailableView("Background Services Unavailable", systemImage: "cpu",
+            ContentUnavailableView(
+                "Background Services Unavailable", systemImage: "cpu",
                 description: Text("Background services can be changed only on simulators."))
         case .simulator(.loading):
             ProgressView("Loading background services…")
         case .simulator(.unavailableRuntime):
-            ContentUnavailableView("Runtime Unavailable", systemImage: "cpu",
+            ContentUnavailableView(
+                "Runtime Unavailable", systemImage: "cpu",
                 description: Text("Install a compatible runtime to use this simulator."))
         case .simulator(.stopped):
-            ContentUnavailableView("Simulator Stopped", systemImage: "cpu",
+            ContentUnavailableView(
+                "Simulator Stopped", systemImage: "cpu",
                 description: Text("Start this simulator to change individual services."))
         case .simulator(.failure(let issue)):
             ContentUnavailableView {
@@ -130,7 +145,7 @@ private struct BackgroundServicesUnavailable: View {
             } description: {
                 Text(issue)
             } actions: {
-                Button("Try Again", action: retry)
+                Button("Try Again", action: model.requestRefresh)
             }
         case .simulator(.services):
             EmptyView()
@@ -139,15 +154,23 @@ private struct BackgroundServicesUnavailable: View {
 }
 
 #if DEBUG
-#Preview("Profile + Overrides", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.overrides).frame(width: 320, height: 820) }
-#Preview("Use Default", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.defaultProfile).frame(width: 320, height: 820) }
-#Preview("Use Default (Modified)", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.defaultModified).frame(width: 320, height: 820) }
-#Preview("Stopped Simulator", traits: .sizeThatFitsLayout) { BackgroundServicesPreview(.stopped).frame(width: 320, height: 820) }
-#Preview("Save Profile", traits: .sizeThatFitsLayout) {
-    PreviewViewController {
-        let model = ServiceProfileEditorModel(name: "", configuration: ServiceConfiguration())
-        model.save = { _ in }
-        return ServiceProfileEditorController(model: model)
-    }.frame(width: 360, height: 160)
-}
+    #Preview("Profile + Overrides", traits: .sizeThatFitsLayout) {
+        BackgroundServicesPreview(.overrides).frame(width: 320, height: 820)
+    }
+    #Preview("Use Default", traits: .sizeThatFitsLayout) {
+        BackgroundServicesPreview(.defaultProfile).frame(width: 320, height: 820)
+    }
+    #Preview("Use Default (Modified)", traits: .sizeThatFitsLayout) {
+        BackgroundServicesPreview(.defaultModified).frame(width: 320, height: 820)
+    }
+    #Preview("Stopped Simulator", traits: .sizeThatFitsLayout) {
+        BackgroundServicesPreview(.stopped).frame(width: 320, height: 820)
+    }
+    #Preview("Save Profile", traits: .sizeThatFitsLayout) {
+        PreviewViewController {
+            let model = ServiceProfileEditorModel(name: "", configuration: ServiceConfiguration())
+            model.save = { _ in }
+            return ServiceProfileEditorController(model: model)
+        }.frame(width: 360, height: 160)
+    }
 #endif

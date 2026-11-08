@@ -21,8 +21,10 @@ package final class InspectorViewController: NSViewController {
     private var stateObservation: PortableObservationTracking.Token?
 
     /// Device commands come from the window, which presents what they ask for.
-    package init(model: InspectorModel, manager: SimulatorManagerModel,
-                 pairingMenu: @escaping (SimulatorHostDevice) -> NSMenu, deviceMenu: @escaping (SimulatorHostDevice) -> NSMenu) {
+    package init(
+        model: InspectorModel, manager: SimulatorManagerModel,
+        pairingMenu: @escaping (SimulatorHostDevice) -> NSMenu, deviceMenu: @escaping (SimulatorHostDevice) -> NSMenu
+    ) {
         self.model = model
         deviceInspector = ManagerDeviceInspectorController(model: manager, inspection: model.deviceInspection)
         deviceInspector.onPairingMenu = pairingMenu
@@ -45,7 +47,7 @@ package final class InspectorViewController: NSViewController {
         item.canCollapse = true
         item.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
         item.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
-        item.addBottomAlignedAccessoryViewController(services.searchAccessory)
+        services.addAccessories(to: item)
         splitViewItem = item
         collapseObservation = item.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated {
@@ -67,7 +69,8 @@ package final class InspectorViewController: NSViewController {
     package func makeToolbarItem() -> NSToolbarItem {
         let pages = InspectorModel.Page.allCases
         let images = pages.map { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: $0.title)! }
-        let tabs = NSSegmentedControl(images: images, trackingMode: .selectOne, target: self, action: #selector(changePage(_:)))
+        let tabs = NSSegmentedControl(
+            images: images, trackingMode: .selectOne, target: self, action: #selector(changePage(_:)))
         tabs.setAccessibilityLabel("Device Inspector")
         for page in pages { tabs.setToolTip(page.title, forSegment: page.rawValue) }
         let item = NSToolbarItem(itemIdentifier: Self.toolbarIdentifier)
@@ -110,7 +113,8 @@ package final class InspectorViewController: NSViewController {
         guard let splitViewItem else { return }
         if splitViewItem.isCollapsed == model.isShown { splitViewItem.animator().isCollapsed = !model.isShown }
         show(model.page)
-        deviceInspector.update(device: model.device, isManaging: model.isManaging, isVisible: model.showsDeviceInspector)
+        deviceInspector.update(
+            device: model.device, isManaging: model.isManaging, isVisible: model.showsDeviceInspector)
         let selected = model.isShown ? model.page.rawValue : -1
         (toolbarItem?.view as? NSSegmentedControl)?.selectedSegment = selected
         for action in toolbarItem?.menuFormRepresentation?.submenu?.items ?? [] {
