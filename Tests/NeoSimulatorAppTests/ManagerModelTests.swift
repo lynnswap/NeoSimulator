@@ -15,6 +15,7 @@ import IOSurface
 @testable import NeoSimulatorCompactWindow
 @testable import NeoSimulatorDeviceScreens
 @testable import NeoSimulatorInspector
+@testable import NeoSimulatorDeviceDisplay
 @testable import NeoSimulatorSidebar
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor

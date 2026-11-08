@@ -11,6 +11,7 @@ import NeoSimulatorCompactWindow
 import NeoSimulatorDeviceScreens
 import NeoSimulatorInspector
 import NeoSimulatorSidebar
+import NeoSimulatorDeviceDisplay
 
 @MainActor
 final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation, NSMenuItemValidation,
@@ -23,7 +24,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
     private let artworkCache: DeviceArtworkCache
     let sidebar: DeviceSidebarViewController
     private(set) lazy var deviceScreenViewController: DeviceScreenViewController = {
-        let pane = DeviceScreenViewController(model: model, screens: screens)
+        let pane = DeviceScreenViewController(model: model, screens: screens, artworkCache: artworkCache)
         pane.onViewScreen = { [weak self] in
             guard let self else { return }
             sidebar.model.open(selectedDevices)
@@ -41,14 +42,13 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
     /// The user's latest placement choice for the selected device's screen. Each choice advances the revision, so
     /// moves accepted for an earlier choice stop.
     private(set) var presentationIntent: (revision: Int, placement: SimulatorScreenRestoration.Presentation) = (0, .main)
-    private var managementObservation: PortableObservationTracking.Token?
     private var liveScreenToolbarObservation: PortableObservationTracking.Token?
     /// The one selected device that the panes last showed.
     private var selectionIdentifier: DeviceInventoryID?
     private let compactIdentifier = NSToolbarItem.Identifier("CompactDeviceWindow")
-    private let resizeAppIdentifier = NSToolbarItem.Identifier("resizeApp")
-    private let captureKeyboardIdentifier = NSToolbarItem.Identifier("captureKeyboard")
-    private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
+    private let resizeAppIdentifier = DeviceScreenViewController.resizeAppIdentifier
+    private let captureKeyboardIdentifier = DeviceScreenViewController.captureKeyboardIdentifier
+    private let canvasZoomIdentifier = DeviceScreenViewController.canvasZoomIdentifier
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
     private(set) lazy var inspectorController: InspectorViewController = {
@@ -99,7 +99,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         sidebar.populateDeviceMenu = { [weak self] in self?.populateDeviceMenu($0, devices: $1) }
         let sidebarItem = sidebar.makeSplitViewItem()
         splitController.addSplitViewItem(sidebarItem)
-        buildDevicePane()
+        splitController.addSplitViewItem(deviceScreenViewController.makeSplitViewItem())
         splitController.addSplitViewItem(inspectorController.makeSplitViewItem())
         splitController.splitView.autosaveName = splitViewAutosaveName
         splitController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
@@ -125,7 +125,6 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         window.center()
         window.setFrameAutosaveName("NeoSimulatorDevices")
         sidebar.update()
-        observeManagement()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -142,29 +141,6 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         if byUser || selectionIdentifier != previous { selectedDeviceChanged(selectionIdentifier) }
     }
 
-    /// What can be done with the selection changes with what the manager is doing.
-    private func observeManagement() {
-        managementObservation = withPortableContinuousObservation { [weak self, model] event in
-            _ = model.managingDeviceIDs
-            _ = model.isBusy
-            _ = model.holdsAllEdits
-            _ = model.queuedDeviceIDs
-            _ = model.openingDeviceIDs
-            guard event.kind != .initial else { return }
-            Task { @MainActor [weak self] in self?.updateSelection() }
-        }
-    }
-
-    private func buildDevicePane() {
-        let pane = deviceScreenViewController
-        let content = NSSplitViewItem(viewController: pane)
-        content.minimumThickness = 280
-        content.holdingPriority = .defaultLow
-        pane.canvasAccessory.onMinimumWidthChange = { [weak self] in self?.updateCanvasMinimumWidth($0) }
-        content.addBottomAlignedAccessoryViewController(pane.canvasAccessory)
-        splitController.addSplitViewItem(content)
-    }
-
     func stopInspectorReads() { inspectorController.stopReading() }
     func finishInspectorPreviews() async throws { try await inspectorController.finishPreviews() }
     func resumeInspectorAfterCancelledQuit() { inspectorController.resumeAfterCancelledQuit() }
@@ -176,19 +152,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         window?.subtitle = selectedDevice?.operatingSystem ?? ""
         moreItem?.isHidden = selectedDevice == nil
         selectionIdentifier = selectedDevice?.id
-        if let device = selectedDevice {
-            let details: String
-            if case .simulator(let simulator) = device { details = "\(simulator.runtimeName) Simulator" }
-            else {
-                details = [device.operatingSystem, device.modelName, device.kindTitle]
-                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-            }
-            deviceScreenViewController.updatePreview(for: device, details: details,
-                                                     artwork: artworkCache.artwork(for: device, screens: screens, manager: model),
-                                                     canViewScreen: model.canViewScreen(device))
-        } else {
-            deviceScreenViewController.updatePreview(selectionCount: selections.count)
-        }
+        deviceScreenViewController.showPreview(of: selectedDevice, selectionCount: selections.count)
         model.inspect(selectedDevice, selectionCount: selections.count)
     }
 
@@ -283,6 +247,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         }
     }
 
+    /// The window's items that follow the live screen: its compact window and the selected device's actions.
     private func updateLiveScreenToolbarItems() {
         let hasScreen = deviceScreenViewController.liveDeviceIdentifier != nil
         for item in window?.toolbar?.items ?? [] {
@@ -293,17 +258,9 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
             case compactIdentifier:
                 item.isHidden = !hasScreen
                 item.isEnabled = validateToolbarItem(item)
-            case resizeAppIdentifier, captureKeyboardIdentifier, canvasZoomIdentifier:
-                if !hasScreen { item.isHidden = true; item.isEnabled = false }
             default: break
             }
         }
-    }
-
-    private func updateCanvasMinimumWidth(_ width: CGFloat) {
-        let item = splitController.splitViewItems[1]
-        let minimum = max(280, width)
-        if item.minimumThickness != minimum { item.minimumThickness = minimum }
     }
 
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
@@ -324,7 +281,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         return super.supplementalTarget(forAction: action, sender: sender)
     }
 
-    /// Follows the live screen's state for its toolbar items and the device commands' shared shortcuts.
+    /// Follows the live screen for the window's toolbar items and the device commands' shared shortcuts.
     private func observeLiveScreenToolbar() {
         liveScreenToolbarObservation?.cancel()
         liveScreenToolbarObservation = withPortableContinuousObservation { [weak self] _ in
@@ -336,84 +293,6 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         updateLiveScreenToolbarItems()
         guard let screen = deviceScreenViewController.liveScreen else { return }
         menus.updateKeyEquivalents(for: screen.simulatorCapabilities)
-        let blocked = window?.attachedSheet != nil
-        if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == resizeAppIdentifier }) {
-            let resizingApp = screen.resizingApp
-            let title = resizingApp ? "Stop Resize" : "Resize App"
-            if item.label != title { item.label = title }
-            if item.toolTip != title { item.toolTip = title }
-            item.menuFormRepresentation?.title = title
-            if let button = item.view as? NSButton {
-                button.toolTip = title
-                button.setAccessibilityLabel(title)
-            }
-            let hidden = !screen.supports("resizeApp")
-            let enabled = screen.isEnabled("resizeApp") && !blocked
-            if item.isHidden != hidden { item.isHidden = hidden }
-            if item.isEnabled != enabled { item.isEnabled = enabled }
-            item.menuFormRepresentation?.isEnabled = item.isEnabled
-            item.menuFormRepresentation?.state = resizingApp ? .on : .off
-            if let button = item.view as? NSButton {
-                let state: NSControl.StateValue = resizingApp ? .on : .off
-                if button.state != state { button.state = state }
-                if button.isEnabled != item.isEnabled { button.isEnabled = item.isEnabled }
-            }
-        }
-        if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == captureKeyboardIdentifier }) {
-            let capturesKeyboard = screen.capturesKeyboard
-            let hidden = !screen.supports("captureKeyboard")
-            let enabled = screen.isEnabled("captureKeyboard") && !blocked
-            if item.isHidden != hidden { item.isHidden = hidden }
-            if item.isEnabled != enabled { item.isEnabled = enabled }
-            item.menuFormRepresentation?.state = capturesKeyboard ? .on : .off
-            item.menuFormRepresentation?.isEnabled = item.isEnabled
-            if let button = item.view as? NSButton {
-                let state: NSControl.StateValue = capturesKeyboard ? .on : .off
-                if button.state != state { button.state = state }
-                if button.isEnabled != item.isEnabled { button.isEnabled = item.isEnabled }
-                button.toolTip = capturesKeyboard ? "Release Keyboard — or hold Escape for one second." : "Capture Keyboard"
-            }
-        }
-        if let group = window?.toolbar?.items.first(where: { $0.itemIdentifier == canvasZoomIdentifier }) as? NSToolbarItemGroup {
-            let hidden = !screen.supports(CanvasZoom.Action.fit.rawValue)
-            if group.isHidden != hidden { group.isHidden = hidden }
-            let enabledActions = CanvasZoom.Action.allCases.map { screen.isEnabled($0.rawValue) && !blocked }
-            let enabled = enabledActions.contains(true)
-            if group.isEnabled != enabled { group.isEnabled = enabled }
-            for (index, enabled) in enabledActions.enumerated() {
-                if group.subitems[index].isEnabled != enabled { group.subitems[index].isEnabled = enabled }
-            }
-            for action in group.menuFormRepresentation?.submenu?.items ?? [] {
-                action.state = screen.canvasZoomIsSelected(CanvasZoom.Action.allCases[action.tag].rawValue) ? .on : .off
-            }
-            if let selected = CanvasZoom.Action.allCases.firstIndex(where: { screen.canvasZoomIsSelected($0.rawValue) }) {
-                if !group.isSelected(at: selected) { group.setSelected(true, at: selected) }
-            } else if group.selectedIndex >= 0 {
-                // selectOne rejects clearing its last selection, including selectedIndex = -1.
-                group.selectionMode = .selectAny
-                for index in group.subitems.indices { group.setSelected(false, at: index) }
-                group.selectionMode = .selectOne
-            }
-        }
-    }
-
-    @objc private func resizeApp(_ sender: Any?) {
-        deviceScreenViewController.liveScreen?.perform("resizeApp")
-    }
-
-    @objc private func captureKeyboard(_ sender: Any?) { deviceScreenViewController.liveScreen?.perform("captureKeyboard") }
-
-    @objc private func performCanvasZoom(_ sender: NSToolbarItemGroup) {
-        performCanvasZoom(at: sender.selectedIndex)
-    }
-
-    @objc private func performCanvasZoomFromMenu(_ sender: NSMenuItem) {
-        performCanvasZoom(at: sender.tag)
-    }
-
-    private func performCanvasZoom(at index: Int) {
-        guard CanvasZoom.Action.allCases.indices.contains(index) else { return }
-        deviceScreenViewController.liveScreen?.perform(CanvasZoom.Action.allCases[index].rawValue)
     }
 
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
@@ -437,18 +316,9 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        let action: String
-        switch item.action {
-        case #selector(captureKeyboard(_:)): action = "captureKeyboard"
-        case #selector(resizeApp(_:)): action = "resizeApp"
-        case #selector(performCanvasZoomFromMenu(_:)):
-            guard CanvasZoom.Action.allCases.indices.contains(item.tag) else { return false }
-            action = CanvasZoom.Action.allCases[item.tag].rawValue
-        case #selector(showCompactDeviceWindow(_:)):
-            return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
-        default: return true
-        }
-        return deviceScreenViewController.liveScreen?.isEnabled(action) == true && window?.attachedSheet == nil
+        guard item.action == #selector(showCompactDeviceWindow(_:)) else { return true }
+        return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil
+            && window?.styleMask.contains(.fullScreen) == false
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
@@ -529,75 +399,8 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if itemIdentifier == resizeAppIdentifier {
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "Resize App"
-            item.toolTip = "Resize App"
-            item.image = NSImage(systemSymbolName: "aspectratio", accessibilityDescription: item.label)
-            item.target = self
-            item.action = #selector(resizeApp(_:))
-            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
-            menuItem.target = self
-            item.menuFormRepresentation = menuItem
-            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(resizeApp(_:)))
-            button.identifier = NSUserInterfaceItemIdentifier(itemIdentifier.rawValue)
-            button.bezelStyle = .toolbar
-            button.setButtonType(.pushOnPushOff)
-            button.toolTip = item.toolTip
-            button.setAccessibilityLabel(item.label)
-            item.view = button
-            item.autovalidates = false
-            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
-            return item
-        }
-        if itemIdentifier == captureKeyboardIdentifier {
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "Capture Keyboard"
-            item.toolTip = "Capture Keyboard"
-            item.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Capture Keyboard")
-            item.target = self
-            item.action = #selector(captureKeyboard(_:))
-            let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
-            menuItem.target = self
-            item.menuFormRepresentation = menuItem
-            let button = NSButton(image: item.image ?? NSImage(), target: self, action: #selector(captureKeyboard(_:)))
-            button.setButtonType(.pushOnPushOff)
-            button.bezelStyle = .toolbar
-            button.toolTip = item.toolTip
-            button.setAccessibilityLabel(item.label)
-            item.view = button
-            item.autovalidates = false
-            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
-            return item
-        }
-        if itemIdentifier == canvasZoomIdentifier {
-            let labels = ["Zoom Out", "Fit", "Physical Size", "Zoom In"]
-            let symbols = ["minus.magnifyingglass", "arrowtriangles.up.right.down.left.magnifyingglass", "1.magnifyingglass", "plus.magnifyingglass"]
-            let images = zip(symbols, labels).compactMap { NSImage.deviceControlSymbol(named: $0, accessibilityDescription: $1) }
-            let item: NSToolbarItemGroup
-            if images.count == labels.count {
-                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, images: images, selectionMode: .selectOne,
-                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
-            } else {
-                item = NSToolbarItemGroup(itemIdentifier: itemIdentifier, titles: labels, selectionMode: .selectOne,
-                                           labels: labels, target: self, action: #selector(performCanvasZoom(_:)))
-            }
-            item.label = "Canvas Zoom"
-            item.autovalidates = false
-            for subitem in item.subitems { subitem.autovalidates = false }
-            item.controlRepresentation = .automatic
-            item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
-            let menu = NSMenu(title: item.label)
-            for (index, label) in labels.enumerated() {
-                let action = NSMenuItem(title: label, action: #selector(performCanvasZoomFromMenu(_:)), keyEquivalent: "")
-                action.target = self
-                action.tag = index
-                menu.addItem(action)
-            }
-            let representation = NSMenuItem(title: item.label, action: nil, keyEquivalent: "")
-            representation.submenu = menu
-            item.menuFormRepresentation = representation
-            return item
+        if [resizeAppIdentifier, captureKeyboardIdentifier, canvasZoomIdentifier].contains(itemIdentifier) {
+            return deviceScreenViewController.makeToolbarItem(itemIdentifier)
         }
         if itemIdentifier == moreIdentifier {
             let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)

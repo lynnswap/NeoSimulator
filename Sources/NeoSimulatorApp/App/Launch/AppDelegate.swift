@@ -8,6 +8,7 @@ import SwiftUI
 import NeoSimulatorManager
 import NeoSimulatorCompactWindow
 import NeoSimulatorDeviceScreens
+import NeoSimulatorDeviceDisplay
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
