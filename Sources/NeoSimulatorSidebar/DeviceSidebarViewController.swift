@@ -602,7 +602,11 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
         update()
     }
 
-    @objc private func openSelectedDevice(_ sender: Any?) { model.open(visibleSelectedDevices) }
+    @objc private func openSelectedDevice(_ sender: Any?) {
+        let devices = visibleSelectedDevices
+        guard !devices.contains(where: { screens.screen(for: $0.id) != nil }) else { return }
+        model.open(devices)
+    }
 
     /// Targets the clicked row, or the selection when it contains that row or no row was clicked.
     /// Opening the menu does not change selection or presentation.

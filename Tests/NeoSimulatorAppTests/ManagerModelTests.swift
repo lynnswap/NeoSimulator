@@ -1307,7 +1307,7 @@ struct ManagerModelTests {
 
     @Test func aContextMenuLeavesTheSelectionAndPresentationOfAnyRow() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.viewdevicescreen"}]},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.registry.stopReading()
@@ -1346,6 +1346,9 @@ struct ManagerModelTests {
         main.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         let outline = try #require(fields.compactMap { $0 as? NSOutlineView }.first)
+        #expect(model.canViewScreen(.remote(a)))
+        #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
+        #expect(model.openingDeviceIDs.isEmpty)
         let aRow = outline.selectedRow
         try #require(aRow >= 0)
         main.sidebar.updateDeviceMenu(for: aRow)
