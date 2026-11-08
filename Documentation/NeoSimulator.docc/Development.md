@@ -33,6 +33,13 @@ pre-scan against the manifest and module graph:
 scripts/check-module-graph.py
 ```
 
+Swift sources follow the repository's `.swift-format` configuration. Format the
+files you change:
+
+```bash
+xcrun swift-format format --in-place <files>
+```
+
 The Xcode application targets contain their entry points and bundle resources.
 The manager also contains the LicenseList-backed Licenses pane, passed to the
 app module as a view-controller factory. The Objective-C guest-settings helper
