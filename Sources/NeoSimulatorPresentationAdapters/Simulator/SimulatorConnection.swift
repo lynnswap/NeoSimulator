@@ -106,8 +106,9 @@ package final class SimulatorConnection: SimulatorDisplay {
         let handler = try SimulatorDisplayInterface.ScreenEventHandler { [weak self] _, _ in
             MainActor.assumeIsolated { self?.onPropertiesChange?() }
         }
-        screenEvents = try unsafe display.registerScreenEvents.unsafeInvoke(
-            on: screen.object, display.screenPropertyEvents, .main, handler)
+        screenEvents = try await display.registerEvents(
+            of: screen.object, types: display.screenPropertyEvents, queue: .main,
+            on: device.screenChannel, handler: handler)
         // SimulatorKit connects keyboard input on every display and sends each modifier
         // change to all of them; the window controller enables it only while the window is key.
         // A native keyboard replaces it, which keeps Indigo from reattaching its own keyboard.
@@ -186,6 +187,8 @@ package final class SimulatorConnection: SimulatorDisplay {
     }
 
     package var isBooted: Bool { !disconnected && device.state == 3 }
+
+    package func waitForGuestStartup() async throws { try await device.waitForStartup { _ in } }
 
     package var inputView: NSView { nativeCanvas?.inputView ?? plugin?.overlayView ?? digitizerView ?? view }
 
@@ -387,10 +390,17 @@ package final class SimulatorConnection: SimulatorDisplay {
         found: @escaping @MainActor (Result<any SimulatorExternalScreen, any Error>) -> Void
     ) throws -> AnyObject? {
         try runtime.display.registerForExternalScreens(of: device) { [device, runtime, displays, pasteboardRoute, nativeKeyboard] screen in
-            found(Result {
-                try SimulatorExternalScreenConnection(device: device, screen: try screen.get(), runtime: runtime, displays: displays,
-                                                      pasteboardRoute: pasteboardRoute, nativeKeyboard: nativeKeyboard, changed: changed)
-            })
+            let connection: Result<any SimulatorExternalScreen, any Error>
+            do {
+                connection = .success(try await SimulatorExternalScreenConnection(
+                    device: device, screen: try screen.get(), runtime: runtime, displays: displays,
+                    pasteboardRoute: pasteboardRoute, nativeKeyboard: nativeKeyboard, changed: changed))
+            } catch {
+                connection = .failure(error)
+            }
+            // Releasing the token meanwhile ended the reports.
+            guard !Task.isCancelled else { return }
+            found(connection)
         }
     }
     package func setChromeVisible(_ visible: Bool) {

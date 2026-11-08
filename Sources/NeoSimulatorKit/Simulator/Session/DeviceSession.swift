@@ -147,13 +147,6 @@ package enum HostPreferences {
     package static let detachOnWindowClose = "DetachOnWindowClose"
     /// Whether quitting leaves devices running instead of shutting them down.
     package static let detachOnAppQuit = "DetachOnAppQuit"
-    /// Whether launching shows windows for devices that are already booted.
-    package static let attachBootedOnStart = "AttachBootedOnStart"
-    /// Whether launching starts the last chosen device; both must be on.
-    package static let sessionOnLaunch = "SessionOnLaunch"
-    package static let startLastDeviceOnLaunch = "StartLastDeviceOnLaunch"
-    /// The device last chosen to open, which launching starts.
-    package static let currentDeviceUDID = "CurrentDeviceUDID"
     /// How long quitting waits for devices to disconnect and shut down, in seconds.
     package static let terminationTimeout = "TerminationTimeout"
     /// `TerminationTimeout` as a limit, which holds its registered default until the defaults are registered.
@@ -212,9 +205,8 @@ package enum HostPreferences {
     package static func registerDefaults() {
         HostPreferences.defaults.register(defaults: [
             showTestingDevices: true, showChrome: true, useMonobar: true, useCompactTitleBar: false,
-            detachOnWindowClose: false, detachOnAppQuit: false,
-            attachBootedOnStart: true, sessionOnLaunch: true, startLastDeviceOnLaunch: true,
-            terminationTimeout: 60.0, screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
+            detachOnWindowClose: false, detachOnAppQuit: false, terminationTimeout: 60.0,
+            screenShotSaveLocation: defaultScreenshotLocation(), screenShotUseMask: false,
             slowMotionAnimation: false, graphicsQualityOverride: GraphicsQuality.deviceDefault.rawValue,
             gifMaxFramerate: 10, gifMaxFrameSize: 640, gifUseDither: true, gifDitherDepth: 4.0,
             locationMode: LocationSelection.customMode, locationLatitude: 37.785834, locationLongitude: -122.406417,
@@ -1132,10 +1124,10 @@ package final class DeviceSession {
     }
 
     /// Reads what commands show of the guest into the model, without waiting for it. One read runs at a time, so a device
-    /// that is slow to answer gets one more read, not a queue of them, and an unresponsive device gets none until it
-    /// recovers, which reads it again. `changed` runs if the read changes the model.
+    /// that is slow to answer gets one more read, not a queue of them. A channel that holds a call refuses the read
+    /// without queueing it, and reads it again once it recovers. `changed` runs if the read changes the model.
     package func refreshGuestState(changed: (@MainActor () -> Void)? = nil) {
-        guard canPerformCommands, model.unresponsiveOperation == nil else { return }
+        guard canPerformCommands else { return }
         if let changed { guestStateObservers.append(changed) }
         needsGuestStateRead = true
         guard !isReadingGuestState else { return }
@@ -1901,6 +1893,10 @@ package final class DeviceSession {
             return nil
         }
     }
+
+    /// Returns once the device's guest has finished starting, which is when its own services answer, as the
+    /// orientation's does. Throws if the device stops or its boot ends unfinished; cancellation ends the wait.
+    package func waitForGuestStartup() async throws { try await primaryDisplay.waitForGuestStartup() }
 
     /// Reads physical orientation; automatic rotation subsequently follows guest interface orientation.
     package func readOrientation() async throws {

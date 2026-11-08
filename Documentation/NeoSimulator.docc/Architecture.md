@@ -16,11 +16,11 @@ NeoSimulator manages these CoreSimulator routing preferences:
 | `com.apple.dt.Xcode` | `DVTiPhoneSimulatorAlwaysLaunchInCoreSimulatorSession` |
 | `com.apple.dt.Devices` | `disableAutoStartLiveDeviceView` |
 
-Each value is absent, false, or true; other types are errors. `DefaultsStore`
-uses `defaults` to access the managed domains, including Device Hub's container.
-`RestorationReceipt` journals original, expected, and pending values under a
-lock, verifies writes, and recovers interrupted transactions without overwriting
-conflicting external changes.
+Each value is absent, false, or true; other types are errors. NeoSimulator uses
+`defaults` to access the managed domains, including Device Hub's container. A
+restoration receipt journals the original, expected, and pending values. Writes
+are verified, and an interrupted change is recovered without overwriting a
+conflicting external change.
 
 `display-host.txt` stores the preferred host separately. If absent, the manager
 uses a legacy receipt's intent or defaults to NeoSimulator. Startup applies the
@@ -69,43 +69,19 @@ including in Device Hub mode.
 
 ### Sidebar activity
 
-For open native canvases, `DeviceActiveStateObservation` reads DeviceKit's
-`SidebarModel.shouldRenderAsActive(_:)`. This predicate uses DeviceKit views in
-the manager process; SimulatorKit, remote screens, Device Hub, and renderers do
-not contribute their activity.
+The sidebar marks a device active using DeviceKit's own activity predicate, which
+reflects DeviceKit views in the manager process. SimulatorKit, remote screens,
+Device Hub, and renderers do not contribute their activity.
 
 Evaluating a device can start its native HID services and interfere with
-SimulatorKit input. `init(limitedTo:)` therefore evaluates only open native-canvas
-devices reported by `DeviceScreens`, using their CoreDevice identifiers. Custom
-simulator sets have no CoreDevice record and no activity value.
+SimulatorKit input, so only devices with an open native canvas are evaluated.
+Custom simulator sets have no CoreDevice record and no activity value.
 
 Within an availability group, active devices sort first. Other rows use the
 remaining sort criteria and Neo's screen and boot state for artwork. A failed
-read clears activity values and reports an inventory issue. DeviceKit's own
-observation and coordinators last for the process; stopping Neo's observation
-ends only its reads and callbacks.
+read clears activity values and reports an inventory issue.
 
-## Ownership and presentation
-
-| Owner | Responsibility |
-| --- | --- |
-| `SimulatorHostController` | Host changes, operation ordering, renderer ownership, and Xcode resolution. |
-| `SimulatorManagerModel` | Observable inventory and the manager's operation queue. |
-| `DeviceRegistry`, `DeviceModel` | Stable device identity, shared state, and ordered changes. |
-| `ManagerSelection`, inspector models | Selection and presentation state. |
-| `ManagerWindowController`, `DeviceScreenViewController` | Sidebar, inspector, and placement of screens in the main or compact window. |
-| `DeviceScreens` | Index open screens and own their contexts and remote connections. |
-| `SimulatorContext`, `SimulatorDeviceSession` | Public device discovery, guest lifetime, state, and commands. |
-| `SimulatorScreens`, `SimulatorScreen` | Public AppKit presentation, using `DeviceWindowPresenter`. |
-| `SimulatorScreenHost`, `DeviceSession` | Device-set observation, sessions, and resource cleanup. |
-| `NativeFrameworks` | Private-framework loading and the process's single UI toolkit. |
-| `SimulatorIORuntime`, `SimulatorPresentationRuntime` | Per-Xcode device interfaces and process-wide presentation interfaces. |
-| `SimulatorScreenRouter` | Display connection and capability-based input and pasteboard routing. |
-| `HostApplication` | Renderer lifecycle, menus, manager requests, and ownership registration. |
-| `CapturedContent`, `RecordingStore`, `VideoRecording` | Capture files, destination claims, and recording completion. |
-| `RemoteDeviceScreenSession` | Remote display transport, input, resize assertions, and recordings. |
-| `SystemCommandRunner` | Subprocess launch, cancellation policy, reaping, and output cleanup. |
-| `SimulatorDeviceChannel`, `DeviceIOHub` | Native request ordering, deadlines, and in-flight work. |
+## Screens and renderers
 
 Each Xcode has a headless renderer with a bundle identifier distinct from the
 manager's. The manager loads one SimulatorKit/DeviceKit UI toolkit for its
@@ -118,32 +94,30 @@ policy. Restart finishes recording and disconnects presentation before changing
 the guest, then reconnects the retained controller. Management operations report
 completed steps and per-device failures.
 
-Renderer startup acknowledges success only after runtime creation, ownership
-registration, device-set subscription, and a final competing-host check.
-Termination identifies the app by bundle identifier and normalized bundle URL.
-`HostConflictMonitor` rejects competing hosts at startup and observes later
-launches. When Device Hub or Simulator.app appears, Neo disconnects affected
-sessions and leaves guests running. It neither quits the competitor nor ends the
-manager for an in-process presentation conflict.
-
-Observable models and AppKit presentation stay on MainActor. Blocking discovery,
-process scans, catalog decoding, and preference I/O run in `@concurrent` helpers.
-`NativeFrameworks` serializes framework checks and loads on its own queue.
-Concurrent preparation joins the existing task.
+A renderer reports a successful start only after it has subscribed to the device
+set and checked once more for a competing host. Neo identifies an app to
+terminate by its bundle identifier and normalized bundle URL. It rejects
+competing hosts at startup and observes later launches. When Device Hub or
+Simulator.app appears, Neo disconnects affected sessions and leaves guests
+running. It neither quits the competitor nor ends the manager for an in-process
+presentation conflict.
 
 Operations on different devices can overlap; operations on one device retain
 acceptance order. Host, preference, and renderer-lifetime changes wait for all
 prior operations and hold later ones. A screen open becomes such a barrier only
-when it must start a renderer. Catalog reads defer attachment of a device that
-is being changed. The active command target comes from `NSApp.keyWindow`;
-sidebar selection independently chooses the inspector target.
+when it must start a renderer. Catalog reads keep a device that is being
+changed in its earlier state until the change ends. Device commands act on the
+screen in the key window; sidebar selection independently chooses the inspector's
+device.
 
 ## Device lifecycle
 
 Neo observes the default set and, when enabled and present, Xcode's parallel
-testing set. It does not create the testing set. `AttachBootedOnStart` controls
-initial attachment; later boot transitions can attach new devices. Explicitly
-detached devices stay closed until reopened or until they leave the booted state.
+testing set. It does not create the testing set. The manager attaches no device
+by itself, whether it was booted at launch or later: only a request opens a
+screen. Xcode launching an app moves an open screen to that Xcode. A renderer
+that another app opens by itself also attaches no device that is running at its
+launch, and starts none; it shows the devices that start later.
 
 Sessions discover the integrated screen rather than assuming screen ID zero.
 A failed connection affects only that device. Teardown cancels commands and
@@ -153,63 +127,47 @@ their original session even if the active window changes.
 ## Native device requests
 
 CoreSimulator calls can block indefinitely on a guest, service, or internal
-queue. `SimulatorDeviceChannel` dispatches them to a serial worker and stays
-responsive on its actor. Read-modify-write operations, such as Toggle Appearance,
-run as one request.
+queue. Each device's calls run in order on its own worker, so a blocked call does
+not stall the app. Read-modify-write operations, such as Toggle Appearance, run
+as one request.
 
 A deadline ends the caller's wait, not the native call:
 
 | Condition | Result |
 | --- | --- |
-| Cancelled before starting | `CancellationError`; the call never runs. |
-| Read cancelled while running | `CancellationError`. |
-| Change cancelled while running | `outcomeUnknown(.cancelled)`. |
-| Read past its deadline | `noAnswer`. |
-| Change past its deadline | `outcomeUnknown(.timedOut)`. |
-| Requested or queued behind an overdue call | `notSent`. |
+| Cancelled before starting | Cancelled; the call never runs. |
+| Read cancelled while running | Cancelled. |
+| Change cancelled while running | Outcome unknown. |
+| Read past its deadline | No answer. |
+| Change past its deadline | Outcome unknown. |
+| Requested or queued behind an overdue call | Not sent. |
 
-An overdue call makes the channel `unresponsive` until it returns. No replacement
-worker starts. Late results receive cleanup through `lateCompletion` or
-`cleanUp`. Abandoned requests are not replayed; the session reapplies current
-preferences when the channel recovers, without delaying presentation.
+An overdue call makes the device unresponsive until it returns. Abandoned
+requests are not replayed; the session reapplies current preferences when the
+device recovers, without delaying presentation.
 
-### Device sets and clients
+### Device sets and connections
 
-`SimulatorDeviceSet` opens and reads one set on its own worker, exposing cached
-`SimulatorDeviceRecord` values. CoreSimulator's state and catalog accessors also
-block, so menus and views read these values instead of calling them directly.
-`refresh()` coalesces concurrent requests into one active read and at most one
-pending read. Failure preserves cached values. Native notifications and channel
-recovery request another read.
+Each device set is read on its own worker. CoreSimulator's state and catalog
+accessors also block, so menus and views show the values from the last read. A
+failed read keeps the previous values. Native notifications and device recovery
+request another read.
 
-Guest access uses a shared `SimulatorDevice` for each developer directory,
-device-set path, and UDID. Its private CoreSimulator context prevents a blocked
-lookup from holding another device's connection. The client opens lazily;
-concurrent callers share the opening, and a failed opening is retried on demand.
-Closing a window, rebooting, or timing out retains the client.
-
-Deletion or CoreSimulator connection invalidation ends the client. An unavailable
-runtime or failed listing does not. Old requests then fail unsent; a replacement
-uses the same worker so it cannot overlap an outstanding call.
-
-Releasing the native context requires cancelling its connection, waiting for the
-end notification and all `SimulatorDevice` holders, then clearing the private
-set's retained context, devices, and pairs on the worker. Releasing earlier can
-leak the context or leave SimulatorKit with a device whose weak set has gone.
-Device-set and device workers have separate connections, but remain subject to
+Each device has its own CoreSimulator connection for each developer directory
+and device set, so a blocked lookup cannot hold another device's connection.
+Deleting the device or invalidating the CoreSimulator connection ends it; an
+unavailable runtime or a failed listing does not. Requests to an ended connection
+fail without being sent. Device sets and devices remain subject to
 CoreSimulatorService-wide stalls and synchronous SimulatorKit calls.
 
 ### Optional services
 
-CoreDevice initialization uses one `SharedTask`. Caller cancellation and the
-`coreDeviceInitialization` deadline end only the wait; later callers join the
-same initialization.
+CoreDevice initializes once per process. Cancelling or timing out ends only the
+wait; later requests join the same initialization.
 
 A display connects using its own requirements. Native input and pasteboard
-services follow the device's capabilities. `CoreDeviceRecordDiscovery` waits for
-a connected record using change notifications; it follows replacement records
-and discards stale reads. A Duo canvas also needs this record and uses the
-`coreDeviceRecord` deadline.
+services follow the device's capabilities and wait for the device's connected
+CoreDevice record. A Duo canvas also needs this record.
 
 Only a connected record lacking a feature marks it unsupported. A connection
 failure keeps the chosen route and offers retry. SimulatorKit input remains
@@ -220,11 +178,11 @@ input, because those services make the guest reject SimulatorKit touches.
 
 ### Termination
 
-The manager gives accepted work `TerminationTimeout`, reports queued work as
-not run, and stops running uninterrupted commands. Transactions and rollbacks
-receive `terminationGrace`; unfinished outcomes remain unknown.
-`TerminationAccount` records remaining work for the quit report, including
-requests still held by `DeviceIOHub`.
+On quit, the manager gives accepted work the time set by the `TerminationTimeout`
+preference, reports queued work as not run, and stops running uninterrupted
+commands. Transactions and rollbacks receive a further grace period; unfinished
+outcomes remain unknown. The quit report lists the remaining work, including
+device requests that have not returned.
 
 ## Device state
 
@@ -265,12 +223,11 @@ VMs use Screen Sharing when VNC is available, with its pasteboard sharing
 disabled. Physical devices use a user-selected AVFoundation capture source and
 Metal rendering, with CoreDevice supplying input, geometry, and supported
 recording operations. The manager requests Camera access. macOS does not identify
-which device a capture source shows, so `ScreenCaptureSourceCatalog` stores the
-user's choice in `RemoteScreenCaptureSources`, keyed by CoreDevice identifier.
+which device a capture source shows, so the manager stores the user's choice in
+the `RemoteScreenCaptureSources` preference, keyed by CoreDevice identifier.
 A source belongs to at most one device; reconnecting fails if it does not return.
 
-`RemoteDeviceScreenSession` owns the frame independently of its transport.
-DeviceKit draws chrome and masks around the framebuffer without starting its own
+A remote screen keeps its frame independently of its transport. DeviceKit draws chrome and masks around the framebuffer without starting its own
 display stream. Side buttons send the chrome's declared HID usages. Trackpad
 events use one UniversalHID service per originating Mac HID service. The first
 gesture event positions its hidden pointer with the current display transform;

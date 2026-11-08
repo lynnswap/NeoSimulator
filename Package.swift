@@ -21,8 +21,8 @@ let package = Package(
         .executable(name: "CoreDeviceInventoryProbe", targets: ["CoreDeviceInventoryProbe"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.19.0"),
-        .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.11"),
+        .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.19.1"),
+        .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.12"),
     ],
     targets: [
         .target(name: "NeoSimulatorNative", dependencies: [
@@ -48,8 +48,37 @@ let package = Package(
             "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ], swiftSettings: memberImportVisibility),
-        .target(name: "NeoSimulatorApp", dependencies: [
+        // The manager's shared state and operations, below every pane of its window.
+        .target(name: "NeoSimulatorManager", dependencies: [
+            "NeoSimulatorHostSupport", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+        ], swiftSettings: memberImportVisibility),
+        // Physical devices' screen windows.
+        .target(name: "NeoSimulatorCompactWindow", dependencies: [
             "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+        ], swiftSettings: memberImportVisibility),
+        // Open device screens, their placement, and device artwork, which the window's panes share.
+        .target(name: "NeoSimulatorDeviceScreens", dependencies: [
+            "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI",
+            "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], swiftSettings: memberImportVisibility),
+        // The window's inspector pane and the service list that Settings shares.
+        .target(name: "NeoSimulatorInspector", dependencies: [
+            "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorSidebar", dependencies: [
+            "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorPresentationAdapters",
+            "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorDeviceDisplay", dependencies: [
+            "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI",
+            "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
+            .product(name: "ObservationBridge", package: "ObservationBridge"),
+        ], swiftSettings: memberImportVisibility),
+        .target(name: "NeoSimulatorApp", dependencies: [
+            "NeoSimulatorSidebar", "NeoSimulatorDeviceDisplay", "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ], resources: [.process("Resources")], swiftSettings: memberImportVisibility),
         .target(name: "NeoSimulatorService", dependencies: [
@@ -57,7 +86,7 @@ let package = Package(
         ], swiftSettings: memberImportVisibility),
         .executableTarget(name: "CoreDeviceInventoryProbe", dependencies: ["NeoSimulatorKit"], swiftSettings: memberImportVisibility),
         .testTarget(name: "NeoSimulatorAppTests", dependencies: [
-            "NeoSimulatorApp", "NeoSimulatorService", "NeoSimulatorHostSupport", "NeoSimulatorUI",
+            "NeoSimulatorApp", "NeoSimulatorSidebar", "NeoSimulatorDeviceDisplay", "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorService", "NeoSimulatorHostSupport", "NeoSimulatorUI",
             "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ABIBridge", package: "ABIBridge"),
         ], swiftSettings: [

@@ -549,14 +549,6 @@ struct XcodeConnectionsTests {
         #expect(tracker.xcodeURL(forDevice: clone.deviceID) == clone.xcodeURL)
         let normalDevice = SimulatorHostDevice(identifier: "A", name: "Normal", descriptiveName: "Normal", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
         let cloneDevice = SimulatorHostDevice(identifier: "A", name: "Clone", descriptiveName: "Clone", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Booted", deviceSetPath: path)
-        let boots = SimulatorBootTracker()
-        let initial = boots.observe([normalDevice, cloneDevice], attachInitially: true)
-        #expect(Set(initial.devicesToAttach) == [normal.deviceID, clone.deviceID])
-        boots.didAttach(normal.deviceID)
-        #expect(boots.observe([normalDevice, cloneDevice], attachInitially: true).devicesToAttach == [clone.deviceID])
-        boots.didAttach(clone.deviceID)
-        boots.forgetTestingDevices()
-        #expect(boots.observe([normalDevice, cloneDevice], attachInitially: true).devicesToAttach == [clone.deviceID])
         let registrations = [normal, clone].enumerated().map { index, connection in
             RendererRegistration(processIdentifier: Int32(index + 1), applicationPath: "/Renderer.app", xcodePath: connection.xcodeURL.path,
                                  sessionIdentifier: "session\(index)", deviceIdentifiers: [connection.deviceID])
@@ -854,163 +846,22 @@ struct XcodeConnectionsTests {
         #expect(transfers == [nextRun])
     }
 
-    @Test func bootTransitionsRestoreOnceAndDoNotReopenClosedBootedWindows() {
-        let tracker = SimulatorBootTracker()
-        func device(_ identifier: String, _ state: String) -> SimulatorHostDevice {
-            .init(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state)
-        }
-        #expect(tracker.observe([device("A", "Booted"), device("B", "Shutdown")], attachInitially: false).devicesToAttach.isEmpty)
-        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: false).devicesToAttach == [.simulator(udid: "B", deviceSetPath: nil)])
-        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: false).devicesToAttach == [.simulator(udid: "B", deviceSetPath: nil)])
-        tracker.didAttach(.simulator(udid: "B", deviceSetPath: nil))
-        // Losing registry ownership while still Booted means a window was closed, not a new boot.
-        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach.isEmpty)
-        _ = tracker.observe([device("A", "Shutdown"), device("B", "Booted")], attachInitially: true)
-        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == [.simulator(udid: "A", deviceSetPath: nil)])
-        tracker.reset()
-        #expect(tracker.observe([device("A", "Booted"), device("B", "Booted")], attachInitially: true).devicesToAttach == [.simulator(udid: "A", deviceSetPath: nil), .simulator(udid: "B", deviceSetPath: nil)])
-    }
-
-    @Test func aCancelledAttachmentStaysRetiredForOnlyItsBootAndDeviceSet() {
-        let tracker = SimulatorBootTracker()
-        func device(_ state: String, set: String? = nil) -> SimulatorHostDevice {
-            .init(identifier: "A", name: "A", descriptiveName: "A", runtimeIdentifier: "runtime", runtimeName: "iOS",
-                  productFamily: "iPhone", state: state, deviceSetPath: set)
-        }
-        let normal = device("Booted")
-        let clone = device("Booted", set: "/custom-set")
-        _ = tracker.observe([device("Shutdown"), device("Shutdown", set: "/custom-set")], attachInitially: false)
-        // Cleanup can finish before the booted state reaches the next catalog snapshot.
-        tracker.didCancelAttachment(normal.inventoryID)
-        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
-        tracker.didAttach(clone.inventoryID)
-        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach.isEmpty)
-        _ = tracker.observe([device("Shutdown"), clone], attachInitially: true)
-        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [normal.inventoryID])
-        tracker.didCancelAttachment(normal.inventoryID)
-        tracker.reset()
-        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [normal.inventoryID, clone.inventoryID])
-        tracker.didCancelAttachment(clone.inventoryID)
-        tracker.didAttach(normal.inventoryID)
-        tracker.forgetTestingDevices()
-        #expect(tracker.observe([normal, clone], attachInitially: true).devicesToAttach == [clone.inventoryID])
-    }
-
-    @Test func aChangeToADeviceLeavesItsCancelledAttachmentRetired() {
-        let tracker = SimulatorBootTracker()
-        func device(_ state: String) -> SimulatorHostDevice {
-            .init(identifier: "A", name: "A", descriptiveName: "A", runtimeIdentifier: "runtime", runtimeName: "iOS",
-                  productFamily: "iPhone", state: state)
-        }
-        let identifier = device("Booted").inventoryID
-        _ = tracker.observe([device("Shutdown")], attachInitially: false)
-        // The cancelled open booted the device, but a read during a rename keeps the catalog's older Shutdown.
-        tracker.didCancelAttachment(identifier)
-        #expect(tracker.observe([device("Booted")], attachInitially: false, changing: [identifier]).devicesToAttach.isEmpty)
-        #expect(tracker.observe([device("Booted")], attachInitially: false).devicesToAttach.isEmpty)
-        // A read outside the change can establish that this boot ended, so the next boot attaches.
-        _ = tracker.observe([device("Shutdown")], attachInitially: false)
-        #expect(tracker.observe([device("Booted")], attachInitially: false).devicesToAttach == [identifier])
-    }
-
-    @Test(arguments: ["Booted", "Shutdown"])
-    func aFirstObservationDuringAChangeKeepsThatDevicesInitialAttachment(_ observed: String) {
-        func device(_ identifier: String, _ state: String) -> SimulatorHostDevice {
-            .init(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime", runtimeName: "iOS",
-                  productFamily: "iPhone", state: state)
-        }
-        let a = device("A", "Booted").inventoryID
-        let b = device("B", "Booted").inventoryID
-        let running = [device("A", "Booted"), device("B", "Booted")]
-
-        // With attachment on start off, whatever step of the change the read saw, A attaches only after a later stop.
-        let off = SimulatorBootTracker()
-        let first = off.observe([device("A", observed), device("B", "Booted")], attachInitially: false, changing: [a])
-        #expect(first.catalogChanged && first.devicesToAttach.isEmpty)
-        #expect(off.observe(running, attachInitially: false).devicesToAttach.isEmpty)
-        _ = off.observe([device("A", "Shutdown"), device("B", "Booted")], attachInitially: false)
-        #expect(off.observe(running, attachInitially: false).devicesToAttach == [a])
-
-        // With it on, B attaches now, and A once the change has settled if it is running then.
-        let on = SimulatorBootTracker()
-        #expect(on.observe([device("A", observed), device("B", "Booted")], attachInitially: true, changing: [a]).devicesToAttach == [b])
-        on.didAttach(b)
-        #expect(on.observe(running, attachInitially: true).devicesToAttach == [a])
-        let stopped = SimulatorBootTracker()
-        #expect(stopped.observe([device("A", observed)], attachInitially: true, changing: [a]).devicesToAttach.isEmpty)
-        #expect(stopped.observe([device("A", "Shutdown")], attachInitially: true).devicesToAttach.isEmpty)
-
-        // A cancelled open still retires that boot.
-        let cancelled = SimulatorBootTracker()
-        cancelled.didCancelAttachment(a)
-        #expect(cancelled.observe([device("A", observed)], attachInitially: true, changing: [a]).devicesToAttach.isEmpty)
-        #expect(cancelled.observe([device("A", "Booted")], attachInitially: true).devicesToAttach.isEmpty)
-
-        // A device that first appears after the first read and during a change is a new device once that settles.
-        let later = SimulatorBootTracker()
-        _ = later.observe([], attachInitially: false)
-        #expect(later.observe([device("A", observed)], attachInitially: false, changing: [a]).devicesToAttach.isEmpty)
-        #expect(later.observe([device("A", "Booted")], attachInitially: false).devicesToAttach == [a])
-    }
-
-    @Test func testingVisibilityChangesReattachClonesAndPreserveNormalWindowChoices() {
-        let tracker = SimulatorBootTracker()
-        func device(_ identifier: String, _ state: String = "Booted", testing: Bool = false) -> SimulatorHostDevice {
-            .init(identifier: identifier, name: identifier, descriptiveName: identifier, runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state, deviceSetPath: testing ? "/custom/XCTestDevices" : nil)
-        }
-        let closedNormal = device("closed")
-        let clone = device("testing", testing: true)
-        #expect(tracker.observe([closedNormal, device("pending", "Shutdown"), clone], attachInitially: false).devicesToAttach.isEmpty)
-        let current = [closedNormal, device("pending"), clone]
-        #expect(tracker.observe(current, attachInitially: false).devicesToAttach == [.simulator(udid: "pending", deviceSetPath: nil)])
-        // OFF and ON can both occur before another catalog snapshot is read.
-        tracker.forgetTestingDevices()
-        #expect(tracker.observe(current, attachInitially: false).devicesToAttach == [.simulator(udid: "pending", deviceSetPath: nil), .simulator(udid: "testing", deviceSetPath: clone.deviceSetPath)])
-        tracker.didAttach(.simulator(udid: "pending", deviceSetPath: nil))
-        tracker.didAttach(.simulator(udid: "testing", deviceSetPath: clone.deviceSetPath))
-        #expect(tracker.observe(current, attachInitially: false).devicesToAttach.isEmpty)
-    }
-
-    @Test func catalogChangesRefreshUnownedDevicesWithoutAttachingThem() {
-        let tracker = SimulatorBootTracker()
+    @Test func catalogChangesRefreshTheInventoryExceptForStepsOfAChange() {
+        let tracker = SimulatorCatalogTracker()
         func device(_ identifier: String, _ state: String, name: String = "iPhone") -> SimulatorHostDevice {
             .init(identifier: identifier, name: name, descriptiveName: name, runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: state)
         }
         let original = device("A", "Booted")
-        #expect(tracker.observe([original, original], attachInitially: false).catalogChanged)
-        let unchanged = tracker.observe([original], attachInitially: false)
-        #expect(!unchanged.catalogChanged)
-        #expect(unchanged.devicesToAttach.isEmpty)
-        let shutdown = tracker.observe([device("A", "Shutdown")], attachInitially: false)
-        #expect(shutdown.catalogChanged)
-        #expect(shutdown.devicesToAttach.isEmpty)
-        let renamed = tracker.observe([device("A", "Shutdown", name: "Renamed")], attachInitially: false)
-        #expect(renamed.catalogChanged)
-        #expect(renamed.devicesToAttach.isEmpty)
-        let created = tracker.observe([device("A", "Shutdown", name: "Renamed"), device("B", "Shutdown")], attachInitially: false)
-        #expect(created.catalogChanged)
-        #expect(created.devicesToAttach.isEmpty)
-        #expect(tracker.observe([], attachInitially: false).catalogChanged)
-        let deviceHub = tracker.observe([original], attachInitially: false, allowsAttachments: false)
-        #expect(deviceHub.catalogChanged)
-        #expect(deviceHub.devicesToAttach.isEmpty)
-        #expect(!tracker.observe([original], attachInitially: false, allowsAttachments: false).catalogChanged)
-    }
-
-    @Test func startupLastDeviceRespectsSavedSelectionAndDisabledPreferences() {
-        let device = SimulatorHostDevice(identifier: "CFB0DFE8-2184-4B1C-A6EF-9B4AEEDCB823", name: "iPhone", descriptiveName: "iPhone", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown")
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: .simulator(udid: device.identifier.lowercased(), deviceSetPath: nil), hasOwnedDevices: false) == device)
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: false, startsLastDevice: true, current: device.inventoryID, hasOwnedDevices: false) == nil)
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: false, current: device.inventoryID, hasOwnedDevices: false) == nil)
-        #expect(SimulatorStartupSelection.device(in: [device], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.inventoryID, hasOwnedDevices: true) == nil)
-        let path = "/fixture/TestingDevices"
-        let clone = SimulatorHostDevice(identifier: device.identifier, name: "Testing iPad", descriptiveName: "Testing iPad", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPad", state: "Shutdown", deviceSetPath: path)
-        let fallback = SimulatorHostDevice(identifier: "fallback", name: "Fallback iPhone", descriptiveName: "Fallback iPhone", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown")
-        let saved = DeviceInventoryID.simulator(udid: device.identifier.lowercased(), deviceSetPath: path)
-        #expect(SimulatorStartupSelection.device(in: [device, fallback, clone], attachInitially: true, startsSession: true, startsLastDevice: true, current: saved, hasOwnedDevices: false) == clone)
-        #expect(SimulatorStartupSelection.device(in: [device, fallback], attachInitially: true, startsSession: true, startsLastDevice: true, current: saved, hasOwnedDevices: false) == fallback)
-        let booted = SimulatorHostDevice(identifier: "other", name: "iPad", descriptiveName: "iPad", runtimeIdentifier: "runtime", runtimeName: "iOS", productFamily: "iPad", state: "Booted")
-        #expect(SimulatorStartupSelection.device(in: [device, booted], attachInitially: true, startsSession: true, startsLastDevice: true, current: device.inventoryID, hasOwnedDevices: false) == nil)
+        #expect(tracker.observe([original, original]))
+        #expect(!tracker.observe([original]))
+        #expect(tracker.observe([device("A", "Shutdown")]))
+        #expect(tracker.observe([device("A", "Shutdown", name: "Renamed")]))
+        #expect(tracker.observe([device("A", "Shutdown", name: "Renamed"), device("B", "Shutdown")]))
+        #expect(tracker.observe([]))
+        #expect(tracker.observe([original]))
+        // A restart's stop is a step of that change, so the device keeps its earlier state until the change ends.
+        #expect(!tracker.observe([device("A", "Shutdown")], changing: [original.inventoryID]))
+        #expect(tracker.observe([device("A", "Shutdown")]))
     }
 
     @Test func disablingTestingDevicesDiscardsPendingCloneConnections() async throws {

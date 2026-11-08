@@ -84,8 +84,8 @@ struct NativeDeviceCanvasTests {
         screen.position = CGPoint(x: 700, y: 700)
         surface.addSublayer(screen)
         let presentation = NativeCanvasPresentation()
-        presentation.viewport = try #require(NativeCanvasProjection.viewport(for: [screen], frameMargin: 0,
-            controlMargin: NativeCanvasProjection.hoverControlMargin(renderingHeight: surface.bounds.height)))
+        presentation.viewport = NativeCanvasProjection.viewport(for: [screen], frameMargin: 0,
+            controlMargin: NativeCanvasProjection.hoverControlMargin(renderingHeight: surface.bounds.height))
         presentation.pointScale = 2
         let size = presentation.naturalSize
         let control = RecorderView()

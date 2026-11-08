@@ -4,38 +4,52 @@ import NeoSimulatorKit
 /// What a device's optional services tell the person using its screen, if anything. A pasteboard that has not connected
 /// yet costs nothing until a transfer waits for it, so only its failure and a wait for the device's record show.
 package struct DeviceServiceStatus: Equatable {
-    package var message: String
-    package var offersRetry: Bool
+    /// What the status's button does.
+    package enum Action: Equatable {
+        /// Connects the input route again.
+        case retry
+        /// Restarts the device, which starts its boot again.
+        case restart
+    }
 
-    package init?(input: SimulatorServiceReadiness, pasteboard: SimulatorServiceReadiness, isAwaitingDeviceRecord: Bool = false) {
+    package var message: String
+    package var action: Action?
+
+    package init?(input: SimulatorServiceReadiness, pasteboard: SimulatorServiceReadiness, isAwaitingDeviceRecord: Bool = false,
+                  startup: DeviceStartupWait? = nil) {
         if let failure = input.failure {
             message = "The device's keyboard and touch input aren't connected: \(failure.localizedDescription)"
-            offersRetry = true
+            // Connecting again would wait for the same boot.
+            action = startup == .unfinished ? .restart : .retry
         } else if let failure = pasteboard.failure {
             message = "The device's pasteboard isn't connected: \(failure.localizedDescription)"
-            offersRetry = false
+            action = nil
         } else if isAwaitingDeviceRecord {
             message = "Waiting for CoreDevice to report this device…"
-            offersRetry = false
+            action = nil
+        } else if case .pending = input, case .starting(let phase) = startup {
+            message = "The device is still starting: \(phase). Its keyboard and touch input connect once it has started."
+            action = .restart
         } else if case .pending = input {
             message = "Connecting the device's keyboard and touch input…"
-            offersRetry = false
+            action = nil
         } else {
             return nil
         }
     }
 }
 
-/// States a device's service status in front of its screen. It never changes the screen's geometry, and only Retry takes
-/// events, so the screen beneath keeps its input.
+/// States a device's service status in front of its screen. It never changes the screen's geometry, and only its button
+/// takes events, so the screen beneath keeps its input.
 @MainActor
 final class DeviceServiceStatusView: NSVisualEffectView {
     private let label = NSTextField(wrappingLabelWithString: "")
-    private let retry = NSButton(title: "Retry", target: nil, action: nil)
-    private let onRetry: () -> Void
+    private let button = NSButton(title: "Retry", target: nil, action: nil)
+    private let perform: (DeviceServiceStatus.Action) -> Void
+    private var action: DeviceServiceStatus.Action?
 
-    init(onRetry: @escaping () -> Void) {
-        self.onRetry = onRetry
+    init(perform: @escaping (DeviceServiceStatus.Action) -> Void) {
+        self.perform = perform
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         material = .hudWindow
@@ -45,10 +59,10 @@ final class DeviceServiceStatusView: NSVisualEffectView {
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         label.maximumNumberOfLines = 3
         label.lineBreakMode = .byTruncatingTail
-        retry.controlSize = .small
-        retry.target = self
-        retry.action = #selector(retryPressed)
-        let stack = NSStackView(views: [label, retry])
+        button.controlSize = .small
+        button.target = self
+        button.action = #selector(buttonPressed)
+        let stack = NSStackView(views: [label, button])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 8
@@ -67,20 +81,28 @@ final class DeviceServiceStatusView: NSVisualEffectView {
 
     func show(_ status: DeviceServiceStatus) {
         label.stringValue = status.message
-        retry.isHidden = !status.offersRetry
+        action = status.action
+        switch status.action {
+        case .retry: button.title = "Retry"
+        case .restart: button.title = "Restart"
+        case nil: break
+        }
+        button.isHidden = status.action == nil
     }
 
     /// The size this takes in a space `width` wide.
     func size(fitting width: CGFloat) -> NSSize {
-        label.preferredMaxLayoutWidth = max(0, width - 20 - (retry.isHidden ? 0 : retry.intrinsicContentSize.width + 8))
+        label.preferredMaxLayoutWidth = max(0, width - 20 - (button.isHidden ? 0 : button.intrinsicContentSize.width + 8))
         let fitting = fittingSize
         return NSSize(width: min(fitting.width, width), height: fitting.height)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let hit = super.hitTest(point), hit.isDescendant(of: retry) else { return nil }
+        guard let hit = super.hitTest(point), hit.isDescendant(of: button) else { return nil }
         return hit
     }
 
-    @objc private func retryPressed() { onRetry() }
+    @objc private func buttonPressed() {
+        if let action { perform(action) }
+    }
 }

@@ -38,7 +38,7 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
 
     package init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorPresentationRuntime,
          displays: SimulatorDisplaySet, pasteboardRoute: SimulatorPasteboardRoute, nativeKeyboard: SharedNativeKeyboard,
-         changed: @escaping @MainActor () -> Void) throws {
+         changed: @escaping @MainActor () -> Void) async throws {
         self.device = device
         self.screen = screen.object
         self.runtime = runtime
@@ -61,8 +61,9 @@ package final class SimulatorExternalScreenConnection: SimulatorExternalScreen {
         let handler = try SimulatorDisplayInterface.ScreenEventHandler { _, _ in
             MainActor.assumeIsolated { changed() }
         }
-        events = try unsafe display.registerScreenEvents.unsafeInvoke(
-            on: screen.object, display.screenPropertyEvents, .main, handler)
+        events = try await display.registerEvents(
+            of: screen.object, types: display.screenPropertyEvents, queue: .main,
+            on: device.screenChannel, handler: handler)
     }
 
     isolated deinit { disconnect() }

@@ -23,7 +23,6 @@ package final class SimulatorScreenHost {
     package var onRestart: ((SimulatorDeviceIdentifier, Bool) -> Void)?
     package var onShutDown: ((SimulatorDeviceIdentifier) -> Void)?
     package var onOwnershipChange: ((Bool) throws -> Void)?
-    package var onOpen: ((SimulatorDeviceIdentifier) -> Void)?
     package var onNoScreens: (() -> Void)?
     package var onConflict: ((String, (any Error)?) -> Void)?
     package var onConflictBegan: ((String) -> Void)?
@@ -457,7 +456,6 @@ package final class SimulatorScreenHost {
     }
 
     package func didSelectDevice(_ identifier: SimulatorDeviceIdentifier) {
-        onOpen?(identifier)
         sessions[identifier]?.session.updatePasteboardSync()
     }
 
@@ -561,7 +559,6 @@ package final class SimulatorScreenHost {
         if isManaged { try onOwnershipChange?(false) }
         suppressed.remove(identifier)
         connectionFailures.removeValue(forKey: identifier)
-        onOpen?(identifier)
         // Attach an already booting device when it finishes; avoid a second boot.
         if bootIfNeeded, device.state != 2, device.state != 3, bootOperations[identifier] == nil {
             let tools = try DeviceTools(identifier: identifier.identifier, xcodeURL: runtime.xcodeURL,

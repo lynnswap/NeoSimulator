@@ -10,9 +10,14 @@ package protocol DeviceStateSource: Sendable {
     func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
                       publish: @escaping @Sendable (DeviceSettingsGroupRead) async -> Void) async
     func write(_ change: DeviceSettingChange, to device: InventoryDevice) async throws
-    func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices
+    /// Reads the services that `catalog` manages.
+    func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServices
+    /// Changes targets that `catalog` lists, and reads back the services that it manages.
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                               for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate
+        catalog: BackgroundServiceCatalog, for device: InventoryDevice
+    ) async throws
+        -> SimulatorBackgroundServicesUpdate
     /// What runs a device's inspection commands. Making one reads nothing of the device.
     func inspector(for device: InventoryDevice) async throws -> DeviceInspector
     /// Stops the reads running now and refuses new ones until ``resumeReads()``, without stopping any change.
@@ -69,8 +74,10 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         catch { throw SimulatorHostFailure(error) }
     }
 
-    package func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices {
-        do { return try await serviceBackend(for: device).read() }
+    package func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServices
+    {
+        do { return try await serviceBackend(for: device, catalog: catalog).read() }
         catch is CancellationError { throw CancellationError() }
         catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
@@ -80,9 +87,12 @@ package struct LiveDeviceStateSource: DeviceStateSource {
     /// The disable overrides persist, so the change also applies to later boots. Once launchctl may have run,
     /// a failure is a `SimulatorBackgroundServicesUpdateFailure` with the state read after the attempt.
     package func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                                       for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
+        catalog: BackgroundServiceCatalog, for device: InventoryDevice
+    ) async throws
+        -> SimulatorBackgroundServicesUpdate
+    {
         let backend: SimulatorBackgroundServiceBackend
-        do { backend = try await serviceBackend(for: device) }
+        do { backend = try await serviceBackend(for: device, catalog: catalog) }
         catch is CancellationError { throw CancellationError() }
         catch let error as SimulatorHostFailure { throw error }
         catch { throw SimulatorHostFailure(error) }
@@ -93,7 +103,9 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         DeviceInspector(device: device, simulatorXcodeURL: try await xcodeURL(device))
     }
 
-    private func serviceBackend(for device: InventoryDevice) async throws -> SimulatorBackgroundServiceBackend {
+    private func serviceBackend(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServiceBackend
+    {
         guard case .simulator(let simulator) = device, simulator.state == "Booted" else {
             throw DeviceDomainError.unavailable("background-services-unavailable",
                                        "Background services are available only on a booted simulator.")
@@ -101,7 +113,7 @@ package struct LiveDeviceStateSource: DeviceStateSource {
         guard let url = try await xcodeURL(device) else {
             throw DeviceDomainError.configuration("background-services-source", "simctl requires the simulator's developer tools.")
         }
-        return .live(device: simulator, xcodeURL: url)
+        return .live(device: simulator, xcodeURL: url, catalog: catalog)
     }
 
     private static func settingsArguments(_ tool: SimulatorSettingsBackend.Tool, _ arguments: [String]) throws -> [String] {

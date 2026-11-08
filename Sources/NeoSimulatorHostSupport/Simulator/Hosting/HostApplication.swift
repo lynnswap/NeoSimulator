@@ -38,10 +38,6 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         engine = try SimulatorScreenHost(runtime: runtime, conflicts: conflicts, presenter: DeviceWindowPresenter(),
                                          isManaged: isManaged, headless: headless)
         super.init()
-        engine.onOpen = { identifier in
-            HostPreferences.defaults.set(identifier.identifier, forKey: HostPreferences.currentDeviceUDID)
-            HostPreferences.defaults.set(identifier.deviceSetPath, forKey: "CurrentDeviceSetPath")
-        }
         engine.onOwnershipChange = { [weak self] changed in
             guard let self, self.isManaged, !self.engine.isStopped else { return }
             try self.writeRegistration(testingVisibilityChanged: changed)
@@ -108,24 +104,12 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
             Self.handoverTarget?.engine.yieldToAnotherHost()
             Self.requestTermination()
         }
-        let defaults = HostPreferences.defaults
-        let attachesBooted = defaults.bool(forKey: HostPreferences.attachBootedOnStart)
-        try await engine.start(attachingBootedDevices: attachesBooted)
-        if isManaged {
-            if let initialDevice { openRequestedSimulator(initialDevice) }
-            return
-        }
-        let attached = attachesBooted && engine.hasPresentations
+        // Launching connects to and starts no device, also when another app opens the renderer: only the device that
+        // the launch names, or a later request, opens a screen.
+        try await engine.start(attachingBootedDevices: false)
         if let initialDevice {
             openRequestedSimulator(initialDevice)
-        } else if !attached, defaults.bool(forKey: HostPreferences.sessionOnLaunch),
-                  defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch),
-                  let device = Self.initialDevice(in: availableSimulatorDevices(),
-                      current: defaults.string(forKey: HostPreferences.currentDeviceUDID).map {
-                          SimulatorDeviceIdentifier($0, deviceSetPath: defaults.string(forKey: "CurrentDeviceSetPath"))
-                      }) {
-            openRequestedSimulator(device.identity)
-        } else if !engine.hasPresentations {
+        } else if !isManaged, !engine.hasPresentations {
             showDeviceBrowser()
         }
     }
@@ -335,15 +319,6 @@ package final class HostApplication: NSObject, NSApplicationDelegate, DeviceBrow
         configuration.activates = true
         configuration.allowsRunningApplicationSubstitution = false
         try await NSWorkspace.shared.open([url], withApplicationAt: managerURL, configuration: configuration)
-    }
-
-    /// Prefers the saved identity, then the last iPhone or first device across the available catalog.
-    package static func initialDevice(in devices: [AvailableDevice], current: SimulatorDeviceIdentifier?) -> AvailableDevice? {
-        if let current, let identifier = UUID(uuidString: current.identifier),
-           let device = devices.first(where: { $0.identity.deviceSetPath == current.deviceSetPath && UUID(uuidString: $0.identifier) == identifier }) {
-            return device
-        }
-        return devices.last { $0.productFamily == 1 && $0.deviceTypeName.contains("iPhone") } ?? devices.first
     }
 
     package static func observeHandoverSignal(_ onHandover: @escaping @MainActor @Sendable () -> Void) -> DispatchSourceSignal {

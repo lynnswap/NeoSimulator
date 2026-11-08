@@ -159,7 +159,7 @@ package final class CoreSimulatorInterface: @unchecked Sendable {
         deviceType = try await runtime.resolve(
             .objc(.method("deviceType", as: (() -> AnyObject?).self)),
             on: device)
-        guest = try await GuestMessages(runtime: runtime, device: device)
+        guest = try await GuestMessages(runtime: runtime, device: device, bootInfo: try requireClass("SimDeviceBootInfo"))
         logPath = try await runtime.resolve(.objc(.method("logPath", as: (() -> String?).self)), on: device)
         memoryWarningFilePath = try await runtime.resolve(
             .objc(.method("memoryWarningFilePath", as: (() -> String?).self)),
@@ -247,12 +247,22 @@ private struct InventoryMessages: @unchecked Sendable {
     }
 }
 
-/// Prepared guest requests that may block indefinitely. Send only from the device worker.
+/// Prepared device requests, which may block indefinitely. Send those that CoreSimulatorBridge answers in the guest only
+/// from the device's bridge worker, and the rest from its workers.
 private struct GuestMessages: @unchecked Sendable {
     typealias CloudSyncCompletion = CoreSimulatorInterface.CloudSyncCompletion
+    typealias NotificationHandler = CoreSimulatorInterface.NotificationHandler
 
     let state: NativeObjCMethod<UInt>
     let lastBootedAt: NativeObjCMethod<NSDate?>
+    /// The `SimDeviceBootInfo` that CoreSimulatorService last reported, read from the device's own state.
+    let bootStatus: NativeObjCMethod<AnyObject?>
+    /// 0 booting, 1 waiting on backboardd, 2 waiting on data migration, 3 data migration failed, 4 waiting on the system
+    /// app, and `UInt32.max` finished.
+    let bootStatusValue: NativeObjCMethod<UInt32>
+    let bootStatusIsTerminal: NativeObjCMethod<Bool>
+    let registerHandler: NativeObjCMethod<UInt64, DispatchQueue, NotificationHandler>
+    let unregisterHandler: NativeObjCMethod<Void, UInt64>
     let supportsFeature: NativeObjCMethod<Bool, String>
     let interfaceStyle: NativeObjCMethod<Int>
     let setInterfaceStyle: NativeObjCMethod<Void, Int>
@@ -280,9 +290,20 @@ private struct GuestMessages: @unchecked Sendable {
     let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
 
     @MainActor
-    init(runtime: ABIRuntime, device: AnyClass) async throws {
+    init(runtime: ABIRuntime, device: AnyClass, bootInfo: AnyClass) async throws {
         state = try await runtime.resolve(.objc(.method("state", as: (() -> UInt).self)), on: device)
         lastBootedAt = try await runtime.resolve(.objc(.method("lastBootedAt", as: (() -> NSDate?).self)), on: device)
+        bootStatus = try await runtime.resolve(.objc(.method("bootStatus", as: (() -> AnyObject?).self)), on: device)
+        bootStatusValue = try await runtime.resolve(.objc(.method("status", as: (() -> UInt32).self)), on: bootInfo)
+        bootStatusIsTerminal = try await runtime.resolve(
+            .objc(.method("isTerminalStatus", as: (() -> Bool).self)), on: bootInfo)
+        registerHandler = try await runtime.resolve(
+            .objc(.method("registerNotificationHandlerOnQueue:handler:",
+                as: ((DispatchQueue, @escaping NotificationHandler) -> UInt64).self)),
+            on: device)
+        unregisterHandler = try await runtime.resolve(
+            .objc(.method("unregisterNotificationHandler:error:", as: ((UInt64) throws -> Void).self)),
+            on: device)
         supportsFeature = try await runtime.resolve(
             .objc(.method("supportsFeature:", as: ((String) -> Bool).self)),
             on: device)
@@ -351,14 +372,61 @@ private struct GuestMessages: @unchecked Sendable {
     }
 }
 
-/// One device's `GuestMessages`, whose calls only its channel's worker makes.
+/// One device's `GuestMessages`, which only its workers send.
 private struct GuestBridge: @unchecked Sendable {
+    private static let notifications = DispatchQueue(label: "dev.lynnswap.NeoSimulator.device-notifications")
+
     let client: NativeDeviceClient
+    /// The SimDevice that the client opened, which the device's owner holds.
+    let object: AnyObject
     let messages: GuestMessages
 
     /// The SimDevice, or a failure once its client has ended.
     var device: AnyObject {
-        get throws { try client.device() }
+        get throws {
+            try client.checkConnected()
+            return object
+        }
+    }
+
+    /// How far the guest has started, from what CoreSimulatorService last reported: this asks the guest nothing.
+    func startup() throws -> GuestStartup {
+        let device = try device
+        // 2 booting, 3 booted.
+        let state = try unsafe messages.state.unsafeInvoke(on: device)
+        guard state == 2 || state == 3 else { return .stopped }
+        // CoreSimulatorService reports a status from the start of each boot that it watches. Without one, nothing
+        // would report an end to wait for.
+        guard let status = try unsafe messages.bootStatus.unsafeInvoke(on: device) else {
+            return state == 3 ? .started : .starting("booting")
+        }
+        let value = try unsafe messages.bootStatusValue.unsafeInvoke(on: status)
+        if value == UInt32.max { return .started }
+        // CoreSimulator's own monitor stops at a terminal status, so nothing would report a later one.
+        guard !(try unsafe messages.bootStatusIsTerminal.unsafeInvoke(on: status)) else {
+            return .failed(value == 3 ? "its data migration failed" : String(describing: status))
+        }
+        let phase = switch value {
+        case 1: "waiting for backboardd"
+        case 2: "migrating its data"
+        case 4: "waiting for its system app"
+        default: "booting"
+        }
+        return .starting(phase)
+    }
+
+    /// Calls `changed` after each of the device's notifications, which include each change of its state and its boot
+    /// status.
+    func observe(_ changed: @escaping @Sendable () -> Void) throws -> UInt64 {
+        let handler: GuestMessages.NotificationHandler = { _ in changed() }
+        return try unsafe messages.registerHandler.unsafeInvoke(on: device, Self.notifications, handler)
+    }
+
+    /// Nothing waits for a registration to leave, so its failure can only be logged. The registration belongs to the
+    /// SimDevice, so this also reaches it after the connection has ended.
+    func stopObservingReportingFailure(_ token: UInt64) {
+        do { try unsafe messages.unregisterHandler.unsafeInvoke(on: object, token) }
+        catch { hostLog("Could not unregister device notifications: \(error.localizedDescription)") }
     }
 
     func notificationState(_ name: String) throws -> UInt64 {
@@ -384,6 +452,25 @@ private struct GuestBridge: @unchecked Sendable {
     }
 
     var lastBootDate: Date? { (try? unsafe messages.lastBootedAt.unsafeInvoke(on: device)).flatMap { $0 as Date? } }
+}
+
+/// How far a guest has started, as CoreSimulatorService last reported it.
+private enum GuestStartup: Equatable, Sendable {
+    case started
+    /// What the boot waits for, as a phrase that completes "The device is still starting: …".
+    case starting(String)
+    /// The device is neither booting nor booted.
+    case stopped
+    /// How a boot ended before it finished, as a phrase that completes "The device did not finish starting: …".
+    case failed(String)
+}
+
+/// A boot that CoreSimulatorService reports as ended before the guest finished starting.
+package struct UnfinishedDeviceStartup: LocalizedError, Equatable {
+    /// How the boot ended, as a phrase that completes "The device did not finish starting: …".
+    package let reason: String
+
+    package var errorDescription: String? { "The device did not finish starting: \(reason)." }
 }
 
 /// A guest notification whose state changed, but which did not reach the guest.
@@ -558,16 +645,24 @@ package final class SimulatorDevice {
     package var hasUserInterfacePlugin: Bool { record.hasUserInterfacePlugin }
     /// Nil denotes the default device set.
     package var deviceSetPath: String? { record.deviceSetPath }
-    /// The owner of this device's requests, which every object made for the device shares.
+    /// The owner of this device's requests that CoreSimulator answers on the host, which every object made for the
+    /// device shares. Requests that the guest answers wait on `bridge` instead, so one held there does not hold these.
     package let channel: SimulatorDeviceChannel
+    /// The owner of SimulatorKit's registrations for this device's screens. They wait for a screen's queue rather than
+    /// for CoreSimulator, so a request that `channel` is still waiting for does not hold them back.
+    package let screenChannel: SimulatorDeviceChannel
+    private let bridge: SimulatorDeviceChannel
     private let interface: CoreSimulatorInterface
     private let client: NativeDeviceClient
     private let logPath: String?
     private let memoryWarningFilePath: String?
     private let dataPath: String?
-    private var guest: GuestBridge { GuestBridge(client: client, messages: interface.guest) }
+    /// Requests waiting for the guest to start, which the end of the connection wakes.
+    private var startupWaiters: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private var guest: GuestBridge { GuestBridge(client: client, object: object, messages: interface.guest) }
 
-    fileprivate init(_ opened: NativeDeviceClient.OpenedDevice, client: NativeDeviceClient, interface: CoreSimulatorInterface) {
+    fileprivate init(_ opened: NativeDeviceClient.OpenedDevice, client: NativeDeviceClient,
+                     interface: CoreSimulatorInterface, screenChannel: SimulatorDeviceChannel) {
         record = opened.record
         object = opened.object
         serviceContext = opened.context
@@ -577,6 +672,8 @@ package final class SimulatorDevice {
         self.client = client
         self.interface = interface
         channel = client.channel
+        self.screenChannel = screenChannel
+        bridge = client.bridge
     }
 
     /// Its set holds it until it ends, so this comes only after that.
@@ -584,6 +681,68 @@ package final class SimulatorDevice {
 
     fileprivate func update(_ record: SimulatorDeviceRecord) { self.record = record }
     fileprivate func removeFromSet() { record.state = 0 }
+
+    /// A request waiting for the guest finds the end when it reads the device again.
+    fileprivate func connectionEnded() {
+        for waiter in startupWaiters.values { waiter.yield() }
+    }
+
+    /// Returns once CoreSimulatorService reports that the guest has finished starting, which is when its own services
+    /// answer. `progress` hears what the boot waits for, each time that changes while this waits. A device whose boot
+    /// has no status, as one booted before CoreSimulatorService watched it, counts as started once it is booted. Throws
+    /// if the device stops, or ``UnfinishedDeviceStartup`` if its boot ends unfinished, and cancellation ends the wait.
+    package func waitForStartup(progress: @escaping @MainActor (String) -> Void) async throws {
+        try await waitForStartup(on: channel, progress: progress)
+    }
+
+    /// Reads and observes the startup on `channel`, the one that the requests waiting for it take, so that the wait
+    /// adds no other worker's calls to theirs.
+    private func waitForStartup(on channel: SimulatorDeviceChannel,
+                                progress: @escaping @MainActor (String) -> Void = { _ in }) async throws {
+        let waiter = UUID()
+        var changes: AsyncStream<Void>.Iterator?
+        var token: UInt64?
+        var reported: String?
+        defer {
+            startupWaiters.removeValue(forKey: waiter)?.finish()
+            if let token {
+                channel.cleanUp("stop observing the device's startup") { [guest] in guest.stopObservingReportingFailure(token) }
+            }
+        }
+        while true {
+            switch try await channel.read("read how far the device has started", { [guest] in try guest.startup() }) {
+            case .started: return
+            case .stopped:
+                throw DeviceIOError.unavailable("simulator-operation", "The device is not running.")
+            case .failed(let reason):
+                throw UnfinishedDeviceStartup(reason: reason)
+            case .starting(let phase):
+                if phase != reported {
+                    reported = phase
+                    progress(phase)
+                }
+                if changes == nil {
+                    // The next read follows the observation, since the guest can finish starting before it begins.
+                    let (stream, changed) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+                    startupWaiters[waiter] = changed
+                    changes = stream.makeAsyncIterator()
+                    token = try await channel.read("observe the device's startup", lateCompletion: { [guest] result in
+                        if case .success(let token) = result { guest.stopObservingReportingFailure(token) }
+                    }) { [guest] in try guest.observe { changed.yield() } }
+                } else if await changes?.next(isolation: #isolation) == nil {
+                    throw CancellationError()
+                }
+            }
+        }
+    }
+
+    /// The bridge's channel, once the guest has started. CoreSimulatorBridge answers one request at a time, and one sent
+    /// earlier can wait on a guest service that has yet to start, as a Core Animation debug option waits on the render
+    /// server, and hold every request after it, CoreSimulator's own boot monitor's among them.
+    private func startedBridge() async throws -> SimulatorDeviceChannel {
+        try await waitForStartup(on: bridge)
+        return bridge
+    }
 
     /// SimDeviceState as the set last reported it; 3 means booted and 0 that the set no longer lists the device.
     package var state: UInt { record.state }
@@ -608,51 +767,51 @@ package final class SimulatorDevice {
 
     /// Reads and flips the appearance as one step, so that no other request runs between them.
     package func toggleAppearance() async throws {
-        try await channel.change("toggle the device's appearance") { [guest] in
+        try await startedBridge().change("toggle the device's appearance") { [guest] in
             let style = try unsafe guest.messages.interfaceStyle.unsafeInvoke(on: guest.device)
             try unsafe guest.messages.setInterfaceStyle.unsafeInvoke(on: guest.device, style == 2 ? 1 : 2)
         }
     }
 
     package func postNotification(_ name: String) async throws {
-        try await channel.change("post \(name) in the device") { [guest] in try guest.post(name) }
+        try await startedBridge().change("post \(name) in the device") { [guest] in try guest.post(name) }
     }
 
     /// The guest's state of a Darwin notification.
     package func notificationState(_ name: String) async throws -> UInt64 {
-        try await channel.read("read \(name) from the device") { [guest] in try guest.notificationState(name) }
+        try await startedBridge().read("read \(name) from the device") { [guest] in try guest.notificationState(name) }
     }
 
     /// Sets a guest notification's state and posts it as one step. Throws ``GuestNotificationNotPosted`` when the state
     /// changed and only the post failed.
     package func sendNotificationState(_ name: String, to state: UInt64) async throws {
-        try await channel.change("change \(name) in the device") { [guest] in try guest.send(state, to: name) }
+        try await startedBridge().change("change \(name) in the device") { [guest] in try guest.send(state, to: name) }
     }
 
     /// Reads a guest notification's state, then sets and posts what `change` makes of it, as one step. Returns the state
     /// it set. Throws ``GuestNotificationNotPosted`` when the state changed and only the post failed.
     package func updateNotificationState(_ name: String, _ change: @escaping @Sendable (UInt64) -> UInt64) async throws {
-        try await channel.change("change \(name) in the device") { [guest] in
+        try await startedBridge().change("change \(name) in the device") { [guest] in
             try guest.send(change(try guest.notificationState(name)), to: name)
         }
     }
 
     /// CoreSimulator content-size values: 1–12, from Extra Small to Accessibility XXXL.
     package func contentSizeCategory() async throws -> Int {
-        try await channel.read("read the device's text size") { [guest] in
+        try await startedBridge().read("read the device's text size") { [guest] in
             try unsafe guest.messages.contentSizeCategory.unsafeInvoke(on: guest.device)
         }
     }
 
     package func setContentSizeCategory(_ category: Int) async throws {
-        try await channel.change("change the device's text size") { [guest] in
+        try await startedBridge().change("change the device's text size") { [guest] in
             try unsafe guest.messages.setContentSizeCategory.unsafeInvoke(on: guest.device, category)
         }
     }
 
     /// Reads the text size and sets what `change` makes of it, if anything, as one step.
     package func updateContentSizeCategory(_ change: @escaping @Sendable (Int) throws -> Int?) async throws {
-        try await channel.change("change the device's text size") { [guest] in
+        try await startedBridge().change("change the device's text size") { [guest] in
             let category = try unsafe guest.messages.contentSizeCategory.unsafeInvoke(on: guest.device)
             if let updated = try change(category) {
                 try unsafe guest.messages.setContentSizeCategory.unsafeInvoke(on: guest.device, updated)
@@ -662,7 +821,7 @@ package final class SimulatorDevice {
 
     /// Atomically reads Increase Contrast (0 unknown, 1 off, 2 on) and applies `change`.
     package func updateIncreaseContrast(_ change: @escaping @Sendable (Int) throws -> Bool) async throws {
-        try await channel.change("change the device's Increase Contrast") { [guest] in
+        try await startedBridge().change("change the device's Increase Contrast") { [guest] in
             let enabled = try change(try unsafe guest.messages.increaseContrastMode.unsafeInvoke(on: guest.device))
             try unsafe guest.messages.setIncreaseContrast.unsafeInvoke(on: guest.device, enabled)
         }
@@ -676,7 +835,7 @@ package final class SimulatorDevice {
         nonisolated(unsafe) let completion: CoreSimulatorInterface.CloudSyncCompletion = { error in
             continuation.finish(throwing: error)
         }
-        try await channel.change(operation) { [guest] in
+        try await startedBridge().change(operation) { [guest] in
             try unsafe guest.messages.triggerCloudSync.unsafeInvoke(on: guest.device, .main, completion)
         }
         let limit = DeviceOperationLimit.cloudSync
@@ -717,7 +876,7 @@ package final class SimulatorDevice {
     /// Sends a counted CarPlay request; each start needs one end. Throws CarPlayRequestMoot if the device is no longer in
     /// `boot` when the request runs.
     package func setCarPlayEnabled(_ enabled: Bool, inBoot boot: Date?) async throws {
-        try await channel.change(enabled ? "start CarPlay on the device" : "stop CarPlay on the device") { [guest] in
+        try await startedBridge().change(enabled ? "start CarPlay on the device" : "stop CarPlay on the device") { [guest] in
             // A restart between this check and guest delivery cannot be detected here.
             guard guest.lastBootDate == boot else { throw CarPlayRequestMoot() }
             try unsafe guest.messages.enableCarPlay.unsafeInvoke(on: guest.device, enabled)
@@ -727,7 +886,7 @@ package final class SimulatorDevice {
     /// The guest values that `notifications` and `debugOptions` name, read as one step. CoreSimulator drops the error of a
     /// debug option's read, so false can also mean that it failed.
     package func guestState(notifications: [String], debugOptions: [UInt32]) async throws -> GuestStateReading {
-        try await channel.read("read the device's state") { [guest] in
+        try await startedBridge().read("read the device's state") { [guest] in
             var reading = GuestStateReading()
             for name in notifications { reading.notifications[name] = try guest.notificationState(name) }
             for option in debugOptions { reading.debugOptions[option] = try guest.debugOption(option) }
@@ -737,7 +896,7 @@ package final class SimulatorDevice {
 
     /// Reads a Core Animation debug option, sets the opposite and reads it back, as one step.
     package func toggleCADebugOption(_ option: UInt32, title: String) async throws -> CADebugOptionChange {
-        try await channel.change("change \(title) on the device") { [guest] in
+        try await startedBridge().change("change \(title) on the device") { [guest] in
             let enabled = try !guest.debugOption(option)
             try unsafe guest.messages.setCADebugOption.unsafeInvoke(on: guest.device, option, enabled)
             return CADebugOptionChange(requested: enabled, observed: try guest.debugOption(option))
@@ -746,7 +905,7 @@ package final class SimulatorDevice {
 
     /// Recorded routes in runtime order; empty if none are reported.
     package func locationScenarios() async throws -> [LocationScenario] {
-        try await channel.read("read the device's location scenarios") { [guest] in
+        try await startedBridge().read("read the device's location scenarios") { [guest] in
             try unsafe guest.messages.availableLocationScenarios.unsafeInvoke(on: guest.device)?.compactMap { scenario in
                 guard let name = scenario["name"] as? String else { return nil }
                 return LocationScenario(name: name, localizedName: scenario["localizedName"] as? String ?? name)
@@ -755,32 +914,32 @@ package final class SimulatorDevice {
     }
 
     package func clearSimulatedLocation() async throws {
-        try await channel.change("clear the device's simulated location") { [guest] in
+        try await startedBridge().change("clear the device's simulated location") { [guest] in
             try unsafe guest.messages.clearSimulatedLocation.unsafeInvoke(on: guest.device)
         }
     }
 
     package func setLocation(latitude: Double, longitude: Double) async throws {
-        try await channel.change("set the device's simulated location") { [guest] in
+        try await startedBridge().change("set the device's simulated location") { [guest] in
             try unsafe guest.messages.setLocation.unsafeInvoke(on: guest.device, latitude, longitude)
         }
     }
 
     package func setLocationScenario(_ name: String) async throws {
-        try await channel.change("run a location scenario on the device") { [guest] in
+        try await startedBridge().change("run a location scenario on the device") { [guest] in
             try unsafe guest.messages.setLocationScenario.unsafeInvoke(on: guest.device, name)
         }
     }
 
     /// Uses the byte-sized keyboard type returned by IndigoHIDGetKeyboardType.
     package func setHardwareKeyboardEnabled(_ enabled: Bool, keyboardType: UInt8) async throws {
-        try await channel.change("change the device's hardware keyboard") { [guest] in
+        try await startedBridge().change("change the device's hardware keyboard") { [guest] in
             try unsafe guest.messages.setHardwareKeyboard.unsafeInvoke(on: guest.device, enabled, keyboardType)
         }
     }
 
     package func setKeyboardLanguage(_ language: String) async throws {
-        try await channel.change("change the device's keyboard language") { [guest] in
+        try await startedBridge().change("change the device's keyboard language") { [guest] in
             try unsafe guest.messages.setKeyboardLanguage.unsafeInvoke(on: guest.device, language)
         }
     }
@@ -955,8 +1114,9 @@ package final class SimulatorDeviceSet {
     }
 
     private func makeClient(_ key: String) -> NativeDeviceClient {
-        let channel = DeviceIOHub.shared.channel(for: .device(DeviceAddress(identifier: key, deviceSetPath: address.path)))
-        return NativeDeviceClient(identifier: key, address: address, channel: channel, interface: interface) {
+        let device = DeviceAddress(identifier: key, deviceSetPath: address.path)
+        return NativeDeviceClient(identifier: key, address: address, channel: DeviceIOHub.shared.channel(for: .device(device)),
+                                  bridge: DeviceIOHub.shared.channel(for: .bridge(device)), interface: interface) {
             [weak self] client, deviceWasDeleted in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.clientEnded(client, key, deviceWasDeleted: deviceWasDeleted) }
@@ -976,7 +1136,9 @@ package final class SimulatorDeviceSet {
                 clients[key] = nil
                 return nil
             }
-            let device = SimulatorDevice(opened, client: client, interface: interface)
+            let screens = DeviceAddress(identifier: key, deviceSetPath: address.path)
+            let device = SimulatorDevice(opened, client: client, interface: interface,
+                                         screenChannel: DeviceIOHub.shared.channel(for: .screens(screens)))
             clients[key]?.device = device
             return device
         }
@@ -990,6 +1152,7 @@ package final class SimulatorDeviceSet {
         clients[key] = nil
         guard let device = current.device else { return client.release() }
         if deviceWasDeleted { device.removeFromSet() }
+        device.connectionEnded()
     }
 
     /// Registers `handler` for changes to the set's devices, on the main queue.
@@ -1202,7 +1365,7 @@ private func allocate(_ type: AnyClass) -> AnyObject? {
 /// Native retain cycles require cancelling the connection and clearing the set's context,
 /// devices, and pairs. Release waits for the connection-end notification and all device
 /// holders; earlier release can leak the context or leave SimulatorKit without a set.
-/// Cancellation returns held lookups, but bridge calls occupy the worker until they return.
+/// Cancellation returns held lookups, but bridge calls occupy the bridge worker until they return.
 private final class NativeDeviceClient: @unchecked Sendable {
     struct OpenedDevice: @unchecked Sendable {
         let object: AnyObject
@@ -1221,6 +1384,8 @@ private final class NativeDeviceClient: @unchecked Sendable {
     }
 
     let channel: SimulatorDeviceChannel
+    /// The channel of the device's requests that its guest answers, which also send to what this has open.
+    let bridge: SimulatorDeviceChannel
     private let identifier: String
     private let address: DeviceSetAddress
     private let interface: CoreSimulatorInterface
@@ -1228,13 +1393,15 @@ private final class NativeDeviceClient: @unchecked Sendable {
     private let events: DispatchQueue
     private let connection = Mutex(Connection())
     private var opened: (context: AnyObject, set: AnyObject, device: AnyObject, toolPath: String?)?
-    private var isReleased = false
+    /// Set on the worker, and read from the bridge worker too.
+    private let isReleased = Atomic(false)
 
-    init(identifier: String, address: DeviceSetAddress, channel: SimulatorDeviceChannel, interface: CoreSimulatorInterface,
-         onEnd: @escaping @Sendable (NativeDeviceClient, _ deviceWasDeleted: Bool) -> Void) {
+    init(identifier: String, address: DeviceSetAddress, channel: SimulatorDeviceChannel, bridge: SimulatorDeviceChannel,
+         interface: CoreSimulatorInterface, onEnd: @escaping @Sendable (NativeDeviceClient, _ deviceWasDeleted: Bool) -> Void) {
         self.identifier = identifier
         self.address = address
         self.channel = channel
+        self.bridge = bridge
         self.interface = interface
         self.onEnd = onEnd
         events = DispatchQueue(label: "dev.lynnswap.NeoSimulator.device-client.\(identifier)", qos: .userInitiated,
@@ -1246,7 +1413,7 @@ private final class NativeDeviceClient: @unchecked Sendable {
     func open() throws -> OpenedDevice? {
         if let opened { return try read(opened.device, context: opened.context, toolPath: opened.toolPath) }
         // A request that was waiting when this client ended belongs to no one who could release what it opened.
-        guard !isReleased else { throw DeviceIOError.unavailable("simulator-runtime", "The device's connection to CoreSimulator ended while it opened.") }
+        guard !isReleased.load(ordering: .acquiring) else { throw DeviceIOError.unavailable("simulator-runtime", "The device's connection to CoreSimulator ended while it opened.") }
         guard let uuid = NSUUID(uuidString: identifier) else { return nil }
         guard let allocated = allocate(interface.serviceClass) else {
             throw DeviceIOError.unavailable("simulator-runtime", "Could not allocate the device's connection to CoreSimulator.")
@@ -1283,23 +1450,28 @@ private final class NativeDeviceClient: @unchecked Sendable {
         }
     }
 
-    /// The SimDevice, for a request on the worker. CoreSimulator answers a message to a device whose context is gone as
-    /// though nothing had failed, so a request after the end must not reach it.
-    func device() throws -> AnyObject {
-        guard let opened, !connection.withLock({ $0.hasEnded }) else {
+    /// Throws once the connection has ended or the client has let go of it, from either of the device's workers.
+    /// CoreSimulator answers a message to a device whose context is gone as though nothing had failed, so a request after
+    /// the end must not reach it.
+    func checkConnected() throws {
+        guard !isReleased.load(ordering: .acquiring), !connection.withLock({ $0.hasEnded }) else {
             throw DeviceIOError.unavailable("simulator-runtime", "The simulator's connection to CoreSimulator has ended, so this request was not sent.")
         }
-        return opened.device
     }
 
-    /// Lets go of what is open, once no call holds the worker and before any request waiting there. Nothing waits for it.
+    /// Refuses requests from now on, and lets go of what is open once neither of the device's workers holds a call that
+    /// can still send to it. Nothing waits for it.
     nonisolated func release() {
-        channel.cleanUp("release the device's connection to CoreSimulator") { [self] in
-            isReleased = true
-            guard let opened else { return }
-            self.opened = nil
-            connection.withLock { $0.object = nil }
-            letGo(of: opened.set)
+        isReleased.store(true, ordering: .releasing)
+        // A cleanup runs once its worker's call has returned and before the requests waiting there, so the bridge's
+        // call has returned before the set is emptied, and the device's own call before that.
+        bridge.cleanUp("finish the guest's requests to the device") { [self] in
+            channel.cleanUp("release the device's connection to CoreSimulator") { [self] in
+                guard let opened else { return }
+                self.opened = nil
+                connection.withLock { $0.object = nil }
+                letGo(of: opened.set)
+            }
         }
     }
 

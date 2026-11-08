@@ -168,85 +168,34 @@ struct HostModeControllerTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func cancelledBootCandidatesKeepTheirObservationOriginWhileAnEarlierDeviceOpens() async throws {
+    func xcodeLaunchesMoveOpenScreensAndLeaveOtherRunningSimulatorsClosed() async throws {
         let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
         let xcode = XcodeInstallation(applicationURL: URL(fileURLWithPath: "/Xcode.app"), version: try ToolVersion("27.2"), buildVersion: "fixture")
         let devices = ["A", "B"].map {
             SimulatorHostDevice(identifier: $0, name: $0, descriptiveName: $0, runtimeIdentifier: "runtime",
                                 runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
         }
-        let entered = AsyncStream<Void>.makeStream()
-        let release = AsyncStream<Void>.makeStream()
-        let opened = Mutex<[DeviceInventoryID]>([])
-        let batch = Task {
-            try await controller.operation(.independent) { @Sendable in
-                let catalog = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
-                return try await controller.synchronizeBootedDevices(catalog, attachInitially: true, ownedIdentifiers: { [] }) { id in
-                    opened.withLock { $0.append(id) }
-                    if id == devices[0].inventoryID {
-                        entered.continuation.yield(())
-                        for await _ in release.stream { break }
-                    }
-                }
-            }
+        let catalog = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
+        // Another Xcode launched an app in both running simulators, but only A's screen is open.
+        let connections = devices.enumerated().map { index, device in
+            XcodeSimulatorConnection(
+                event: .init(processIdentifier: Int32(index + 1), startSeconds: 10, startMicroseconds: 0),
+                deviceIdentifier: device.identifier, xcodeURL: URL(fileURLWithPath: "/OtherXcode.app"))
         }
-        var events = entered.stream.makeAsyncIterator()
-        await events.next()
-        controller.makeScreenOpenRequest(for: devices[1].inventoryID).cancel()
-        release.continuation.yield(())
-        #expect(try await batch.value.failure == nil)
-        #expect(opened.withLock { $0 } == [devices[0].inventoryID])
-
-        let next = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
-        _ = try await controller.synchronizeBootedDevices(next, attachInitially: true, ownedIdentifiers: { [] }) { id in
-            opened.withLock { $0.append(id) }
+        let owner = RendererRegistration(
+            processIdentifier: 1, applicationPath: "/Renderer.app", xcodePath: xcode.applicationURL.path,
+            sessionIdentifier: "session", deviceIdentifiers: [devices[0].inventoryID])
+        let moved = Mutex<[DeviceInventoryID]>([])
+        _ = try await controller.moveOpenScreens(to: connections, in: catalog, owners: [owner]) { connection in
+            moved.withLock { $0.append(connection.deviceID) }
         }
-        #expect(opened.withLock { $0 } == [devices[0].inventoryID])
-    }
-
-    @Test(.timeLimit(.minutes(1)))
-    func staleShutdownAndMissingCatalogsDoNotReleaseCancelledBoots() async throws {
-        let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
-        let xcode = XcodeInstallation(applicationURL: URL(fileURLWithPath: "/Xcode.app"), version: try ToolVersion("27.2"), buildVersion: "fixture")
-        let shutdown = SimulatorHostDevice(identifier: "B", name: "B", descriptiveName: "B", runtimeIdentifier: "runtime",
-                                           runtimeName: "iOS", productFamily: "iPhone", state: "Shutdown")
-        let booted = SimulatorHostDevice(identifier: "B", name: "B", descriptiveName: "B", runtimeIdentifier: "runtime",
-                                         runtimeName: "iOS", productFamily: "iPhone", state: "Booted")
-        let opened = Mutex<[DeviceInventoryID]>([])
-        let poll: @Sendable ([SimulatorHostDevice]) async throws -> Void = { devices in
-            try await controller.operation(.independent) { @Sendable in
-                let catalog = try await controller.readScreenOpenCatalog { [(xcode, devices)] }
-                _ = try await controller.synchronizeBootedDevices(catalog, attachInitially: true, ownedIdentifiers: { [] }) { id in
-                    opened.withLock { $0.append(id) }
-                }
-            }
+        #expect(moved.withLock { $0 } == [devices[0].inventoryID])
+        // Opening B stays an explicit request, which the same controller still admits.
+        let opened = Mutex(false)
+        try await controller.screenOpen(controller.makeScreenOpenRequest(for: devices[1].inventoryID)) {
+            opened.withLock { $0 = true }
         }
-        try await poll([shutdown])
-        let entered = AsyncStream<Void>.makeStream()
-        let release = AsyncStream<Void>.makeStream()
-        let reading = Task {
-            try await controller.readScreenOpenCatalog {
-                entered.continuation.yield(())
-                for await _ in release.stream { break }
-                return [(xcode, [shutdown])]
-            }
-        }
-        var events = entered.stream.makeAsyncIterator()
-        await events.next()
-        controller.makeScreenOpenRequest(for: booted.inventoryID).cancel()
-        release.continuation.yield(())
-        let stale = try await reading.value
-        _ = try await controller.synchronizeBootedDevices(stale, attachInitially: true, ownedIdentifiers: { [] }) { id in
-            opened.withLock { $0.append(id) }
-        }
-        try await poll([booted])
-        #expect(opened.withLock { $0 }.isEmpty)
-        try await poll([])
-        try await poll([booted])
-        #expect(opened.withLock { $0 }.isEmpty)
-        try await poll([shutdown])
-        try await poll([booted])
-        #expect(opened.withLock { $0 } == [booted.inventoryID])
+        #expect(opened.withLock { $0 })
     }
 
     @Test(.timeLimit(.minutes(1)))

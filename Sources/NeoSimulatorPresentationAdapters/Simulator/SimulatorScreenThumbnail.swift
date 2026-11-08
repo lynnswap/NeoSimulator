@@ -95,9 +95,14 @@ package final class SimulatorScreenThumbnail: DeviceThumbnailSource {
     private var adapterRegistration: AnyObject?
     private var screens: [UInt32: Screen] = [:]
     private var updates: Task<Void, Never>?
+    private let stream: AsyncStream<UInt32?>
     private let continuation: AsyncStream<UInt32?>.Continuation
     private var onFrame: ((DeviceThumbnailFrame?) -> Void)?
     private var onFailure: ((any Error) -> Void)?
+
+    /// Where SimulatorKit reports to the handlers, which only pass the reports on. A screen waits for this queue while
+    /// it reports a frame or a disconnection, and on the main thread a `SimDisplayView` waits for that screen's queue.
+    private static let reports = DispatchQueue(label: "dev.lynnswap.NeoSimulator.thumbnail-reports")
 
     package static func connect(device: SimulatorHostDevice, onFrame: @escaping (DeviceThumbnailFrame?) -> Void,
                                 onFailure: @escaping (any Error) -> Void) async throws -> any DeviceThumbnailSource {
@@ -121,9 +126,11 @@ package final class SimulatorScreenThumbnail: DeviceThumbnailSource {
                 maskURL: client.record.framebufferMaskURL, context: client.serviceContext)
         } else { chromeRenderer = nil }
         try Task.checkCancellation()
-        return try SimulatorScreenThumbnail(runtime: runtime, lease: lease, adapter: adapter, bindings: bindings,
-                                            chromeRenderer: chromeRenderer,
-                                            onFrame: onFrame, onFailure: onFailure)
+        let thumbnail = SimulatorScreenThumbnail(runtime: runtime, lease: lease, adapter: adapter, bindings: bindings,
+                                                 chromeRenderer: chromeRenderer,
+                                                 onFrame: onFrame, onFailure: onFailure)
+        try await thumbnail.start()
+        return thumbnail
     }
 
     /// CoreSimulator can publish Booted before its I/O adapter, just as for a full screen connection.
@@ -139,7 +146,7 @@ package final class SimulatorScreenThumbnail: DeviceThumbnailSource {
 
     private init(runtime: SimulatorPresentationRuntime, lease: SimulatorDeviceLease, adapter: AnyObject, bindings: Bindings,
                  chromeRenderer: DeviceThumbnailChromeRenderer?,
-                 onFrame: @escaping (DeviceThumbnailFrame?) -> Void, onFailure: @escaping (any Error) -> Void) throws {
+                 onFrame: @escaping (DeviceThumbnailFrame?) -> Void, onFailure: @escaping (any Error) -> Void) {
         self.runtime = runtime
         self.lease = lease
         screenCornerRadius = lease.device.screenCornerRadius
@@ -149,16 +156,24 @@ package final class SimulatorScreenThumbnail: DeviceThumbnailSource {
         self.onFrame = onFrame
         self.onFailure = onFailure
         let (stream, continuation) = AsyncStream<UInt32?>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        self.stream = stream
         self.continuation = continuation
+    }
+
+    private func start() async throws {
+        guard let adapter, let lease else { throw CancellationError() }
+        let continuation = continuation
         let handler = try SimulatorDisplayInterface.AdapterEventHandler { _ in continuation.yield(nil) }
-        adapterRegistration = try unsafe runtime.display.registerAdapterEvents.unsafeInvoke(on: adapter, nil, .main, handler)
-        try refreshScreens()
+        adapterRegistration = try await runtime.display.registerEvents(
+            of: adapter, queue: Self.reports, on: lease.device.screenChannel, handler: handler)
+        try await refreshScreens()
+        let stream = stream
         updates = Task(priority: .utility) { [weak self] in
             for await identifier in stream {
                 guard !Task.isCancelled else { return }
                 do {
                     // An adapter change can be coalesced with a later frame notification.
-                    try self?.refreshScreens()
+                    try await self?.refreshScreens()
                     try self?.publishFrame(preferred: identifier)
                     // Coalesce incoming frames instead of putting a task for each frame on the main actor.
                     try await Task.sleep(for: .milliseconds(200))
@@ -184,8 +199,8 @@ package final class SimulatorScreenThumbnail: DeviceThumbnailSource {
         onFailure = nil
     }
 
-    private func refreshScreens() throws {
-        guard let adapter else { return }
+    private func refreshScreens() async throws {
+        guard let adapter, let channel = lease?.device.screenChannel else { return }
         let values = try unsafe runtime.display.adapterScreens.unsafeInvoke(on: adapter)
         screens = screens.filter { values[$0.key] != nil }
         for (identifier, value) in values where screens[identifier] == nil {
@@ -195,8 +210,10 @@ package final class SimulatorScreenThumbnail: DeviceThumbnailSource {
             guard try runtime.display.screenMessages.send("screenType", to: properties, as: UInt64.self) == 0 else { continue }
             let continuation = continuation
             let handler = try SimulatorDisplayInterface.ScreenEventHandler { _, _ in continuation.yield(identifier) }
-            let registration = try unsafe runtime.display.registerScreenEvents.unsafeInvoke(
-                on: screen, bindings.events, .main, handler)
+            let registration = try await runtime.display.registerEvents(
+                of: screen, types: bindings.events, queue: Self.reports, on: channel, handler: handler)
+            // Stopping meanwhile ends what this registered.
+            guard self.adapter != nil else { return }
             screens[identifier] = Screen(object: screen, registration: registration)
         }
     }

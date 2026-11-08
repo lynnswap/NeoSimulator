@@ -3,21 +3,25 @@ import NeoSimulatorHostSupport
 import AppKit
 import ObservationBridge
 import SwiftUI
+import NeoSimulatorManager
+import NeoSimulatorInspector
+import UniformTypeIdentifiers
 
 @MainActor
 final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
     let model: ServiceProfilesSettingsModel
     private let table = NSTableView()
     private let defaultProfileMenu = NSPopUpButton(frame: .zero, pullsDown: false)
-    private static let profileDragType = NSPasteboard.PasteboardType("dev.lynnswap.NeoSimulator.service-profile")
+    nonisolated fileprivate static let profileDragType = NSPasteboard.PasteboardType(
+        "dev.lynnswap.NeoSimulator.service-profile")
     private let profileActions = NSSegmentedControl(images: [
-        NSImage(systemSymbolName: "plus", accessibilityDescription: "New Service Profile")!,
+            NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Service Profile")!,
         NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
     ], trackingMode: .momentary, target: nil, action: nil)
+    /// What the add button offers: a profile that starts from the selected one, or profiles from files.
+    let addProfileMenu = NSMenu()
     private let detailsController = NSViewController()
-    private lazy var outline = BackgroundServiceOutlineController(categories: model.selectedProfile.categories, showsDetails: true)
-    private var displayedProfile: ServiceProfile?
-    private lazy var searchField = BackgroundServiceSearchField(model: outline.model)
+    let services: ServiceProfileServicesViewController
     private var observation: PortableObservationTracking.Token?
     private var profiles: [ServiceProfile] = []
     private var selecting = false
@@ -25,9 +29,10 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
 
     init(store: ServiceProfileStore) {
         model = ServiceProfilesSettingsModel(store: store)
+        services = ServiceProfileServicesViewController(model: model)
         super.init(nibName: nil, bundle: nil)
         title = "Service Profiles"
-        preferredContentSize = NSSize(width: 720, height: 520)
+        preferredContentSize = NSSize(width: 860, height: 520)
     }
     required init?(coder: NSCoder) { nil }
 
@@ -46,8 +51,10 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         table.delegate = self
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.setAccessibilityLabel("Service Profiles")
-        table.registerForDraggedTypes([Self.profileDragType])
+        table.registerForDraggedTypes([Self.profileDragType, .fileURL])
         table.setDraggingSourceOperationMask(.move, forLocal: true)
+        // Outside the app, a profile drops as a file.
+        table.setDraggingSourceOperationMask(.copy, forLocal: false)
         table.draggingDestinationFeedbackStyle = .gap
         let menu = NSMenu()
         menu.delegate = self
@@ -85,15 +92,15 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         sidebarItem.maximumThickness = 240
         sidebarItem.holdingPriority = .defaultHigh
         addSplitViewItem(sidebarItem)
-        detailsController.addChild(outline)
-        let list = outline.view
-        list.translatesAutoresizingMaskIntoConstraints = false
-        details.addSubview(list, positioned: .below, relativeTo: unavailable)
+        detailsController.addChild(services)
+        let panes = services.view
+        panes.translatesAutoresizingMaskIntoConstraints = false
+        details.addSubview(panes, positioned: .below, relativeTo: unavailable)
         NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: details.leadingAnchor),
-            list.trailingAnchor.constraint(equalTo: details.trailingAnchor),
-            list.topAnchor.constraint(equalTo: details.topAnchor),
-            list.bottomAnchor.constraint(equalTo: details.bottomAnchor),
+            panes.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            panes.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            panes.topAnchor.constraint(equalTo: details.topAnchor),
+            panes.bottomAnchor.constraint(equalTo: details.bottomAnchor),
         ])
         addSplitViewItem(NSSplitViewItem(viewController: detailsController))
     }
@@ -123,18 +130,17 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         profileActions.target = self
         profileActions.action = #selector(performProfileAction(_:))
         profileActions.segmentStyle = .smallSquare
+        for (title, action) in [
+            ("New Profile", #selector(newProfile(_:))), ("Import…", #selector(chooseProfilesToImport(_:))),
+        ] {
+            addProfileMenu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
         let controls = NSStackView(views: [profileActions, NSView()])
         controls.frame.size = NSSize(width: 180, height: controls.fittingSize.height)
         actions.view = controls
         splitViewItems[0].addBottomAlignedAccessoryViewController(actions)
-        let search = NSSplitViewItemAccessoryViewController()
-        search.preferredScrollEdgeEffectStyle = .hard
-        let searchControls = NSStackView(views: [searchField])
-        searchControls.orientation = .vertical
-        searchControls.alignment = .width
-        searchControls.frame.size = searchControls.fittingSize
-        search.view = searchControls
-        splitViewItems[1].addTopAlignedAccessoryViewController(search)
+        // The filter spans the categories and their services, but not the profiles.
+        splitViewItems[1].addTopAlignedAccessoryViewController(services.searchAccessory)
         observation = withPortableContinuousObservation { [weak self] _ in self?.update() }
     }
 
@@ -168,7 +174,8 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             unavailable.isHidden = false
         } else { unavailable.isHidden = true }
         let profile = model.selectedProfile
-        showProfile(profile)
+        // A profile's categories change when a custom category is added or removed.
+        services.show(profile)
         profileActions.setEnabled(model.canDelete, forSegment: 1)
         beginRenaming()
         if let issue = model.issue ?? profile.issue, let window = view.window {
@@ -179,13 +186,6 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
             alert.informativeText = issue
             alert.beginSheetModal(for: window)
         }
-    }
-
-    private func showProfile(_ profile: ServiceProfile) {
-        guard displayedProfile !== profile else { return }
-        displayedProfile = profile
-        outline.model.setCategories(profile.categories)
-        outline.isEnabled = profile.canEdit
     }
 
     override func viewDidAppear() {
@@ -225,33 +225,54 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-        guard profiles.indices.contains(row), profiles[row].id != ServiceProfile.allServices.id else { return nil }
-        let item = NSPasteboardItem()
-        item.setString(profiles[row].id.uuidString, forType: Self.profileDragType)
-        return item
+        guard profiles.indices.contains(row) else { return nil }
+        let profile = profiles[row]
+        // Encoding the profile's names and labels can't fail.
+        guard let contents = try? model.store.exportedFile(for: profile) else { return nil }
+        return ServiceProfileFilePromise(
+            movedProfile: profile.id == ServiceProfile.allServicesID ? nil : profile.id,
+            fileName: model.exportFileName(for: profile), contents: contents)
     }
 
     private func draggedProfile(_ info: any NSDraggingInfo) -> UUID? {
         guard let source = info.draggingSource as? NSTableView, source === table,
               let value = info.draggingPasteboard.string(forType: Self.profileDragType),
               let id = UUID(uuidString: value),
-              id != ServiceProfile.allServices.id,
+            id != ServiceProfile.allServicesID,
               profiles.contains(where: { $0.id == id }) else { return nil }
         return id
     }
 
+    private func droppedFiles(_ info: any NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [UTType.json.identifier],
+        ]
+        return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
+
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
                    proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-        guard draggedProfile(info) != nil else { return [] }
-        tableView.setDropRow(max(1, min(row, profiles.count)), dropOperation: .above)
-        return .move
+        if draggedProfile(info) != nil {
+            tableView.setDropRow(max(1, min(row, profiles.count)), dropOperation: .above)
+            return .move
+        }
+        guard !droppedFiles(info).isEmpty else { return [] }
+        // Files add profiles to the list rather than at a row.
+        tableView.setDropRow(-1, dropOperation: .on)
+        return .copy
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo,
                    row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard dropOperation == .above, row >= 1, row <= profiles.count,
-              let id = draggedProfile(info) else { return false }
-        return model.move(id, before: row < profiles.count ? profiles[row].id : nil)
+        if let id = draggedProfile(info) {
+            guard dropOperation == .above, row >= 1, row <= profiles.count else { return false }
+            return model.move(id, before: row < profiles.count ? profiles[row].id : nil)
+        }
+        let files = droppedFiles(info)
+        guard !files.isEmpty else { return false }
+        importProfiles(from: files)
+        return true
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -266,11 +287,17 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         duplicate.target = self
         duplicate.representedObject = profile
         menu.addItem(duplicate)
-        if profile.id != ServiceProfile.allServices.id {
+        if profile.id != ServiceProfile.allServicesID {
             let rename = NSMenuItem(title: "Rename…", action: #selector(renameProfile(_:)), keyEquivalent: "")
             rename.target = self
             rename.representedObject = profile
             menu.addItem(rename)
+        }
+        let export = NSMenuItem(title: "Export…", action: #selector(exportProfile(_:)), keyEquivalent: "")
+        export.target = self
+        export.representedObject = profile
+        menu.addItem(export)
+        if profile.id != ServiceProfile.allServicesID {
             menu.addItem(.separator())
             let delete = NSMenuItem(title: "Delete", action: #selector(deleteProfile(_:)), keyEquivalent: "")
             delete.target = self
@@ -280,10 +307,57 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
     @objc private func performProfileAction(_ sender: NSSegmentedControl) {
         switch sender.selectedSegment {
-        case 0: model.create()
+        case 0:
+            addProfileMenu.popUp(
+                positioning: nil, at: NSPoint(x: 0, y: sender.isFlipped ? sender.bounds.maxY + 4 : -4), in: sender)
         case 1: confirmDeletion(model.selectedProfile)
         default: break
         }
+    }
+    // A new profile starts from the selected one, which can be the built-in profile.
+    @objc private func newProfile(_ sender: Any?) { model.duplicate(model.selectedProfile) }
+    @objc private func chooseProfilesToImport(_ sender: Any?) {
+        guard let window = view.window else { return }
+        let panel = NSOpenPanel()
+        panel.message = "Choose JSON files of service profiles to add."
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let self else { return }
+            importProfiles(from: panel.urls)
+        }
+    }
+    private func importProfiles(from urls: [URL]) {
+        Task { [weak self, model] in
+            do { try await model.importProfiles(from: urls) } catch {
+                self?.showFailure("Unable to Import Service Profiles", error)
+            }
+        }
+    }
+    @objc private func exportProfile(_ sender: NSMenuItem) {
+        guard let profile = sender.representedObject as? ServiceProfile, let window = view.window else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Service Profile"
+        panel.nameFieldStringValue = model.exportFileName(for: profile)
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.beginSheetModal(for: window) { [weak self, model] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { [weak self] in
+                do { try await model.export(profile, to: url) } catch {
+                    self?.showFailure("Unable to Export “\(profile.name)”", error)
+                }
+            }
+        }
+    }
+    private func showFailure(_ title: String, _ error: any Error) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.beginSheetModal(for: window)
     }
     @objc private func renameProfile(_ sender: NSMenuItem) {
         if let profile = sender.representedObject as? ServiceProfile {
@@ -298,7 +372,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         if let profile = sender.representedObject as? ServiceProfile { confirmDeletion(profile) }
     }
     private func confirmDeletion(_ profile: ServiceProfile) {
-        guard profile.id != ServiceProfile.allServices.id, let window = view.window else { return }
+        guard profile.id != ServiceProfile.allServicesID, let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "Delete Service Profile?"
         alert.informativeText = "The simulators keep their current services. Devices using this profile will follow the default profile at their next start."
@@ -316,6 +390,56 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
                 model.issue = nil
             }
         }
+    }
+}
+
+/// A dragged profile, which moves within the list and becomes a JSON file where it drops outside the app. Its
+/// file's contents come from when the drag starts.
+private final class ServiceProfileFilePromise: NSFilePromiseProvider, NSFilePromiseProviderDelegate {
+    /// The profile that the drag moves within the list, or `nil` for the built-in profile, which stays first.
+    let movedProfile: UUID?
+    private let fileName: String
+    private let contents: Data
+    private let writes = OperationQueue()
+
+    init(movedProfile: UUID?, fileName: String, contents: Data) {
+        self.movedProfile = movedProfile
+        self.fileName = fileName
+        self.contents = contents
+        super.init()
+        writes.qualityOfService = .userInitiated
+        fileType = UTType.json.identifier
+        // The provider holds what it writes, so the drag keeps the delegate as long as it needs it.
+        delegate = self
+    }
+
+    override func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        super.writableTypes(for: pasteboard)
+            + (movedProfile == nil ? [] : [ServiceProfilesSettingsViewController.profileDragType])
+    }
+
+    override func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        guard type == ServiceProfilesSettingsViewController.profileDragType else {
+            return super.pasteboardPropertyList(forType: type)
+        }
+        return movedProfile?.uuidString
+    }
+
+    func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
+        fileName
+    }
+
+    func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue { writes }
+
+    func filePromiseProvider(
+        _ filePromiseProvider: NSFilePromiseProvider, writePromiseTo url: URL,
+        completionHandler: @escaping @Sendable ((any Error)?) -> Void
+    ) {
+        do {
+            // The destination needn't be empty, and a file already there stays.
+            try contents.write(to: url, options: .withoutOverwriting)
+            completionHandler(nil)
+        } catch { completionHandler(error) }
     }
 }
 
@@ -362,7 +486,7 @@ private final class ServiceProfileCell: NSTableCellView {
     required init?(coder: NSCoder) { nil }
 
     func configure(profile: ServiceProfile) {
-        subtitle.isHidden = profile.id != ServiceProfile.allServices.id
+        subtitle.isHidden = profile.id != ServiceProfile.allServicesID
         textField?.identifier = NSUserInterfaceItemIdentifier(profile.id.uuidString)
         textField?.isEditable = profile.canEdit
         textField?.isSelectable = profile.canEdit
@@ -382,25 +506,17 @@ final class OpaqueSettingsPane: NSView {
 }
 
 #if DEBUG
-#Preview("Service Profiles", traits: .sizeThatFitsLayout) {
-    PreviewViewController {
-        let store = ServiceProfileStore(fileURL: URL.temporaryDirectory
-            .appending(path: "NeoSimulator.ServiceProfilesPreview", directoryHint: .isDirectory)
-            .appending(path: "ServiceProfiles.json"), legacyDefaults: nil)
-        if store.profiles.isEmpty {
-            let _ = try? store.create(name: "Development", configuration: ServiceConfiguration())
-            let _ = try? store.create(name: "Lightweight", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
-        }
-        let controller = ServiceProfilesSettingsViewController(store: store)
-        controller.model.selectedProfileID = store.profiles.first?.id
-        return controller
-    }.frame(width: 720, height: 520)
+#Preview("Service Profiles", traits: .fixedLayout(width: 720, height: 520)) {
+    let store = ServiceProfileStore.preview(named: "NeoSimulator.ServiceProfilesPreview")
+    _ = try? store.create(name: "Development", configuration: ServiceConfiguration())
+    _ = try? store.create(
+        name: "Lightweight", configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+    let controller = ServiceProfilesSettingsViewController(store: store)
+    controller.model.selectedProfileID = store.profiles.first?.id
+    return controller
 }
-#Preview("All Services", traits: .sizeThatFitsLayout) {
-    PreviewViewController {
-        ServiceProfilesSettingsViewController(store: ServiceProfileStore(fileURL: URL.temporaryDirectory
-            .appending(path: "NeoSimulator.DefaultServiceProfilePreview", directoryHint: .isDirectory)
-            .appending(path: "ServiceProfiles.json"), legacyDefaults: nil))
-    }.frame(width: 720, height: 520)
+
+#Preview("All Services", traits: .fixedLayout(width: 720, height: 520)) {
+    ServiceProfilesSettingsViewController(store: .preview(named: "NeoSimulator.DefaultServiceProfilePreview"))
 }
 #endif

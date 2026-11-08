@@ -94,9 +94,9 @@ package struct SimulatorDisplayInterface {
     let isCarPlay: NativeObjCMethod<Bool>
     let buttonTarget: NativeSwiftMethod<() -> UInt32>
     package typealias ScreenEventHandler = NativeSwiftClosure<(NativeSwiftBorrowedValue, NativeSwiftBorrowedValue) -> Void>
-    /// `SimDeviceScreen.register(types:queue:handler:)`. Releasing the
-    /// returned registration ends it.
-    let registerScreenEvents: NativeSwiftMethod<(NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue>
+    /// `SimDeviceScreen.register(types:queue:handler:)`, which `registerEvents(of:types:queue:on:handler:)` calls.
+    private let registerScreenEvents:
+        NativeSwiftMethod<(NativeSwiftValue, DispatchQueue, ScreenEventHandler) -> NativeSwiftValue>
     /// `SimDeviceScreen.ScreenEventTypes.properties`.
     let screenPropertyEvents: NativeSwiftValue
     /// `SimDeviceScreen.properties`, an `id<SimScreenProperties>`.
@@ -110,8 +110,8 @@ package struct SimulatorDisplayInterface {
     /// Screens currently published by the device's screen adapter.
     let adapterScreens: NativeSwiftMethod<() -> [UInt32: NativeSwiftValue]>
     package typealias AdapterEventHandler = NativeSwiftClosure<(NativeSwiftValue) -> Void>
-    /// Screen-adapter registration. Releasing the token ends callbacks except those already queued.
-    let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
+    /// `SimDeviceScreenAdapter.register(screenID:queue:handler:)`, which `registerEvents(of:queue:on:handler:)` calls.
+    private let registerAdapterEvents: NativeSwiftMethod<(UInt32?, DispatchQueue, AdapterEventHandler) -> AnyObject>
     /// Messages to CoreSimDeviceIO's screen proxies: `SimScreenProperties`
     /// and `SimScreenMode`.
     package let screenMessages = ProxyMessages()
@@ -377,17 +377,19 @@ package struct SimulatorDisplayInterface {
     /// Displays configures. 0 is a device's own screen and 2 is CarPlay.
     package static let externalScreenType: UInt64 = 1
 
-    /// Observes connected TVOut screens on the main queue, including future connections.
-    /// Releasing the token ends reports except those already queued; nil means no adapter.
+    /// Observes connected TVOut screens, including future connections, and reports each to `found` in turn, as does a
+    /// failure to register. Releasing the token ends the reports, also one under way; nil means no adapter.
     package func registerForExternalScreens(
         of device: SimulatorDevice,
-        found: @escaping @MainActor (Result<(identifier: UInt32, object: AnyObject), any Error>) -> Void
+        found: @escaping @MainActor (Result<(identifier: UInt32, object: AnyObject), any Error>) async -> Void
     ) throws -> AnyObject? {
         guard let adapter = try screenAdapter.adapter(of: device.handle.object) else { return nil }
-        let handler = try AdapterEventHandler { event in
+        let observation = ExternalScreenObservation(found: found)
+        let handler = try AdapterEventHandler { [weak observation] event in
             // The adapter reports on the main queue, which the event never leaves.
             nonisolated(unsafe) let event = event
             MainActor.assumeIsolated {
+                guard let observation else { return }
                 do {
                     // A disconnection also carries its screen.
                     guard let screen = try event.copyEnumPayloadAndWait(forCase: "connected")?
@@ -395,13 +397,105 @@ package struct SimulatorDisplayInterface {
                     let properties = try unsafe screenProperties.unsafeInvoke(on: screen)
                     guard try screenMessages.send("screenType", to: properties, as: UInt64.self) == Self.externalScreenType
                     else { return }
-                    found(.success((try screenMessages.send("screenID", to: properties, as: UInt32.self), screen)))
+                    let identifier = try screenMessages.send("screenID", to: properties, as: UInt32.self)
+                    observation.report(.success((identifier, screen)))
                 } catch {
-                    found(.failure(error))
+                    observation.report(.failure(error))
                 }
             }
         }
-        return try unsafe registerAdapterEvents.unsafeInvoke(on: adapter, UInt32?.none, .main, handler)
+        observation.registering = Task { [weak observation] in
+            do {
+                let registration = try await registerEvents(of: adapter, queue: .main, on: device.screenChannel,
+                                                            handler: handler)
+                // A token released meanwhile drops the registration here, which ends it.
+                observation?.registration = registration
+            } catch {
+                observation?.report(.failure(error))
+            }
+        }
+        return observation
+    }
+
+    /// Registers `handler` for `types` of `screen`'s events, which SimulatorKit reports on `queue`. Releasing the
+    /// returned registration ends it.
+    package func registerEvents(
+        of screen: AnyObject, types: NativeSwiftValue, queue: DispatchQueue,
+        on channel: SimulatorDeviceChannel, handler: ScreenEventHandler
+    ) async throws -> NativeSwiftValue {
+        // The worker gets its own value of the types, which other screens' registrations also read.
+        nonisolated(unsafe) let screen = screen, types = try types.copy(), handler = handler
+        let register = registerScreenEvents
+        return try await Self.register("register for the screen's events", on: channel) {
+            try unsafe register.unsafeInvoke(on: screen, types, queue, handler)
+        }
+    }
+
+    /// Registers `handler` for `adapter`'s screen connections, which SimulatorKit reports on `queue`. Releasing the
+    /// returned registration ends the reports except those already queued.
+    package func registerEvents(
+        of adapter: AnyObject, queue: DispatchQueue, on channel: SimulatorDeviceChannel,
+        handler: AdapterEventHandler
+    ) async throws -> AnyObject {
+        nonisolated(unsafe) let adapter = adapter, handler = handler
+        let register = registerAdapterEvents
+        return try await Self.register("register for the screen adapter's events", on: channel) {
+            try unsafe register.unsafeInvoke(on: adapter, UInt32?.none, queue, handler)
+        }
+    }
+
+    /// Runs a SimulatorKit registration on `channel`'s worker, which is a device's `screenChannel`.
+    ///
+    /// A `SimDeviceScreen` or `SimDeviceScreenAdapter` adds an observer on its own queue and waits for that queue,
+    /// which reports some events by waiting for the observer's queue; a screen reports a disconnection or a frame that
+    /// way. `SimDisplayView` observes on the main queue, so a registration made on the main thread can wait for a queue
+    /// that waits for the main thread.
+    package static func register<Registration>(
+        _ operation: String, on channel: SimulatorDeviceChannel,
+        _ body: @escaping @Sendable () throws -> Registration
+    ) async throws -> Registration {
+        try await channel.read(operation) { Handoff(value: try body()) }.value
+    }
+}
+
+/// What a worker made, which its caller owns from then on.
+private struct Handoff<Value>: @unchecked Sendable {
+    let value: Value
+}
+
+/// What `registerForExternalScreens(of:found:)` returns.
+@MainActor
+private final class ExternalScreenObservation {
+    typealias Screen = Result<(identifier: UInt32, object: AnyObject), any Error>
+
+    var registration: AnyObject?
+    var registering: Task<Void, Never>?
+    private let found: @MainActor (Screen) async -> Void
+    private var pending: [Screen] = []
+    /// Passes the reports on, each once the one before it has been taken.
+    private var reporting: Task<Void, Never>?
+
+    init(found: @escaping @MainActor (Screen) async -> Void) { self.found = found }
+
+    func report(_ screen: Screen) {
+        pending.append(screen)
+        guard reporting == nil else { return }
+        reporting = Task { [weak self, found] in
+            while let screen = self?.next() { await found(screen) }
+        }
+    }
+
+    private func next() -> Screen? {
+        guard !pending.isEmpty else {
+            reporting = nil
+            return nil
+        }
+        return pending.removeFirst()
+    }
+
+    isolated deinit {
+        registering?.cancel()
+        reporting?.cancel()
     }
 }
 

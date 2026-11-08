@@ -19,6 +19,14 @@ public enum SimulatorServiceReadiness: Sendable {
     public var failure: (any Error)? { if case .failed(let error) = self { error } else { nil } }
 }
 
+/// How a device's startup stands for a service that waits for it to finish.
+package enum DeviceStartupWait: Equatable, Sendable {
+    /// What the boot waits for, as a phrase that completes "The device is still starting: …".
+    case starting(String)
+    /// The boot ended before the device finished starting.
+    case unfinished
+}
+
 /// The optional services of one connected display and whether each is ready.
 @MainActor
 @Observable
@@ -30,6 +38,8 @@ package final class DeviceOptionalServices {
     package private(set) var pasteboard = SimulatorServiceReadiness.notRouted
     /// A service is waiting because CoreDevice has not said yet what this device has. A change to the device's record ends this.
     package private(set) var isAwaitingDeviceRecord = false
+    /// How the device's startup stands for the input route, which waits for it: nil when it does not wait.
+    package private(set) var startup: DeviceStartupWait?
     /// Connects the input route again, set by whatever owns the route.
     @ObservationIgnored package var onRetryInput: (@MainActor () -> Void)?
 
@@ -38,6 +48,7 @@ package final class DeviceOptionalServices {
     package func setInput(_ readiness: SimulatorServiceReadiness) { input = readiness }
     package func setPasteboard(_ readiness: SimulatorServiceReadiness) { pasteboard = readiness }
     package func setAwaitingDeviceRecord(_ awaiting: Bool) { isAwaitingDeviceRecord = awaiting }
+    package func setStartup(_ startup: DeviceStartupWait?) { self.startup = startup }
 
     /// Connects the input route again after a failure. A route that is pending, ready or unsupported stays as it is.
     package func retryInput() {

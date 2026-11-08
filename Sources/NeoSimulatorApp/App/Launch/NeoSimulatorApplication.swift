@@ -3,6 +3,7 @@ import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import NeoSimulatorUI
+import NeoSimulatorManager
 
 /// Starts the NeoSimulator manager. Only the app's Xcode target calls this; it is not a supported API.
 @_spi(AppBootstrap) public enum NeoSimulatorApplication {

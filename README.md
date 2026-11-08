@@ -29,7 +29,7 @@ display host is kept after quitting. To use Device Hub, choose it under
 - [SDK guide](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/usingthesdk)
 - API reference: [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit/) and [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui/)
 - [Migrating from the CLI](Documentation/MigratingFromCLI.md)
-- [Development](Documentation/NeoSimulator.docc/Development.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Acknowledgements
 

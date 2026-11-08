@@ -3,6 +3,7 @@ import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class SettingsViewController: NSTabViewController {
@@ -84,12 +85,6 @@ final class SettingsViewController: NSTabViewController {
 }
 
 #if DEBUG
-struct PreviewViewController<Controller: NSViewController>: NSViewControllerRepresentable {
-    let makeController: () -> Controller
-    func makeNSViewController(context: Context) -> Controller { makeController() }
-    func updateNSViewController(_ controller: Controller, context: Context) {}
-}
-
 @MainActor
 enum SettingsPreview {
     static func licenses() -> NSViewController {

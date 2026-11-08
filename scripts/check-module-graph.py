@@ -26,14 +26,36 @@ GRAPH = {
     "NeoSimulatorHostSupport": {
         "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO", "ObservationBridge",
     },
+    "NeoSimulatorManager": {
+        "NeoSimulatorHostSupport", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+    },
+    "NeoSimulatorCompactWindow": {
+        "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+    },
+    "NeoSimulatorDeviceScreens": {
+        "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI",
+        "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO", "ObservationBridge",
+    },
+    "NeoSimulatorInspector": {
+        "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+        "ObservationBridge",
+    },
+    "NeoSimulatorSidebar": {
+        "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorPresentationAdapters",
+        "NeoSimulatorKit", "NeoSimulatorDeviceIO", "ObservationBridge",
+    },
+    "NeoSimulatorDeviceDisplay": {
+        "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI",
+        "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "ObservationBridge",
+    },
     "NeoSimulatorApp": {
-        "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
+        "NeoSimulatorSidebar", "NeoSimulatorDeviceDisplay", "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
         "NeoSimulatorDeviceIO", "ObservationBridge",
     },
     "NeoSimulatorService": {"NeoSimulatorHostSupport", "NeoSimulatorKit"},
     "CoreDeviceInventoryProbe": {"NeoSimulatorKit"},
 }
-PRESENTATION_FREE = {"NeoSimulatorNative", "NeoSimulatorDeviceIO", "NeoSimulatorKit"}
+PRESENTATION_FREE = {"NeoSimulatorNative", "NeoSimulatorDeviceIO", "NeoSimulatorKit", "NeoSimulatorManager"}
 PRESENTATION_FRAMEWORKS = {"AppKit", "SwiftUI"}
 
 

@@ -2,6 +2,7 @@ import NeoSimulatorKit
 import NeoSimulatorHostSupport
 import AppKit
 import SwiftUI
+import NeoSimulatorManager
 
 @MainActor
 final class GeneralSettingsViewController: NSHostingController<GeneralSettingsView> {
@@ -52,8 +53,7 @@ struct GeneralSettingsView: View {
                     Button("Restart to Apply", action: model.restart).disabled(!model.canRestart)
                 }
             }
-            Section("Startup and Windows") {
-                Toggle("Start the last used simulator on launch", isOn: $preferences.startLastDevice)
+            Section("Closing and Quitting") {
                 Toggle("Keep simulators running when closing a window", isOn: $preferences.keepRunningOnWindowClose)
                 Toggle("Keep simulators running when quitting NeoSimulator", isOn: $preferences.keepRunningOnQuit)
             }

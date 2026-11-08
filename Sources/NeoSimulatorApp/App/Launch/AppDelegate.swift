@@ -5,6 +5,10 @@ import NeoSimulatorKit
 import NeoSimulatorUI
 import ObservationBridge
 import SwiftUI
+import NeoSimulatorManager
+import NeoSimulatorCompactWindow
+import NeoSimulatorDeviceScreens
+import NeoSimulatorDeviceDisplay
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -78,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onError = { [weak self] error in self?.present(error) }
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }
-        controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
+        controller.deviceActions.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
         controller.onShowServiceProfile = { [weak self] in self?.showSettings(selectingServiceProfile: $0) }
         mainWindow = controller
         return controller
@@ -123,11 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installMenu()
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
-        ) { [weak self] notification in
-            let testingVisibilityChanged = notification.userInfo?["testingVisibilityChanged"] as? Bool == true
+        ) { [weak self] _ in
             Task { @MainActor in
                 self?.processObservation.refresh()
-                await self?.model.rendererDevicesDidChange(testingVisibilityChanged: testingVisibilityChanged)
+                await self?.model.rendererDevicesDidChange()
             }
         }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(

@@ -11,6 +11,12 @@ import SwiftUI
 import Synchronization
 import Testing
 import IOSurface
+@testable import NeoSimulatorManager
+@testable import NeoSimulatorCompactWindow
+@testable import NeoSimulatorDeviceScreens
+@testable import NeoSimulatorInspector
+@testable import NeoSimulatorDeviceDisplay
+@testable import NeoSimulatorSidebar
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
@@ -210,8 +216,8 @@ struct ManagerModelTests {
         let surface = try #require(IOSurface(properties: [.width: 80, .height: 160, .bytesPerElement: 4,
                                                          .pixelFormat: 0x42475241]))
         IOSurfaceLock(surface, [], nil)
-        try #require(IOSurfaceGetBaseAddress(surface)).initializeMemory(as: UInt8.self, repeating: 255,
-                                                                       count: IOSurfaceGetAllocSize(surface))
+        IOSurfaceGetBaseAddress(surface).initializeMemory(as: UInt8.self, repeating: 255,
+                                                          count: IOSurfaceGetAllocSize(surface))
         IOSurfaceUnlock(surface, [], nil)
         let image = try await DeviceThumbnailFrame(surface: surface, rotation: .pi / 2, chrome: chrome).snapshot()
         #expect(image.width == 96 && image.height == 48)
@@ -499,15 +505,11 @@ struct ManagerModelTests {
         await form.waitForCreation()
         #expect(created == ["My Phone", "phone", "ios"])
         preferences.showSingleTouches = true
-        preferences.startLastDevice = false
         #expect(defaults.bool(forKey: "ShowSingleTouches"))
-        #expect(!defaults.bool(forKey: "StartLastDeviceOnLaunch") && !defaults.bool(forKey: "SessionOnLaunch"))
         #expect(preferences.gifImageSize == 640)
         let externalDefaults = try #require(UserDefaults(suiteName: domain))
         externalDefaults.set(true, forKey: HostPreferences.screenShotUseMask)
         #expect(preferences.includeDeviceMask)
-        preferences.startLastDevice = true
-        #expect(defaults.bool(forKey: HostPreferences.startLastDeviceOnLaunch) && defaults.bool(forKey: HostPreferences.sessionOnLaunch))
     }
 
     @Test func deviceFilterShowsNativeSelectionWithoutChangingItsSymbol() throws {
@@ -522,7 +524,7 @@ struct ManagerModelTests {
         let button = try #require(item.view as? NSButton)
         let image = try #require(button.image)
         let menu = try #require(item.menuFormRepresentation?.submenu)
-        browser.menuNeedsUpdate(menu)
+        browser.sidebar.menuNeedsUpdate(menu)
         #expect(button.state == .off)
         let simulators = try #require(menu.items.first { $0.title == "Simulators" })
         #expect(NSApp.sendAction(try #require(simulators.action), to: simulators.target, from: simulators))
@@ -567,14 +569,14 @@ struct ManagerModelTests {
         let menu = try #require(controller.window?.toolbar?.items
             .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
         func choose(_ title: String) throws {
-            controller.menuNeedsUpdate(menu)
+            controller.sidebar.menuNeedsUpdate(menu)
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
         func deviceNames() -> Set<String> {
             Set((0..<outline.numberOfRows).compactMap { row in
-                guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
-                return controller.outlineView(outline, typeSelectStringFor: nil, item: item)
+                guard let item = outline.item(atRow: row), controller.sidebar.outlineView(outline, shouldSelectItem: item) else { return nil }
+                return controller.sidebar.outlineView(outline, typeSelectStringFor: nil, item: item)
             })
         }
         try choose("Show Groups")
@@ -595,7 +597,7 @@ struct ManagerModelTests {
             reportFailure: { _ in Issue.record("Unexpected failure") })
         let window = try #require(controller.window)
         defer { window.close() }
-        #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.allServices.id)
+        #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.allServicesID)
         window.makeKeyAndOrderFront(nil)
         window.layoutIfNeeded()
         let samples = SettingsWindowFrameSamples()
@@ -769,7 +771,7 @@ struct ManagerModelTests {
         controller.selectDevice(.coreDevice(ids["Mike"]!.uuidString))
         func rows() -> [String: Int] {
             Dictionary(uniqueKeysWithValues: (0..<outline.numberOfRows).compactMap { row in
-                outline.item(atRow: row).flatMap { controller.outlineView(outline, typeSelectStringFor: nil, item: $0) }.map { ($0, row) }
+                outline.item(atRow: row).flatMap { controller.sidebar.outlineView(outline, typeSelectStringFor: nil, item: $0) }.map { ($0, row) }
             })
         }
         func order() -> [String] { rows().sorted { $0.value < $1.value }.map(\.key) }
@@ -913,17 +915,17 @@ struct ManagerModelTests {
         let menu = try #require(controller.window?.toolbar?.items
             .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
         func choose(_ title: String) throws {
-            controller.menuNeedsUpdate(menu)
+            controller.sidebar.menuNeedsUpdate(menu)
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
         try choose("Availability")
-        #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
+        #expect(controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         try choose("Recent")
         controller.selectDevice(.coreDevice("A"))
         let selectedRow = try #require(outline.item(atRow: outline.selectedRow) as? NSObject)
         let groupedOrder = (0..<outline.numberOfRows).compactMap { row -> NSObject? in
-            guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
+            guard let item = outline.item(atRow: row), controller.sidebar.outlineView(outline, shouldSelectItem: item) else { return nil }
             return item as? NSObject
         }
         try choose("Show Groups")
@@ -945,29 +947,29 @@ struct ManagerModelTests {
         let search = try #require(inspectorViews(content).compactMap { $0 as? NSSearchField }
             .first { $0.placeholderString == "Search Devices" })
         search.stringValue = "Alpha"
-        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        controller.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         search.stringValue = ""
         controller.selectDevice(.coreDevice("A"))
-        controller.update()
+        controller.sidebar.update()
         let newGroup = try #require(outline.item(atRow: 0))
         #expect(outline.isItemExpanded(newGroup))
         search.stringValue = "Alpha"
-        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        controller.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         await source.setDevices(try devices(firstDate: 200_000))
         await model.refresh()
-        controller.update()
+        controller.sidebar.update()
         #expect(search.stringValue == "Alpha")
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
         #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
         search.stringValue = ""
-        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
-        #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
+        controller.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        #expect(controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
 
         func deviceNames() -> [String] {
             (0..<outline.numberOfRows).compactMap { row in
-                guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
-                return controller.outlineView(outline, typeSelectStringFor: nil, item: item)
+                guard let item = outline.item(atRow: row), controller.sidebar.outlineView(outline, shouldSelectItem: item) else { return nil }
+                return controller.sidebar.outlineView(outline, typeSelectStringFor: nil, item: item)
             }
         }
         for (date, expected) in [(199_999.0, ["Beta", "Alpha"]), (200_001.0, ["Alpha", "Beta"])] {
@@ -987,21 +989,21 @@ struct ManagerModelTests {
         #expect(viewScreen.isEnabled)
         await source.setDevices(try devices(firstDate: 200_000, firstConnection: "connecting"))
         await model.refresh()
-        controller.update()
+        controller.sidebar.update()
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
         #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
         #expect(!viewScreen.isEnabled)
-        let row = try #require(controller.outlineView(outline, viewFor: outline.tableColumns.first, item: selectedRow))
+        let row = try #require(controller.sidebar.outlineView(outline, viewFor: outline.tableColumns.first, item: selectedRow))
         #expect(row.accessibilityLabel()?.hasSuffix(", Available") == true)
 
         try choose("All Availability")
         try choose("Recent")
         await source.setDevices(try devices())
         await model.refresh()
-        controller.update()
+        controller.sidebar.update()
         controller.selectDevice(.coreDevice("A"))
-        let roots = (0..<controller.outlineView(outline, numberOfChildrenOfItem: nil)).map {
-            controller.outlineView(outline, child: $0, ofItem: nil)
+        let roots = (0..<controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil)).map {
+            controller.sidebar.outlineView(outline, child: $0, ofItem: nil)
         }
         for root in roots { outline.collapseItem(root) }
         let revision = controller.presentationIntent.revision
@@ -1009,7 +1011,7 @@ struct ManagerModelTests {
         await source.setDevices(try devices(firstDate: 200_000))
         await model.inventoryDidChange()
         try await wait {
-            controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1
+            controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil) == 1
         }
         let merged = try #require(outline.item(atRow: 0))
         #expect(!outline.isItemExpanded(merged))
@@ -1112,7 +1114,7 @@ struct ManagerModelTests {
             let content = try #require(main.window?.contentView)
             let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
             let otherRow = try #require((0..<outline.numberOfRows).first { row in
-                row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+                row != outline.selectedRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
             })
             outline.selectRowIndexes(IndexSet(integer: otherRow), byExtendingSelection: false)
         }
@@ -1127,7 +1129,7 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == rendered && renderedController.presentationViewController.parent === pane.liveScreenContainer
         }
         #expect(main.selectedIdentifiers == [selected])
-        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(model.selection.device?.id == selected && main.inspectorController.deviceInspector.inspection.device?.id == selected)
         #expect((mode == "new-selection" ? aController : bController).presentationViewController.parent == nil)
         #expect(aSession.state == .connected && app.screens.screen(for: aID)?.commandTarget === aController)
         try await aSession.stop()
@@ -1172,7 +1174,7 @@ struct ManagerModelTests {
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let bRow = try #require((0..<outline.numberOfRows).first { row in
-            row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            row != outline.selectedRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         })
         outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         #expect(await releases.next() != nil)
@@ -1214,7 +1216,7 @@ struct ManagerModelTests {
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let aRow = outline.selectedRow
         let bRow = try #require((0..<outline.numberOfRows).first { row in
-            row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            row != aRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         })
         outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
@@ -1237,7 +1239,7 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == aID && aController.presentationViewController.parent === pane.liveScreenContainer
         }
         #expect(main.selectedIdentifiers == [aID])
-        #expect(model.selection.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
+        #expect(model.selection.device?.id == aID && main.inspectorController.deviceInspector.inspection.device?.id == aID)
         #expect(!bController.isEmbedded && aSession.state == .connected)
         try await aSession.stop()
         try await bSession.stop()
@@ -1276,7 +1278,7 @@ struct ManagerModelTests {
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let rows = (0..<outline.numberOfRows).filter { row in
-            outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         }
         try #require(rows.count == 3)
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
@@ -1305,7 +1307,7 @@ struct ManagerModelTests {
 
     @Test func aContextMenuLeavesTheSelectionAndPresentationOfAnyRow() async throws {
         _ = NSApplication.shared
-        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
+        let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.viewdevicescreen"}]},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
         let a = try #require(devices.first), b = try #require(devices.last)
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
         model.registry.stopReading()
@@ -1334,28 +1336,31 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == nil && !aController.isEmbedded
         }
         let compactIntent = main.presentationIntent
-        main.update()
+        main.sidebar.update()
         let content = try #require(main.window?.contentView)
         let fields = inspectorViews(content)
         let search = try #require(fields.compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "Search Devices" })
         search.stringValue = "B"
-        main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        main.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         search.stringValue = ""
-        main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        main.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         let outline = try #require(fields.compactMap { $0 as? NSOutlineView }.first)
+        #expect(model.canViewScreen(.remote(a)))
+        #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
+        #expect(model.openingDeviceIDs.isEmpty)
         let aRow = outline.selectedRow
         try #require(aRow >= 0)
-        main.updateDeviceMenu(for: aRow)
+        main.sidebar.updateDeviceMenu(for: aRow)
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         let bRow = try #require((0..<outline.numberOfRows).first { row in
-            row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            row != aRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         })
-        main.updateDeviceMenu(for: bRow)
+        main.sidebar.updateDeviceMenu(for: bRow)
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         #expect(main.selectedIdentifiers == [aID] && outline.selectedRow == aRow)
         #expect(pane.liveDeviceIdentifier == nil && !bController.isEmbedded)
-        #expect(model.selection.device?.id == aID && main.deviceInspector.inspection.device?.id == aID)
+        #expect(model.selection.device?.id == aID && main.inspectorController.deviceInspector.inspection.device?.id == aID)
         try await aSession.stop()
         try await bSession.stop()
     }
@@ -1376,19 +1381,19 @@ struct ManagerModelTests {
         let main = try #require(app.mainWindow)
         main.window?.setFrameAutosaveName("")
         defer { main.window?.close() }
-        main.update()
+        main.sidebar.update()
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let menu = try #require(outline.menu)
         func row(of device: InventoryDevice) throws -> Int {
             try #require((0..<outline.numberOfRows).first { row in
                 guard let item = outline.item(atRow: row) else { return false }
-                return main.outlineView(outline, viewFor: outline.tableColumns.first, item: item)?.accessibilityLabel()?.hasPrefix("\(device.name),") == true
+                return main.sidebar.outlineView(outline, viewFor: outline.tableColumns.first, item: item)?.accessibilityLabel()?.hasPrefix("\(device.name),") == true
             })
         }
         func restart(fromMenuOf row: Int) async throws {
             try await wait { model.managingDeviceIDs.isEmpty }
-            main.updateDeviceMenu(for: row)
+            main.sidebar.updateDeviceMenu(for: row)
             menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Restart" }))
         }
 
@@ -1413,10 +1418,46 @@ struct ManagerModelTests {
         // No row means the selection, and a row that is no device has no menu.
         try await restart(fromMenuOf: -1)
         #expect(await events.next() == .manage(.restart, [first.id, third.id]))
-        let header = try #require((0..<outline.numberOfRows).first { outline.item(atRow: $0).map { main.outlineView(outline, shouldSelectItem: $0) } == false })
-        main.updateDeviceMenu(for: header)
+        let header = try #require((0..<outline.numberOfRows).first { outline.item(atRow: $0).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == false })
+        main.sidebar.updateDeviceMenu(for: header)
         #expect(menu.items.isEmpty)
         #expect(main.selectedIdentifiers == [first.id, third.id] && main.presentationIntent.revision == group.revision)
+        try await model.quitRenderer(keepingDevicesRunning: true)
+    }
+
+    @Test func startingSimulatorsFromTheSidebarOpensTheScreenOfEach() async throws {
+        _ = NSApplication.shared
+        let first = simulator(deviceSet: "/first", name: "First", state: "Shutdown")
+        let second = simulator(deviceSet: "/second", name: "Second", state: "Shutdown")
+        let source = ManagerModelSource(devices: [first, second])
+        var events = source.events.makeAsyncIterator()
+        let model = SimulatorManagerModel(source: source)
+        model.registry.stopReading()
+        await model.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = model
+        app.prepareMainWindow()
+        let main = try #require(app.mainWindow)
+        main.window?.setFrameAutosaveName("")
+        defer { main.window?.close() }
+        main.sidebar.update()
+        let content = try #require(main.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        let menu = try #require(outline.menu)
+        let rows = (0..<outline.numberOfRows).filter { row in
+            outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
+        }
+        outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
+        #expect(main.selectedIdentifiers == [first.id, second.id])
+
+        main.sidebar.updateDeviceMenu(for: -1)
+        menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Start" }))
+        let opened = [await events.next(), await events.next()]
+        #expect(opened.contains(.open(first.id)) && opened.contains(.open(second.id)))
+        #expect(await source.lastOpenBootIfNeeded == true)
+        await source.completeOpen(for: first.id)
+        await source.completeOpen(for: second.id)
+        try await wait { !model.isBusy }
         try await model.quitRenderer(keepingDevicesRunning: true)
     }
 
@@ -1446,10 +1487,11 @@ struct ManagerModelTests {
             presentCompactWindow: { _ in compactPresentations += 1 })
         app.screens.attach(controller)
         if !initial { main.selectDevice(bID) }
-        try await main.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
+        try await main.presentConnectedScreen(aID, purpose: .automatic)
         let selected = initial ? aID : bID
-        #expect(main.selectedIdentifiers == [selected])
-        #expect(model.selection.device?.id == selected && main.deviceInspector.inspection.device?.id == selected)
+        #expect(main.selectedIdentifiers == [selected] && model.selection.device?.id == selected)
+        // The inspector follows the selection through observation, whose changes arrive after this turn.
+        try await wait { main.inspectorController.deviceInspector.inspection.device?.id == selected }
         #expect(pane.liveDeviceIdentifier == (initial ? aID : nil))
         #expect((controller.presentationViewController.parent === pane.liveScreenContainer) == initial)
         #expect(session.state == .connected && app.screens.screen(for: aID)?.commandTarget === controller)
@@ -1554,7 +1596,7 @@ struct ManagerModelTests {
             let content = try #require(main.window?.contentView)
             let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
             let bRow = try #require((0..<outline.numberOfRows).first { row in
-                row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+                row != outline.selectedRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
             })
             outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         } else {
@@ -1679,7 +1721,7 @@ struct ManagerModelTests {
         let outline = try #require(inspectorViews(firstSplit.splitViewItems[0].viewController.view)
             .compactMap { $0 as? NSOutlineView }.first)
         let rows = (0..<outline.numberOfRows).filter {
-            outline.item(atRow: $0).map { first.outlineView(outline, shouldSelectItem: $0) } == true
+            outline.item(atRow: $0).map { first.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         }
         outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
         #expect(first.selectedIdentifiers == Set(devices.map(\.id)))
@@ -1706,7 +1748,7 @@ struct ManagerModelTests {
         #expect(second.selectedIdentifiers.isEmpty)
         await source.setDevices(devices)
         await model.refresh()
-        second.update()
+        second.sidebar.update()
         #expect(second.selectedIdentifiers == Set(devices.map(\.id)))
         let restoredOutline = try #require(inspectorViews(secondSplit.splitViewItems[0].viewController.view)
             .compactMap { $0 as? NSOutlineView }.first)
@@ -1743,9 +1785,12 @@ struct ManagerModelTests {
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
-        let servicesAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServicesAccessoryViewController }.first)
-        let searchAccessory = try #require(inspector.topAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
-        #expect(servicesAccessory.isHidden)
+        let searchAccessory = try #require(inspector.bottomAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
+        let profileAccessory = try #require(
+            inspector.topAlignedAccessoryViewControllers.compactMap {
+                $0 as? BackgroundServicesProfileAccessoryViewController
+            }.first)
+        #expect(searchAccessory.isHidden && profileAccessory.isHidden)
         #expect((0..<tabs.segmentCount).map { tabs.toolTip(forSegment: $0) } == ["Settings", "Reports", "Info", "Background Services"])
         window.setContentSize(NSSize(width: 1200, height: 800))
         split.view.layoutSubtreeIfNeeded()
@@ -1772,9 +1817,9 @@ struct ManagerModelTests {
             #expect(!tabs.isHidden)
             #expect(inspector.topAlignedAccessoryViewControllers.first === accessory)
             #expect(window.frame == frame, "Tab \(index), collapsed \(collapsed): frame \(window.frame), original \(frame)")
-            #expect(controller.deviceInspector.inspection.isVisible == (!collapsed && (index == 1 || index == 2)))
+            #expect(controller.inspectorController.deviceInspector.inspection.isVisible == (!collapsed && (index == 1 || index == 2)))
             #expect(model.selection.showsServices == (!collapsed && index == 3))
-            if let page { #expect(controller.deviceInspector.inspection.page == page) }
+            if let page { #expect(controller.inspectorController.deviceInspector.inspection.page == page) }
         }
 
         #expect(!inspector.isCollapsed && tabs.selectedSegment == 0)
@@ -1793,38 +1838,38 @@ struct ManagerModelTests {
 
         inspector.isCollapsed = true
         #expect((0..<tabs.segmentCount).allSatisfy { !tabs.isSelected(forSegment: $0) })
-        #expect(!controller.deviceInspector.inspection.isVisible)
+        #expect(!controller.inspectorController.deviceInspector.inspection.isVisible)
         inspector.isCollapsed = false
-        #expect(tabs.selectedSegment == 2 && controller.deviceInspector.inspection.isVisible)
+        #expect(tabs.selectedSegment == 2 && controller.inspectorController.deviceInspector.inspection.isVisible)
         try click(0, collapsed: false)
         #expect(accessory.isHidden)
         let device = simulator()
-        let deviceModel = DeviceModel(inventory: device, source: model.registry.source)
-        controller.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
+        model.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        model.inspect(device, selectionCount: 1)
         try click(2, collapsed: false, page: .info)
-        controller.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
         window.layoutIfNeeded()
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
         #expect((0..<categories.segmentCount).map { categories.label(forSegment: $0) } == ["Info", "Apps", "Profiles"])
-        #expect(!categories.isDescendant(of: controller.deviceInspector.view))
-        let informationScroll = try #require(inspectorViews(controller.deviceInspector.view)
+        #expect(!categories.isDescendant(of: controller.inspectorController.deviceInspector.view))
+        let informationScroll = try #require(inspectorViews(controller.inspectorController.deviceInspector.view)
             .compactMap { $0 as? NSScrollView }.first { !$0.isHiddenOrHasHiddenAncestor })
         let viewport = informationScroll.convert(informationScroll.bounds, to: nil)
         let accessoryFrame = accessory.view.convert(accessory.view.bounds, to: nil)
         #expect(viewport.maxY > accessoryFrame.minY)
         categories.selectedSegment = 1
         #expect(NSApp.sendAction(try #require(categories.action), to: categories.target, from: categories))
-        #expect(controller.deviceInspector.inspection.content == .applications)
+        #expect(controller.inspectorController.deviceInspector.inspection.content == .applications)
         try click(1, collapsed: false, page: .reports)
         #expect(accessory.isHidden)
-        model.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
-        model.inspect(device, selectionCount: 1)
         try click(3, collapsed: false)
         window.layoutIfNeeded()
-        #expect(!servicesAccessory.isHidden && !searchAccessory.isHidden)
-        #expect(servicesAccessory.view.convert(servicesAccessory.view.bounds, to: nil).maxY <= window.contentLayoutRect.maxY)
+        let services = try #require(inspector.viewController.children.compactMap { $0 as? BackgroundServicesViewController }.first)
+        #expect(!searchAccessory.isHidden && !profileAccessory.isHidden)
+        #expect(inspectorViews(services.view).contains { $0 is NSOutlineView })
         try click(0, collapsed: false)
-        #expect(servicesAccessory.isHidden && searchAccessory.isHidden)
+        #expect(
+            services.parent == nil && services.view.window == nil && searchAccessory.isHidden
+                && profileAccessory.isHidden)
         controller.stopInspectorReads()
     }
 
@@ -1852,7 +1897,7 @@ struct ManagerModelTests {
         await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         func show(_ device: InventoryDevice) throws {
             manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
             manager.inspect(device, selectionCount: 1)
@@ -1917,7 +1962,7 @@ struct ManagerModelTests {
         await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         func show(_ device: InventoryDevice) throws {
             manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
             manager.inspect(device, selectionCount: 1)
@@ -1967,7 +2012,7 @@ struct ManagerModelTests {
         manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
         manager.inspect(device, selectionCount: 1)
         let model = try #require(manager.registry.device(for: device.id))
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         controller.update(device: model, isManaging: false, isVisible: true)
         #expect(await events.next() == .inspect(device.id))
         await manager.registry.finishReading()
@@ -2014,7 +2059,7 @@ struct ManagerModelTests {
         await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         // A sheet only needs a window to attach to; this one is never ordered on screen.
         let window = NSWindow(contentViewController: controller)
         manager.registry.apply(DeviceInventorySnapshot(devices: [first, second], issues: []))
@@ -2095,7 +2140,7 @@ struct ManagerModelTests {
         let source = ManagerModelSource(devices: [], inspectorResponse: Self.inspectionResponse)
         await source.skipSettingsReads()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         // A quit can be cancelled before the inspector was ever shown.
         controller.resumeAfterCancelledQuit()
         #expect(!controller.isViewLoaded)
@@ -3095,7 +3140,7 @@ struct ManagerModelTests {
         window.window?.setFrameAutosaveName("")
         defer { window.window?.close() }
         window.selectDevice(stopped.id)
-        window.update()
+        window.sidebar.update()
         let content = try #require(window.window?.contentView)
         let start = try #require(inspectorViews(content).compactMap { $0 as? NSButton }.first { $0.title == "Start" })
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
@@ -4438,9 +4483,11 @@ struct ManagerModelTests {
         let data = try JSONEncoder().encode(LegacyServiceProfiles(profiles: [first, second], devices: [
             device: .init(profileID: second.id, base: ServiceConfiguration(disabledLabels: ["com.apple.searchtoold"]),
                           overrides: ["com.apple.searchd": true], requestID: UUID(), pendingApplication: true),
-            unchosen: .init(profileID: ServiceProfile.allServices.id, base: ServiceConfiguration(),
+                    unchosen: .init(
+                        profileID: ServiceProfile.allServicesID, base: ServiceConfiguration(),
                             overrides: ["com.apple.searchd": false], requestID: UUID(), pendingApplication: false),
-            pendingDefault: .init(profileID: ServiceProfile.allServices.id, base: ServiceConfiguration(),
+                    pendingDefault: .init(
+                        profileID: ServiceProfile.allServicesID, base: ServiceConfiguration(),
                                   overrides: [:], requestID: UUID(), pendingApplication: true),
         ]))
         defaults.set(data, forKey: ServiceProfileStore.defaultsKey)
@@ -4459,9 +4506,9 @@ struct ManagerModelTests {
         #expect(store.binding(for: unchosen) == DeviceServiceProfile(selection: .inheritDefault, overrides: ["com.apple.searchd": false]))
         #expect(store.defaultProfileID == ServiceProfile.allServicesID)
         #expect(store.configuration(for: unchosen)?.disabledLabels == ["com.apple.searchd"])
-        #expect(store.selection(for: pendingDefault) == .profile(ServiceProfile.allServices.id))
+        #expect(store.selection(for: pendingDefault) == .profile(ServiceProfile.allServicesID))
         #expect(store.configuration(for: pendingDefault) == ServiceConfiguration())
-        #expect(store.availableProfiles.first === ServiceProfile.allServices)
+        #expect(store.availableProfiles.first === store.allServices)
         defaults.set(Data("obsolete".utf8), forKey: ServiceProfileStore.defaultsKey)
         let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: defaults)
         #expect(restored.issue == nil && restored.binding(for: device) == binding)
@@ -4521,11 +4568,17 @@ struct ManagerModelTests {
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
         defer { window.close() }
-        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }
-            .first { !($0 is NSOutlineView) })
+        let table = try #require(
+            inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+                .first { $0.accessibilityLabel() == "Service Profiles" })
         let accessory = try #require(controller.splitViewItems.first?.topAlignedAccessoryViewControllers.first)
         let defaultMenu = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSPopUpButton }.first)
-        #expect(controller.tableView(table, pasteboardWriterForRow: 0) == nil)
+        // The built-in profile drags out as a file, but stays first.
+        let builtIn = TestDraggingInfo(
+            item: try #require(controller.tableView(table, pasteboardWriterForRow: 0)), source: table)
+        defer { builtIn.draggingPasteboard.releaseGlobally() }
+        #expect(
+            controller.tableView(table, validateDrop: builtIn, proposedRow: 2, proposedDropOperation: .above).isEmpty)
         let writer = try #require(controller.tableView(table, pasteboardWriterForRow: 3))
         let drag = TestDraggingInfo(item: writer, source: table)
         defer { drag.draggingPasteboard.releaseGlobally() }
@@ -4545,7 +4598,8 @@ struct ManagerModelTests {
         #expect(NSApp.sendAction(try #require(defaultMenu.action), to: defaultMenu.target, from: defaultMenu))
         #expect(inspector.defaultProfileChoice.title == "Use Default: Third")
         #expect(controller.model.selectedProfile === second)
-        #expect(inspector.savedProfileChoices.map(\.id) == [.profile(third.id), .profile(first.id), .profile(second.id)])
+        #expect(
+            inspector.profileChoices.map(\.id) == [.profile(third.id), .profile(first.id), .profile(second.id)])
 
         let downwardWriter = try #require(controller.tableView(table, pasteboardWriterForRow: 2))
         let downward = TestDraggingInfo(item: downwardWriter, source: table)
@@ -4557,8 +4611,8 @@ struct ManagerModelTests {
         drag.draggingSource = nil
         #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above).isEmpty)
 
-        try store.update(first.id, name: ServiceProfile.allServices.name, configuration: first.configuration)
-        try store.update(third.id, name: ServiceProfile.allServices.name, configuration: third.configuration)
+        try store.update(first.id, name: store.allServices.name, configuration: first.configuration)
+        try store.update(third.id, name: store.allServices.name, configuration: third.configuration)
         try await wait(timeout: .seconds(5)) {
             defaultMenu.itemArray.compactMap { $0.representedObject as? UUID } == store.availableProfiles.map(\.id)
                 && defaultMenu.itemTitles == store.availableProfiles.map(\.name)
@@ -4567,6 +4621,77 @@ struct ManagerModelTests {
         defaultMenu.select(choice)
         #expect(NSApp.sendAction(try #require(defaultMenu.action), to: defaultMenu.target, from: defaultMenu))
         #expect(store.defaultProfile === first)
+    }
+
+    @Test func serviceProfilesDragOutAsFilesThatDropInAsNewProfiles() async throws {
+        let domain = "NeoSimulator.ProfileFileDrags.\(UUID().uuidString)"
+        let directory = FileManager.default.temporaryDirectory.appending(path: domain, directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let search = ServiceConfiguration(disabledLabels: ["com.apple.searchd"])
+        let profile = try store.create(name: "Search: Off", configuration: search)
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 520), styleMask: [.titled, .resizable],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let table = try #require(
+            inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+                .first { $0.accessibilityLabel() == "Service Profiles" })
+        try await wait(timeout: .seconds(5)) { table.numberOfRows == 2 }
+
+        // Control-clicking the built-in profile offers to export it, but not to rename it.
+        let row = table.rect(ofRow: 0)
+        let click = try #require(
+            NSEvent.mouseEvent(
+                with: .rightMouseDown, location: table.convert(NSPoint(x: row.midX, y: row.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 1, pressure: 1))
+        let menu = try #require(table.menu(for: click))
+        controller.menuNeedsUpdate(menu)
+        #expect(menu.items.map(\.title) == ["Duplicate", "Export…"])
+
+        // A profile drags out as a file named after it, with what it had when the drag started.
+        let promise = try #require(controller.tableView(table, pasteboardWriterForRow: 1) as? NSFilePromiseProvider)
+        let delegate = try #require(promise.delegate)
+        let name = delegate.filePromiseProvider(promise, fileNameForType: promise.fileType)
+        #expect(name == "Search- Off.json")
+        try store.update(profile.id, name: "Renamed", configuration: ServiceConfiguration())
+        func write(to url: URL) async -> (any Error)? {
+            await withCheckedContinuation { written in
+                delegate.filePromiseProvider(promise, writePromiseTo: url) { written.resume(returning: $0) }
+            }
+        }
+        // A file that the destination already has stays as it is.
+        let existing = directory.appending(path: "Existing.json")
+        try Data("kept".utf8).write(to: existing)
+        let refusal = await write(to: existing)
+        #expect(try refusal != nil && Data(contentsOf: existing) == Data("kept".utf8))
+        let file = directory.appending(path: name)
+        #expect(await write(to: file) == nil)
+
+        // Dropping the file adds a profile with what the file has, and only a file of profiles drops.
+        let notes = directory.appending(path: "Notes.txt")
+        try Data().write(to: notes)
+        for (url, operation) in [(notes, NSDragOperation()), (file, .copy)] {
+            let drop = TestDraggingInfo([url])
+            defer { drop.draggingPasteboard.releaseGlobally() }
+            #expect(
+                controller.tableView(table, validateDrop: drop, proposedRow: 1, proposedDropOperation: .above)
+                    == operation)
+            #expect(controller.tableView(table, acceptDrop: drop, row: -1, dropOperation: .on) == !operation.isEmpty)
+        }
+        try await wait(timeout: .seconds(5)) { store.profiles.count == 2 }
+        let imported = try #require(store.profiles.last)
+        #expect(imported.id != profile.id && imported.name == "Search: Off" && imported.configuration == search)
+        #expect(controller.model.selectedProfile === imported)
     }
 
     @Test func serviceProfilesKeepDeviceOverridesAcrossSwitchesAndRelaunch() throws {
@@ -4606,13 +4731,13 @@ struct ManagerModelTests {
         let device = simulator().id
         let label = "com.apple.searchd"
         let other = "com.apple.searchtoold"
-        #expect(store.defaultProfile === ServiceProfile.allServices && store.selection(for: device) == .inheritDefault)
+        #expect(store.defaultProfile === store.allServices && store.selection(for: device) == .inheritDefault)
         #expect(store.defaultProfile.name == "All Services")
 
         // All Services is the default; an individual change stays an inherited override.
         try store.record([.service(label)], enabled: false, for: device, productFamily: "iPhone")
         #expect(store.binding(for: device) == DeviceServiceProfile(selection: .inheritDefault, overrides: [label: false]))
-        #expect(store.resolvedProfile(for: device) === ServiceProfile.allServices)
+        #expect(store.resolvedProfile(for: device) === store.allServices)
         #expect(store.configuration(for: device)?.disabledLabels == [label])
 
         let common = try store.create(name: "Common", configuration: ServiceConfiguration())
@@ -4694,8 +4819,8 @@ struct ManagerModelTests {
         let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         let device = simulator().id
         let label = "com.apple.searchd"
-        #expect(store.profile(ServiceProfile.allServices.id)?.configuration.disabledLabels.isEmpty == true)
-        #expect(store.availableProfiles.count == 1 && store.availableProfiles.first === ServiceProfile.allServices)
+        #expect(store.profile(ServiceProfile.allServicesID)?.configuration.disabledLabels.isEmpty == true)
+        #expect(store.availableProfiles.count == 1 && store.availableProfiles.first === store.allServices)
         try store.record([.service(label)], enabled: false, for: device, productFamily: "iPhone")
         let changed = try #require(store.binding(for: device))
         #expect(changed.selection == .inheritDefault)
@@ -4704,7 +4829,7 @@ struct ManagerModelTests {
         let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         #expect(restored.binding(for: device) == DeviceServiceProfile(selection: .profile(saved.id)))
         #expect(restored.configuration(for: device)?.disabledLabels == [label])
-        try restored.assign(.profile(ServiceProfile.allServices.id), to: device)
+        try restored.assign(.profile(ServiceProfile.allServicesID), to: device)
         #expect(restored.configuration(for: device)?.disabledLabels.isEmpty == true)
         #expect(restored.binding(for: device)?.overrides.isEmpty == true)
         #expect(restored.profile(saved.id)?.configuration.disabledLabels == [label])
@@ -4770,14 +4895,10 @@ struct ManagerModelTests {
         let category = try #require(model.categories.first { $0.id == "search" })
         let item = try #require(category.items.first { $0.label == "com.apple.searchd" })
         let controller = BackgroundServicesViewController(model: model)
-        controller.isVisible = true
-        let accessory = BackgroundServicesAccessoryViewController(model: model)
-        accessory.isActive = true
         let pane = NSSplitViewItem(inspectorWithViewController: controller)
         pane.minimumThickness = 280
         pane.maximumThickness = 440
-        pane.addTopAlignedAccessoryViewController(accessory)
-        pane.addTopAlignedAccessoryViewController(controller.searchAccessory)
+        controller.addAccessories(to: pane)
         let split = NSSplitViewController()
         split.splitView.isVertical = true
         split.addSplitViewItem(pane)
@@ -4789,12 +4910,43 @@ struct ManagerModelTests {
         defer { window.close() }
         let view = split.view
         view.layoutSubtreeIfNeeded()
-        let outline = try #require(controller.children.compactMap { $0 as? BackgroundServiceOutlineController }.first)
-        #expect(pane.topAlignedAccessoryViewControllers.first === accessory)
-        #expect(!accessory.isHidden && accessory.view.frame.height > 0)
-        #expect(accessory.view.window === window)
-        #expect(!accessory.view.isDescendant(of: controller.view))
+        let outlineView = try #require(inspectorViews(controller.view).compactMap { $0 as? NSOutlineView }.first)
+        let outline = try #require(outlineView.delegate as? BackgroundServiceOutlineController)
+        let scroll = try #require(outlineView.enclosingScrollView)
+        #expect(pane.topAlignedAccessoryViewControllers.first === controller.profileAccessory)
+        // Only the list scrolls; the profile controls stay above it.
+        #expect(!inspectorViews(controller.profileAccessory.view).contains { $0 is NSScrollView })
+        window.makeKeyAndOrderFront(nil)
+        try await wait(timeout: .seconds(5)) {
+            view.layoutSubtreeIfNeeded()
+            return scroll.contentInsets.top > 0
+        }
+        // Saving and reverting show only while the services differ from the profile.
+        let accessory = controller.profileAccessory
+        func shownActions() -> (shown: Bool, height: CGFloat, inset: CGFloat) {
+            view.layoutSubtreeIfNeeded()
+            let hidden = accessory.saveButton.isHiddenOrHasHiddenAncestor
+            #expect(accessory.revertButton.isHiddenOrHasHiddenAncestor == hidden)
+            return (!hidden, accessory.view.frame.height, scroll.contentInsets.top)
+        }
+        let unchanged = shownActions()
+        #expect(!unchanged.shown && !model.hasProfileChanges)
+        let scrollFrame = scroll.convert(scroll.bounds, to: controller.view)
+        #expect(scrollFrame == controller.view.bounds)
+        #expect(scroll.contentInsets.top == scroll.safeAreaInsets.top)
+        #expect(scroll.contentInsets.bottom > 0)
+        let origin = scroll.contentView.bounds.origin
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: outlineView.rect(ofRow: 0).minY - scroll.contentInsets.top / 2))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        let firstRow = outlineView.convert(outlineView.rect(ofRow: 0), to: controller.view)
+        #expect(firstRow.maxY > scrollFrame.maxY - scroll.contentInsets.top)
+        #expect(firstRow.minY < scrollFrame.maxY)
+        scroll.contentView.scroll(to: origin)
+        scroll.reflectScrolledClipView(scroll.contentView)
         #expect(outline.view.bounds.height > 100)
+        #expect(pane.bottomAlignedAccessoryViewControllers.first === controller.searchAccessory)
+        let searchFrame = controller.searchAccessory.view.convert(controller.searchAccessory.view.bounds, to: nil)
+        #expect(searchFrame.minY == window.contentLayoutRect.minY)
         let columnWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.expandItem(category)
         view.layoutSubtreeIfNeeded()
@@ -4833,6 +4985,10 @@ struct ManagerModelTests {
         let action = try #require(toggle.action)
         #expect(NSApp.sendAction(action, to: toggle.target, from: toggle))
         #expect(await events.next() == .changeServices(device.id))
+        try await wait(timeout: .seconds(5)) {
+            let changed = shownActions()
+            return changed.shown && changed.height > unchanged.height && changed.inset > unchanged.inset
+        }
 
         view.frame.size.width = 440
         view.layoutSubtreeIfNeeded()
@@ -4846,6 +5002,12 @@ struct ManagerModelTests {
         try await wait(timeout: .seconds(5)) {
             window.attachedSheet != nil
         }
+        let sheet = try #require(window.attachedSheet)
+        // The sheet takes the height of its name field and buttons, and starts editing the name.
+        #expect(abs(sheet.contentLayoutRect.height - (sheet.contentView?.fittingSize.height ?? 0)) < 1)
+        try await wait(timeout: .seconds(5)) {
+            sheet.firstResponder is NSTextView
+        }
         let expandedWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.collapseItem(category)
         view.layoutSubtreeIfNeeded()
@@ -4858,22 +5020,36 @@ struct ManagerModelTests {
         let saved = try #require(store.profiles.first)
         #expect(saved.configuration.disabledLabels == [item.label])
         #expect(!model.hasProfileChanges)
-        #expect(model.savedProfileChoices.map(\.id) == [.profile(saved.id)])
+        try await wait(timeout: .seconds(5)) { shownActions() == unchanged }
+        #expect(model.profileChoices.map(\.id) == [.profile(saved.id)])
         #expect(settings.settings.serviceProfiles.model.store.profile(saved.id) === saved)
-        #expect(model.selectedProfileTitle == "Development")
+        let profiles = controller.profileAccessory.profileButton
+        try await wait(timeout: .seconds(5)) {
+            profiles.titleOfSelectedItem == "Development"
+        }
 
         model.setServices([.service(item.label)], enabled: true)
         #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: [])
         try await awaitServiceOperations(manager)
-        #expect(model.selectedProfileTitle == "Development (Modified)")
+        try await wait(timeout: .seconds(5)) {
+            profiles.titleOfSelectedItem == "Development (Modified)"
+        }
+        #expect(shownActions().shown)
         model.saveProfile()
         #expect(store.profiles.count == 1 && store.profiles.first?.id == saved.id)
         #expect(store.profiles.first?.configuration.disabledLabels.isEmpty == true)
         #expect(!model.hasProfileChanges)
+        try await wait(timeout: .seconds(5)) { shownActions() == unchanged }
         let binding = store.binding(for: device.id)
         model.profileEditor = nil
-        model.openProfileSettings()
+        try await wait(timeout: .seconds(5)) {
+            profiles.titleOfSelectedItem == "Development"
+        }
+        let openSettings = try #require(profiles.itemArray.last)
+        profiles.select(openSettings)
+        #expect(NSApp.sendAction(try #require(openSettings.action), to: openSettings.target, from: openSettings))
+        #expect(profiles.titleOfSelectedItem == "Development")
         #expect(settings.settings.selectedTabViewItemIndex == 3)
         #expect(settings.settings.serviceProfiles.model.selectedProfile === saved)
         #expect(store.binding(for: device.id) == binding)
@@ -4925,8 +5101,9 @@ struct ManagerModelTests {
         let actionsAccessory = try #require(controller.splitViewItems[0].bottomAlignedAccessoryViewControllers.first)
         let actions = try #require(inspectorViews(actionsAccessory.view).compactMap { $0 as? NSSegmentedControl }.first)
         #expect(!actions.isEnabled(forSegment: 1))
-        let add = try #require((actions.cell as? NSSegmentedCell)?.accessibilityChildren()?.first as? any NSAccessibilityProtocol)
-        _ = add.accessibilityPerformPress()
+        #expect(controller.addProfileMenu.items.map(\.title) == ["New Profile", "Import…"])
+        func addProfile() { controller.addProfileMenu.performActionForItem(at: 0) }
+        addProfile()
         try await wait(timeout: .seconds(5)) {
             guard let field = window.firstResponder as? NSTextView else { return false }
             return field.string == "Profile (1)" && field.selectedRange() == NSRange(location: 0, length: 11)
@@ -4937,20 +5114,337 @@ struct ManagerModelTests {
         let field = try #require(window.firstResponder as? NSTextView)
         #expect(field.enabledTextCheckingTypes == 0)
         field.string = "Focused"
-        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }
-            .first { !($0 is NSOutlineView) })
+        let table = try #require(
+            inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+                .first { $0.accessibilityLabel() == "Service Profiles" })
         window.makeFirstResponder(table)
         #expect(first.name == "Focused")
         #expect(search.stringValue == "com.apple.searchd")
-        let details = try #require(controller.splitViewItems[1].viewController.children.compactMap { $0 as? BackgroundServiceOutlineController }.first)
-        let filtered = try #require(details.model.sections.first?.items.first)
-        filtered.setEnabled(false)
+        let lists = inspectorViews(controller.services.view).compactMap { $0 as? NSTableView }
+        let categories = try #require(lists.first { $0.accessibilityLabel() == "Service Categories" })
+        let services = try #require(lists.first { $0.accessibilityLabel() == "Services" })
+        func shownServices() -> [String] {
+            (0..<services.numberOfRows).compactMap { row in
+                services.view(atColumn: 0, row: row, makeIfNecessary: true).flatMap {
+                    inspectorViews($0).compactMap { $0 as? NSTextField }.first?.stringValue
+                }
+            }
+        }
+        // The filter above both lists insets them, and the matches of the selected category show beside it.
+        try await wait(timeout: .seconds(5)) {
+            controller.view.layoutSubtreeIfNeeded()
+            return [categories, services].allSatisfy { ($0.enclosingScrollView?.contentInsets.top ?? 0) > 0 }
+                && categories.numberOfRows == 1 && categories.selectedRow == 0
+                && shownServices() == ["com.apple.searchd"]
+        }
+        let filtered = try #require(controller.services.list.selectedSection?.items.first)
+        try filtered.setEnabled(false)
         #expect(first.configuration.disabledLabels == ["com.apple.searchd"])
-        #expect(ServiceProfile.allServices.configuration.disabledLabels.isEmpty)
-        controller.model.create()
-        #expect(controller.model.selectedProfile.name == "Profile (1)")
-        controller.model.create()
+        #expect(store.allServices.configuration.disabledLabels.isEmpty)
+        search.stringValue = ""
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        let other = try #require(controller.services.list.sections.dropFirst().first)
+        try await wait(timeout: .seconds(5)) {
+            categories.numberOfRows == controller.services.list.sections.count
+        }
+        // Turning off a service that keeps running says why and leaves the profile and the switch as they were.
+        let connectivity = try #require(
+            controller.services.list.sections.firstIndex { $0.category.id == "connectivity" })
+        categories.selectRowIndexes(IndexSet(integer: connectivity), byExtendingSelection: false)
+        let required = try #require(
+            controller.services.list.selectedSection?.items.first { $0.label == "com.apple.sharingd" })
+        let reason = try #require(required.keptRunningReason)
+        try await wait(timeout: .seconds(5)) { shownServices().contains(required.label) }
+        let requiredRow = try #require(controller.services.list.selectedSection?.items.firstIndex { $0 === required })
+        services.scrollRowToVisible(requiredRow)
+        let requiredSwitch = try #require(
+            services.view(atColumn: 0, row: requiredRow, makeIfNecessary: false).flatMap {
+                inspectorViews($0).compactMap { $0 as? NSSwitch }.first
+            })
+        #expect(required.isEnabled && requiredSwitch.state == .on && requiredSwitch.isEnabled)
+        requiredSwitch.performClick(nil)
+        try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+        let refusal = try #require(window.attachedSheet)
+        let refusalText = inspectorViews(try #require(refusal.contentView)).compactMap {
+            ($0 as? NSTextField)?.stringValue
+        }
+        #expect(refusalText.contains(reason) && refusalText.contains { $0.contains(required.label) })
+        #expect(first.configuration.disabledLabels == ["com.apple.searchd"] && requiredSwitch.state == .on)
+        window.endSheet(refusal)
+        categories.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        try await wait(timeout: .seconds(5)) {
+            shownServices() == other.items.map(\.label)
+        }
+        let otherLabel = try #require(other.items.first?.label)
+        search.stringValue = otherLabel
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        try await wait(timeout: .seconds(5)) {
+            shownServices().contains(otherLabel) && categories.selectedRow >= 0
+        }
+        // Moving the divider between the categories and the services resizes both and keeps what they show.
+        let shown = shownServices()
+        let selectedRow = categories.selectedRow
+        let panes = controller.services.splitView
+        let categoriesPane = controller.services.splitViewItems[0].viewController.view
+        let servicesPane = controller.services.splitViewItems[1].viewController.view
+        let widths = (categories: categoriesPane.frame.width, services: servicesPane.frame.width)
+        panes.setPosition(categoriesPane.convert(categoriesPane.bounds, to: panes).maxX + 40, ofDividerAt: 0)
+        panes.layoutSubtreeIfNeeded()
+        #expect(categoriesPane.frame.width > widths.categories && servicesPane.frame.width < widths.services)
+        #expect(search.stringValue == otherLabel && categories.selectedRow == selectedRow)
+        #expect(controller.services.list.selectedSection?.category === other.category && shownServices() == shown)
+        // Adding copies the selected profile into a new one and keeps the default.
+        addProfile()
+        let copy = controller.model.selectedProfile
+        #expect(copy.name == "Profile (1)" && copy.id != first.id)
+        #expect(
+            copy.configuration == first.configuration && first.configuration.disabledLabels == ["com.apple.searchd"])
+        #expect(store.defaultProfileID == ServiceProfile.allServicesID)
+        addProfile()
         #expect(controller.model.selectedProfile.name == "Profile (2)")
+    }
+
+    @Test func customCategoriesShowAboveTheBuiltInOnesAndTakeTheirFirstService() async throws {
+        let domain = "NeoSimulator.CustomCategoryPanes.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let profile = try store.create(name: "Agents Off", configuration: ServiceConfiguration())
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let list = controller.services.list
+        let lists = inspectorViews(controller.services.view).compactMap { $0 as? NSTableView }
+        let categories = try #require(lists.first { $0.accessibilityLabel() == "Service Categories" })
+        let services = try #require(lists.first { $0.accessibilityLabel() == "Services" })
+        func titles(_ table: NSTableView) -> [String] {
+            (0..<table.numberOfRows).compactMap { row in
+                table.view(atColumn: 0, row: row, makeIfNecessary: true).flatMap {
+                    inspectorViews($0).compactMap { $0 as? NSTextField }.first?.stringValue
+                }
+            }
+        }
+        let actions = try (0..<2).map { pane in
+            let accessory = try #require(
+                controller.services.splitViewItems[pane].bottomAlignedAccessoryViewControllers.first)
+            return try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
+        }
+        // The categories' delete and the services' add work on a selected category that the app added.
+        func editsCustomCategory() -> Bool {
+            actions[0].isEnabled(forSegment: 1) && actions[1].isEnabled(forSegment: 0)
+        }
+        // Fills in the sheet that shows and confirms it, and returns what its fields showed.
+        @discardableResult
+        func answer(_ texts: [String], confirming confirm: String) async throws -> [String] {
+            try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+            let sheet = inspectorViews(try #require(window.attachedSheet?.contentView))
+            let fields = sheet.compactMap { $0 as? NSTextField }.filter(\.isEditable)
+            let shown = fields.map(\.stringValue)
+            for (field, text) in zip(fields, texts) { field.stringValue = text }
+            try #require(sheet.compactMap { $0 as? NSButton }.first { $0.title == confirm }).performClick(nil)
+            try await wait(timeout: .seconds(5)) { window.attachedSheet == nil }
+            return shown
+        }
+        func press(
+            _ control: NSSegmentedControl, segment: Int = 0, answering texts: String...,
+            confirming confirm: String = "Add"
+        ) async throws {
+            let button = try #require(
+                (control.cell as? NSSegmentedCell)?.accessibilityChildren()?[segment] as? any NSAccessibilityProtocol)
+            _ = button.accessibilityPerformPress()
+            try await answer(texts, confirming: confirm)
+        }
+        // The built-in profile shows its fixed categories, which gain nothing beside it.
+        let builtIn = SimulatorBackgroundServiceCategory.all.map(\.name)
+        try await wait(timeout: .seconds(5)) { titles(categories) == builtIn }
+        #expect(!actions[0].isEnabled(forSegment: 0) && !editsCustomCategory())
+        try controller.model.addCategory(named: "Agents")
+        #expect(store.customCategories.isEmpty)
+        controller.model.selectedProfileID = profile.id
+        try await wait(timeout: .seconds(5)) { actions[0].isEnabled(forSegment: 0) }
+        #expect(titles(categories) == builtIn && !editsCustomCategory())
+
+        // A new category shows and stays selected without services, above the built-in ones.
+        try await press(actions[0], answering: "Agents")
+        try await wait(timeout: .seconds(5)) {
+            titles(categories) == ["Custom", "Agents", "Built-in"] + builtIn && categories.selectedRow == 1
+        }
+        let agents = try #require(list.selectedSection?.category)
+        #expect(categories.delegate?.tableView?(categories, shouldSelectRow: 0) == false)
+        let servicesPane = controller.services.splitViewItems[1].viewController.view
+        func showsNoServices() -> Bool {
+            services.numberOfRows == 0
+                && inspectorViews(servicesPane).contains {
+                    String(describing: type(of: $0)).hasPrefix("NSHostingView") && !$0.isHidden
+                }
+        }
+        // The services pane can take the new category after the categories pane shows it.
+        try await wait(timeout: .seconds(5)) { editsCustomCategory() && showsNoServices() }
+        list.query = "agents"
+        try await wait(timeout: .seconds(5)) {
+            titles(categories) == ["Custom", "Agents"] && categories.selectedRow == 1 && showsNoServices()
+        }
+
+        // Its first service shows beside it once the filter clears for it.
+        try await press(actions[1], answering: " com.example.agent ")
+        try await wait(timeout: .seconds(5)) {
+            list.query.isEmpty && titles(services) == ["com.example.agent"] && !showsNoServices()
+        }
+        #expect(list.selectedSection?.category === agents && categories.selectedRow == 1)
+
+        // A service can say what it does, and the one that's added or edited is selected.
+        try await press(actions[1], answering: "com.example.helper", " Helps the agent. ")
+        try await wait(timeout: .seconds(5)) {
+            titles(services) == ["com.example.agent", "com.example.helper"] && services.selectedRowIndexes == [1]
+        }
+        #expect(agents.items.map(\.detail) == ["", "Helps the agent."])
+        // A row's shortcut menu edits its label and description, starting from what it has.
+        func edit(row: Int) throws {
+            let rect = services.rect(ofRow: row)
+            let click = try #require(
+                NSEvent.mouseEvent(
+                    with: .rightMouseDown, location: services.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil),
+                    modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: 1))
+            let menu = try #require(services.menu(for: click))
+            menu.delegate?.menuNeedsUpdate?(menu)
+            menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Edit…" }))
+        }
+        try edit(row: 0)
+        #expect(
+            try await answer(["com.example.worker", "Works for the agent."], confirming: "Save")
+                == ["com.example.agent", ""])
+        try await wait(timeout: .seconds(5)) {
+            titles(services) == ["com.example.worker", "com.example.helper"] && services.selectedRowIndexes == [0]
+        }
+        try edit(row: 1)
+        #expect(
+            try await answer(["com.example.helper", "Helps."], confirming: "Save")
+                == ["com.example.helper", "Helps the agent."])
+        try await wait(timeout: .seconds(5)) {
+            agents.items.map(\.detail) == ["Works for the agent.", "Helps."] && services.selectedRowIndexes == [1]
+        }
+
+        // The Delete key and the minus button remove the selected services once the removal is confirmed.
+        services.selectRowIndexes([0, 1], byExtendingSelection: false)
+        try await wait(timeout: .seconds(5)) { actions[1].isEnabled(forSegment: 1) }
+        // The Delete key, whose key code is kVK_Delete.
+        let delete = try #require(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: "\u{7F}", charactersIgnoringModifiers: "\u{7F}", isARepeat: false,
+                keyCode: 51))
+        services.keyDown(with: delete)
+        try await answer([], confirming: "Cancel")
+        #expect(titles(services) == ["com.example.worker", "com.example.helper"])
+        try await press(actions[1], segment: 1, confirming: "Remove")
+        try await wait(timeout: .seconds(5)) { showsNoServices() && !actions[1].isEnabled(forSegment: 1) }
+        #expect(store.customCategories.map(\.labels) == [[]])
+
+        // The built-in categories' services stay as they are.
+        categories.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+        try await wait(timeout: .seconds(5)) {
+            list.selectedSection?.category.isCustom == false && !editsCustomCategory()
+        }
+        #expect(services.delegate?.tableView?(services, shouldSelectRow: 0) == false)
+        controller.model.selectedProfileID = ServiceProfile.allServicesID
+        try await wait(timeout: .seconds(5)) { titles(categories) == builtIn && !actions[0].isEnabled(forSegment: 0) }
+    }
+
+    @Test func reusedServiceSwitchesShowTheirProfileWithoutMoving() async throws {
+        let domain = "NeoSimulator.ServiceSwitchReuse.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let category = try #require(
+            SimulatorBackgroundServiceCategory.all.max { $0.services.count < $1.services.count })
+        let labels = Set(category.services.map(\.label))
+        let even = Set(category.services.enumerated().filter { $0.offset.isMultiple(of: 2) }.map(\.element.label))
+        let first = try store.create(name: "Even", configuration: ServiceConfiguration(disabledLabels: even))
+        let second = try store.create(
+            name: "Odd", configuration: ServiceConfiguration(disabledLabels: labels.subtracting(even)))
+        let controller = ServiceProfilesSettingsViewController(store: store)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 360),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let lists = inspectorViews(controller.services.view).compactMap { $0 as? NSTableView }
+        let categories = try #require(lists.first { $0.accessibilityLabel() == "Service Categories" })
+        let services = try #require(lists.first { $0.accessibilityLabel() == "Services" })
+        let scroll = try #require(services.enclosingScrollView)
+        // The switches in view, by the position that their layers draw and the item that their row shows.
+        func shownSwitches() -> [(drawing: String, isOn: Bool, item: BackgroundServiceItem)] {
+            let items = controller.services.list.selectedSection?.items ?? []
+            let rows = services.rows(in: services.visibleRect)
+            return (rows.location..<rows.location + rows.length).compactMap { row in
+                guard
+                    let toggle = services.view(atColumn: 0, row: row, makeIfNecessary: false)
+                        .flatMap({ inspectorViews($0).compactMap { $0 as? NSSwitch }.first })
+                else { return nil }
+                var drawing: [String] = []
+                func visit(_ layer: CALayer) {
+                    drawing.append("\(layer.frame) \(layer.transform.m41) \(layer.opacity)")
+                    layer.sublayers?.forEach(visit)
+                }
+                toggle.layer.map(visit)
+                return (drawing.joined(separator: "|"), toggle.state == .on, items[row])
+            }
+        }
+        for profile in [first, second, first] {
+            controller.model.selectedProfileID = profile.id
+            try await wait(timeout: .seconds(5)) {
+                controller.services.list.categories.first === profile.categories.first
+                    && categories.numberOfRows == controller.services.list.sections.count
+            }
+            let index = try #require(controller.services.list.sections.firstIndex { $0.category.id == category.id })
+            categories.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+            try await wait(timeout: .seconds(5)) {
+                controller.services.list.selectedSection?.category.category == category
+                    && services.numberOfRows == controller.services.list.selectedSection?.items.count
+            }
+            var offset: CGFloat = 0
+            while offset < services.frame.height {
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: offset - scroll.contentInsets.top))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                window.displayIfNeeded()
+                try await Task.sleep(for: .milliseconds(30))
+                let shown = shownSwitches()
+                #expect(!shown.isEmpty && shown.allSatisfy { $0.isOn == $0.item.isEnabled })
+                // A switch that animated to its row's state would still be moving.
+                for _ in 0..<3 {
+                    try await Task.sleep(for: .milliseconds(40))
+                    #expect(shownSwitches().map(\.drawing) == shown.map(\.drawing))
+                }
+                offset += scroll.contentView.bounds.height / 2
+            }
+        }
+        #expect(first.configuration.disabledLabels == even)
+        #expect(second.configuration.disabledLabels == labels.subtracting(even))
+
+        let sharedLabel = try #require(category.services.first?.label)
+        let sharedID = try store.createCategory(named: "Shared Service")
+        try store.addService(sharedLabel, to: sharedID)
+        let sharedProfile = try store.create(name: "Shared", configuration: ServiceConfiguration(disabledLabels: []))
+        let sharedCategory = try #require(sharedProfile.categories.first { $0.id == sharedID })
+        let cell = BackgroundServiceCell()
+        window.contentView?.addSubview(cell)
+        cell.configure(item: sharedCategory, showsDetails: false)
+        let toggle = try #require(cell.subviews.compactMap { $0 as? NSSwitch }.first)
+        #expect(sharedCategory.isEnabled && toggle.state == .on)
+        // Another enabled category keeps this shared service on without changing the profile.
+        toggle.performClick(nil)
+        #expect(sharedProfile.configuration.disabledLabels.isEmpty && toggle.state == .on)
+
+        let item = try #require(sharedCategory.items.first)
+        cell.configure(item: item, showsDetails: false)
+        toggle.performClick(nil)
+        #expect(sharedProfile.configuration.disabledLabels == [sharedLabel] && toggle.state == .off)
     }
 
     @Test func selectingDefaultEnablesEveryServiceExceptTheOverriddenOnes() async throws {
@@ -4974,16 +5468,218 @@ struct ManagerModelTests {
         let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
         await manager.refresh()
         manager.inspect(device, selectionCount: 1)
-        manager.selectServiceProfile(.profile(ServiceProfile.allServices.id), for: device.id)
+        manager.selectServiceProfile(.profile(ServiceProfile.allServicesID), for: device.id)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: [label, other])
         #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: [label])
         try await awaitServiceOperations(manager)
-        #expect(store.binding(for: device.id) == DeviceServiceProfile(selection: .profile(ServiceProfile.allServices.id), overrides: [label: false]))
+        #expect(
+            store.binding(for: device.id)
+                == DeviceServiceProfile(selection: .profile(ServiceProfile.allServicesID), overrides: [label: false]))
         #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels == [label])
         #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: true)])
         try await manager.prepareForQuit()
+    }
+
+    @Test func customCategoriesSwitchEveryProfileUntilTheyAreRemoved() async throws {
+        let domain = "NeoSimulator.CustomServiceCategory.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let label = "com.example.agent"
+        let categoryID = try store.createCategory(named: "Agents")
+        try store.addService(label, to: categoryID)
+        for refused in [label, "com.apple.sharingd", "com.apple.nanoregistryd"] {
+            #expect(throws: ServiceProfileStore.Failure.self) { try store.addService(refused, to: categoryID) }
+        }
+        let profile = try store.create(name: "Agents Off", configuration: ServiceConfiguration())
+        let other = try store.create(name: "Other", configuration: ServiceConfiguration())
+        let category = try #require(profile.categories.first)
+        #expect(category.id == categoryID && category.isCustom && category.items.map(\.label) == [label])
+        category.setEnabled(false)
+        #expect(profile.configuration.disabledLabels == [label])
+        #expect(other.categories.first?.id == categoryID && other.categories.first?.isEnabled == true)
+        let copy = try store.create(name: "Copy", configuration: profile.configuration)
+
+        // Simulators read and change the custom services, which another profile turns on again.
+        let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        manager.selectServiceProfile(.profile(profile.id), for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [label])
+        try await awaitServiceOperations(manager)
+        manager.selectServiceProfile(.profile(ServiceProfile.allServicesID), for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [])
+        try await awaitServiceOperations(manager)
+        #expect(
+            await source.serviceChanges == [
+                .init(targets: [.service(label)], enabled: false),
+                .init(targets: [.service(label)], enabled: true),
+            ])
+        try store.record([.service(label)], enabled: false, for: device.id, productFamily: "iPhone")
+        try await manager.prepareForQuit()
+
+        // The definitions last, and a service that takes a new label stays off where it was off.
+        let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        #expect(restored.customCategories.map(\.labels) == [[label]])
+        #expect(restored.profile(copy.id)?.configuration.disabledLabels == [label])
+        let renamed = "com.example.worker"
+        try restored.updateService(label, in: categoryID, label: renamed, summary: " Works for the agents. ")
+        for saved in [restored, ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)] {
+            #expect(
+                saved.catalog.category(categoryID)?.services
+                    == [SimulatorBackgroundService(renamed, "Works for the agents.")])
+            #expect(saved.profile(copy.id)?.configuration.disabledLabels == [renamed])
+            #expect(saved.binding(for: device.id)?.overrides == [renamed: false])
+        }
+
+        // Removing a service takes it out of every profile and device.
+        try restored.removeServices([renamed], from: categoryID)
+        for saved in [restored, ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)] {
+            #expect(saved.profiles.allSatisfy { $0.configuration.disabledLabels.isEmpty })
+            #expect(saved.binding(for: device.id)?.overrides == [:])
+            #expect(saved.catalog.category(categoryID)?.services.isEmpty == true)
+        }
+        try restored.deleteCategory(categoryID)
+        #expect(ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil).catalog == .builtIn)
+    }
+
+    @Test func profileFilesListEveryServiceAndImportWhatTheySay() throws {
+        let domains = ["Exporting", "Importing"].map { "NeoSimulator.ServiceProfileFiles.\($0).\(UUID().uuidString)" }
+        defer {
+            for domain in domains {
+                try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+            }
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domains[0]), legacyDefaults: nil)
+        let label = "com.example.agent"
+        let categoryID = try store.createCategory(named: "Agents")
+        try store.addService(label, to: categoryID)
+        let searchd = "com.apple.searchd"
+        let profile = try store.create(
+            name: "Agents Off", configuration: ServiceConfiguration(disabledLabels: [label, searchd]))
+        // A file as someone who edits it sees it.
+        struct File: Codable {
+            struct Category: Codable, Equatable {
+                var name: String
+                var services: [Service]
+            }
+            struct Service: Codable, Equatable {
+                var label: String?
+                var enabled: Bool?
+                var description: String?
+            }
+            var version: Int
+            var name: String
+            var categories: [Category]
+        }
+
+        // All Services nests every built-in service in its category, spread over lines for reading.
+        let builtIn = try store.exportedFile(for: store.allServices)
+        var file = try JSONDecoder().decode(File.self, from: builtIn)
+        #expect(file.version == 1 && file.name == "All Services")
+        #expect(file.categories.map(\.name) == SimulatorBackgroundServiceCategory.all.map(\.name))
+        #expect(
+            file.categories.map { $0.services.map { $0.label ?? "" } }
+                == SimulatorBackgroundServiceCategory.all.map {
+                    $0.services.map(\.label) + $0.requiredServices.map(\.label)
+                })
+        #expect(file.categories.allSatisfy { $0.services.allSatisfy { $0.enabled == true } })
+        #expect(
+            String(decoding: builtIn, as: UTF8.self).split(separator: "\n").count
+                > file.categories.flatMap(\.services).count)
+        let custom = try store.exportedFile(for: profile)
+        let customFile = try JSONDecoder().decode(File.self, from: custom)
+        #expect(customFile.name == "Agents Off")
+        #expect(
+            customFile.categories.first
+                == File.Category(name: "Agents", services: [File.Service(label: label, enabled: false)]))
+
+        // A file imports as written: its switches, and its categories and services, which join the custom ones unless
+        // they match one that's here. A renamed category keeps on the services that simulators need.
+        let other = ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil)
+        let guarded = try #require(SimulatorBackgroundServiceCategory.all.first { !$0.requiredServices.isEmpty })
+        file.name = "Quiet"
+        for category in file.categories.indices {
+            if file.categories[category].name == guarded.name { file.categories[category].name = "Mine" }
+            for service in file.categories[category].services.indices
+            where file.categories[category].services[service].label == searchd {
+                file.categories[category].services[service].enabled = false
+            }
+        }
+        file.categories.append(
+            File.Category(
+                name: "Tools",
+                services: [
+                    File.Service(label: "com.example.tool", enabled: false, description: "Builds things."),
+                    File.Service(label: "com.example.helper"),
+                ]))
+        let imported = try other.importProfiles(from: [
+            ("Quiet.json", JSONEncoder().encode(file)), ("Agents Off.json", custom), ("Agents Off 2.json", custom),
+        ])
+        #expect(imported.map(\.name) == ["Quiet", "Agents Off", "Agents Off"])
+        #expect(Set(imported.map(\.id)).count == 3 && imported.allSatisfy { $0.canEdit && $0.id != profile.id })
+        #expect(imported[0].configuration.disabledLabels == [searchd, "com.example.tool"])
+        #expect(imported[1].configuration == profile.configuration)
+        #expect(other.customCategories.map(\.name) == ["Mine", "Tools", "Agents"])
+        // A service that the file doesn't turn off is on.
+        let tools = try #require(imported[0].categories.first { $0.category.name == "Tools" })
+        #expect(tools.isCustom && tools.items.map(\.detail) == ["Builds things.", ""])
+        #expect(tools.items.map(\.isEnabled) == [false, true])
+        let mine = try #require(imported[0].categories.first { $0.category.name == "Mine" })
+        #expect(
+            mine.category.services == guarded.services && mine.category.requiredServices == guarded.requiredServices)
+        #expect(mine.items.filter { $0.keptRunningReason != nil }.map(\.label) == guarded.requiredServices.map(\.label))
+        #expect(
+            ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil).customCategories
+                == other.customCategories)
+        // A category that differs from one here joins beside it.
+        var helpers = customFile
+        helpers.categories[0].name = "Helpers"
+        try store.importProfiles(from: [("Helpers.json", JSONEncoder().encode(helpers))])
+        #expect(store.customCategories.map(\.name) == ["Agents", "Helpers"])
+        #expect(store.customCategories.allSatisfy { $0.labels == [label] })
+
+        // A file that can't import names the field that fails, and nothing that any file has imports.
+        let saved = try Data(contentsOf: other.fileURL)
+        var later = customFile
+        later.version = 2
+        let required = try #require(SimulatorBackgroundServiceCategory.all.lazy.flatMap(\.requiredServices).first)
+        var requiredOff = try JSONDecoder().decode(File.self, from: builtIn)
+        let category = try #require(
+            requiredOff.categories.firstIndex { $0.services.contains { $0.label == required.label } })
+        let service = try #require(requiredOff.categories[category].services.firstIndex { $0.label == required.label })
+        requiredOff.categories[category].services[service].enabled = false
+        var wedging = customFile
+        wedging.categories.append(
+            File.Category(name: "Broken", services: [File.Service(label: "com.apple.nanoregistryd")]))
+        var unlabeled = customFile
+        unlabeled.categories[0].services[0].label = nil
+        let failures: [(Data, String?)] = try [
+            (JSONEncoder().encode(later), "version"),
+            (JSONEncoder().encode(requiredOff), "categories[\(category)].services[\(service)].enabled"),
+            (JSONEncoder().encode(wedging), "categories[\(wedging.categories.count - 1)].services[0].label"),
+            (JSONEncoder().encode(unlabeled), "categories[0].services[0].label"),
+            (Data("Agents Off".utf8), nil),
+        ]
+        for (contents, field) in failures {
+            let failure = try #require(throws: ServiceProfileStore.ImportFailure.self) {
+                try other.importProfiles(from: [("Agents Off.json", custom), ("Profiles.json", contents)])
+            }
+            #expect(failure.field == field)
+            #expect(failure.localizedDescription.hasPrefix("“Profiles.json”\(field.map { ", \($0)" } ?? ""): "))
+            #expect(try other.profiles.count == 3 && Data(contentsOf: other.fileURL) == saved)
+        }
     }
 
     @Test func profileEditsUseTheSameSharedServiceAndPlatformRulesAsLiveControls() throws {
@@ -5397,7 +6093,7 @@ struct ManagerModelTests {
 
         manager.selectServiceProfile(.inheritDefault, for: device.id)
         try await awaitServiceOperations(manager)
-        #expect(!services.isChanging && store.defaultProfile === ServiceProfile.allServices)
+        #expect(!services.isChanging && store.defaultProfile === store.allServices)
         let common = try store.create(name: "Common", configuration: ServiceConfiguration(disabledLabels: [label]))
         try store.setDefaultProfile(common.id)
         await manager.refresh()
@@ -5476,13 +6172,28 @@ struct ManagerModelTests {
         manager.inspect(device, selectionCount: 1)
         manager.selection.setServicesVisible(true)
         #expect(await events.next() == .readServices(device.id))
-        await source.completeServiceRead(disabled: ["com.apple.bird"])
+        await source.completeServiceRead(disabled: ["com.apple.bird", "com.apple.sharingd"])
         await manager.registry.finishReading()
+        // A required service that something disabled shows as off, and only turning it on reaches the simulator.
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        let required = try #require(inspector.categories.flatMap(\.items).first { $0.label == "com.apple.sharingd" })
+        #expect(!required.isEnabled && required.keptRunningReason != nil)
+        #expect(throws: BackgroundServiceKeptRunning.self) { try required.setEnabled(false) }
 
         manager.setBackgroundServices([.category("store")], enabled: false, for: device.id)
         #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: ["com.apple.bird", "com.apple.amsaccountsd", "com.apple.sharingd"])
+        try await awaitServiceOperations(manager)
+        try required.setEnabled(true)
+        #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: ["com.apple.bird", "com.apple.amsaccountsd"])
         try await awaitServiceOperations(manager)
+        #expect(required.isEnabled)
+        #expect(
+            await source.serviceChanges == [
+                .init(targets: [.category("store")], enabled: false),
+                .init(targets: [.service("com.apple.sharingd")], enabled: true),
+            ])
         let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
         try store.assign(.profile(profile.id), to: device.id)
         #expect(store.configuration(for: device.id)?.disabledLabels.contains("com.apple.amsaccountsd") == true)
@@ -5523,6 +6234,57 @@ struct ManagerModelTests {
         await source.completeServiceRead(disabled: [])
         await manager.registry.finishReading()
         #expect(inspector.content == .simulator(.services) && inspector.issue == nil)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func servicesThatACategoryAddsStayUnknownUntilAReadCoversThem() async throws {
+        let domain = "NeoSimulator.AddedServiceCoverage.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let device = simulator()
+        let label = "com.example.agent"
+        let searchd = "com.apple.searchd"
+        let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        await manager.refresh()
+        manager.inspect(device, selectionCount: 1)
+        manager.selection.setServicesVisible(true)
+        // The simulator has the label turned off, which a read of the built-in categories leaves out.
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label])
+        await manager.registry.finishReading()
+        #expect(inspector.content == .simulator(.services))
+
+        // A category without new services keeps what was read while the services are read again.
+        let categoryID = try store.createCategory(named: "Agents")
+        #expect(inspector.content == .simulator(.services))
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label])
+        await manager.registry.finishReading()
+
+        // Once the category lists the label, the services are unknown rather than showing it on, and a change that
+        // started before reads back without the label.
+        manager.setBackgroundServices([.service(searchd)], enabled: false, for: device.id)
+        #expect(await events.next() == .changeServices(device.id))
+        try store.addService(label, to: categoryID)
+        #expect(inspector.serviceState == nil && inspector.content == .simulator(.loading) && !inspector.canSaveProfile)
+        await source.completeServiceChange(disabled: [label, searchd])
+        #expect(await events.next() == .readServices(device.id))
+        #expect(inspector.serviceState == nil)
+        await source.failServiceRead()
+        await manager.registry.finishReading()
+        #expect(inspector.serviceState == nil)
+        #expect(inspector.content == .simulator(.failure(ManagerModelSource.Failure.unavailable.localizedDescription)))
+
+        inspector.requestRefresh()
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [label, searchd])
+        await manager.registry.finishReading()
+        #expect(inspector.serviceState?.disabledLabels == [label, searchd])
         try await manager.prepareForQuit()
     }
 
@@ -6126,10 +6888,20 @@ private struct ServiceChangeSource: DeviceStateSource {
     func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
                       publish: @escaping @concurrent @Sendable (DeviceSettingsGroupRead) async -> Void) async {}
     func write(_ change: DeviceSettingChange, to device: InventoryDevice) async throws {}
-    func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices { try await backend.read() }
+    func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServices
+    { try await backend(catalog).read() }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                               for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
-        try await backend.update(targets, enabled: enabled)
+        catalog: BackgroundServiceCatalog, for device: InventoryDevice
+    ) async throws
+        -> SimulatorBackgroundServicesUpdate
+    {
+        try await backend(catalog).update(targets, enabled: enabled)
+    }
+    private func backend(_ catalog: BackgroundServiceCatalog) -> SimulatorBackgroundServiceBackend {
+        var backend = backend
+        backend.catalog = catalog
+        return backend
     }
     func inspector(for device: InventoryDevice) -> DeviceInspector { DeviceInspector(device: device, simulatorXcodeURL: nil) }
     func stopReads() {}
@@ -6182,6 +6954,8 @@ actor ManagerModelSource: SimulatorManagerSource {
     private(set) var writtenChanges: [DeviceSettingChange] = []
     private var holdsServiceReads = false
     private var serviceReads: [(device: DeviceInventoryID, finished: CheckedContinuation<SimulatorBackgroundServices, any Error>)] = []
+    /// The categories that the last read or change covered, which the states it answers with cover.
+    private var serviceCatalog = BackgroundServiceCatalog.builtIn
     private var serviceChange: CheckedContinuation<SimulatorBackgroundServicesUpdate, any Error>?
     private(set) var serviceChanges: [ServiceChange] = []
     private(set) var readCount = 0
@@ -6306,8 +7080,11 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     /// Background service reads return no overrides at once unless a test holds them.
     func holdServiceReads() { holdsServiceReads = true }
-    func backgroundServices(for device: InventoryDevice) async throws -> SimulatorBackgroundServices {
-        guard holdsServiceReads else { return SimulatorBackgroundServices(disabled: [], loaded: [], productFamily: "iPhone") }
+    func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
+        -> SimulatorBackgroundServices
+    {
+        serviceCatalog = catalog
+        guard holdsServiceReads else { return services(disabled: []) }
         return try await withCheckedThrowingContinuation { waiting in
             serviceReads.append((device.id, waiting))
             continuation.yield(.readServices(device.id))
@@ -6315,14 +7092,18 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     func completeServiceRead(disabled: Set<String>, loaded: Set<String> = [], for device: DeviceInventoryID? = nil) {
         guard let index = serviceReads.firstIndex(where: { device == nil || $0.device == device }) else { return }
-        serviceReads.remove(at: index).finished.resume(returning: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"))
+        serviceReads.remove(at: index).finished.resume(returning: services(disabled: disabled, loaded: loaded))
     }
     func failServiceRead() {
         guard !serviceReads.isEmpty else { return }
         serviceReads.removeFirst().finished.resume(throwing: Failure.unavailable)
     }
     func setBackgroundServices(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool,
-                               for device: InventoryDevice) async throws -> SimulatorBackgroundServicesUpdate {
+        catalog: BackgroundServiceCatalog, for device: InventoryDevice
+    ) async throws
+        -> SimulatorBackgroundServicesUpdate
+    {
+        serviceCatalog = catalog
         serviceChanges.append(ServiceChange(targets: targets, enabled: enabled))
         return try await withCheckedThrowingContinuation { waiting in
             serviceChange = waiting
@@ -6333,15 +7114,18 @@ actor ManagerModelSource: SimulatorManagerSource {
         let waiting = serviceChange
         serviceChange = nil
         waiting?.resume(returning: SimulatorBackgroundServicesUpdate(
-            services: SimulatorBackgroundServices(disabled: disabled, loaded: [], productFamily: "iPhone"),
-            stillEnabledLabels: [], notStartedLabels: notStarted))
+                services: services(disabled: disabled), stillEnabledLabels: [], notStartedLabels: notStarted))
     }
     func failServiceChange(disabled: Set<String>, loaded: Set<String> = []) {
         let waiting = serviceChange
         serviceChange = nil
         waiting?.resume(throwing: SimulatorBackgroundServicesUpdateFailure(
-            services: SimulatorBackgroundServices(disabled: disabled, loaded: loaded, productFamily: "iPhone"),
+                services: services(disabled: disabled, loaded: loaded),
             underlyingError: SimulatorHostFailure(Failure.unavailable)))
+    }
+    private func services(disabled: Set<String>, loaded: Set<String> = []) -> SimulatorBackgroundServices {
+        SimulatorBackgroundServices(
+            disabled: disabled, loaded: loaded, productFamily: "iPhone", catalog: serviceCatalog)
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }
     func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
@@ -6471,7 +7255,6 @@ actor ManagerModelSource: SimulatorManagerSource {
         if failsSynchronization { failsSynchronization = false; throw HostOperationError.temporary("connection", "Try again") }
         return false
     }
-    func testingDeviceVisibilityDidChange() {}
 }
 
 @MainActor

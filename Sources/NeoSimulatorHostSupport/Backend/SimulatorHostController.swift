@@ -27,8 +27,8 @@ package struct SimulatorCreationContext: Sendable {
 
 /// The simulator address and backend selected before presenting its screen.
 package struct SimulatorPresentationContext: Sendable {
-    /// Distinguishes a user request, background attachment, and initial launch selection.
-    package enum Purpose: Sendable { case requested, automatic, startup }
+    /// Distinguishes a user request from an open screen moving to the Xcode that launched its simulator's app.
+    package enum Purpose: Sendable { case requested, automatic }
 
     package let deviceID: DeviceInventoryID
     package let xcodeURL: URL
@@ -123,31 +123,20 @@ private final class ScreenOpenCancellations: Sendable {
     }
     private struct State {
         var latest: [DeviceInventoryID: Cancellation] = [:]
-        var pending: Set<DeviceInventoryID> = []
         var active: [UUID: Active] = [:]
     }
     private let state = Mutex(State())
 
     func request(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
-        request(for: deviceID, cancellationIdentity: state.withLock { $0.latest[deviceID]?.identity })
-    }
-
-    func request(for deviceID: DeviceInventoryID, cancellationIdentity: UUID?) -> SimulatorScreenOpenRequest {
-        SimulatorScreenOpenRequest(deviceID: deviceID, cancellationIdentity: cancellationIdentity) { self.cancel(deviceID) }
-    }
-
-    func snapshot() -> [DeviceInventoryID: UUID] {
-        state.withLock { $0.latest.mapValues(\.identity) }
-    }
-
-    func isCurrent(_ snapshot: [DeviceInventoryID: UUID], for deviceID: DeviceInventoryID) -> Bool {
-        state.withLock { $0.latest[deviceID]?.identity == snapshot[deviceID] }
+        let cancellationIdentity = state.withLock { $0.latest[deviceID]?.identity }
+        return SimulatorScreenOpenRequest(deviceID: deviceID, cancellationIdentity: cancellationIdentity) {
+            self.cancel(deviceID)
+        }
     }
 
     private func cancel(_ deviceID: DeviceInventoryID) {
         let tasks = state.withLock { state in
             state.latest[deviceID] = Cancellation(identity: UUID(), instant: Date().timeIntervalSince1970)
-            state.pending.insert(deviceID)
             return state.active.values.filter { $0.request.deviceID == deviceID }.map(\.task)
         }
         // A task's cancellation handlers can publish another request. Never invoke them under the lock.
@@ -175,19 +164,10 @@ private final class ScreenOpenCancellations: Sendable {
             state.latest[connection.deviceID].map { connection.event.startTime <= $0.instant } ?? false
         }
     }
-
-    func takePending() -> Set<DeviceInventoryID> {
-        state.withLock { state in
-            let pending = state.pending
-            state.pending.removeAll()
-            return pending
-        }
-    }
 }
 
 package struct ScreenOpenCatalogObservation: Sendable {
     package let catalogs: [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])]
-    fileprivate let cancellationIdentities: [DeviceInventoryID: UUID]
     /// The devices that a change was altering during the read, so that their states may be only steps of it.
     fileprivate let changingDevices: Set<DeviceInventoryID>
     package var devices: [SimulatorHostDevice] { catalogs.flatMap(\.devices) }
@@ -219,13 +199,11 @@ package actor SimulatorHostController {
     private var lastTestingCatalogDiagnostic: String?
     private let startedAt = Date().timeIntervalSince1970
     private let connectionTracker = XcodeConnectionTracker()
-    private let bootTracker = SimulatorBootTracker()
+    private let catalogTracker = SimulatorCatalogTracker()
     private nonisolated let screenOpenCancellations = ScreenOpenCancellations()
     /// Every catalog and installation read. Mutations keep their own policies, so stopping these never interrupts one.
     let reads = CommandReads()
-    private var startupHandled = false
     private var allowsSessionHosting = false
-    private var startupDeviceIdentifier: DeviceInventoryID?
     private var screenOpenTasks: [DeviceInventoryID: (id: UUID, task: Task<Void, any Error>)] = [:]
     private var connectionSynchronization: Task<Bool, any Error>?
     private struct AcceptedOperation {
@@ -267,7 +245,7 @@ package actor SimulatorHostController {
         }
     }
 
-    /// Applies the preferred display host and enables automatic hosting without opening a screen.
+    /// Applies the preferred display host for the screens that requests open, without opening one.
     package func beginSession() async throws {
         try await operation(.hostTransition) {
             let xcode = try await self.resolveXcode(nil)
@@ -276,7 +254,7 @@ package actor SimulatorHostController {
         }
     }
 
-    /// Ends automatic hosting for this controller while preserving the selected display settings.
+    /// Ends hosting for this controller while preserving the selected display settings.
     package func endSession() async throws {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) { self.allowsSessionHosting = false }
@@ -384,8 +362,6 @@ package actor SimulatorHostController {
                 throw error
             }
             self.allowsSessionHosting = false
-            self.startupHandled = true
-            self.startupDeviceIdentifier = nil
         }
     }
 
@@ -424,16 +400,9 @@ package actor SimulatorHostController {
         package func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL? = nil, bootIfNeeded: Bool = true) async throws {
         _ = try request.deviceID.simulatorAddress
         try await screenOpen(request) {
-            // An explicit request supersedes the saved startup selection.
-            await self.supersedeStartupSelection()
             try await self.openDeviceBody(deviceID: request.deviceID, xcodeURL: xcodeURL, bootIfNeeded: bootIfNeeded,
                                           purpose: .requested)
         }
-    }
-
-    private func supersedeStartupSelection() {
-        startupHandled = true
-        startupDeviceIdentifier = nil
     }
 
     package func screenOpen(_ request: SimulatorScreenOpenRequest, processStartedAt: TimeInterval? = nil,
@@ -452,7 +421,6 @@ package actor SimulatorHostController {
                     screenOpenTasks.removeValue(forKey: request.deviceID)
                 }
                 screenOpenCancellations.finish(request)
-                retireCancelledScreenOpens()
             }
             try await task.value
         } onCancel: { request.cancel() }
@@ -470,13 +438,6 @@ package actor SimulatorHostController {
 
     package nonisolated func isCancelledScreenConnection(_ connection: XcodeSimulatorConnection) -> Bool {
         screenOpenCancellations.isCancelled(connection)
-    }
-
-    private func retireCancelledScreenOpens() {
-        for deviceID in screenOpenCancellations.takePending() {
-            bootTracker.didCancelAttachment(deviceID)
-            if startupDeviceIdentifier == deviceID { startupDeviceIdentifier = nil }
-        }
     }
 
     private func openDeviceBody(deviceID: DeviceInventoryID, xcodeURL: URL?, bootIfNeeded: Bool = true,
@@ -606,8 +567,11 @@ package actor SimulatorHostController {
         }
     }
 
-    /// Associates devices with the Xcode that launched their current simulator app processes.
-    /// Attaching a debugger to an already running process does not change its launch environment.
+    /// Associates devices with the Xcode that launched their current simulator app processes, and moves open screens to
+    /// it. Attaching a debugger to an already running process does not change its launch environment.
+    /// A simulator without an open screen stays closed, whether it was running at launch or started later: only an
+    /// explicit request opens one.
+    /// - Returns: Whether the catalog changed or a screen moved.
     package func synchronizeXcodeConnections() async throws -> Bool {
         if let connectionSynchronization { return try await connectionSynchronization.value }
         let task = Task { try await self.synchronizeConnections() }
@@ -625,140 +589,76 @@ package actor SimulatorHostController {
     }
 
     private func synchronizeConnections() async throws -> Bool {
-        self.retireCancelledScreenOpens()
         let (observedCatalog, selection) = try await operation(.independent) {
             let catalog = try await self.readScreenOpenCatalog { try await self.availableCatalogs() }
             return (catalog, try await self.hostSelectionStatus())
         }
-        var catalogs = observedCatalog.catalogs
-        let catalog = observedCatalog.devices
-        guard selection.allowsAutomaticHosting else {
-            let observation = self.bootTracker.observe(catalog, attachInitially: false, allowsAttachments: false,
-                                                       changing: observedCatalog.changingDevices)
-            self.startupHandled = true
-            self.startupDeviceIdentifier = nil
-            return observation.catalogChanged
+        let catalogChanged = catalogTracker.observe(observedCatalog.devices, changing: observedCatalog.changingDevices)
+        guard selection.allowsAutomaticHosting else { return catalogChanged }
+        let catalogs = observedCatalog.catalogs
+        let moved = try await moveOpenScreens(
+            to: try await Self.readProcessConnections(), in: observedCatalog, owners: try await registeredRenderers()
+        ) { connection in
+            let cached = catalogs.first { self.sameURL($0.xcode.applicationURL, connection.xcodeURL) }
+            let xcode = if let cached { cached.xcode } else { try await self.resolveXcode(connection.xcodeURL) }
+            let devices = try await Self.connectionCatalog(for: connection.deviceID, cachedDevices: cached?.devices) {
+                try await self.deviceCatalog(xcode: xcode)
+            }
+            guard devices.contains(where: { $0.inventoryID == connection.deviceID && $0.state == "Booted" }) else {
+                return
+            }
+            // The screen may have closed or moved while this waited for the device's earlier opens.
+            guard
+                let owner = try await self.registeredRenderers().first(where: {
+                    $0.deviceIdentifiers.contains(connection.deviceID)
+                }),
+                !self.sameURL(URL(fileURLWithPath: owner.xcodePath), xcode.applicationURL)
+            else { return }
+            try await RendererDeviceRequestWaiter().release(connection.deviceID, from: owner)
+            try await self.openRendererDevice(
+                connection.deviceID, xcode: xcode, bootIfNeeded: false, purpose: .automatic)
         }
-        let rendererDefaults = UserDefaults(suiteName: ToolConstants.neoHostBundleIdentifier)
-        let managerDefaults = ToolConstants.managerDefaults
-        let attachInitially = rendererDefaults?.object(forKey: "AttachBootedOnStart") as? Bool
-            ?? managerDefaults?.object(forKey: "AttachBootedOnStart") as? Bool ?? true
-        var changed = false
-        var firstFailure: (any Error)?
-        do {
-            changed = try await self.connectionTracker.synchronize(
-                observations: try await Self.readProcessConnections(),
-                runningDeviceIdentifiers: Set(catalog.filter { $0.state == "Booted" }.map(\.inventoryID)),
-                changingDeviceIdentifiers: observedCatalog.changingDevices,
-                testingDeviceSetPath: SimulatorDeviceSets.testingPath(),
-                isCancelled: { self.isCancelledScreenConnection($0) }
-            ) { connection in
-                if !attachInitially && connection.event.startTime < self.startedAt { return }
-                let index = catalogs.firstIndex(where: { self.sameURL($0.xcode.applicationURL, connection.xcodeURL) })
-                let xcode: XcodeInstallation
-                if let index { xcode = catalogs[index].xcode }
-                else { xcode = try await self.resolveXcode(connection.xcodeURL) }
-                let devices = try await Self.connectionCatalog(for: connection.deviceID, cachedDevices: index.map { catalogs[$0].devices }) {
-                    try await self.deviceCatalog(xcode: xcode)
-                }
-                if let index { catalogs[index] = (xcode, devices) }
-                else { catalogs.append((xcode, devices)) }
-                guard devices.contains(where: { $0.inventoryID == connection.deviceID && $0.state == "Booted" }) else { return }
-                let request = self.makeScreenOpenRequest(for: connection.deviceID)
-                try await self.screenOpen(request, processStartedAt: connection.event.startTime) {
-                    let renderers = try await self.registeredRenderers()
-                    if let owner = renderers.first(where: { $0.deviceIdentifiers.contains(connection.deviceID) }) {
-                        if self.sameURL(URL(fileURLWithPath: owner.xcodePath), xcode.applicationURL) { return }
-                        try await RendererDeviceRequestWaiter().release(connection.deviceID, from: owner)
-                    }
-                    try await self.openRendererDevice(connection.deviceID, xcode: xcode, bootIfNeeded: false, purpose: .automatic)
-                }
+        return catalogChanged || moved
+    }
+
+    /// Moves each open screen whose simulator runs an app that another Xcode launched, using `move`.
+    /// - Parameters:
+    ///   - connections: The simulator app processes and the Xcode that launched each.
+    ///   - catalog: The devices that the connections' devices must be running in.
+    ///   - owners: The renderers and the screens they have open.
+    ///   - move: Reopens the connection's device with its Xcode.
+    /// - Returns: Whether a connection was new.
+    package func moveOpenScreens(
+        to connections: [XcodeSimulatorConnection], in catalog: ScreenOpenCatalogObservation,
+        owners: [RendererRegistration], move: @escaping @Sendable (XcodeSimulatorConnection) async throws -> Void
+    ) async throws -> Bool {
+        try await connectionTracker.synchronize(
+            observations: connections,
+            runningDeviceIdentifiers: Set(catalog.devices.filter { $0.state == "Booted" }.map(\.inventoryID)),
+            changingDeviceIdentifiers: catalog.changingDevices,
+            testingDeviceSetPath: SimulatorDeviceSets.testingPath(),
+            isCancelled: { self.isCancelledScreenConnection($0) }
+        ) { connection in
+            guard let owner = owners.first(where: { $0.deviceIdentifiers.contains(connection.deviceID) }),
+                !self.sameURL(URL(fileURLWithPath: owner.xcodePath), connection.xcodeURL)
+            else { return }
+            let request = self.makeScreenOpenRequest(for: connection.deviceID)
+            try await self.screenOpen(request, processStartedAt: connection.event.startTime) {
+                try await move(connection)
             }
-        } catch { firstFailure = error }
-        let resolvedCatalogs = catalogs
-        let bootObservation = try await self.synchronizeBootedDevices(observedCatalog, attachInitially: attachInitially,
-            ownedIdentifiers: { Set(try await self.registeredRenderers().flatMap(\.deviceIdentifiers)) }) { deviceID in
-                try await self.openDeviceBody(deviceID: deviceID, xcodeURL: nil, bootIfNeeded: false,
-                                              catalogs: resolvedCatalogs, purpose: .automatic)
-            }
-        changed = changed || bootObservation.changed
-        if firstFailure == nil { firstFailure = bootObservation.failure }
-        let ownedIdentifiers = bootObservation.ownedIdentifiers
-        // A read during a change does not show which devices stay running, so a later one decides.
-        if !self.startupHandled, observedCatalog.changingDevices.isEmpty {
-            self.startupHandled = true
-            func savedBoolean(_ key: String) -> Bool {
-                rendererDefaults?.object(forKey: key) as? Bool ?? managerDefaults?.object(forKey: key) as? Bool ?? true
-            }
-            let savedDefaults = rendererDefaults?.string(forKey: "CurrentDeviceUDID") != nil ? rendererDefaults : managerDefaults
-            let current = savedDefaults?.string(forKey: "CurrentDeviceUDID").map {
-                DeviceInventoryID.simulator(udid: $0, deviceSetPath: savedDefaults?.string(forKey: "CurrentDeviceSetPath"))
-            }
-            self.startupDeviceIdentifier = SimulatorStartupSelection.device(
-                in: catalog, attachInitially: attachInitially,
-                startsSession: savedBoolean("SessionOnLaunch"), startsLastDevice: savedBoolean("StartLastDeviceOnLaunch"),
-                current: current, hasOwnedDevices: !ownedIdentifiers.isEmpty
-            )?.inventoryID
         }
-        if let identifier = self.startupDeviceIdentifier {
-            do {
-                let request = self.makeScreenOpenRequest(for: identifier)
-                let observedCatalogs = catalogs
-                try await self.screenOpen(request, processStartedAt: self.startedAt) {
-                    try await self.openDeviceBody(deviceID: identifier, xcodeURL: nil, catalogs: observedCatalogs, purpose: .startup)
-                }
-                self.startupDeviceIdentifier = nil
-                changed = true
-            } catch is CancellationError { self.startupDeviceIdentifier = nil }
-            catch { if firstFailure == nil { firstFailure = error } }
-        }
-        if let firstFailure { throw firstFailure }
-        return changed
     }
 
     package func readScreenOpenCatalog(
         _ read: @Sendable () async throws -> [(xcode: XcodeInstallation, devices: [SimulatorHostDevice])]
     ) async throws -> ScreenOpenCatalogObservation {
-        // The observation starts before I/O: a later cancellation must also invalidate stale Shutdown results.
-        let identities = screenOpenCancellations.snapshot()
         let id = UUID()
         catalogReads[id] = operations.reduce(into: []) { changing, operation in
             if operation.continuation == nil, case .devices(let devices) = operation.scope { changing.formUnion(devices) }
         }
         defer { catalogReads[id] = nil }
         let catalogs = try await read()
-        return ScreenOpenCatalogObservation(catalogs: catalogs, cancellationIdentities: identities,
-                                            changingDevices: catalogReads[id] ?? [])
-    }
-
-    package func synchronizeBootedDevices(_ catalog: ScreenOpenCatalogObservation, attachInitially: Bool,
-        ownedIdentifiers: @Sendable () async throws -> Set<DeviceInventoryID>,
-        open: @escaping @Sendable (DeviceInventoryID) async throws -> Void
-    ) async throws -> (changed: Bool, ownedIdentifiers: Set<DeviceInventoryID>, failure: (any Error)?) {
-        retireCancelledScreenOpens()
-        let observation = bootTracker.observe(catalog.devices, attachInitially: attachInitially, changing: catalog.changingDevices,
-            isCurrentObservation: { self.screenOpenCancellations.isCurrent(catalog.cancellationIdentities, for: $0) })
-        let requests = observation.devicesToAttach.map {
-            screenOpenCancellations.request(for: $0, cancellationIdentity: catalog.cancellationIdentities[$0])
-        }
-        let owned = try await ownedIdentifiers()
-        var changed = observation.catalogChanged
-        var firstFailure: (any Error)?
-        for request in requests {
-            let deviceID = request.deviceID
-            if connectionTracker.hasPendingConnection(forDevice: deviceID, isCancelled: { self.isCancelledScreenConnection($0) }) { continue }
-            do {
-                if !owned.contains(deviceID) { try await screenOpen(request) { try await open(deviceID) } }
-                bootTracker.didAttach(deviceID)
-                changed = true
-            } catch is CancellationError {} catch { if firstFailure == nil { firstFailure = error } }
-        }
-        return (changed, owned, firstFailure)
-    }
-
-    /// Invalidates testing-device attachments after a visibility change, including changes between catalog polls.
-    package func testingDeviceVisibilityDidChange() async throws {
-        try await operation(.independent) { self.bootTracker.forgetTestingDevices() }
+        return ScreenOpenCatalogObservation(catalogs: catalogs, changingDevices: catalogReads[id] ?? [])
     }
 
     package func quitRenderer(keepingDevicesRunning: Bool? = nil) async throws {
@@ -772,8 +672,6 @@ package actor SimulatorHostController {
     private func select(_ host: SimulatorHost, xcodeURL: URL?) async throws {
         let xcode = try await resolveXcode(xcodeURL)
         let renderers = try await registeredRenderers()
-        let previousHost = try await hostSelectionStatus().host
-        if host == .deviceHub || previousHost == .deviceHub { bootTracker.reset() }
         let existing = xcodeURL == nil ? renderers.first : renderers.first { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }
         do {
             try await useHost(host, xcodeURL: xcode.applicationURL, launchDisplay: host == .deviceHub || existing == nil)
@@ -1295,74 +1193,19 @@ package enum SimulatorProcessConnections {
     }
 }
 
-package final class SimulatorBootTracker {
-    package struct Observation {
-        package let catalogChanged: Bool
-        package let devicesToAttach: [DeviceInventoryID]
-    }
-
+/// The catalog that the last synchronization read, which tells whether the inventory needs reading again.
+package final class SimulatorCatalogTracker {
     private var catalog: [DeviceInventoryID: SimulatorHostDevice] = [:]
-    private var pending: Set<DeviceInventoryID> = []
-    /// A cancelled open may have booted before the catalog observed it, and a first read during a change cannot tell
-    /// whether the device ran before that change. Retire only that boot's automatic attach.
-    private var retiredAttachments: Set<DeviceInventoryID> = []
-    private var initialized = false
 
-    package func reset() { pending = []; retiredAttachments = []; initialized = false }
-    package func didAttach(_ identifier: DeviceInventoryID) { pending.remove(identifier) }
-    package func didCancelAttachment(_ identifier: DeviceInventoryID) {
-        pending.remove(identifier)
-        retiredAttachments.insert(identifier)
-    }
-    package func forgetTestingDevices() {
-        let identifiers = Set(catalog.filter { $0.value.deviceSetPath != nil }.keys)
-        catalog = catalog.filter { $0.value.deviceSetPath == nil }
-        pending.subtract(identifiers)
-        retiredAttachments = retiredAttachments.filter {
-            if case .simulator(_, let path) = $0.destination { return path == nil }
-            return true
-        }
-    }
-
-    package func observe(_ devices: [SimulatorHostDevice], attachInitially: Bool, allowsAttachments: Bool = true,
-                 changing: Set<DeviceInventoryID> = [],
-                 isCurrentObservation: (DeviceInventoryID) -> Bool = { _ in true }) -> Observation {
+    /// Records `devices` and returns whether they differ from the previous observation.
+    /// - Parameter changing: Devices that a change was altering during the read, which keep their previous state.
+    package func observe(_ devices: [SimulatorHostDevice], changing: Set<DeviceInventoryID> = []) -> Bool {
         var current = Dictionary(devices.map { ($0.inventoryID, $0) }, uniquingKeysWith: { first, _ in first })
         // A restart's stop and boot are steps of that change, not a device that newly booted.
         for identifier in changing {
             if let previous = catalog[identifier] { current[identifier] = previous }
         }
-        let changed = current != catalog
         defer { catalog = current }
-        guard allowsAttachments else {
-            reset()
-            return Observation(catalogChanged: changed, devicesToAttach: [])
-        }
-        if !initialized && !attachInitially { retiredAttachments.formUnion(changing.intersection(current.keys)) }
-        // Only a read outside a change can establish that a retired boot has ended.
-        retiredAttachments = retiredAttachments.filter { identifier in
-            changing.contains(identifier) || !isCurrentObservation(identifier) || current[identifier]?.state != "Shutdown"
-        }
-        let booted = Set(current.filter { $0.value.state == "Booted" }.keys)
-        pending.formIntersection(booted)
-        pending.subtract(retiredAttachments)
-        for identifier in booted where !retiredAttachments.contains(identifier) {
-            if initialized {
-                if catalog[identifier]?.state != "Booted" { pending.insert(identifier) }
-            } else if attachInitially { pending.insert(identifier) }
-        }
-        initialized = true
-        return Observation(catalogChanged: changed, devicesToAttach: pending.subtracting(changing).sorted { $0.sortKey < $1.sortKey })
-    }
-}
-
-package enum SimulatorStartupSelection {
-    package static func device(in devices: [SimulatorHostDevice], attachInitially: Bool, startsSession: Bool, startsLastDevice: Bool, current: DeviceInventoryID?, hasOwnedDevices: Bool) -> SimulatorHostDevice? {
-        guard startsSession, startsLastDevice, !hasOwnedDevices,
-              !(attachInitially && devices.contains(where: { $0.state == "Booted" })) else { return nil }
-        if case .simulator(let savedIdentifier, let path)? = current?.destination,
-           let identifier = UUID(uuidString: savedIdentifier),
-           let chosen = devices.first(where: { $0.deviceSetPath == path && UUID(uuidString: $0.identifier) == identifier }) { return chosen }
-        return devices.last(where: { $0.productFamily == "iPhone" }) ?? devices.first
+        return current != catalog
     }
 }
