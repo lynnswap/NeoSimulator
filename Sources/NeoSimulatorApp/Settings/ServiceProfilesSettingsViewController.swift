@@ -228,7 +228,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         guard profiles.indices.contains(row) else { return nil }
         let profile = profiles[row]
         // Encoding the profile's names and labels can't fail.
-        guard let contents = try? model.store.exportedLines(for: profile) else { return nil }
+        guard let contents = try? model.store.exportedFile(for: profile) else { return nil }
         return ServiceProfileFilePromise(
             movedProfile: profile.id == ServiceProfile.allServicesID ? nil : profile.id,
             fileName: model.exportFileName(for: profile), contents: contents)
@@ -246,7 +246,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     private func droppedFiles(_ info: any NSDraggingInfo) -> [URL] {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [
             .urlReadingFileURLsOnly: true,
-            .urlReadingContentsConformToTypes: [ServiceProfilesSettingsModel.fileType.identifier],
+            .urlReadingContentsConformToTypes: [UTType.json.identifier],
         ]
         return info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
     }
@@ -319,8 +319,8 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     @objc private func chooseProfilesToImport(_ sender: Any?) {
         guard let window = view.window else { return }
         let panel = NSOpenPanel()
-        panel.message = "Choose JSON Lines files of service profiles to add."
-        panel.allowedContentTypes = [ServiceProfilesSettingsModel.fileType]
+        panel.message = "Choose JSON files of service profiles to add."
+        panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { [weak self] response in
@@ -340,7 +340,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         let panel = NSSavePanel()
         panel.title = "Export Service Profile"
         panel.nameFieldStringValue = model.exportFileName(for: profile)
-        panel.allowedContentTypes = [ServiceProfilesSettingsModel.fileType]
+        panel.allowedContentTypes = [.json]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.beginSheetModal(for: window) { [weak self, model] response in
@@ -393,7 +393,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
 }
 
-/// A dragged profile, which moves within the list and becomes a JSON Lines file where it drops outside the app. Its
+/// A dragged profile, which moves within the list and becomes a JSON file where it drops outside the app. Its
 /// file's contents come from when the drag starts.
 private final class ServiceProfileFilePromise: NSFilePromiseProvider, NSFilePromiseProviderDelegate {
     /// The profile that the drag moves within the list, or `nil` for the built-in profile, which stays first.
@@ -408,7 +408,7 @@ private final class ServiceProfileFilePromise: NSFilePromiseProvider, NSFileProm
         self.contents = contents
         super.init()
         writes.qualityOfService = .userInitiated
-        fileType = ServiceProfilesSettingsModel.fileType.identifier
+        fileType = UTType.json.identifier
         // The provider holds what it writes, so the drag keeps the delegate as long as it needs it.
         delegate = self
     }

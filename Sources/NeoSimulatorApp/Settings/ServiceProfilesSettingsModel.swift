@@ -3,7 +3,6 @@ import NeoSimulatorHostSupport
 import Foundation
 import Observation
 import NeoSimulatorManager
-import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class ServiceProfilesSettingsModel {
@@ -111,10 +110,7 @@ final class ServiceProfilesSettingsModel {
         try store.removeService(service.label, from: category.id)
     }
 
-    // MARK: Files, which carry profiles between Macs
-
-    /// JSON Lines, which the system doesn't declare a type for.
-    nonisolated static let fileType = UTType(filenameExtension: "jsonl") ?? .data
+    // MARK: JSON files, which carry profiles between Macs
 
     /// A name for `profile`'s file, from its name without what file names can't have.
     func exportFileName(for profile: ServiceProfile) -> String {
@@ -122,15 +118,15 @@ final class ServiceProfilesSettingsModel {
         let name = String(String.UnicodeScalarView(profile.name.unicodeScalars.map { unsafe.contains($0) ? "-" : $0 }))
             // A leading period hides the file.
             .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ".")))
-        return (name.isEmpty ? "Service Profile" : name) + ".jsonl"
+        return (name.isEmpty ? "Service Profile" : name) + ".json"
     }
 
-    /// Writes `profile` to a JSON Lines file at `url`.
+    /// Writes `profile` to a JSON file at `url`.
     func export(_ profile: ServiceProfile, to url: URL) async throws {
-        try await writeFile(store.exportedLines(for: profile), to: url)
+        try await writeFile(store.exportedFile(for: profile), to: url)
     }
 
-    /// Adds the profiles in JSON Lines files and selects the first. Nothing changes unless every file imports.
+    /// Adds the profile in each JSON file and selects the first. Nothing changes unless every file imports.
     func importProfiles(from urls: [URL]) async throws {
         let files = try await readFiles(at: urls)
         if let first = try store.importProfiles(from: files).first { selectedProfileID = first.id }

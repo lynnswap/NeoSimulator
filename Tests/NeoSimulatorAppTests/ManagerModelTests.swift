@@ -4623,7 +4623,7 @@ struct ManagerModelTests {
         let promise = try #require(controller.tableView(table, pasteboardWriterForRow: 1) as? NSFilePromiseProvider)
         let delegate = try #require(promise.delegate)
         let name = delegate.filePromiseProvider(promise, fileNameForType: promise.fileType)
-        #expect(name == "Search- Off.jsonl")
+        #expect(name == "Search- Off.json")
         try store.update(profile.id, name: "Renamed", configuration: ServiceConfiguration())
         func write(to url: URL) async -> (any Error)? {
             await withCheckedContinuation { written in
@@ -4631,7 +4631,7 @@ struct ManagerModelTests {
             }
         }
         // A file that the destination already has stays as it is.
-        let existing = directory.appending(path: "Existing.jsonl")
+        let existing = directory.appending(path: "Existing.json")
         try Data("kept".utf8).write(to: existing)
         let refusal = await write(to: existing)
         #expect(try refusal != nil && Data(contentsOf: existing) == Data("kept".utf8))
@@ -5436,54 +5436,74 @@ struct ManagerModelTests {
         let searchd = "com.apple.searchd"
         let profile = try store.create(
             name: "Agents Off", configuration: ServiceConfiguration(disabledLabels: [label, searchd]))
-        func lines(_ data: Data) -> [String] {
-            String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+        // A file as someone who edits it sees it.
+        struct File: Codable {
+            struct Category: Codable, Equatable {
+                var name: String
+                var services: [Service]
+            }
+            struct Service: Codable, Equatable {
+                var label: String?
+                var enabled: Bool?
+                var description: String?
+            }
+            var version: Int
+            var name: String
+            var categories: [Category]
         }
 
-        // All Services lists every built-in service on a line of its own, whose fields read in order.
-        let builtIn = try store.exportedLines(for: store.allServices)
-        let builtInLines = lines(builtIn)
-        let services = SimulatorBackgroundServiceCategory.all.flatMap {
-            $0.services.map(\.label) + $0.requiredServices.map(\.label)
-        }
-        #expect(builtInLines.first == #"{"type": "profile", "version": 1, "name": "All Services"}"#)
-        #expect(builtInLines.count == 1 + SimulatorBackgroundServiceCategory.all.count + services.count)
+        // All Services nests every built-in service in its category, spread over lines for reading.
+        let builtIn = try store.exportedFile(for: store.allServices)
+        var file = try JSONDecoder().decode(File.self, from: builtIn)
+        #expect(file.version == 1 && file.name == "All Services")
+        #expect(file.categories.map(\.name) == SimulatorBackgroundServiceCategory.all.map(\.name))
         #expect(
-            try builtInLines.allSatisfy { line in
-                let fields = try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
-                return fields.values.allSatisfy { !($0 is [Any] || $0 is [String: Any]) }
-            })
+            file.categories.map { $0.services.map { $0.label ?? "" } }
+                == SimulatorBackgroundServiceCategory.all.map {
+                    $0.services.map(\.label) + $0.requiredServices.map(\.label)
+                })
+        #expect(file.categories.allSatisfy { $0.services.allSatisfy { $0.enabled == true } })
         #expect(
-            builtInLines.contains { $0.hasPrefix(#"{"type": "service", "label": "\#(searchd)", "enabled": true, "#) })
-        let custom = try store.exportedLines(for: profile)
+            String(decoding: builtIn, as: UTF8.self).split(separator: "\n").count
+                > file.categories.flatMap(\.services).count)
+        let custom = try store.exportedFile(for: profile)
+        let customFile = try JSONDecoder().decode(File.self, from: custom)
+        #expect(customFile.name == "Agents Off")
         #expect(
-            Array(lines(custom).prefix(3)) == [
-                #"{"type": "profile", "version": 1, "name": "Agents Off"}"#, #"{"type": "category", "name": "Agents"}"#,
-                #"{"type": "service", "label": "com.example.agent", "enabled": false}"#,
-            ])
+            customFile.categories.first
+                == File.Category(name: "Agents", services: [File.Service(label: label, enabled: false)]))
 
         // A file imports as written: its switches, and its categories and services, which join the custom ones unless
         // they match one that's here. A renamed category keeps on the services that simulators need.
         let other = ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil)
         let guarded = try #require(SimulatorBackgroundServiceCategory.all.first { !$0.requiredServices.isEmpty })
-        let edited =
-            String(decoding: builtIn, as: UTF8.self)
-            .replacing(#""name": "All Services""#, with: #""name": "Quiet""#)
-            .replacing(
-                #"{"type": "category", "name": "\#(guarded.name)"}"#, with: #"{"type": "category", "name": "Mine"}"#
-            )
-            .replacing(#""label": "\#(searchd)", "enabled": true"#, with: #""label": "\#(searchd)", "enabled": false"#)
-            + #"{"type": "category", "name": "Tools"}"# + "\n"
-            + #"{"type": "service", "label": "com.example.tool", "enabled": false, "description": "Builds things."}"#
-            + "\n"
-        let imported = try other.importProfiles(from: [("Quiet.jsonl", Data(edited.utf8) + custom + custom)])
+        file.name = "Quiet"
+        for category in file.categories.indices {
+            if file.categories[category].name == guarded.name { file.categories[category].name = "Mine" }
+            for service in file.categories[category].services.indices
+            where file.categories[category].services[service].label == searchd {
+                file.categories[category].services[service].enabled = false
+            }
+        }
+        file.categories.append(
+            File.Category(
+                name: "Tools",
+                services: [
+                    File.Service(label: "com.example.tool", enabled: false, description: "Builds things."),
+                    File.Service(label: "com.example.helper"),
+                ]))
+        let imported = try other.importProfiles(from: [
+            ("Quiet.json", JSONEncoder().encode(file)), ("Agents Off.json", custom), ("Agents Off 2.json", custom),
+        ])
         #expect(imported.map(\.name) == ["Quiet", "Agents Off", "Agents Off"])
         #expect(Set(imported.map(\.id)).count == 3 && imported.allSatisfy { $0.canEdit && $0.id != profile.id })
         #expect(imported[0].configuration.disabledLabels == [searchd, "com.example.tool"])
         #expect(imported[1].configuration == profile.configuration)
         #expect(other.customCategories.map(\.name) == ["Mine", "Tools", "Agents"])
+        // A service that the file doesn't turn off is on.
         let tools = try #require(imported[0].categories.first { $0.category.name == "Tools" })
-        #expect(tools.isCustom && !tools.isEnabled && tools.items.map(\.detail) == ["Builds things."])
+        #expect(tools.isCustom && tools.items.map(\.detail) == ["Builds things.", ""])
+        #expect(tools.items.map(\.isEnabled) == [false, true])
         let mine = try #require(imported[0].categories.first { $0.category.name == "Mine" })
         #expect(
             mine.category.services == guarded.services && mine.category.requiredServices == guarded.requiredServices)
@@ -5492,32 +5512,40 @@ struct ManagerModelTests {
             ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil).customCategories
                 == other.customCategories)
         // A category that differs from one here joins beside it.
-        let helpers = String(decoding: custom, as: UTF8.self).replacing(
-            #""name": "Agents"}"#, with: #""name": "Helpers"}"#)
-        try store.importProfiles(from: [("Helpers.jsonl", Data(helpers.utf8))])
+        var helpers = customFile
+        helpers.categories[0].name = "Helpers"
+        try store.importProfiles(from: [("Helpers.json", JSONEncoder().encode(helpers))])
         #expect(store.customCategories.map(\.name) == ["Agents", "Helpers"])
         #expect(store.customCategories.allSatisfy { $0.labels == [label] })
 
-        // A line that can't import leaves everything as it was.
+        // A file that can't import names the field that fails, and nothing that any file has imports.
         let saved = try Data(contentsOf: other.fileURL)
+        var later = customFile
+        later.version = 2
         let required = try #require(SimulatorBackgroundServiceCategory.all.lazy.flatMap(\.requiredServices).first)
-        let requiredLine = try #require(builtInLines.firstIndex { $0.contains(#""label": "\#(required.label)""#) })
-        let requiredOff = String(decoding: builtIn, as: UTF8.self).replacing(
-            #""label": "\#(required.label)", "enabled": true"#,
-            with: #""label": "\#(required.label)", "enabled": false"#)
-        let wedging =
-            #"{"type": "category", "name": "Broken"}"# + "\n"
-            + #"{"type": "service", "label": "com.apple.nanoregistryd"}"# + "\n"
-        let customCount = lines(custom).count
-        for (contents, failedLine) in [
-            (custom + Data(#"{"type": "profile", "version": 2, "name": "Later"}"#.utf8), customCount + 1),
-            (Data(requiredOff.utf8), requiredLine + 1),
-            (custom + Data(wedging.utf8), customCount + 2),
-        ] {
+        var requiredOff = try JSONDecoder().decode(File.self, from: builtIn)
+        let category = try #require(
+            requiredOff.categories.firstIndex { $0.services.contains { $0.label == required.label } })
+        let service = try #require(requiredOff.categories[category].services.firstIndex { $0.label == required.label })
+        requiredOff.categories[category].services[service].enabled = false
+        var wedging = customFile
+        wedging.categories.append(
+            File.Category(name: "Broken", services: [File.Service(label: "com.apple.nanoregistryd")]))
+        var unlabeled = customFile
+        unlabeled.categories[0].services[0].label = nil
+        let failures: [(Data, String?)] = try [
+            (JSONEncoder().encode(later), "version"),
+            (JSONEncoder().encode(requiredOff), "categories[\(category)].services[\(service)].enabled"),
+            (JSONEncoder().encode(wedging), "categories[\(wedging.categories.count - 1)].services[0].label"),
+            (JSONEncoder().encode(unlabeled), "categories[0].services[0].label"),
+            (Data("Agents Off".utf8), nil),
+        ]
+        for (contents, field) in failures {
             let failure = try #require(throws: ServiceProfileStore.ImportFailure.self) {
-                try other.importProfiles(from: [("Profiles.jsonl", contents)])
+                try other.importProfiles(from: [("Agents Off.json", custom), ("Profiles.json", contents)])
             }
-            #expect(failure.line == failedLine && failure.localizedDescription.contains("Profiles.jsonl"))
+            #expect(failure.field == field)
+            #expect(failure.localizedDescription.hasPrefix("“Profiles.json”\(field.map { ", \($0)" } ?? ""): "))
             #expect(try other.profiles.count == 3 && Data(contentsOf: other.fileURL) == saved)
         }
     }
