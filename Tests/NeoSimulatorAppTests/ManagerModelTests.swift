@@ -4531,8 +4531,9 @@ struct ManagerModelTests {
         window.isReleasedWhenClosed = false
         window.contentViewController = controller
         defer { window.close() }
-        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }
-            .first { !($0 is NSOutlineView) })
+        let table = try #require(
+            inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+                .first { $0.accessibilityLabel() == "Service Profiles" })
         let accessory = try #require(controller.splitViewItems.first?.topAlignedAccessoryViewControllers.first)
         let defaultMenu = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSPopUpButton }.first)
         #expect(controller.tableView(table, pasteboardWriterForRow: 0) == nil)
@@ -4961,7 +4962,7 @@ struct ManagerModelTests {
         window.contentViewController = controller
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
-        let searchAccessory = try #require(controller.splitViewItems[1].bottomAlignedAccessoryViewControllers.first)
+        let searchAccessory = try #require(controller.splitViewItems[1].topAlignedAccessoryViewControllers.first)
         let search = try #require(inspectorViews(searchAccessory.view).compactMap { $0 as? BackgroundServiceSearchField }.first)
         search.stringValue = "com.apple.searchd"
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
@@ -4982,16 +4983,43 @@ struct ManagerModelTests {
         let field = try #require(window.firstResponder as? NSTextView)
         #expect(field.enabledTextCheckingTypes == 0)
         field.string = "Focused"
-        let table = try #require(inspectorViews(controller.view).compactMap { $0 as? NSTableView }
-            .first { !($0 is NSOutlineView) })
+        let table = try #require(
+            inspectorViews(controller.view).compactMap { $0 as? NSTableView }
+                .first { $0.accessibilityLabel() == "Service Profiles" })
         window.makeFirstResponder(table)
         #expect(first.name == "Focused")
         #expect(search.stringValue == "com.apple.searchd")
-        let details = try #require(controller.splitViewItems[1].viewController.children.compactMap { $0 as? BackgroundServiceOutlineController }.first)
-        let filtered = try #require(details.model.sections.first?.items.first)
+        let lists = inspectorViews(controller.services.view).compactMap { $0 as? NSTableView }
+        let categories = try #require(lists.first { $0.accessibilityLabel() == "Service Categories" })
+        let services = try #require(lists.first { $0.accessibilityLabel() == "Services" })
+        func shownServices() -> [String] {
+            (0..<services.numberOfRows).compactMap { row in
+                services.view(atColumn: 0, row: row, makeIfNecessary: true).flatMap {
+                    inspectorViews($0).compactMap { $0 as? NSTextField }.first?.stringValue
+                }
+            }
+        }
+        // The filter above both lists insets them, and the matches of the selected category show beside it.
+        try await wait(timeout: .seconds(5)) {
+            controller.view.layoutSubtreeIfNeeded()
+            return [categories, services].allSatisfy { ($0.enclosingScrollView?.contentInsets.top ?? 0) > 0 }
+                && categories.numberOfRows == 1 && categories.selectedRow == 0
+                && shownServices() == ["com.apple.searchd"]
+        }
+        let filtered = try #require(controller.services.list.selectedSection?.items.first)
         filtered.setEnabled(false)
         #expect(first.configuration.disabledLabels == ["com.apple.searchd"])
         #expect(ServiceProfile.allServices.configuration.disabledLabels.isEmpty)
+        search.stringValue = ""
+        #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
+        let other = try #require(controller.services.list.sections.dropFirst().first)
+        try await wait(timeout: .seconds(5)) {
+            categories.numberOfRows == controller.services.list.sections.count
+        }
+        categories.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        try await wait(timeout: .seconds(5)) {
+            shownServices() == other.items.map(\.label)
+        }
         controller.model.create()
         #expect(controller.model.selectedProfile.name == "Profile (1)")
         controller.model.create()

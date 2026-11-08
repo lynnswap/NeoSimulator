@@ -17,7 +17,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Service Profile")!,
     ], trackingMode: .momentary, target: nil, action: nil)
     private let detailsController = NSViewController()
-    private lazy var outline = BackgroundServiceOutlineController(categories: model.selectedProfile.categories, showsDetails: true)
+    let services = ServiceProfileServicesViewController()
     private var displayedProfile: ServiceProfile?
     private var observation: PortableObservationTracking.Token?
     private var profiles: [ServiceProfile] = []
@@ -28,7 +28,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         model = ServiceProfilesSettingsModel(store: store)
         super.init(nibName: nil, bundle: nil)
         title = "Service Profiles"
-        preferredContentSize = NSSize(width: 720, height: 520)
+        preferredContentSize = NSSize(width: 860, height: 520)
     }
     required init?(coder: NSCoder) { nil }
 
@@ -86,15 +86,15 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         sidebarItem.maximumThickness = 240
         sidebarItem.holdingPriority = .defaultHigh
         addSplitViewItem(sidebarItem)
-        detailsController.addChild(outline)
-        let list = outline.view
-        list.translatesAutoresizingMaskIntoConstraints = false
-        details.addSubview(list, positioned: .below, relativeTo: unavailable)
+        detailsController.addChild(services)
+        let panes = services.view
+        panes.translatesAutoresizingMaskIntoConstraints = false
+        details.addSubview(panes, positioned: .below, relativeTo: unavailable)
         NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: details.leadingAnchor),
-            list.trailingAnchor.constraint(equalTo: details.trailingAnchor),
-            list.topAnchor.constraint(equalTo: details.topAnchor),
-            list.bottomAnchor.constraint(equalTo: details.bottomAnchor),
+            panes.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            panes.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            panes.topAnchor.constraint(equalTo: details.topAnchor),
+            panes.bottomAnchor.constraint(equalTo: details.bottomAnchor),
         ])
         addSplitViewItem(NSSplitViewItem(viewController: detailsController))
     }
@@ -128,7 +128,8 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         controls.frame.size = NSSize(width: 180, height: controls.fittingSize.height)
         actions.view = controls
         splitViewItems[0].addBottomAlignedAccessoryViewController(actions)
-        splitViewItems[1].addBottomAlignedAccessoryViewController(outline.searchAccessory)
+        // The filter spans the categories and their services, but not the profiles.
+        splitViewItems[1].addTopAlignedAccessoryViewController(services.searchAccessory)
         observation = withPortableContinuousObservation { [weak self] _ in self?.update() }
     }
 
@@ -178,8 +179,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     private func showProfile(_ profile: ServiceProfile) {
         guard displayedProfile !== profile else { return }
         displayedProfile = profile
-        outline.model.setCategories(profile.categories)
-        outline.isEnabled = profile.canEdit
+        services.show(profile)
     }
 
     override func viewDidAppear() {

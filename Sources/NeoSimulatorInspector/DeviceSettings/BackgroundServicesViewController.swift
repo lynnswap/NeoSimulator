@@ -9,7 +9,7 @@ import SwiftUI
 final class BackgroundServicesViewController: NSViewController {
     let model: BackgroundServicesInspectorModel
     let profileAccessory: BackgroundServicesProfileAccessoryViewController
-    private lazy var outline = BackgroundServiceOutlineController(categories: model.categories, showsDetails: false)
+    private lazy var outline = BackgroundServiceOutlineController(categories: model.categories)
     var searchAccessory: BackgroundServiceSearchAccessoryViewController { outline.searchAccessory }
     private lazy var unavailable = NSHostingView(rootView: BackgroundServicesUnavailable(model: model))
     private var accessoriesObservation: PortableObservationTracking.Token?

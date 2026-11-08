@@ -9,7 +9,6 @@ import NeoSimulatorManager
 package final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     package let model: BackgroundServiceListModel
     package lazy var searchAccessory = BackgroundServiceSearchAccessoryViewController(model: model)
-    package let showsDetails: Bool
     package let outline = NSOutlineView()
     package var isEnabled = true {
         didSet {
@@ -28,9 +27,8 @@ package final class BackgroundServiceOutlineController: NSViewController, NSOutl
     private var sections: [BackgroundServiceListModel.Section] = []
     private let empty = NSHostingView(rootView: ContentUnavailableView.search(text: ""))
 
-    package init(categories: [BackgroundServiceCategoryModel], showsDetails: Bool) {
+    package init(categories: [BackgroundServiceCategoryModel]) {
         model = BackgroundServiceListModel(categories: categories)
-        self.showsDetails = showsDetails
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -45,8 +43,8 @@ package final class BackgroundServiceOutlineController: NSViewController, NSOutl
         outline.setAccessibilityLabel("Background Services")
         outline.delegate = self
         outline.dataSource = self
-        outline.style = showsDetails ? .inset : .sourceList
-        if showsDetails { outline.backgroundColor = .clear }
+        outline.style = .sourceList
+        outline.rowHeight = 32
         outline.selectionHighlightStyle = .none
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outline.autoresizesOutlineColumn = false
@@ -165,102 +163,13 @@ package final class BackgroundServiceOutlineController: NSViewController, NSOutl
         model.setExpanded(false, for: category)
     }
 
-    package func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        showsDetails ? (item is BackgroundServiceCategoryModel ? 62 : 48) : 32
-    }
-
     package func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("ServiceCell")
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? BackgroundServiceCell
             ?? BackgroundServiceCell()
         cell.identifier = identifier
-        cell.configure(item: item, showsDetails: showsDetails)
+        cell.configure(item: item, showsDetails: false)
         cell.controlsEnabled = isEnabled
         return cell
     }
-}
-
-@MainActor
-private final class BackgroundServiceCell: NSTableCellView {
-    private let title = LiteralTextField(labelWithString: "")
-    private let detail = LiteralTextField(wrappingLabelWithString: "")
-    private let toggle = NSSwitch()
-    private var observation: PortableObservationTracking.Token?
-    private var change: ((Bool) -> Void)?
-    private var editable = true
-    private weak var representedItem: AnyObject?
-    private var showsDetails = false
-    package var controlsEnabled = true { didSet { toggle.isEnabled = controlsEnabled && editable } }
-
-    package override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        title.lineBreakMode = .byTruncatingMiddle
-        title.isSelectable = true
-        detail.isSelectable = true
-        detail.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        detail.textColor = .secondaryLabelColor
-        detail.maximumNumberOfLines = 2
-        let labels = NSStackView(views: [title, detail])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = 3
-        labels.translatesAutoresizingMaskIntoConstraints = false
-        toggle.translatesAutoresizingMaskIntoConstraints = false
-        toggle.controlSize = .small
-        toggle.target = self
-        toggle.action = #selector(toggleChanged)
-        addSubview(labels)
-        addSubview(toggle)
-        NSLayoutConstraint.activate([
-            labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            labels.centerYAnchor.constraint(equalTo: centerYAnchor),
-            labels.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -8),
-            toggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            toggle.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-        toggle.setContentHuggingPriority(.required, for: .horizontal)
-        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    }
-
-    package convenience init() { self.init(frame: .zero) }
-    package required init?(coder: NSCoder) { nil }
-
-    package func configure(item: Any, showsDetails: Bool) {
-        let object = item as AnyObject
-        guard representedItem !== object || self.showsDetails != showsDetails else { return }
-        representedItem = object
-        self.showsDetails = showsDetails
-        observation?.cancel()
-        if let category = item as? BackgroundServiceCategoryModel {
-            title.stringValue = category.category.name
-            title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-            detail.stringValue = showsDetails ? "When off: " + category.category.consequence : ""
-            toolTip = category.category.consequence
-            toggle.setAccessibilityLabel(category.category.name)
-            toggle.setAccessibilityHelp(category.category.consequence)
-            change = { [weak category] in category?.setEnabled($0) }
-            observation = withPortableContinuousObservation { [weak self, category] _ in
-                self?.toggle.state = category.isEnabled ? .on : .off
-            }
-            editable = true
-        } else if let service = item as? BackgroundServiceItem {
-            title.stringValue = service.label
-            title.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-            detail.stringValue = showsDetails ? service.detail : ""
-            toggle.setAccessibilityLabel(service.label)
-            change = { [weak service] in service?.setEnabled($0) }
-            observation = withPortableContinuousObservation { [weak self, service] _ in
-                guard let self else { return }
-                toggle.state = service.isEnabled ? .on : .off
-                toolTip = service.help
-                toggle.setAccessibilityHelp(service.help)
-                editable = service.canChange
-                toggle.isEnabled = controlsEnabled && editable
-            }
-        }
-        detail.isHidden = !showsDetails
-        toggle.isEnabled = controlsEnabled && editable
-    }
-
-    @objc private func toggleChanged() { change?(toggle.state == .on) }
 }

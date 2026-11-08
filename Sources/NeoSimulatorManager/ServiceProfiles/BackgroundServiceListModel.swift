@@ -20,6 +20,12 @@ package final class BackgroundServiceListModel {
         }
     }
     package var isFiltering: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// The category whose services show beside the categories.
+    package var selectedCategoryID: String?
+    /// The selected category's results, or the first category's while the query leaves out the selected one.
+    package var selectedSection: Section? {
+        sections.first { $0.category.id == selectedCategoryID } ?? sections.first
+    }
     /// Results open every matching category; collapsing one lasts until the query changes.
     private var collapsedResults: Set<String> = []
 
