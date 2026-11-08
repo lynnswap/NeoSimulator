@@ -448,5 +448,5 @@ package final class DeviceScreens {
 }
 
 private extension SimulatorDeviceIdentifier {
-    package var inventoryID: DeviceInventoryID { .simulator(udid: identifier, deviceSetPath: deviceSetPath) }
+    var inventoryID: DeviceInventoryID { .simulator(udid: identifier, deviceSetPath: deviceSetPath) }
 }

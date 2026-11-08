@@ -216,8 +216,8 @@ struct ManagerModelTests {
         let surface = try #require(IOSurface(properties: [.width: 80, .height: 160, .bytesPerElement: 4,
                                                          .pixelFormat: 0x42475241]))
         IOSurfaceLock(surface, [], nil)
-        try #require(IOSurfaceGetBaseAddress(surface)).initializeMemory(as: UInt8.self, repeating: 255,
-                                                                       count: IOSurfaceGetAllocSize(surface))
+        IOSurfaceGetBaseAddress(surface).initializeMemory(as: UInt8.self, repeating: 255,
+                                                          count: IOSurfaceGetAllocSize(surface))
         IOSurfaceUnlock(surface, [], nil)
         let image = try await DeviceThumbnailFrame(surface: surface, rotation: .pi / 2, chrome: chrome).snapshot()
         #expect(image.width == 96 && image.height == 48)

@@ -101,7 +101,7 @@ package final class CoreDeviceHIDService {
 
     package static func touchscreenGestureDescriptor(runtime: ABIRuntime) async throws -> NativeSwiftValue {
         let serviceType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.HIDServiceType")))
-        let gesture = try await serviceType.makeEnumCase(named: "touchscreenGesture")
+        let gesture = try serviceType.makeEnumCase(named: "touchscreenGesture")
         return try await descriptor(for: gesture, runtime: runtime)
     }
 

@@ -1228,7 +1228,7 @@ private struct SimulatorBootTracker {
 private extension DeviceSettingChange {
     /// A connecting screen restores the device's saved audio routes and location, and Display Zoom changes the
     /// framebuffer and relaunches the guest's interface, so these writes wait for a screen that is attaching.
-    package var waitsForScreenAttach: Bool {
+    var waitsForScreenAttach: Bool {
         switch self {
         case .displayZoom, .audioInputDevice, .audioOutputDevice, .location, .locationScenario, .clearLocation: true
         case .appearance, .contentSize, .boldText, .increaseContrast, .lookAndFeel, .liquidGlassOpacity, .colorFilter,
