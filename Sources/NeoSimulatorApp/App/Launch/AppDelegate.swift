@@ -82,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onError = { [weak self] error in self?.present(error) }
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }
-        controller.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
+        controller.deviceActions.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
         controller.onShowServiceProfile = { [weak self] in self?.showSettings(selectingServiceProfile: $0) }
         mainWindow = controller
         return controller

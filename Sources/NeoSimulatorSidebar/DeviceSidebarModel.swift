@@ -139,9 +139,8 @@ package final class DeviceSidebarModel {
 
     /// Opens the screen of the one device given, or stops opening it.
     package func open(_ devices: [InventoryDevice]) {
-        guard devices.count == 1, let device = devices.first, manager.canViewScreen(device) else { return }
-        if manager.openingDeviceIDs.contains(device.id) { manager.cancelOpening(device.id) }
-        else { manager.openScreen(for: device) }
+        guard devices.count == 1, let device = devices.first else { return }
+        manager.toggleScreen(for: device)
     }
 
     func retryInventory() {

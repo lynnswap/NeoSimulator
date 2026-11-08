@@ -480,6 +480,13 @@ package final class SimulatorManagerModel {
         await refresh()
     }
 
+    /// Opens the device's screen, or stops opening it.
+    package func toggleScreen(for device: InventoryDevice) {
+        guard canViewScreen(device) else { return }
+        if openingDeviceIDs.contains(device.id) { cancelOpening(device.id) }
+        else { openScreen(for: device) }
+    }
+
     /// Whether the device's screen can open now, or is opening and can be cancelled.
     package func canViewScreen(_ device: InventoryDevice) -> Bool {
         if openingDeviceIDs.contains(device.id) { return true }
