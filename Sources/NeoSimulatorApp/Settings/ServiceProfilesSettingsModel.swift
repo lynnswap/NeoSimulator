@@ -127,7 +127,7 @@ final class ServiceProfilesSettingsModel {
 
     /// Writes `profile` to a JSON Lines file at `url`.
     func export(_ profile: ServiceProfile, to url: URL) async throws {
-        try await writeFile(store.exportedLine(for: profile), to: url)
+        try await writeFile(store.exportedLines(for: profile), to: url)
     }
 
     /// Adds the profiles in JSON Lines files and selects the first. Nothing changes unless every file imports.

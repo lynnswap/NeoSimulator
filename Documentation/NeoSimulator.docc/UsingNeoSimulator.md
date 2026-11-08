@@ -362,11 +362,23 @@ leaves running simulators as they are, so a service that is off stays off.
 Built-in categories can't be changed, and NeoSimulator doesn't add services that
 simulators need or that stop a simulator from working while they're off.
 
-To use a profile on another Mac, Control-click it and choose **Export…**, or drag
-it to the Finder. The JSON Lines file has the profile's name, the services that
-it turns off, and your categories that it lists, but not which simulators use it
-or which profile is the default. To add profiles from files, choose **Import…**
-from the **+** below the profiles, or drop the files on the profiles. Each
-profile in a file becomes a new profile, and its categories join yours. A
-category that you already have must match the file's. If a line of a file can't
-be imported, nothing changes, and NeoSimulator names the file and the line.
+To use or edit a profile as a file, Control-click it and choose **Export…**, or
+drag it to the Finder. The JSON Lines file has a line for the profile, then a
+line for each category that it shows, each followed by a line for each of the
+category's services:
+
+```
+{"type": "profile", "version": 1, "name": "Quiet"}
+{"type": "category", "name": "Tools"}
+{"type": "service", "label": "com.example.tool", "enabled": false, "description": "Builds things."}
+```
+
+Change `enabled` to turn a service on or off, or add categories and services of
+your own; a service without `enabled` is on. The file doesn't say which
+simulators use the profile or which profile is the default. To add profiles from
+files, choose **Import…** from the **+** below the profiles, or drop the files on
+the profiles. Each profile in a file becomes a new profile. A category with the
+name and services of one that you have is that category; any other becomes a new
+category of yours, and your existing categories stay as they are. Services that
+simulators need stay on. If a line of a file can't be imported, nothing changes,
+and NeoSimulator names the file and the line.

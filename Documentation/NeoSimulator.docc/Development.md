@@ -113,10 +113,10 @@ Service profiles, added categories, and device assignments are stored together i
 are app-wide; a profile stores only the services it turns off. Removing a service from
 every category removes it from each profile and device override too, since nothing
 could show or change those choices. Files without added categories load with none.
-An exported profile is a line of JSON Lines with a format version, the profile's
-name and disabled labels, and the added categories it lists. Importing gives each
-line's profile a new identifier and merges categories by identifier, then saves
-once after every line of every file imports.
+An exported profile is JSON Lines: a versioned profile line, then each shown category
+and its services with `enabled`. Importing gives each profile a new identifier, maps a
+category to an existing one only when its name and services match, adds any other as a
+new custom category, and saves once after every line of every file imports.
 Writes are
 atomic. The first load migrates the former `BackgroundServiceProfiles` defaults
 value only when the file is absent, and removes that value after a successful

@@ -228,7 +228,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         guard profiles.indices.contains(row) else { return nil }
         let profile = profiles[row]
         // Encoding the profile's names and labels can't fail.
-        guard let contents = try? model.store.exportedLine(for: profile) else { return nil }
+        guard let contents = try? model.store.exportedLines(for: profile) else { return nil }
         return ServiceProfileFilePromise(
             movedProfile: profile.id == ServiceProfile.allServicesID ? nil : profile.id,
             fileName: model.exportFileName(for: profile), contents: contents)

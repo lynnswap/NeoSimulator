@@ -5422,7 +5422,7 @@ struct ManagerModelTests {
         #expect(ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil).catalog == .builtIn)
     }
 
-    @Test func exportedProfilesImportElsewhereWithTheirCategoriesOrNotAtAll() throws {
+    @Test func profileFilesListEveryServiceAndImportWhatTheySay() throws {
         let domains = ["Exporting", "Importing"].map { "NeoSimulator.ServiceProfileFiles.\($0).\(UUID().uuidString)" }
         defer {
             for domain in domains {
@@ -5433,30 +5433,86 @@ struct ManagerModelTests {
         let label = "com.example.agent"
         let categoryID = try store.createCategory(named: "Agents")
         try store.addService(label, to: categoryID)
+        let searchd = "com.apple.searchd"
         let profile = try store.create(
-            name: "Agents Off", configuration: ServiceConfiguration(disabledLabels: [label, "com.apple.searchd"]))
-        let line = try store.exportedLine(for: profile)
-        let builtIn = try store.exportedLine(for: store.allServices)
-        #expect(line.firstIndex(of: UInt8(ascii: "\n")) == line.indices.last)
+            name: "Agents Off", configuration: ServiceConfiguration(disabledLabels: [label, searchd]))
+        func lines(_ data: Data) -> [String] {
+            String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+        }
 
-        // Each line becomes a new profile, and a category that two lines list joins once.
+        // All Services lists every built-in service on a line of its own, whose fields read in order.
+        let builtIn = try store.exportedLines(for: store.allServices)
+        let builtInLines = lines(builtIn)
+        let services = SimulatorBackgroundServiceCategory.all.flatMap {
+            $0.services.map(\.label) + $0.requiredServices.map(\.label)
+        }
+        #expect(builtInLines.first == #"{"type": "profile", "version": 1, "name": "All Services"}"#)
+        #expect(builtInLines.count == 1 + SimulatorBackgroundServiceCategory.all.count + services.count)
+        #expect(
+            try builtInLines.allSatisfy { line in
+                let fields = try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+                return fields.values.allSatisfy { !($0 is [Any] || $0 is [String: Any]) }
+            })
+        #expect(
+            builtInLines.contains { $0.hasPrefix(#"{"type": "service", "label": "\#(searchd)", "enabled": true, "#) })
+        let custom = try store.exportedLines(for: profile)
+        #expect(
+            Array(lines(custom).prefix(3)) == [
+                #"{"type": "profile", "version": 1, "name": "Agents Off"}"#, #"{"type": "category", "name": "Agents"}"#,
+                #"{"type": "service", "label": "com.example.agent", "enabled": false}"#,
+            ])
+
+        // A file imports as written: its switches, and its categories and services, which join the custom ones unless
+        // they match one that's here. A renamed category keeps on the services that simulators need.
         let other = ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil)
-        let imported = try other.importProfiles(from: [("Profiles.jsonl", line + builtIn + line)])
-        #expect(imported.map(\.name) == ["Agents Off", "All Services", "Agents Off"])
+        let guarded = try #require(SimulatorBackgroundServiceCategory.all.first { !$0.requiredServices.isEmpty })
+        let edited =
+            String(decoding: builtIn, as: UTF8.self)
+            .replacing(#""name": "All Services""#, with: #""name": "Quiet""#)
+            .replacing(
+                #"{"type": "category", "name": "\#(guarded.name)"}"#, with: #"{"type": "category", "name": "Mine"}"#
+            )
+            .replacing(#""label": "\#(searchd)", "enabled": true"#, with: #""label": "\#(searchd)", "enabled": false"#)
+            + #"{"type": "category", "name": "Tools"}"# + "\n"
+            + #"{"type": "service", "label": "com.example.tool", "enabled": false, "description": "Builds things."}"#
+            + "\n"
+        let imported = try other.importProfiles(from: [("Quiet.jsonl", Data(edited.utf8) + custom + custom)])
+        #expect(imported.map(\.name) == ["Quiet", "Agents Off", "Agents Off"])
         #expect(Set(imported.map(\.id)).count == 3 && imported.allSatisfy { $0.canEdit && $0.id != profile.id })
-        #expect(other.customCategories == store.customCategories)
+        #expect(imported[0].configuration.disabledLabels == [searchd, "com.example.tool"])
+        #expect(imported[1].configuration == profile.configuration)
+        #expect(other.customCategories.map(\.name) == ["Mine", "Tools", "Agents"])
+        let tools = try #require(imported[0].categories.first { $0.category.name == "Tools" })
+        #expect(tools.isCustom && !tools.isEnabled && tools.items.map(\.detail) == ["Builds things."])
+        let mine = try #require(imported[0].categories.first { $0.category.name == "Mine" })
         #expect(
-            imported[0].configuration == profile.configuration && imported[1].configuration == ServiceConfiguration())
-        #expect(imported[0].categories.first?.id == categoryID && imported[0].categories.first?.isEnabled == false)
+            mine.category.services == guarded.services && mine.category.requiredServices == guarded.requiredServices)
+        #expect(mine.items.filter { $0.keptRunningReason != nil }.map(\.label) == guarded.requiredServices.map(\.label))
         #expect(
-            ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil).profiles.map(\.id)
-                == imported.map(\.id))
+            ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil).customCategories
+                == other.customCategories)
+        // A category that differs from one here joins beside it.
+        let helpers = String(decoding: custom, as: UTF8.self).replacing(
+            #""name": "Agents"}"#, with: #""name": "Helpers"}"#)
+        try store.importProfiles(from: [("Helpers.jsonl", Data(helpers.utf8))])
+        #expect(store.customCategories.map(\.name) == ["Agents", "Helpers"])
+        #expect(store.customCategories.allSatisfy { $0.labels == [label] })
 
-        // A category that differs from the one here, or a line that can't import, leaves everything as it was.
-        try other.renameCategory(categoryID, to: "Renamed")
+        // A line that can't import leaves everything as it was.
         let saved = try Data(contentsOf: other.fileURL)
+        let required = try #require(SimulatorBackgroundServiceCategory.all.lazy.flatMap(\.requiredServices).first)
+        let requiredLine = try #require(builtInLines.firstIndex { $0.contains(#""label": "\#(required.label)""#) })
+        let requiredOff = String(decoding: builtIn, as: UTF8.self).replacing(
+            #""label": "\#(required.label)", "enabled": true"#,
+            with: #""label": "\#(required.label)", "enabled": false"#)
+        let wedging =
+            #"{"type": "category", "name": "Broken"}"# + "\n"
+            + #"{"type": "service", "label": "com.apple.nanoregistryd"}"# + "\n"
+        let customCount = lines(custom).count
         for (contents, failedLine) in [
-            (line, 1), (builtIn + Data("{\"version\":2}\n".utf8), 2), (builtIn + builtIn + Data("[]\n".utf8), 3),
+            (custom + Data(#"{"type": "profile", "version": 2, "name": "Later"}"#.utf8), customCount + 1),
+            (Data(requiredOff.utf8), requiredLine + 1),
+            (custom + Data(wedging.utf8), customCount + 2),
         ] {
             let failure = try #require(throws: ServiceProfileStore.ImportFailure.self) {
                 try other.importProfiles(from: [("Profiles.jsonl", contents)])
