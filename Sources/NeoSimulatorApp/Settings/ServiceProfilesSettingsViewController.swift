@@ -4,6 +4,7 @@ import AppKit
 import ObservationBridge
 import SwiftUI
 import NeoSimulatorManager
+import NeoSimulatorInspector
 
 @MainActor
 final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate {

@@ -9,6 +9,7 @@ import SwiftUI
 import NeoSimulatorManager
 import NeoSimulatorCompactWindow
 import NeoSimulatorDeviceScreens
+import NeoSimulatorInspector
 
 @MainActor
 final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate,
@@ -62,22 +63,22 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private let canvasZoomIdentifier = NSToolbarItem.Identifier("CanvasZoom")
     private let moreIdentifier = NSToolbarItem.Identifier("CanvasMoreActions")
     private var moreItem: NSMenuToolbarItem?
-    private(set) lazy var inspectorController: ManagerInspectorController = {
-        let inspector = ManagerInspectorController(model: model, screens: screens, presentationState: presentationState,
+    private(set) lazy var inspectorController: InspectorViewController = {
+        let inspector = InspectorModel(manager: model, screens: screens, defaults: defaults,
+            showProfileSettings: { [weak self] in self?.onShowServiceProfile?($0) },
             showCustomLocation: { [weak self] in
                 guard let self, let identifier = self.model.selection.device?.id else { return }
                 self.presentLocationEditor(for: identifier)
             })
-        inspector.deviceInspector.onPairingMenu = { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() }
-        inspector.deviceInspector.onDeviceMenu = { [weak self] device in
-            let menu = NSMenu(title: "Device Actions")
-            self?.populateDeviceMenu(menu, devices: [.simulator(device)])
-            return menu
-        }
-        inspector.onShowServiceProfile = { [weak self] in self?.onShowServiceProfile?($0) }
-        return inspector
+        return InspectorViewController(model: inspector, manager: model,
+            pairingMenu: { [weak self] in self?.pairingMenu(for: $0) ?? NSMenu() },
+            deviceMenu: { [weak self] device in
+                let menu = NSMenu(title: "Device Actions")
+                self?.populateDeviceMenu(menu, devices: [.simulator(device)])
+                return menu
+            })
     }()
-    private let inspectorIdentifier = ManagerInspectorController.toolbarIdentifier
+    private let inspectorIdentifier = InspectorViewController.toolbarIdentifier
     private var updatingSelection = false
     private var rows: [DeviceRow] = []
     private var rowsByID: [DeviceInventoryID: DeviceRow] = [:]
@@ -99,7 +100,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
     private var displayedGrouping = false
     private let deviceMenu = NSMenu(title: "Device Actions")
     private var sidebarObservation: NSKeyValueObservation?
-    private var inspectorObservation: NSKeyValueObservation?
     private var toolbarAppearanceObservation: NSKeyValueObservation?
     private var windowCommandObservers: [any NSObjectProtocol] = []
     private let settingsIdentifier = NSToolbarItem.Identifier("Settings")
@@ -214,11 +214,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
                 guard let self else { return }
                 self.updateSidebarToolbarItems()
                 self.scheduleThumbnailRefresh()
-            }
-        }
-        inspectorObservation = splitController.splitViewItems[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
-            MainActor.assumeIsolated {
-                self?.inspectorController.updateVisibility()
             }
         }
         window.setContentSize(NSSize(width: 1040, height: 700))
@@ -737,7 +732,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
         } else {
             deviceScreenViewController.updatePreview(selectionCount: selections.count)
         }
-        updateInspector()
         model.inspect(selectedDevice, selectionCount: selections.count)
     }
 
@@ -1021,12 +1015,6 @@ final class ManagerWindowController: NSWindowController, NSOutlineViewDataSource
             return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
         }
         return true
-    }
-
-    private func updateInspector() {
-        let selection = selectedDevices.count == 1 ? selectedDevices.first : nil
-        inspectorController.update(device: selection.flatMap { model.registry.device(for: $0.id) },
-                                   isManaging: selection.map { model.managingDeviceIDs.contains($0.id) } == true)
     }
 
     private func presentLocationEditor(for identifier: DeviceInventoryID, latitude: String = "0", longitude: String = "0") {

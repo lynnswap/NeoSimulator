@@ -6,12 +6,12 @@ import SwiftUI
 import NeoSimulatorManager
 
 @MainActor
-final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
-    let model: BackgroundServiceListModel
-    lazy var searchAccessory = BackgroundServiceSearchAccessoryViewController(model: model)
-    let showsDetails: Bool
-    let outline = NSOutlineView()
-    var isEnabled = true {
+package final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    package let model: BackgroundServiceListModel
+    package lazy var searchAccessory = BackgroundServiceSearchAccessoryViewController(model: model)
+    package let showsDetails: Bool
+    package let outline = NSOutlineView()
+    package var isEnabled = true {
         didSet {
             guard isEnabled != oldValue else { return }
             for row in 0..<outline.numberOfRows {
@@ -28,15 +28,15 @@ final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewD
     private var sections: [BackgroundServiceListModel.Section] = []
     private let empty = NSHostingView(rootView: ContentUnavailableView.search(text: ""))
 
-    init(categories: [BackgroundServiceCategoryModel], showsDetails: Bool) {
+    package init(categories: [BackgroundServiceCategoryModel], showsDetails: Bool) {
         model = BackgroundServiceListModel(categories: categories)
         self.showsDetails = showsDetails
         super.init(nibName: nil, bundle: nil)
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
-    override func loadView() {
+    package override func loadView() {
         let column = NSTableColumn(identifier: .init("Service"))
         column.resizingMask = .autoresizingMask
         outline.addTableColumn(column)
@@ -139,37 +139,37 @@ final class BackgroundServiceOutlineController: NSViewController, NSOutlineViewD
         sections.first { $0.category === category }?.items ?? []
     }
 
-    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+    package func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if let category = item as? BackgroundServiceCategoryModel { return items(in: category).count }
         return item == nil ? sections.count : 0
     }
 
-    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+    package func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         if let category = item as? BackgroundServiceCategoryModel { return items(in: category)[index] }
         return sections[index].category
     }
 
-    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+    package func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         (item as? BackgroundServiceCategoryModel).map { !items(in: $0).isEmpty } ?? false
     }
 
-    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { false }
+    package func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { false }
 
-    func outlineViewItemDidExpand(_ notification: Notification) {
+    package func outlineViewItemDidExpand(_ notification: Notification) {
         guard !updatingRows, let category = notification.userInfo?["NSObject"] as? BackgroundServiceCategoryModel else { return }
         model.setExpanded(true, for: category)
     }
 
-    func outlineViewItemDidCollapse(_ notification: Notification) {
+    package func outlineViewItemDidCollapse(_ notification: Notification) {
         guard !updatingRows, let category = notification.userInfo?["NSObject"] as? BackgroundServiceCategoryModel else { return }
         model.setExpanded(false, for: category)
     }
 
-    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+    package func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
         showsDetails ? (item is BackgroundServiceCategoryModel ? 62 : 48) : 32
     }
 
-    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+    package func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("ServiceCell")
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? BackgroundServiceCell
             ?? BackgroundServiceCell()
@@ -190,9 +190,9 @@ private final class BackgroundServiceCell: NSTableCellView {
     private var editable = true
     private weak var representedItem: AnyObject?
     private var showsDetails = false
-    var controlsEnabled = true { didSet { toggle.isEnabled = controlsEnabled && editable } }
+    package var controlsEnabled = true { didSet { toggle.isEnabled = controlsEnabled && editable } }
 
-    override init(frame frameRect: NSRect) {
+    package override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         title.lineBreakMode = .byTruncatingMiddle
         title.isSelectable = true
@@ -222,10 +222,10 @@ private final class BackgroundServiceCell: NSTableCellView {
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
-    convenience init() { self.init(frame: .zero) }
-    required init?(coder: NSCoder) { nil }
+    package convenience init() { self.init(frame: .zero) }
+    package required init?(coder: NSCoder) { nil }
 
-    func configure(item: Any, showsDetails: Bool) {
+    package func configure(item: Any, showsDetails: Bool) {
         let object = item as AnyObject
         guard representedItem !== object || self.showsDetails != showsDetails else { return }
         representedItem = object

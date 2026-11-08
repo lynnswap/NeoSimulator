@@ -42,13 +42,18 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         if let issue { return .simulator(.failure(issue)) }
         return .simulator(.loading)
     }
+    /// The filter belongs to a simulator's services, while their page shows.
+    var showsFilter: Bool {
+        guard selection.showsServices, case .simulator = content else { return false }
+        return true
+    }
+    var canFilter: Bool { content == .simulator(.services) }
     var holdsChanges: Bool { selection.device.map { !manager.canEditSettings(for: $0.id) } ?? true }
     var serviceState: SimulatorBackgroundServices? { services?.services }
     var issue: String? {
         if case .stale(let reason) = services?.status { reason } else { nil }
     }
     var pendingRestartLabels: Set<String> { services?.pendingRestartLabels ?? [] }
-    var isLoading: Bool { services?.isReading == true }
     var showsActionIssue: Bool {
         get { actionIssue != nil }
         set { if !newValue { actionIssue = nil } }
@@ -61,7 +66,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
         let title: String
     }
     var defaultProfileChoice: ProfileChoice {
-        profileChoice(.inheritDefault, title: String(localized: "Use Default: \(profiles.defaultProfile.name)", bundle: #bundle))
+        profileChoice(.inheritDefault, title: String(localized: "Use Default: \(profiles.defaultProfile.name)"))
     }
     var savedProfileChoices: [ProfileChoice] {
         profiles.profiles.map { profileChoice(.profile($0.id), title: $0.name) }
@@ -74,7 +79,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     }
     private func profileChoice(_ selection: ServiceProfileSelection, title: String) -> ProfileChoice {
         ProfileChoice(id: selection, title: selection == selectedProfileSelection && hasProfileChanges
-            ? String(localized: "\(title) (Modified)", bundle: #bundle) : title)
+            ? String(localized: "\(title) (Modified)") : title)
     }
 
     var selectedProfileSelection: ServiceProfileSelection {

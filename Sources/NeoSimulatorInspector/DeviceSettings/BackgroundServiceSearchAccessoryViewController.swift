@@ -5,8 +5,8 @@ import ObservationBridge
 import NeoSimulatorManager
 
 @MainActor
-final class BackgroundServiceSearchField: NSSearchField {
-    override class var cellClass: AnyClass? {
+package final class BackgroundServiceSearchField: NSSearchField {
+    package override class var cellClass: AnyClass? {
         get { LiteralSearchFieldCell.self }
         set {}
     }
@@ -14,7 +14,7 @@ final class BackgroundServiceSearchField: NSSearchField {
     private let model: BackgroundServiceListModel
     private var observation: PortableObservationTracking.Token?
 
-    init(model: BackgroundServiceListModel) {
+    package init(model: BackgroundServiceListModel) {
         self.model = model
         super.init(frame: .zero)
         placeholderString = "Filter"
@@ -29,16 +29,16 @@ final class BackgroundServiceSearchField: NSSearchField {
         }
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 
     @objc private func search() { model.query = stringValue }
 }
 
 @MainActor
-final class BackgroundServiceSearchAccessoryViewController: NSSplitViewItemAccessoryViewController {
-    let searchField: BackgroundServiceSearchField
+package final class BackgroundServiceSearchAccessoryViewController: NSSplitViewItemAccessoryViewController {
+    package let searchField: BackgroundServiceSearchField
 
-    init(model: BackgroundServiceListModel) {
+    package init(model: BackgroundServiceListModel) {
         searchField = BackgroundServiceSearchField(model: model)
         super.init(nibName: nil, bundle: nil)
         automaticallyAppliesContentInsets = false
@@ -51,5 +51,5 @@ final class BackgroundServiceSearchAccessoryViewController: NSSplitViewItemAcces
         view = controls
     }
 
-    required init?(coder: NSCoder) { nil }
+    package required init?(coder: NSCoder) { nil }
 }

@@ -20,13 +20,13 @@ struct BackgroundServicesProfileForm: View {
                     }
                     Divider()
                     Button(action: model.openProfileSettings) {
-                        Text("Open Settings…", bundle: #bundle)
+                        Text("Open Settings…")
                     }
                 } label: {
-                    Text("Profile", bundle: #bundle)
+                    Text("Profile")
                 }
                 .pickerStyle(.menu)
-                .help(Text("Applies at each simulator start while NeoSimulator is open.", bundle: #bundle))
+                .help(Text("Applies at each simulator start while NeoSimulator is open."))
                 .disabled(model.holdsChanges || model.profiles.issue != nil)
                 HStack {
                     Button("Revert", action: model.revertProfile)

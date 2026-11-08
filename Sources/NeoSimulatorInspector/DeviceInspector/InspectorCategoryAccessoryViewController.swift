@@ -31,7 +31,7 @@ import SwiftUI
 
 private struct InspectorCategoryPreview: NSViewControllerRepresentable {
     func makeNSViewController(context: Context) -> NSSplitViewController {
-        let manager = SettingsPreview.manager()
+        let manager = SimulatorManagerModel(rendererApplicationURL: Bundle.main.bundleURL)
         let inspection = DeviceInspectorModel()
         inspection.device = DeviceModel(inventory: .simulator(SimulatorHostDevice(
             identifier: "A1840638-6397-40C7-8BB8-B8223DE937CC", name: "iPad Pro 11-inch (M5)",

@@ -10,21 +10,15 @@ final class BackgroundServicesViewController: NSViewController {
     private lazy var outline = BackgroundServiceOutlineController(categories: model.categories, showsDetails: false)
     private lazy var content = NSHostingController(rootView: BackgroundServicesView(model: model, outline: outline))
     var searchAccessory: BackgroundServiceSearchAccessoryViewController { outline.searchAccessory }
-    var isVisible = false { didSet { updateVisibility() } }
-
-    private func updateVisibility() {
-        if case .simulator = model.content {
-            searchAccessory.isHidden = !isVisible
-        } else {
-            searchAccessory.isHidden = true
-        }
-    }
+    private var filterObservation: PortableObservationTracking.Token?
     private var observation: PortableObservationTracking.Token?
     private var editor: ServiceProfileEditorController?
 
     init(model: BackgroundServicesInspectorModel) {
         self.model = model
         super.init(nibName: nil, bundle: nil)
+        // The split view item shows the filter whether or not this page has loaded.
+        filterObservation = withPortableContinuousObservation { [weak self] _ in self?.updateFilter() }
     }
     required init?(coder: NSCoder) { nil }
 
@@ -39,12 +33,25 @@ final class BackgroundServicesViewController: NSViewController {
         observation = withPortableContinuousObservation { [weak self] _ in self?.update() }
     }
 
+    // Observed changes arrive after the turn that swaps pages, and the filter shows and hides with the page.
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        updateFilter()
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        updateFilter()
+    }
+
+    private func updateFilter() {
+        searchAccessory.isHidden = !model.showsFilter
+        searchAccessory.searchField.isEnabled = model.canFilter
+    }
+
     private func update() {
-        updateVisibility()
-        let hasServices = model.content == .simulator(.services)
-        outline.view.isHidden = !hasServices
+        outline.view.isHidden = !model.canFilter
         outline.isEnabled = !model.holdsChanges
-        searchAccessory.searchField.isEnabled = hasServices
         showEditor(model.profileEditor)
     }
 

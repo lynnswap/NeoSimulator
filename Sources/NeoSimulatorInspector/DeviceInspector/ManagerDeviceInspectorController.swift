@@ -13,7 +13,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
                                                        NSSearchFieldDelegate, NSMenuDelegate {
     typealias Page = DeviceInspectorModel.Page
     private typealias Content = DeviceInspectorModel.Content
-    let inspection = DeviceInspectorModel()
+    let inspection: DeviceInspectorModel
     private let model: SimulatorManagerModel
     private var device: DeviceModel? { get { inspection.device } set { inspection.device = newValue } }
     private var page: Page { get { inspection.page } set { inspection.page = newValue } }
@@ -93,8 +93,9 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
     private var actionIssue: String? { get { inspection.actionIssue } set { inspection.actionIssue = newValue } }
     private var reading: Bool { inspection.reading }
 
-    init(model: SimulatorManagerModel) {
+    init(model: SimulatorManagerModel, inspection: DeviceInspectorModel) {
         self.model = model
+        self.inspection = inspection
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { nil }

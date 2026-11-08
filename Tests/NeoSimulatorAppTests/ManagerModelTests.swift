@@ -14,6 +14,7 @@ import IOSurface
 @testable import NeoSimulatorManager
 @testable import NeoSimulatorCompactWindow
 @testable import NeoSimulatorDeviceScreens
+@testable import NeoSimulatorInspector
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
@@ -1451,8 +1452,9 @@ struct ManagerModelTests {
         if !initial { main.selectDevice(bID) }
         try await main.presentConnectedScreen(aID, purpose: initial ? .startup : .automatic)
         let selected = initial ? aID : bID
-        #expect(main.selectedIdentifiers == [selected])
-        #expect(model.selection.device?.id == selected && main.inspectorController.deviceInspector.inspection.device?.id == selected)
+        #expect(main.selectedIdentifiers == [selected] && model.selection.device?.id == selected)
+        // The inspector follows the selection through observation, whose changes arrive after this turn.
+        try await wait { main.inspectorController.deviceInspector.inspection.device?.id == selected }
         #expect(pane.liveDeviceIdentifier == (initial ? aID : nil))
         #expect((controller.presentationViewController.parent === pane.liveScreenContainer) == initial)
         #expect(session.state == .connected && app.screens.screen(for: aID)?.commandTarget === controller)
@@ -1801,10 +1803,9 @@ struct ManagerModelTests {
         try click(0, collapsed: false)
         #expect(accessory.isHidden)
         let device = simulator()
-        let deviceModel = DeviceModel(inventory: device, source: model.registry.source)
-        controller.inspectorController.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
+        model.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
+        model.inspect(device, selectionCount: 1)
         try click(2, collapsed: false, page: .info)
-        controller.inspectorController.deviceInspector.update(device: deviceModel, isManaging: false, isVisible: true)
         window.layoutIfNeeded()
         #expect(!accessory.isHidden && accessory.view.frame.height > 0)
         #expect((0..<categories.segmentCount).map { categories.label(forSegment: $0) } == ["Info", "Apps", "Profiles"])
@@ -1819,8 +1820,6 @@ struct ManagerModelTests {
         #expect(controller.inspectorController.deviceInspector.inspection.content == .applications)
         try click(1, collapsed: false, page: .reports)
         #expect(accessory.isHidden)
-        model.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
-        model.inspect(device, selectionCount: 1)
         try click(3, collapsed: false)
         window.layoutIfNeeded()
         let services = try #require(inspector.viewController.children.compactMap { $0 as? BackgroundServicesViewController }.first)
@@ -1855,7 +1854,7 @@ struct ManagerModelTests {
         await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         func show(_ device: InventoryDevice) throws {
             manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
             manager.inspect(device, selectionCount: 1)
@@ -1920,7 +1919,7 @@ struct ManagerModelTests {
         await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         func show(_ device: InventoryDevice) throws {
             manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
             manager.inspect(device, selectionCount: 1)
@@ -1970,7 +1969,7 @@ struct ManagerModelTests {
         manager.registry.apply(DeviceInventorySnapshot(devices: [device], issues: []))
         manager.inspect(device, selectionCount: 1)
         let model = try #require(manager.registry.device(for: device.id))
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         controller.update(device: model, isManaging: false, isVisible: true)
         #expect(await events.next() == .inspect(device.id))
         await manager.registry.finishReading()
@@ -2017,7 +2016,7 @@ struct ManagerModelTests {
         await source.skipSettingsReads()
         var events = source.events.makeAsyncIterator()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         // A sheet only needs a window to attach to; this one is never ordered on screen.
         let window = NSWindow(contentViewController: controller)
         manager.registry.apply(DeviceInventorySnapshot(devices: [first, second], issues: []))
@@ -2098,7 +2097,7 @@ struct ManagerModelTests {
         let source = ManagerModelSource(devices: [], inspectorResponse: Self.inspectionResponse)
         await source.skipSettingsReads()
         let manager = SimulatorManagerModel(source: source)
-        let controller = ManagerDeviceInspectorController(model: manager)
+        let controller = ManagerDeviceInspectorController(model: manager, inspection: DeviceInspectorModel())
         // A quit can be cancelled before the inspector was ever shown.
         controller.resumeAfterCancelledQuit()
         #expect(!controller.isViewLoaded)
@@ -4773,7 +4772,6 @@ struct ManagerModelTests {
         let category = try #require(model.categories.first { $0.id == "search" })
         let item = try #require(category.items.first { $0.label == "com.apple.searchd" })
         let controller = BackgroundServicesViewController(model: model)
-        controller.isVisible = true
         let pane = NSSplitViewItem(inspectorWithViewController: controller)
         pane.minimumThickness = 280
         pane.maximumThickness = 440

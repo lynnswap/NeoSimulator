@@ -19,6 +19,7 @@ import Synchronization
 import IOKit.hidsystem
 import XPC
 @testable import NeoSimulatorManager
+@testable import NeoSimulatorInspector
 @testable import NeoSimulatorCompactWindow
 @testable import NeoSimulatorDeviceScreens
 

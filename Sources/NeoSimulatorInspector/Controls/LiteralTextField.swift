@@ -3,8 +3,8 @@ import AppKit
 /// Identifiers, names and search queries are literal text. Configure the shared
 /// field editor before editing or selecting, so resigning it does not start AppKit's data detectors.
 @MainActor
-final class LiteralTextField: NSTextField {
-    override class var cellClass: AnyClass? {
+package final class LiteralTextField: NSTextField {
+    package override class var cellClass: AnyClass? {
         get { LiteralTextFieldCell.self }
         set {}
     }
@@ -12,7 +12,7 @@ final class LiteralTextField: NSTextField {
 
 @MainActor
 private final class LiteralTextFieldCell: NSTextFieldCell {
-    override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
+    package override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
         let editor = super.setUpFieldEditorAttributes(textObj)
         (editor as? NSTextView)?.enabledTextCheckingTypes = 0
         return editor
@@ -20,8 +20,8 @@ private final class LiteralTextFieldCell: NSTextFieldCell {
 }
 
 @MainActor
-final class LiteralSearchFieldCell: NSSearchFieldCell {
-    override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
+package final class LiteralSearchFieldCell: NSSearchFieldCell {
+    package override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
         let editor = super.setUpFieldEditorAttributes(textObj)
         (editor as? NSTextView)?.enabledTextCheckingTypes = 0
         return editor
