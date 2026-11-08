@@ -15,6 +15,7 @@ import IOSurface
 @testable import NeoSimulatorCompactWindow
 @testable import NeoSimulatorDeviceScreens
 @testable import NeoSimulatorInspector
+@testable import NeoSimulatorSidebar
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
@@ -526,7 +527,7 @@ struct ManagerModelTests {
         let button = try #require(item.view as? NSButton)
         let image = try #require(button.image)
         let menu = try #require(item.menuFormRepresentation?.submenu)
-        browser.menuNeedsUpdate(menu)
+        browser.sidebar.menuNeedsUpdate(menu)
         #expect(button.state == .off)
         let simulators = try #require(menu.items.first { $0.title == "Simulators" })
         #expect(NSApp.sendAction(try #require(simulators.action), to: simulators.target, from: simulators))
@@ -571,14 +572,14 @@ struct ManagerModelTests {
         let menu = try #require(controller.window?.toolbar?.items
             .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
         func choose(_ title: String) throws {
-            controller.menuNeedsUpdate(menu)
+            controller.sidebar.menuNeedsUpdate(menu)
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
         func deviceNames() -> Set<String> {
             Set((0..<outline.numberOfRows).compactMap { row in
-                guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
-                return controller.outlineView(outline, typeSelectStringFor: nil, item: item)
+                guard let item = outline.item(atRow: row), controller.sidebar.outlineView(outline, shouldSelectItem: item) else { return nil }
+                return controller.sidebar.outlineView(outline, typeSelectStringFor: nil, item: item)
             })
         }
         try choose("Show Groups")
@@ -773,7 +774,7 @@ struct ManagerModelTests {
         controller.selectDevice(.coreDevice(ids["Mike"]!.uuidString))
         func rows() -> [String: Int] {
             Dictionary(uniqueKeysWithValues: (0..<outline.numberOfRows).compactMap { row in
-                outline.item(atRow: row).flatMap { controller.outlineView(outline, typeSelectStringFor: nil, item: $0) }.map { ($0, row) }
+                outline.item(atRow: row).flatMap { controller.sidebar.outlineView(outline, typeSelectStringFor: nil, item: $0) }.map { ($0, row) }
             })
         }
         func order() -> [String] { rows().sorted { $0.value < $1.value }.map(\.key) }
@@ -917,17 +918,17 @@ struct ManagerModelTests {
         let menu = try #require(controller.window?.toolbar?.items
             .first { $0.itemIdentifier.rawValue == "FilterSimulators" }?.menuFormRepresentation?.submenu)
         func choose(_ title: String) throws {
-            controller.menuNeedsUpdate(menu)
+            controller.sidebar.menuNeedsUpdate(menu)
             let item = try #require(menu.items.first { $0.title == title && !$0.isSectionHeader })
             #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
         }
         try choose("Availability")
-        #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
+        #expect(controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         try choose("Recent")
         controller.selectDevice(.coreDevice("A"))
         let selectedRow = try #require(outline.item(atRow: outline.selectedRow) as? NSObject)
         let groupedOrder = (0..<outline.numberOfRows).compactMap { row -> NSObject? in
-            guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
+            guard let item = outline.item(atRow: row), controller.sidebar.outlineView(outline, shouldSelectItem: item) else { return nil }
             return item as? NSObject
         }
         try choose("Show Groups")
@@ -949,29 +950,29 @@ struct ManagerModelTests {
         let search = try #require(inspectorViews(content).compactMap { $0 as? NSSearchField }
             .first { $0.placeholderString == "Search Devices" })
         search.stringValue = "Alpha"
-        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        controller.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         search.stringValue = ""
         controller.selectDevice(.coreDevice("A"))
-        controller.update()
+        controller.sidebar.update()
         let newGroup = try #require(outline.item(atRow: 0))
         #expect(outline.isItemExpanded(newGroup))
         search.stringValue = "Alpha"
-        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        controller.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         await source.setDevices(try devices(firstDate: 200_000))
         await model.refresh()
-        controller.update()
+        controller.sidebar.update()
         #expect(search.stringValue == "Alpha")
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
         #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
         search.stringValue = ""
-        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
-        #expect(controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
+        controller.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        #expect(controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil) == 1)
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
 
         func deviceNames() -> [String] {
             (0..<outline.numberOfRows).compactMap { row in
-                guard let item = outline.item(atRow: row), controller.outlineView(outline, shouldSelectItem: item) else { return nil }
-                return controller.outlineView(outline, typeSelectStringFor: nil, item: item)
+                guard let item = outline.item(atRow: row), controller.sidebar.outlineView(outline, shouldSelectItem: item) else { return nil }
+                return controller.sidebar.outlineView(outline, typeSelectStringFor: nil, item: item)
             }
         }
         for (date, expected) in [(199_999.0, ["Beta", "Alpha"]), (200_001.0, ["Alpha", "Beta"])] {
@@ -991,21 +992,21 @@ struct ManagerModelTests {
         #expect(viewScreen.isEnabled)
         await source.setDevices(try devices(firstDate: 200_000, firstConnection: "connecting"))
         await model.refresh()
-        controller.update()
+        controller.sidebar.update()
         #expect(controller.selectedIdentifiers == [.coreDevice("A")])
         #expect(outline.item(atRow: outline.selectedRow) as? NSObject === selectedRow)
         #expect(!viewScreen.isEnabled)
-        let row = try #require(controller.outlineView(outline, viewFor: outline.tableColumns.first, item: selectedRow))
+        let row = try #require(controller.sidebar.outlineView(outline, viewFor: outline.tableColumns.first, item: selectedRow))
         #expect(row.accessibilityLabel()?.hasSuffix(", Available") == true)
 
         try choose("All Availability")
         try choose("Recent")
         await source.setDevices(try devices())
         await model.refresh()
-        controller.update()
+        controller.sidebar.update()
         controller.selectDevice(.coreDevice("A"))
-        let roots = (0..<controller.outlineView(outline, numberOfChildrenOfItem: nil)).map {
-            controller.outlineView(outline, child: $0, ofItem: nil)
+        let roots = (0..<controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil)).map {
+            controller.sidebar.outlineView(outline, child: $0, ofItem: nil)
         }
         for root in roots { outline.collapseItem(root) }
         let revision = controller.presentationIntent.revision
@@ -1013,7 +1014,7 @@ struct ManagerModelTests {
         await source.setDevices(try devices(firstDate: 200_000))
         await model.inventoryDidChange()
         try await wait {
-            controller.outlineView(outline, numberOfChildrenOfItem: nil) == 1
+            controller.sidebar.outlineView(outline, numberOfChildrenOfItem: nil) == 1
         }
         let merged = try #require(outline.item(atRow: 0))
         #expect(!outline.isItemExpanded(merged))
@@ -1116,7 +1117,7 @@ struct ManagerModelTests {
             let content = try #require(main.window?.contentView)
             let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
             let otherRow = try #require((0..<outline.numberOfRows).first { row in
-                row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+                row != outline.selectedRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
             })
             outline.selectRowIndexes(IndexSet(integer: otherRow), byExtendingSelection: false)
         }
@@ -1176,7 +1177,7 @@ struct ManagerModelTests {
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let bRow = try #require((0..<outline.numberOfRows).first { row in
-            row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            row != outline.selectedRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         })
         outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         #expect(await releases.next() != nil)
@@ -1218,7 +1219,7 @@ struct ManagerModelTests {
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let aRow = outline.selectedRow
         let bRow = try #require((0..<outline.numberOfRows).first { row in
-            row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            row != aRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         })
         outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
@@ -1280,7 +1281,7 @@ struct ManagerModelTests {
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let rows = (0..<outline.numberOfRows).filter { row in
-            outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         }
         try #require(rows.count == 3)
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
@@ -1338,24 +1339,24 @@ struct ManagerModelTests {
             pane.liveDeviceIdentifier == nil && !aController.isEmbedded
         }
         let compactIntent = main.presentationIntent
-        main.update()
+        main.sidebar.update()
         let content = try #require(main.window?.contentView)
         let fields = inspectorViews(content)
         let search = try #require(fields.compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "Search Devices" })
         search.stringValue = "B"
-        main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        main.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         search.stringValue = ""
-        main.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        main.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         let outline = try #require(fields.compactMap { $0 as? NSOutlineView }.first)
         let aRow = outline.selectedRow
         try #require(aRow >= 0)
-        main.updateDeviceMenu(for: aRow)
+        main.sidebar.updateDeviceMenu(for: aRow)
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         let bRow = try #require((0..<outline.numberOfRows).first { row in
-            row != aRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+            row != aRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         })
-        main.updateDeviceMenu(for: bRow)
+        main.sidebar.updateDeviceMenu(for: bRow)
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         #expect(main.selectedIdentifiers == [aID] && outline.selectedRow == aRow)
         #expect(pane.liveDeviceIdentifier == nil && !bController.isEmbedded)
@@ -1380,19 +1381,19 @@ struct ManagerModelTests {
         let main = try #require(app.mainWindow)
         main.window?.setFrameAutosaveName("")
         defer { main.window?.close() }
-        main.update()
+        main.sidebar.update()
         let content = try #require(main.window?.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
         let menu = try #require(outline.menu)
         func row(of device: InventoryDevice) throws -> Int {
             try #require((0..<outline.numberOfRows).first { row in
                 guard let item = outline.item(atRow: row) else { return false }
-                return main.outlineView(outline, viewFor: outline.tableColumns.first, item: item)?.accessibilityLabel()?.hasPrefix("\(device.name),") == true
+                return main.sidebar.outlineView(outline, viewFor: outline.tableColumns.first, item: item)?.accessibilityLabel()?.hasPrefix("\(device.name),") == true
             })
         }
         func restart(fromMenuOf row: Int) async throws {
             try await wait { model.managingDeviceIDs.isEmpty }
-            main.updateDeviceMenu(for: row)
+            main.sidebar.updateDeviceMenu(for: row)
             menu.performActionForItem(at: try #require(menu.items.firstIndex { $0.title == "Restart" }))
         }
 
@@ -1417,8 +1418,8 @@ struct ManagerModelTests {
         // No row means the selection, and a row that is no device has no menu.
         try await restart(fromMenuOf: -1)
         #expect(await events.next() == .manage(.restart, [first.id, third.id]))
-        let header = try #require((0..<outline.numberOfRows).first { outline.item(atRow: $0).map { main.outlineView(outline, shouldSelectItem: $0) } == false })
-        main.updateDeviceMenu(for: header)
+        let header = try #require((0..<outline.numberOfRows).first { outline.item(atRow: $0).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == false })
+        main.sidebar.updateDeviceMenu(for: header)
         #expect(menu.items.isEmpty)
         #expect(main.selectedIdentifiers == [first.id, third.id] && main.presentationIntent.revision == group.revision)
         try await model.quitRenderer(keepingDevicesRunning: true)
@@ -1559,7 +1560,7 @@ struct ManagerModelTests {
             let content = try #require(main.window?.contentView)
             let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
             let bRow = try #require((0..<outline.numberOfRows).first { row in
-                row != outline.selectedRow && outline.item(atRow: row).map { main.outlineView(outline, shouldSelectItem: $0) } == true
+                row != outline.selectedRow && outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
             })
             outline.selectRowIndexes(IndexSet(integer: bRow), byExtendingSelection: false)
         } else {
@@ -1684,7 +1685,7 @@ struct ManagerModelTests {
         let outline = try #require(inspectorViews(firstSplit.splitViewItems[0].viewController.view)
             .compactMap { $0 as? NSOutlineView }.first)
         let rows = (0..<outline.numberOfRows).filter {
-            outline.item(atRow: $0).map { first.outlineView(outline, shouldSelectItem: $0) } == true
+            outline.item(atRow: $0).map { first.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         }
         outline.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
         #expect(first.selectedIdentifiers == Set(devices.map(\.id)))
@@ -1711,7 +1712,7 @@ struct ManagerModelTests {
         #expect(second.selectedIdentifiers.isEmpty)
         await source.setDevices(devices)
         await model.refresh()
-        second.update()
+        second.sidebar.update()
         #expect(second.selectedIdentifiers == Set(devices.map(\.id)))
         let restoredOutline = try #require(inspectorViews(secondSplit.splitViewItems[0].viewController.view)
             .compactMap { $0 as? NSOutlineView }.first)
@@ -3097,7 +3098,7 @@ struct ManagerModelTests {
         window.window?.setFrameAutosaveName("")
         defer { window.window?.close() }
         window.selectDevice(stopped.id)
-        window.update()
+        window.sidebar.update()
         let content = try #require(window.window?.contentView)
         let start = try #require(inspectorViews(content).compactMap { $0 as? NSButton }.first { $0.title == "Start" })
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)

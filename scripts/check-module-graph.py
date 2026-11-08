@@ -40,8 +40,12 @@ GRAPH = {
         "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
         "ObservationBridge",
     },
+    "NeoSimulatorSidebar": {
+        "NeoSimulatorDeviceScreens", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorPresentationAdapters",
+        "NeoSimulatorKit", "NeoSimulatorDeviceIO", "ObservationBridge",
+    },
     "NeoSimulatorApp": {
-        "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
+        "NeoSimulatorSidebar", "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
         "NeoSimulatorDeviceIO", "ObservationBridge",
     },
     "NeoSimulatorService": {"NeoSimulatorHostSupport", "NeoSimulatorKit"},
