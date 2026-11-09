@@ -73,8 +73,19 @@ package final class DeviceHubCompanions {
                 }
             }
         }
-        try await prepare(xcodeURL: xcodeURL).value
+        let wasEnabled = enabled
         enabled = true
+        do { try await prepare(xcodeURL: xcodeURL).value } catch let startupError {
+            if !wasEnabled {
+                do { try await stop() } catch let cleanupError {
+                    throw HostOperationError.temporary(
+                        "device-hub-startup-cleanup",
+                        "Could not prepare the display bridge (\(startupError.localizedDescription)) or release its processes (\(cleanupError.localizedDescription))."
+                    )
+                }
+            }
+            throw startupError
+        }
         if workspaceObservers.isEmpty {
             for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didActivateApplicationNotification] {
                 workspaceObservers.append(
@@ -156,12 +167,13 @@ package final class DeviceHubCompanions {
             process.standardError = FileHandle.standardError
             process.terminationHandler = { [weak self] process in
                 Task { @MainActor in
-                    guard let self, self.companions[xcode]?.process.processIdentifier == process.processIdentifier
+                    guard let self, let companion = self.companions[xcode],
+                        companion.process.processIdentifier == process.processIdentifier
                     else {
                         return
                     }
                     self.companions.removeValue(forKey: xcode)
-                    guard self.enabled, self.launches[xcode] == nil else { return }
+                    guard self.enabled, companion.application != nil, self.launches[xcode] == nil else { return }
                     let task = self.prepare(xcodeURL: xcode)
                     Task { do { try await task.value } catch { self.onError?(error) } }
                 }
