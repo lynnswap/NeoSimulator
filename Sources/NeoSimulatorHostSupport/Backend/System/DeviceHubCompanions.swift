@@ -57,8 +57,6 @@ package final class DeviceHubCompanions {
     package func start(at applicationURL: URL) async throws {
         let identity = try RendererOwnerIdentity.current()
         owner.withLock { $0 = identity }
-        try await prepare(at: applicationURL).value
-        enabled = true
         if requestObserver == nil {
             requestObserver = DistributedNotificationCenter.default().addObserver(
                 forName: Self.requestNotification, object: Self.token(for: identity), queue: .main
@@ -68,7 +66,7 @@ package final class DeviceHubCompanions {
                 else { return }
                 let request = (notification.userInfo?["url"] as? String).flatMap(URL.init(string:))
                 MainActor.assumeIsolated {
-                    guard let self, self.enabled,
+                    guard let self, self.requestObserver != nil,
                         let url = self.companions.first(where: { $0.value.process.processIdentifier == pid })?.key
                     else { return }
                     let xcode = url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -76,6 +74,8 @@ package final class DeviceHubCompanions {
                 }
             }
         }
+        try await prepare(at: applicationURL).value
+        enabled = true
         if workspaceObservers.isEmpty {
             for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didActivateApplicationNotification] {
                 workspaceObservers.append(
