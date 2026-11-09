@@ -22,6 +22,11 @@ restoration receipt journals the original, expected, and pending values. Writes
 are verified, and an interrupted change is recovered without overwriting a
 conflicting external change.
 
+Neo mode sets Xcode's headless-session preference to false and suppresses
+Device Hub's automatic live views. On Xcode's headless route, stopping the last
+debug session shuts down a simulator that Xcode cold-booted. The normal route
+leaves that guest running.
+
 `display-host.txt` stores the preferred host separately. If absent, the manager
 uses a legacy receipt's intent or defaults to NeoSimulator. Startup applies the
 preference and checks for external changes, as do explicit host changes and
@@ -34,13 +39,33 @@ if the original preferences selected the CoreSimulator route.
 
 Host changes validate Xcode, managed preferences, Device Hub identity, and the
 renderer contract before recovering receipts or terminating processes. Selecting
-NeoSimulator configures the route, closes Device Hub, and starts renderers as
-needed. Selecting Device Hub closes managed renderers, changes the route, and
-opens Device Hub. Both leave guests running.
+NeoSimulator configures the route, closes competing Device Hub instances, and
+starts windowless display bridges and renderers as needed. Each bridge runs the
+bundled renderer in a separate mode that registers with LaunchServices for the
+selected Xcode's Device Hub path before AppKit starts. Xcode's device URLs reach
+the bridge while Neo presents the screens. This mode loads no simulator runtime,
+creates no windows, and launches no Apple Device Hub process. Additional simulator
+launches reuse the bridge without presenting another host. Session startup waits
+for bridges for the selected and other running Xcodes. A failure for another
+Xcode is reported without disabling the selected working host. Xcodes opened
+later are detected asynchronously, so their first Run can race initial bridge
+preparation.
+
+The bridge's launch arguments identify its manager by PID and launch date.
+The manager and its renderers use this identity to distinguish bridges from
+competing hosts. A bridge that exits is replaced while hosting is active and
+exits when its manager dies. Xcode's Run requests retain the existing screen
+opening policy: only explicitly opened Neo screens are presented. Opening Device
+Hub normally, or choosing Devices and Simulators in Xcode, requests a host change
+and forwards any device-management URL after the bridge has exited.
+Selecting Device Hub stops bridges, closes managed
+renderers, changes the route, and opens Device Hub normally. Guests keep running.
 
 Startup applies the preference before processing URL requests or restoring
-screens. Quitting closes screens and renderers and ends automatic hosting, but
-keeps the route and restoration receipt. No background launch service is installed.
+screens. Quitting closes screens, renderers, and bridges and ends automatic
+hosting, but keeps the route and restoration receipt. No background launch
+service is installed. Startup closes orphaned bridges left by a previous
+manager before preparing new ones.
 
 ## Device discovery and Xcode association
 
@@ -99,8 +124,9 @@ operations report completed steps and per-device failures.
 A renderer reports a successful start only after it has subscribed to the device
 set and checked once more for a competing host. Neo identifies an app to
 terminate by its bundle identifier and normalized bundle URL. It rejects
-competing hosts at startup and observes later launches. When Device Hub or
-Simulator.app appears, Neo disconnects affected sessions and leaves guests
+competing hosts at startup and observes later launches. Its own windowless Device Hub
+bridges are permitted. When another Device Hub or Simulator.app appears,
+Neo disconnects affected sessions and leaves guests
 running. It neither quits the competitor nor ends the manager for an in-process
 presentation conflict.
 

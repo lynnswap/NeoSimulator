@@ -13215,13 +13215,31 @@ struct HostBehaviorTests {
         #expect(defaults.externalDisplayTag(forDevice: "A") == 2114)
     }
 
-    @Test func launchConflictIsRetainedBeforeDeferredTeardown() {
+    @Test(arguments: [false, true])
+    func launchConflictIsRetainedBeforeDeferredTeardown(_ ownsCompanion: Bool) throws {
         let center = NotificationCenter()
-        let monitor = HostConflictMonitor(notificationCenter: center)
+        let url = URL(filePath: "/Xcode.app/Contents/Applications/DeviceHub.app")
+        let monitor = HostConflictMonitor(
+            notificationCenter: center,
+            allowsDeviceHub: { pid, bundleURL in
+                ownsCompanion && pid == 101 && bundleURL == url
+            })
         var teardownCalled = false
         monitor.onConflict = { teardownCalled = true }
         center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
-            userInfo: [NSWorkspace.applicationUserInfoKey: FixtureRunningApplication()])
+            userInfo: [
+                NSWorkspace.applicationUserInfoKey: FixtureRunningApplication(processIdentifier: 101, bundleURL: url)
+            ])
+
+        if ownsCompanion {
+            try monitor.check()
+            center.post(
+                name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+                userInfo: [
+                    NSWorkspace.applicationUserInfoKey: FixtureRunningApplication(
+                        processIdentifier: 102, bundleURL: url)
+                ])
+        }
 
         #expect(monitor.conflictingHostName == "Device Hub")
         #expect(throws: SimulatorError.self) { try monitor.check() }
@@ -13359,6 +13377,15 @@ struct HostBehaviorTests {
         #expect(options.deviceIdentifier == identifier)
         #expect(options.isManaged && options.isHeadless)
         #expect(options.owner == RendererOwnerIdentity(processIdentifier: 123, launchDate: Date(timeIntervalSinceReferenceDate: 1234.5)))
+        let bridgeArguments =
+            WorkspaceClient.rendererLaunchArguments(
+                owner: try #require(options.owner),
+                startupResultURL: URL(fileURLWithPath: "/tmp/result"), xcodeURL: options.xcodeURL, deviceIdentifier: nil
+            )
+            + ["--device-hub-proxy"]
+        let bridge = try HostLaunchOptions(arguments: bridgeArguments)
+        #expect(bridge.isDeviceHubProxy && bridge.owner == options.owner)
+        #expect(!bridge.isHeadless && bridge.deviceIdentifier == nil)
         #expect(throws: (any Error).self) {
             try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app"])
         }
@@ -13642,6 +13669,15 @@ struct DeviceToolTests {
 
 // The fixture adds no mutable state to NSRunningApplication's Sendable contract.
 private final class FixtureRunningApplication: NSRunningApplication, @unchecked Sendable {
+    private let reportedPID: pid_t
+    private let reportedURL: URL?
+    init(processIdentifier: pid_t = 101, bundleURL: URL? = nil) {
+        reportedPID = processIdentifier
+        reportedURL = bundleURL
+        super.init()
+    }
+    override var processIdentifier: pid_t { reportedPID }
+    override var bundleURL: URL? { reportedURL }
     override var bundleIdentifier: String? { "com.apple.dt.Devices" }
 }
 

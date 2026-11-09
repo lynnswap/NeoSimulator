@@ -113,6 +113,7 @@ jobs:
 
   distribution:
     name: Distribution Scripts
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     timeout-minutes: 5
     steps:

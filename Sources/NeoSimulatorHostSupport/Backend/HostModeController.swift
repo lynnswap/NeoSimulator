@@ -47,7 +47,8 @@ package struct HostModeController {
     private func makeSelectionStatus() throws -> SimulatorHostSelectionStatus {
         let receipt = try receiptStore.load()
         let host = try receiptStore.loadHostSelection()
-            ?? receipt.map { $0.expectedCurrent == .coreSimulator ? SimulatorHost.neo : .deviceHub } ?? .neo
+            ?? receipt.map { [.coreSimulator, .neo].contains($0.expectedCurrent) ? SimulatorHost.neo : .deviceHub }
+            ?? .neo
         return SimulatorHostSelectionStatus(host: host, restorationAvailable: receipt != nil,
             allowsAutomaticHosting: host == .neo && receipt?.pending == nil)
     }
@@ -127,8 +128,10 @@ package struct HostModeController {
             }
             switch host {
             case .neo(let renderer):
+                try await workspace.prepareDeviceHubCompanionForXcode(xcode.applicationURL)
                 if launchDisplay { _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier) }
             case .deviceHub:
+                try await workspace.stopDeviceHubCompanions()
                 if launchDisplay { _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL) }
             }
         } catch {
@@ -142,10 +145,12 @@ package struct HostModeController {
     package nonisolated(nonsending) func restore(force: Bool = false) async throws -> RestoreReport {
         try rejectRootMutation()
         guard try receiptStore.stateDirectoryExists() else {
+            try await workspace.stopDeviceHubCompanions()
             return RestoreReport(didRestore: false, restoredState: nil, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: 0)
         }
         return try await receiptStore.withExistingExclusiveLock {
             guard let originalReceipt = try receiptStore.load() else {
+                try await workspace.stopDeviceHubCompanions()
                 try receiptStore.saveHostSelection(.deviceHub)
                 return RestoreReport(didRestore: false, restoredState: nil, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: 0)
             }
@@ -153,6 +158,7 @@ package struct HostModeController {
             // post-restore choice before recovery can remove that receipt.
             try receiptStore.saveHostSelection(.deviceHub)
             if force { _ = try await defaultsStore.readState() } else { _ = try await recoverManagedContext() }
+            try await workspace.stopDeviceHubCompanions()
             let terminatedNeo = originalReceipt.original.effectiveRoute == .deviceHub
                 ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
             if force {

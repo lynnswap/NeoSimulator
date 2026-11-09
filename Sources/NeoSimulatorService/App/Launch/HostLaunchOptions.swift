@@ -14,6 +14,7 @@ struct HostLaunchOptions {
     let deviceSetPath: String?
     let isManaged: Bool
     let isHeadless: Bool
+    let isDeviceHubProxy: Bool
     let owner: RendererOwnerIdentity?
 
     init(arguments: [String]) throws {
@@ -26,11 +27,14 @@ struct HostLaunchOptions {
         var creationCatalog = false
         var managed = false
         var headless = false
+        var deviceHubProxy = false
         var ownerPID: Int32?
         var ownerLaunchDate: Date?
         var index = 0
         func invalid() -> SimulatorError {
-            .invalidArguments("Expected [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            .invalidArguments(
+                "Expected [--managed --owner-pid PID --owner-launch-date SECONDS [--headless | --device-hub-proxy]] [--creation-catalog] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app"
+            )
         }
         while index < arguments.count {
             switch arguments[index] {
@@ -40,6 +44,9 @@ struct HostLaunchOptions {
             case "--headless":
                 guard !headless else { throw invalid() }
                 headless = true
+            case "--device-hub-proxy":
+                guard !deviceHubProxy else { throw invalid() }
+                deviceHubProxy = true
             case "--owner-pid":
                 index += 1
                 guard index < arguments.count, ownerPID == nil,
@@ -85,6 +92,8 @@ struct HostLaunchOptions {
         guard let xcodePath, !(validate && resultPath != nil),
               !includeNative || (validate && !creationCatalog),
               !headless || managed,
+            !deviceHubProxy
+                || (managed && !headless && !validate && !creationCatalog && device == nil && deviceSet == nil),
               managed ? (ownerPID != nil && ownerLaunchDate != nil) : (ownerPID == nil && ownerLaunchDate == nil)
         else { throw invalid() }
         xcodeURL = URL(fileURLWithPath: xcodePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
@@ -96,6 +105,7 @@ struct HostLaunchOptions {
         deviceSetPath = deviceSet
         isManaged = managed
         isHeadless = headless
+        isDeviceHubProxy = deviceHubProxy
         owner = ownerPID.flatMap { pid in ownerLaunchDate.map { RendererOwnerIdentity(processIdentifier: pid, launchDate: $0) } }
     }
 

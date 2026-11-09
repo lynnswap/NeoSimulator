@@ -195,6 +195,7 @@ package enum HostOperationScope {
 package actor SimulatorHostController {
     package let rendererApplicationURL: URL
     private let presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)?
+    private let deviceHubCompanions: DeviceHubCompanions?
     private let catalogLogger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "Catalog")
     private var lastTestingCatalogDiagnostic: String?
     private let startedAt = Date().timeIntervalSince1970
@@ -219,9 +220,12 @@ package actor SimulatorHostController {
     var shutdownTransactions: [SimulatorShutdownTransaction] = []
 
     package init(rendererApplicationURL: URL,
-                presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil) {
+        presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil,
+        deviceHubCompanions: DeviceHubCompanions? = nil
+    ) {
         self.rendererApplicationURL = rendererApplicationURL.resolvingSymlinksInPath().standardizedFileURL
         self.presentSimulator = presentSimulator
+        self.deviceHubCompanions = deviceHubCompanions
     }
 
     /// Stops the catalog and installation reads running now and refuses new ones until ``resumeReads()``.
@@ -257,7 +261,10 @@ package actor SimulatorHostController {
     /// Ends hosting for this controller while preserving the selected display settings.
     package func endSession() async throws {
         await cancelConnectionSynchronization()
-        try await operation(.hostTransition) { self.allowsSessionHosting = false }
+        try await operation(.hostTransition) {
+            self.allowsSessionHosting = false
+            try await self.deviceHubCompanions?.stop()
+        }
     }
 
     package func installedXcodes() async throws -> [SimulatorXcode] {
@@ -328,16 +335,19 @@ package actor SimulatorHostController {
         }
     }
 
-    package func selectHost(_ host: SimulatorHost, xcodeURL: URL? = nil) async throws {
+    package func selectHost(_ host: SimulatorHost, xcodeURL: URL? = nil, deviceHubURL: URL? = nil) async throws {
         await cancelConnectionSynchronization()
-        try await operation(.hostTransition) { try await self.select(host, xcodeURL: xcodeURL) }
+        try await operation(.hostTransition) {
+            try await self.select(host, xcodeURL: xcodeURL, deviceHubURL: deviceHubURL)
+        }
     }
 
     package func activate(xcodeURL: URL? = nil) async throws {
         try await operation(.hostTransition) {
             if try await self.hostSelectionStatus().host == .deviceHub {
                 let xcode = try await self.resolveXcode(xcodeURL)
-                let workspace = await WorkspaceClient.live
+                let workspace = await WorkspaceClient.live(
+                    headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
                 _ = try await workspace.openDeviceHub(xcode.deviceHubApplicationURL)
                 return
             }
@@ -669,7 +679,7 @@ package actor SimulatorHostController {
         }
     }
 
-    private func select(_ host: SimulatorHost, xcodeURL: URL?) async throws {
+    private func select(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) async throws {
         let xcode = try await resolveXcode(xcodeURL)
         let renderers = try await registeredRenderers()
         let existing = xcodeURL == nil ? renderers.first : renderers.first { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }
@@ -680,6 +690,9 @@ package actor SimulatorHostController {
             throw error
         }
         allowsSessionHosting = true
+        if host == .deviceHub, let deviceHubURL {
+            try await WorkspaceClient.openDeviceHubRequest(deviceHubURL, at: xcode.deviceHubApplicationURL)
+        }
         if host == .neo {
             if let existing { send("activate", to: existing) }
             else if let launched = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) { send("show-browser", to: launched) }
@@ -870,7 +883,8 @@ package actor SimulatorHostController {
 
     @concurrent
     private func savedHostSelectionStatus() async throws -> SimulatorHostSelectionStatus {
-        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        let workspace = await WorkspaceClient.live(
+            headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
         return try await makeCore(workspace: workspace).selectionStatus()
     }
 
@@ -887,25 +901,29 @@ package actor SimulatorHostController {
 
     @concurrent
     private func beginHostSession(xcodeURL: URL) async throws {
-        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        let workspace = await WorkspaceClient.live(
+            headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
         _ = try await makeCore(workspace: workspace).beginSession(xcodeURL: xcodeURL)
     }
 
     @concurrent
     private func launchHost(_ host: SimulatorHost, xcodeURL: URL) async throws {
-        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        let workspace = await WorkspaceClient.live(
+            headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
         try await makeCore(workspace: workspace).launch(host, xcodeURL: xcodeURL)
     }
 
     @concurrent
     private func useHost(_ host: SimulatorHost, xcodeURL: URL, launchDisplay: Bool) async throws {
-        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        let workspace = await WorkspaceClient.live(
+            headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
         _ = try await makeCore(workspace: workspace).use(host, xcodeURL: xcodeURL, launchDisplay: launchDisplay)
     }
 
     @concurrent
     private func restoreHost(force: Bool) async throws {
-        let workspace = await WorkspaceClient.live(headlessRenderers: presentSimulator != nil)
+        let workspace = await WorkspaceClient.live(
+            headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
         _ = try await makeCore(workspace: workspace).restore(force: force)
     }
 
@@ -1135,13 +1153,7 @@ package enum SimulatorProcessConnections {
             var info = proc_bsdinfo()
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
                   info.pbi_uid == user else { continue }
-            var query = [CTL_KERN, KERN_PROCARGS2, pid]
-            var size = 0
-            guard sysctl(&query, UInt32(query.count), nil, &size, nil, 0) == 0, size > 4 else { continue }
-            var data = Data(count: size)
-            let status = data.withUnsafeMutableBytes { sysctl(&query, UInt32(query.count), $0.baseAddress, &size, nil, 0) }
-            guard status == 0 else { continue } // Processes can exit while the snapshot is being read.
-            data.count = size
+            guard let data = ProcessArguments.readRaw(processIdentifier: pid) else { continue }
             var current = proc_bsdinfo()
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &current, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
                   current.pbi_start_tvsec == info.pbi_start_tvsec, current.pbi_start_tvusec == info.pbi_start_tvusec else { continue }
@@ -1153,25 +1165,8 @@ package enum SimulatorProcessConnections {
     }
 
     package static func decode(_ arguments: Data, executablePath: String, event: XcodeSimulatorConnection.Event, testingDeviceSetPath: String? = nil) -> XcodeSimulatorConnection? {
-        guard arguments.count >= MemoryLayout<Int32>.size else { return nil }
-        let argumentCount = arguments.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
-        guard argumentCount >= 0 else { return nil }
-        var cursor = 4
-        func nextString() -> String? {
-            guard cursor < arguments.count, let end = arguments[cursor...].firstIndex(of: 0) else { return nil }
-            defer { cursor = end + 1 }
-            return String(data: arguments[cursor..<end], encoding: .utf8)
-        }
-        guard nextString() != nil else { return nil } // executable path precedes argv, padded with NULs.
-        while cursor < arguments.count, arguments[cursor] == 0 { cursor += 1 }
-        for _ in 0..<argumentCount { guard nextString() != nil else { return nil } }
-        var environment: [String: String] = [:]
-        let relevant: Set<String> = ["SIMULATOR_UDID", "GPUTOOLS_XCODE_DEVELOPER_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_LIBRARY_PATH"]
-        while let entry = nextString(), !entry.isEmpty {
-            guard let equals = entry.firstIndex(of: "=") else { continue }
-            let key = String(entry[..<equals])
-            if relevant.contains(key) { environment[key] = String(entry[entry.index(after: equals)...]) }
-        }
+        guard let process = ProcessArguments(data: arguments) else { return nil }
+        let environment = process.environment
         guard let rawIdentifier = environment["SIMULATOR_UDID"], let identifier = UUID(uuidString: rawIdentifier)?.uuidString else { return nil }
         let defaultDevice = executablePath.contains("/CoreSimulator/Devices/\(identifier)/data/Containers/Bundle/Application/")
         let testingDevice = testingDeviceSetPath.map { path in
@@ -1207,5 +1202,48 @@ package final class SimulatorCatalogTracker {
         }
         defer { catalog = current }
         return current != catalog
+    }
+}
+
+
+package struct ProcessArguments {
+    package let arguments: [String]
+    package let environment: [String: String]
+
+    package static func readRaw(processIdentifier: pid_t) -> Data? {
+        var query = [CTL_KERN, KERN_PROCARGS2, processIdentifier]
+        var size = 0
+        guard sysctl(&query, UInt32(query.count), nil, &size, nil, 0) == 0, size > 4 else { return nil }
+        var data = Data(count: size)
+        guard data.withUnsafeMutableBytes({ sysctl(&query, UInt32(query.count), $0.baseAddress, &size, nil, 0) }) == 0
+        else { return nil }
+        data.count = size
+        return data
+    }
+
+    package init?(data: Data) {
+        guard data.count >= MemoryLayout<Int32>.size else { return nil }
+        let count = data.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard count >= 0 else { return nil }
+        var cursor = MemoryLayout<Int32>.size
+        func nextString() -> String? {
+            guard cursor < data.count, let end = data[cursor...].firstIndex(of: 0) else { return nil }
+            defer { cursor = end + 1 }
+            return String(data: data[cursor..<end], encoding: .utf8)
+        }
+        guard nextString() != nil else { return nil }
+        while cursor < data.count, data[cursor] == 0 { cursor += 1 }
+        var arguments: [String] = []
+        for _ in 0..<count {
+            guard let argument = nextString() else { return nil }
+            arguments.append(argument)
+        }
+        var environment: [String: String] = [:]
+        while let entry = nextString(), !entry.isEmpty {
+            guard let equals = entry.firstIndex(of: "=") else { continue }
+            environment[String(entry[..<equals])] = String(entry[entry.index(after: equals)...])
+        }
+        self.arguments = arguments
+        self.environment = environment
     }
 }

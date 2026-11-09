@@ -13,11 +13,19 @@ import NeoSimulatorDeviceDisplay
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let rendererURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/NeoSimulatorRenderer.app")
+    private lazy var deviceHubCompanions: DeviceHubCompanions = {
+        let companions = DeviceHubCompanions(rendererApplicationURL: rendererURL)
+        companions.onError = { [weak self] error in self?.present(error) }
+        companions.onOpenDeviceHub = { [weak self] xcode, request in
+            self?.model.select(.deviceHub, xcodeURL: xcode, deviceHubURL: request)
+        }
+        return companions
+    }()
     lazy var model = SimulatorManagerModel(rendererApplicationURL: rendererURL, presentSimulator: { [weak self] context in
         try await self?.openSimulatorPresentation(context)
-    })
+        }, deviceHubCompanions: deviceHubCompanions)
     private(set) lazy var screens: DeviceScreens = {
-        let screens = DeviceScreens(model: self.model)
+        let screens = DeviceScreens(model: self.model, allowsDeviceHub: deviceHubCompanions.allows)
         screens.onError = { [weak self] error in self?.present(error) }
         screens.onShowInMainWindow = { [weak self] identifier in self?.prepareMainWindow().showDevice(identifier) }
         return screens

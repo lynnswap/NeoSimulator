@@ -98,7 +98,7 @@ package protocol SimulatorManagerSource: DeviceStateSource {
     func endSession() async throws
     func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func installedXcodes() async throws -> [SimulatorXcode]
-    func selectHost(_ host: SimulatorHost, xcodeURL: URL?) async throws
+    func selectHost(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) async throws
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest
     func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?, bootIfNeeded: Bool) async throws
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws
@@ -259,8 +259,11 @@ package final class SimulatorManagerModel {
 
     package init(rendererApplicationURL: URL,
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil,
+        deviceHubCompanions: DeviceHubCompanions? = nil,
          serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
-        let controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator)
+        let controller = SimulatorHostController(
+            rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator,
+            deviceHubCompanions: deviceHubCompanions)
         self.controller = controller
         makeDevicePosture = { DevicePostureModel(deviceID: $0) }
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
@@ -301,11 +304,11 @@ package final class SimulatorManagerModel {
         }
     }
 
-    package func select(_ host: SimulatorHost) {
+    package func select(_ host: SimulatorHost, xcodeURL: URL? = nil, deviceHubURL: URL? = nil) {
         perform("Switching simulator app…") {
             try await self.requestHostPreferenceAccess?()
             if host == .deviceHub { try await self.beforeStoppingScreens?() }
-            try await self.controller.selectHost(host, xcodeURL: nil)
+            try await self.controller.selectHost(host, xcodeURL: xcodeURL, deviceHubURL: deviceHubURL)
         }
     }
 
@@ -1028,7 +1031,15 @@ package final class SimulatorManagerModel {
             try await prepareForQuit()
             try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
             try await beforeEndingSession()
-            try await controller.endSession()
+            do { try await controller.endSession() } catch let endingError {
+                do { try await controller.beginSession() } catch let recoveryError {
+                    throw HostOperationError.temporary(
+                        "session-end-recovery",
+                        "Could not end the simulator session (\(endingError.localizedDescription)) or resume it (\(recoveryError.localizedDescription))."
+                    )
+                }
+                throw endingError
+            }
         } catch { resumeAfterCancelledQuit(); throw error }
     }
 

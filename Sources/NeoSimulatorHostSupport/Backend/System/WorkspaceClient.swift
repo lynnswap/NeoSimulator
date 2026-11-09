@@ -188,10 +188,15 @@ package struct WorkspaceClient: Sendable {
 
     package var openDeviceHub: @MainActor @Sendable (URL) async throws -> URL
     package var quitNeoHost: @MainActor @Sendable (URL, [RendererRegistration], Bool?) async throws -> Int
+    package var prepareDeviceHubCompanionForXcode: @MainActor @Sendable (URL) async throws -> Void = { _ in }
+    package var stopDeviceHubCompanions: @MainActor @Sendable () async throws -> Void = {}
 
     @MainActor package static var live: WorkspaceClient { live(headlessRenderers: false) }
 
-    @MainActor package static func live(headlessRenderers: Bool) -> WorkspaceClient { WorkspaceClient(
+    @MainActor package static func live(headlessRenderers: Bool, deviceHubCompanions: DeviceHubCompanions? = nil)
+        -> WorkspaceClient
+    {
+        WorkspaceClient(
         runningXcodes: {
             runningApplications(
                 withBundleIdentifier: ToolConstants.xcodeBundleIdentifier
@@ -214,7 +219,12 @@ package struct WorkspaceClient: Sendable {
             }
             return try await terminateApplications(
                 ManagedApplicationIdentity(displayName: "Device Hub", bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
-                    expectedURLs: expectedURLs, errorIdentifier: "device-hub", terminationRequest: .deviceHubHandoff)
+                        expectedURLs: expectedURLs, errorIdentifier: "device-hub", terminationRequest: .deviceHubHandoff
+                    ),
+                    excluding: {
+                        deviceHubCompanions?.allows(processIdentifier: $0.processIdentifier, bundleURL: $0.bundleURL)
+                            ?? false
+                    }
             )
         },
         terminateNeoHosts: { expectedApplicationURL in
@@ -229,6 +239,7 @@ package struct WorkspaceClient: Sendable {
             )
         },
         openNeoHost: { applicationURL, xcodeURL, deviceIdentifier in
+                try await deviceHubCompanions?.start(xcodeURL: xcodeURL)
             guard Bundle(url: applicationURL)?.bundleIdentifier
                     == ToolConstants.neoHostBundleIdentifier
             else {
@@ -310,6 +321,7 @@ package struct WorkspaceClient: Sendable {
             }
         },
         openDeviceHub: { applicationURL in
+                try await deviceHubCompanions?.stop()
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.allowsRunningApplicationSubstitution = false
@@ -340,9 +352,29 @@ package struct WorkspaceClient: Sendable {
                 )
                 return true
             })
-        }
+            },
+            prepareDeviceHubCompanionForXcode: { try await deviceHubCompanions?.start(xcodeURL: $0) },
+            stopDeviceHubCompanions: { try await deviceHubCompanions?.stop() }
 
     ) }
+
+    @MainActor package static func terminateDeviceHubCompanion(_ application: NSRunningApplication, at url: URL)
+        async throws
+    {
+        let identity = ManagedApplicationIdentity(
+            displayName: "Device Hub", bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
+            expectedURLs: [url], errorIdentifier: "device-hub-companion", terminationRequest: .deviceHubHandoff)
+        try await ApplicationTerminationWaiter(application: application, identity: identity, timeoutInterval: 10)
+            .terminate()
+    }
+
+    @MainActor package static func openDeviceHubRequest(_ request: URL, at applicationURL: URL) async throws {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.allowsRunningApplicationSubstitution = false
+        _ = try await NSWorkspace.shared.open(
+            [request], withApplicationAt: applicationURL, configuration: configuration)
+    }
 
     @MainActor private static func waitForPreviousRendererOwners(at applicationURL: URL) async throws {
         let applications = NSRunningApplication.runningApplications(withBundleIdentifier: ToolConstants.neoHostBundleIdentifier)
@@ -422,6 +454,7 @@ package struct WorkspaceClient: Sendable {
         _ identity: ManagedApplicationIdentity,
         timeoutInterval: TimeInterval? = 10,
         processIdentifiers: Set<pid_t>? = nil,
+        excluding: (NSRunningApplication) -> Bool = { _ in false },
         requestTermination: ((NSRunningApplication) throws -> Bool)? = nil
     ) async throws -> Int {
         let expected = Set(identity.expectedURLs.map(normalized))
@@ -432,7 +465,9 @@ package struct WorkspaceClient: Sendable {
         while true {
             let applications = NSRunningApplication.runningApplications(
                 withBundleIdentifier: identity.bundleIdentifier
-            ).filter { !$0.isTerminated && (processIdentifiers?.contains($0.processIdentifier) ?? true) }
+            ).filter {
+                !$0.isTerminated && (processIdentifiers?.contains($0.processIdentifier) ?? true) && !excluding($0)
+            }
             guard !applications.isEmpty else {
                 return terminatedCount
             }
@@ -492,7 +527,7 @@ package struct WorkspaceClient: Sendable {
         }
     }
 
-    @MainActor private static func makeNeoHostStartupDirectory() throws -> URL {
+    @MainActor package static func makeNeoHostStartupDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "\(ToolConstants.name)-startup-\(UUID().uuidString)",
             isDirectory: true

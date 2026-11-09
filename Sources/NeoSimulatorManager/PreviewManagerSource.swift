@@ -65,7 +65,9 @@
         package func xcodeURL(forDevice deviceID: DeviceInventoryID) throws -> URL {
             throw CocoaError(.featureUnsupported)
         }
-        package func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw CocoaError(.featureUnsupported) }
+        package func selectHost(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) throws {
+            throw CocoaError(.featureUnsupported)
+        }
         package nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
             SimulatorScreenOpenRequest(deviceID: deviceID, onCancel: {})
         }

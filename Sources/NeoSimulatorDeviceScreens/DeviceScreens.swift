@@ -29,6 +29,7 @@ package final class DeviceScreens {
     /// The Xcode whose SimulatorKit UI toolkit the manager loaded, which also supplies device artwork.
     package private(set) var displayXcodeURL: URL?
     @ObservationIgnored private let model: SimulatorManagerModel
+    @ObservationIgnored private let allowsDeviceHub: @Sendable (pid_t, URL?) -> Bool
     @ObservationIgnored private var contexts: [ContextKey: SimulatorScreens] = [:]
     /// Invalidated contexts remain available until their native resources have finished closing.
     @ObservationIgnored private var retiredContexts: [SimulatorContext] = []
@@ -53,8 +54,11 @@ package final class DeviceScreens {
         self?.simulatorControllers.map(\.session) ?? []
     }
 
-    package init(model: SimulatorManagerModel) {
+    package init(
+        model: SimulatorManagerModel, allowsDeviceHub: @escaping @Sendable (pid_t, URL?) -> Bool = { _, _ in false }
+    ) {
         self.model = model
+        self.allowsDeviceHub = allowsDeviceHub
         locationObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.DeviceLocationChanged"),
             object: nil, queue: .main
@@ -370,6 +374,7 @@ package final class DeviceScreens {
         do {
             screens = try await SimulatorScreens(
                 context: created,
+                allowsDeviceHub: allowsDeviceHub,
                 makeWindow: { [weak self] device in
                     compact ? self?.connectingCompactWindows[device.identity.inventoryID]?.takeWindow() : nil
                 })
