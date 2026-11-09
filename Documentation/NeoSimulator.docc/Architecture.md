@@ -45,7 +45,9 @@ bundled renderer in a separate mode that registers with LaunchServices for the
 selected Xcode's Device Hub path before AppKit starts. Xcode's device URLs reach
 the bridge while Neo presents the screens. This mode loads no simulator runtime,
 creates no windows, and launches no Apple Device Hub process. Additional simulator
-launches reuse the bridge without presenting another host.
+launches reuse the bridge without presenting another host. Session startup waits
+for the selected Xcode's bridge; other running Xcodes are prepared independently,
+and a failure for one is reported without disabling the working host.
 
 The bridge's launch arguments identify its manager by PID and launch date.
 The manager and its renderers use this identity to distinguish bridges from

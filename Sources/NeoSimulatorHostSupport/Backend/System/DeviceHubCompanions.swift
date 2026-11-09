@@ -57,6 +57,7 @@ package final class DeviceHubCompanions {
     package func start(at applicationURL: URL) async throws {
         let identity = try RendererOwnerIdentity.current()
         owner.withLock { $0 = identity }
+        try await prepare(at: applicationURL).value
         enabled = true
         if requestObserver == nil {
             requestObserver = DistributedNotificationCenter.default().addObserver(
@@ -96,11 +97,13 @@ package final class DeviceHubCompanions {
                     })
             }
         }
-        try await prepare(at: applicationURL).value
         for xcode in NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dt.Xcode") {
             if let url = xcode.bundleURL {
                 let hub = url.appendingPathComponent(ToolConstants.deviceHubPath)
-                if FileManager.default.fileExists(atPath: hub.path) { try await prepare(at: hub).value }
+                if FileManager.default.fileExists(atPath: hub.path) {
+                    let task = prepare(at: hub)
+                    Task { do { try await task.value } catch { onError?(error) } }
+                }
             }
         }
     }
@@ -112,10 +115,9 @@ package final class DeviceHubCompanions {
         workspaceObservers = []
         if let requestObserver { DistributedNotificationCenter.default().removeObserver(requestObserver) }
         requestObserver = nil
+        // Launch failures are delivered to their callers. Ending ownership only needs their cleanup to finish.
+        for task in launches.values { _ = await task.result }
         var failure: (any Error)?
-        for task in launches.values {
-            do { try await task.value } catch { if failure == nil { failure = error } }
-        }
         for (url, companion) in companions {
             do {
                 try await terminate(companion, at: url)
@@ -128,10 +130,14 @@ package final class DeviceHubCompanions {
     private func prepare(at applicationURL: URL) -> Task<Void, any Error> {
         let url = applicationURL.standardizedFileURL.resolvingSymlinksInPath()
         if let task = launches[url] { return task }
-        if let companion = companions[url], companion.process.isRunning { return Task {} }
+        if let companion = companions[url], companion.process.isRunning, companion.application != nil { return Task {} }
 
         let task = Task { [self] in
             defer { launches.removeValue(forKey: url) }
+            if let previous = companions[url] {
+                try await terminate(previous, at: url)
+                companions.removeValue(forKey: url)
+            }
             try CodeSignatureValidator.live.validateAppleApplication(url, ToolConstants.deviceHubBundleIdentifier)
             let startupDirectory = try WorkspaceClient.makeNeoHostStartupDirectory()
             defer { try? FileManager.default.removeItem(at: startupDirectory) }
@@ -174,10 +180,11 @@ package final class DeviceHubCompanions {
                 }
                 companions[url]?.application = application
             } catch let error {
-                let companion = companions.removeValue(forKey: url) ?? Companion(process: process)
+                let companion = companions[url] ?? Companion(process: process)
                 try await WorkspaceClient.finishFailedNeoHostLaunch(error, processIdentifier: process.processIdentifier)
                 {
                     try await self.terminate(companion, at: url)
+                    self.companions.removeValue(forKey: url)
                 }
             }
         }
