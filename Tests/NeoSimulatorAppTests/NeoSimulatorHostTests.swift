@@ -13377,6 +13377,15 @@ struct HostBehaviorTests {
         #expect(options.deviceIdentifier == identifier)
         #expect(options.isManaged && options.isHeadless)
         #expect(options.owner == RendererOwnerIdentity(processIdentifier: 123, launchDate: Date(timeIntervalSinceReferenceDate: 1234.5)))
+        let bridgeArguments =
+            WorkspaceClient.rendererLaunchArguments(
+                owner: try #require(options.owner),
+                startupResultURL: URL(fileURLWithPath: "/tmp/result"), xcodeURL: options.xcodeURL, deviceIdentifier: nil
+            )
+            + ["--device-hub-proxy"]
+        let bridge = try HostLaunchOptions(arguments: bridgeArguments)
+        #expect(bridge.isDeviceHubProxy && bridge.owner == options.owner)
+        #expect(!bridge.isHeadless && bridge.deviceIdentifier == nil)
         #expect(throws: (any Error).self) {
             try HostLaunchOptions(arguments: ["--managed", "--xcode", "/Xcode.app"])
         }

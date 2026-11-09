@@ -517,7 +517,7 @@ package struct WorkspaceClient: Sendable {
         }
     }
 
-    @MainActor private static func makeNeoHostStartupDirectory() throws -> URL {
+    @MainActor package static func makeNeoHostStartupDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "\(ToolConstants.name)-startup-\(UUID().uuidString)",
             isDirectory: true

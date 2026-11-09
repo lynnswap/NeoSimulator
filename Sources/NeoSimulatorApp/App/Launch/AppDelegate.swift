@@ -13,12 +13,24 @@ import NeoSimulatorDeviceDisplay
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let rendererURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/NeoSimulatorRenderer.app")
-    private let deviceHubCompanions = DeviceHubCompanions()
+    private lazy var deviceHubCompanions: DeviceHubCompanions = {
+        let companions = DeviceHubCompanions(rendererApplicationURL: rendererURL)
+        companions.onError = { [weak self] error in self?.present(error) }
+        companions.onOpenDeviceHub = { [weak self] xcode in self?.model.select(.deviceHub, xcodeURL: xcode) }
+        companions.onOpenDevice = { [weak self] device, xcode in
+            guard let self else { return }
+            self.processObservation.refresh()
+            let matches = self.model.devices.filter {
+                $0.identifier == device.uuidString && ($0.ownerXcodeURL ?? $0.catalogXcodeURL) == xcode
+            }
+            if matches.count == 1, let known = matches.first { self.model.openDevice(known.inventoryID) }
+        }
+        return companions
+    }()
     lazy var model = SimulatorManagerModel(rendererApplicationURL: rendererURL, presentSimulator: { [weak self] context in
         try await self?.openSimulatorPresentation(context)
         }, deviceHubCompanions: deviceHubCompanions)
     private(set) lazy var screens: DeviceScreens = {
-        deviceHubCompanions.onError = { [weak self] error in self?.present(error) }
         let screens = DeviceScreens(model: self.model, allowsDeviceHub: deviceHubCompanions.allows)
         screens.onError = { [weak self] error in self?.present(error) }
         screens.onShowInMainWindow = { [weak self] identifier in self?.prepareMainWindow().showDevice(identifier) }

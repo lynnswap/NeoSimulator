@@ -48,7 +48,9 @@ import Synchronization
 #endif
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--help"] {
-            print("usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app")
+            print(
+                "usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS [--headless | --device-hub-proxy]] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app"
+            )
             return
         }
         if arguments == ["--relaunch-manager"] {
@@ -61,6 +63,11 @@ import Synchronization
         } catch { fail(error) }
         do {
             try options.validateInstallation()
+            if options.isDeviceHubProxy {
+                let proxy = DeviceHubProxy(options: options)
+                try withExtendedLifetime(proxy) { try proxy.run() }
+                return
+            }
             try RendererBootstrap.selectToolkit(xcodeURL: options.xcodeURL)
         }
         catch { fail(error, resultURL: options.startupResultURL) }

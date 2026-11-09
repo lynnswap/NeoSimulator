@@ -304,11 +304,11 @@ package final class SimulatorManagerModel {
         }
     }
 
-    package func select(_ host: SimulatorHost) {
+    package func select(_ host: SimulatorHost, xcodeURL: URL? = nil) {
         perform("Switching simulator app…") {
             try await self.requestHostPreferenceAccess?()
             if host == .deviceHub { try await self.beforeStoppingScreens?() }
-            try await self.controller.selectHost(host, xcodeURL: nil)
+            try await self.controller.selectHost(host, xcodeURL: xcodeURL)
         }
     }
 
