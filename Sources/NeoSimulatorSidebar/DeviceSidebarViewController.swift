@@ -17,6 +17,7 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
     package var onSelectionChange: ((_ byUser: Bool) -> Void)?
     /// Fills the context menu with the actions for the devices it targets.
     package var populateDeviceMenu: ((NSMenu, [InventoryDevice]) -> Void)?
+    package var onOpenCompactScreen: ((InventoryDevice) -> Void)?
     private var manager: SimulatorManagerModel { model.manager }
     private let screens: DeviceScreens
     private let artworkCache: DeviceArtworkCache
@@ -87,7 +88,7 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
 
     override package func loadView() {
         view = NSView()
-        search.placeholderString = "Search Devices"
+        search.placeholderString = "Search"
         search.delegate = self
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -97,7 +98,7 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
         table.outlineTableColumn = column
         table.headerView = nil
         table.style = .sourceList
-        table.rowHeight = 52
+        table.rowHeight = 44
         table.intercellSpacing = NSSize(width: 0, height: 2)
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.allowsMultipleSelection = true
@@ -468,7 +469,7 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
     package func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { item is DeviceGroup }
     package func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { item is DeviceRow }
     package func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        item is DeviceGroup ? 26 : 52
+        item is DeviceGroup ? 26 : outlineView.rowHeight
     }
 
     package func outlineView(_ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any) -> String? {
@@ -604,8 +605,8 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
 
     @objc private func openSelectedDevice(_ sender: Any?) {
         let devices = visibleSelectedDevices
-        guard !devices.contains(where: { screens.screen(for: $0.id) != nil }) else { return }
-        model.open(devices)
+        guard devices.count == 1, let device = devices.first, manager.canViewScreen(device) else { return }
+        onOpenCompactScreen?(device)
     }
 
     /// Targets the clicked row, or the selection when it contains that row or no row was clicked.

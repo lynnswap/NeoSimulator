@@ -152,7 +152,18 @@ struct InputFocusTests {
             controllers.append(controller)
             app.screens.attach(controller, as: .simulator(udid: id, deviceSetPath: nil))
         }
-        defer { controllers.forEach { $0.invalidate() }; main.window?.close() }
+        var compactController: DeviceWindowController?
+        if !showsCompactDeviceInMain {
+            let controller = try makeController(
+                TestDisplay(), features: [], device: ids[1],
+                keyboardLanguage: { nil }, keyboardCaptureTap: TestKeyboardEventTap(),
+                presentCompactWindow: {
+                    compactPresentations.append(ids[1]); $0.orderFront(nil)
+                })
+            compactController = controller
+            app.screens.attach(controller, as: devices[1].id, compact: true)
+        }
+        defer { compactController?.invalidate(); controllers.forEach { $0.invalidate() }; main.window?.close() }
         let xcode = URL(fileURLWithPath: "/Applications/Fixture Xcode.app")
         let restorations = zip(ids, [SimulatorScreenRestoration.Presentation.hidden, .compact, .main]).map {
             SimulatorScreenRestoration(device: SimulatorDeviceIdentifier($0.0), xcodeURL: xcode, presentation: $0.1)
@@ -1730,7 +1741,15 @@ struct InputFocusTests {
             } else {
                 #expect(failure.errorDescription == (access == kIOHIDAccessTypeDenied
                     ? "Keyboard Capture Access Was Denied." : "Keyboard Capture Access Is Not Authorized."))
-                #expect(failure.recoverySuggestion?.contains("System Settings > Privacy & Security > Accessibility") == true)
+                if #available(macOS 27, *) {
+                    #expect(
+                        failure.recoverySuggestion?.contains(
+                            "System Settings > Privacy & Security > Device Control and Data Access") == true)
+                } else {
+                    #expect(
+                        failure.recoverySuggestion?.contains("System Settings > Privacy & Security > Accessibility")
+                            == true)
+                }
             }
         }
         #expect(checks == 1 && !capture.isCapturing)
@@ -2826,7 +2845,12 @@ struct InputFocusTests {
         let otherToolbar = try #require(other.window?.toolbar)
         let otherItems = otherToolbar.items.map(\.itemIdentifier)
         controller.onShowInMainWindow = {}
-        #expect(toolbar.items.first?.itemIdentifier.rawValue == "ShowInMainWindow")
+        #expect(toolbar.items.first?.itemIdentifier == .flexibleSpace)
+        #expect(toolbar.items.dropFirst().first?.itemIdentifier.rawValue == "ShowInMainWindow")
+        let window = try #require(controller.window)
+        window.setContentSize(NSSize(width: 300, height: 600))
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+        #expect(window.titleVisibility == .visible && window.toolbarStyle == .unified)
         #expect(otherToolbar.items.map(\.itemIdentifier) == otherItems)
     }
 
@@ -4659,7 +4683,8 @@ struct InputFocusTests {
         let toolbar = NSToolbar(identifier: "PluginToolbar")
         let pluginDelegate = TestPluginToolbarDelegate()
         toolbar.delegate = pluginDelegate
-        toolbar.insertItem(withItemIdentifier: TestPluginToolbarDelegate.itemIdentifier, at: 0)
+        toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: 0)
+        toolbar.insertItem(withItemIdentifier: TestPluginToolbarDelegate.itemIdentifier, at: 1)
         // SimulatorKit loads the Apple Vision Pro plugin before opening its window.
         display.plugin = SimulatorUserInterfacePlugin(overlayView: overlay, toolbar: toolbar)
         let controller = try makeController(display, family: .vision, features: [], userInterfacePlugin: true)
@@ -4669,6 +4694,7 @@ struct InputFocusTests {
         var mainWindowRequests = 0
         controller.onShowInMainWindow = { mainWindowRequests += 1 }
         let mainWindowItem = try #require(toolbar.items.first { $0.itemIdentifier.rawValue == "ShowInMainWindow" })
+        #expect(toolbar.items.first?.itemIdentifier == .flexibleSpace)
         #expect(toolbar.items.contains { $0.itemIdentifier == TestPluginToolbarDelegate.itemIdentifier })
         #expect(toolbar.delegate?.toolbarSelectableItemIdentifiers?(toolbar) == [TestPluginToolbarDelegate.itemIdentifier])
         #expect(NSApp.sendAction(try #require(mainWindowItem.action), to: mainWindowItem.target, from: mainWindowItem))
@@ -12057,8 +12083,12 @@ private final class TestPluginToolbarDelegate: NSObject, NSToolbarDelegate {
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         NSToolbarItem(itemIdentifier: identifier)
     }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, Self.itemIdentifier]
+    }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, Self.itemIdentifier]
+    }
     func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.itemIdentifier] }
 }
 /// Models menu handling by Apple Vision Pro's XROS.VirtualHMDInputView overlay.

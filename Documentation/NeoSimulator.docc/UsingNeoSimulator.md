@@ -71,11 +71,13 @@ selected device family, and it shows each runtime's build. If it shows
 
 ## Main and compact windows
 
-Choose **Switch to Compact Window** in the main toolbar to move the live screen
-into its own window. Choose **Show in Main Window** in that window to return to
-the browser with the same device selected. Moving the screen preserves its
-connection, recording, and unsaved captures. Finish an open sheet or leave full
-screen before switching windows.
+Double-click a device or choose **Open Compact Window** in the main toolbar to
+open its compact window immediately and start or connect the device automatically.
+The window shows the device preview while preparing, then progress while
+connecting, and finally the live screen. The main window keeps showing
+the selected device, and both windows accept input. Each window retains its own
+recording and captures. Choose **Show in Main Window** in the compact window to
+close it and bring the main window forward with the same device selected.
 
 The toolbar and **Device**, **I/O**, **Features**, and **Debug** menus provide
 device actions. Main and compact windows keep separate scales. Selecting another
@@ -187,8 +189,8 @@ Option with the pointer over the toolbar to change the camera to Record Screen
 and rotation to Rotate Left. Watches and Apple TV omit rotation; supported
 watches also have an Always On control.
 
-Physical-device and VM screen windows support standard macOS tabs. Moving a
-screen between the main and compact windows keeps its connection. Home, Lock,
+Physical-device and VM screen windows support standard macOS tabs. Main and
+compact windows connect to the same device independently. Home, Lock,
 and volume controls appear when the
 device supports them. **Reconnect** in the compact window's toolbar or in the
 menu you get by Control-clicking beside the device retries the screen.

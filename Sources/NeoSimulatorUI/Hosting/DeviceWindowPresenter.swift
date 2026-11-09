@@ -17,9 +17,11 @@ package final class DeviceWindowPresenter: DevicePresenter {
     private let touchPressure = TouchPressure()
     private let tvRemote = TVRemoteController()
     private let cascade = WindowCascade()
+    private let makeWindow: (AvailableDevice) -> DeviceWindow?
     package let captureOwner = UUID()
 
-    package init() {
+    package init(makeWindow: @escaping (AvailableDevice) -> DeviceWindow? = { _ in nil }) {
+        self.makeWindow = makeWindow
         let displays = SimulatorDisplaySet()
         self.displays = displays
         router = SimulatorScreenRouter(displays: displays)
@@ -35,7 +37,8 @@ package final class DeviceWindowPresenter: DevicePresenter {
         if let shutDown = events.onShutDown { onShutDown = { shutDown($0) } }
         return try DeviceWindowController(
             session: session, displays: displays, touchPressure: touchPressure, tvRemote: tvRemote, cascade: cascade,
-            offersLifetimeChoice: offersLifetimeChoice, captureOwner: captureOwner,
+            offersLifetimeChoice: offersLifetimeChoice, preparedWindow: makeWindow(session.device),
+            captureOwner: captureOwner,
             reportDetachedCapture: events.reportDetachedCapture,
             onClose: { events.onClose($0, $1) }, onRestart: { events.onRestart($0, $1) }, onShutDown: onShutDown)
     }

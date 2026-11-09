@@ -111,7 +111,10 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
     package var isEmbedded: Bool { embeddedContainer != nil }
     package var presentationWindow: NSWindow? { isEmbedded ? content.window : window }
     package var onShowInMainWindow: (() -> Void)? {
-        didSet { deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil) }
+        didSet {
+            deviceToolbar?.setShowsMainWindowAction(onShowInMainWindow != nil)
+            if let window { updateToolbarStyle(forWidth: window.frame.width) }
+        }
     }
     private var permitsPresentationMove: Bool {
         guard !closed, !isFullScreen else { return false }
@@ -164,7 +167,7 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
 
     package init(session: DeviceSession, displays: SimulatorDisplaySet, preferences: any PreferenceStore = HostPreferences.defaults,
          touchPressure: TouchPressure, tvRemote: TVRemoteController, cascade: WindowCascade = WindowCascade(),
-         offersLifetimeChoice: Bool = true,
+        offersLifetimeChoice: Bool = true, preparedWindow: DeviceWindow? = nil,
          captureOwner: UUID? = nil,
          reportDetachedCapture: @escaping (Error) -> Void = { CaptureThumbnail.reportDetached($0) },
          performWindowDrag: @escaping (NSWindow, NSEvent) -> Void = { $0.performDrag(with: $1) },
@@ -206,7 +209,10 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
             throw SimulatorError.unavailable("Simulator display has no usable size")
         }
         // Initial width determines toolbar style before display scaling.
-        let window = DeviceWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
+        let window =
+            preparedWindow
+            ?? DeviceWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         fitting = DisplayFitting(display: display, content: content)
@@ -215,6 +221,7 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         super.init(window: window)
         keyboard.capture.failure = { [weak self] in self?.present($0) }
         (window.title, window.subtitle) = deviceWindowTitles(name: session.device.name, runtimeName: session.device.runtimeName)
+        window.titleVisibility = .visible
         window.appearance = NSAppearance(named: .darkAqua)
         // AppKit draws the opaque title bar; see `updateHeaderShape()`.
         window.titlebarSeparatorStyle = .none

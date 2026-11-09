@@ -58,8 +58,16 @@ package final class SystemKeyboardEventTap: KeyboardEventTap {
             let title = authorization == kIOHIDAccessTypeDenied
                 ? "Keyboard Capture Access Was Denied."
                 : "Keyboard Capture Access Is Not Authorized."
+            let permission: String
+            if #available(macOS 27, *) {
+                permission = "Device Control and Data Access"
+            } else {
+                permission = "Accessibility"
+            }
             throw StartFailure(errorDescription: title,
-                recoverySuggestion: "Allow “\(applicationName)” in System Settings > Privacy & Security > Accessibility, then try Capture Keyboard again. You can still type in the focused device screen.")
+                recoverySuggestion:
+                    "Allow “\(applicationName)” in System Settings > Privacy & Security > \(permission), then try Capture Keyboard again. You can still type in the focused device screen."
+            )
         }
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0) else {
             CFMachPortInvalidate(port)

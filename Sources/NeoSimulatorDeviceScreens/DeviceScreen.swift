@@ -176,7 +176,7 @@ package final class DeviceScreen {
 
     /// Sends a canvas or toolbar action to the device while this screen is open.
     package func perform(_ action: String) {
-        guard let screens, screens.screen(for: id) === self else { return }
+        guard let screens, screens.contains(self) else { return }
         if action == "pairedDevice" {
             model.openActivePairedDevice(for: id)
             return
@@ -220,7 +220,10 @@ package final class DeviceScreen {
     // MARK: Presentation
 
     package var presentation: SimulatorScreenRestoration.Presentation {
-        switch controller {
+        if let compact = screens?.compactScreen(for: id), compact !== self, compact.presentation == .compact {
+            return .compact
+        }
+        return switch controller {
         case .simulator(let controller): .init(isEmbedded: controller.isEmbedded, window: controller.window)
         case .remote(let controller): .init(isEmbedded: controller.isEmbedded, window: controller.window)
         }

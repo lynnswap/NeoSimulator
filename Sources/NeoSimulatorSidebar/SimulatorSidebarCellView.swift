@@ -57,7 +57,7 @@ final class SimulatorSidebarCellView: NSTableCellView {
             host.setAccessibilityHidden(true)
             addSubview(host, positioned: .below, relativeTo: thumbnail)
             NSLayoutConstraint.activate([
-                host.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                host.leadingAnchor.constraint(equalTo: leadingAnchor),
                 host.centerYAnchor.constraint(equalTo: centerYAnchor),
                 host.widthAnchor.constraint(equalToConstant: 32),
                 host.heightAnchor.constraint(equalToConstant: 32),
@@ -99,14 +99,14 @@ final class SimulatorSidebarCellView: NSTableCellView {
         addSubview(labels)
         addSubview(trailing)
         NSLayoutConstraint.activate([
-            thumbnail.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            thumbnail.leadingAnchor.constraint(equalTo: leadingAnchor),
             thumbnail.centerYAnchor.constraint(equalTo: centerYAnchor),
             thumbnail.widthAnchor.constraint(equalToConstant: 32),
             thumbnail.heightAnchor.constraint(equalToConstant: 32),
-            labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 49),
+            labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 41),
             labels.trailingAnchor.constraint(equalTo: trailing.leadingAnchor, constant: -10),
             labels.centerYAnchor.constraint(equalTo: centerYAnchor),
-            trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            trailing.trailingAnchor.constraint(equalTo: trailingAnchor),
             trailing.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
