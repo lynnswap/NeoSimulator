@@ -1031,7 +1031,15 @@ package final class SimulatorManagerModel {
             try await prepareForQuit()
             try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
             try await beforeEndingSession()
-            try await controller.endSession()
+            do { try await controller.endSession() } catch let endingError {
+                do { try await controller.beginSession() } catch let recoveryError {
+                    throw HostOperationError.temporary(
+                        "session-end-recovery",
+                        "Could not end the simulator session (\(endingError.localizedDescription)) or resume it (\(recoveryError.localizedDescription))."
+                    )
+                }
+                throw endingError
+            }
         } catch { resumeAfterCancelledQuit(); throw error }
     }
 

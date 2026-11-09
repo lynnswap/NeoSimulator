@@ -440,17 +440,23 @@ struct ManagerModelTests {
         #expect(manager.status?.host == .deviceHub)
     }
 
-    @Test func failedExitPreparationKeepsTheSessionAvailableForAnotherAttempt() async throws {
+    @Test(arguments: [false, true])
+    func failedExitPreparationKeepsTheSessionAvailableForAnotherAttempt(endingSession: Bool) async throws {
         let source = ManagerModelSource(devices: [])
         let manager = SimulatorManagerModel(source: source)
         manager.start()
+        if endingSession { await source.failNextSessionEnd() }
         do {
             try await manager.quitRenderer(keepingDevicesRunning: true) {
-                throw ManagerModelSource.Failure.unavailable
+                if !endingSession { throw ManagerModelSource.Failure.unavailable }
             }
             Issue.record("Exit preparation should have failed")
         } catch ManagerModelSource.Failure.unavailable {}
-        #expect(await !source.sessionEvents.contains("end"))
+        if endingSession {
+            #expect(await source.sessionEvents.suffix(2) == ["end", "begin"])
+        } else {
+            #expect(await !source.sessionEvents.contains("end"))
+        }
         try await manager.quitRenderer(keepingDevicesRunning: true)
         #expect(await source.sessionEvents.last == "end")
     }
@@ -7253,13 +7259,18 @@ private struct ServiceChangeSource: DeviceStateSource {
 
 actor ManagerModelSource: SimulatorManagerSource {
     private var failsSessionStart = false
+    private var failsSessionEnd = false
     private(set) var sessionEvents: [String] = []
     func failSessionStart() { failsSessionStart = true }
     func beginSession() throws {
         sessionEvents.append("begin")
         if failsSessionStart { throw Failure.unavailable }
     }
-    func endSession() { sessionEvents.append("end") }
+    func failNextSessionEnd() { failsSessionEnd = true }
+    func endSession() throws {
+        sessionEvents.append("end")
+        if failsSessionEnd { failsSessionEnd = false; throw Failure.unavailable }
+    }
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
     enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, synchronize, quit, manage(DeviceManagementAction, [DeviceInventoryID]), readServices(DeviceInventoryID), changeServices(DeviceInventoryID) }

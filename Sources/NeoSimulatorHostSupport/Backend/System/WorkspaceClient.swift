@@ -217,15 +217,14 @@ package struct WorkspaceClient: Sendable {
                 try CodeSignatureValidator.live.validateAppleApplication(url, ToolConstants.deviceHubBundleIdentifier)
                 expectedURLs.append(url)
             }
-                let competing = running.filter {
-                    !(deviceHubCompanions?.allows(processIdentifier: $0.processIdentifier, bundleURL: $0.bundleURL)
-                        ?? false)
-                }
             return try await terminateApplications(
                 ManagedApplicationIdentity(displayName: "Device Hub", bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
                         expectedURLs: expectedURLs, errorIdentifier: "device-hub", terminationRequest: .deviceHubHandoff
                     ),
-                    processIdentifiers: Set(competing.map(\.processIdentifier))
+                    excluding: {
+                        deviceHubCompanions?.allows(processIdentifier: $0.processIdentifier, bundleURL: $0.bundleURL)
+                            ?? false
+                    }
             )
         },
         terminateNeoHosts: { expectedApplicationURL in
@@ -455,6 +454,7 @@ package struct WorkspaceClient: Sendable {
         _ identity: ManagedApplicationIdentity,
         timeoutInterval: TimeInterval? = 10,
         processIdentifiers: Set<pid_t>? = nil,
+        excluding: (NSRunningApplication) -> Bool = { _ in false },
         requestTermination: ((NSRunningApplication) throws -> Bool)? = nil
     ) async throws -> Int {
         let expected = Set(identity.expectedURLs.map(normalized))
@@ -465,7 +465,9 @@ package struct WorkspaceClient: Sendable {
         while true {
             let applications = NSRunningApplication.runningApplications(
                 withBundleIdentifier: identity.bundleIdentifier
-            ).filter { !$0.isTerminated && (processIdentifiers?.contains($0.processIdentifier) ?? true) }
+            ).filter {
+                !$0.isTerminated && (processIdentifiers?.contains($0.processIdentifier) ?? true) && !excluding($0)
+            }
             guard !applications.isEmpty else {
                 return terminatedCount
             }

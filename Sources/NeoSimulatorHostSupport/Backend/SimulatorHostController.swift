@@ -262,8 +262,8 @@ package actor SimulatorHostController {
     package func endSession() async throws {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) {
-            try await self.deviceHubCompanions?.stop()
             self.allowsSessionHosting = false
+            try await self.deviceHubCompanions?.stop()
         }
     }
 
