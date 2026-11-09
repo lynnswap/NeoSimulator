@@ -48,6 +48,27 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Test package
+        run: |
+          xcodebuild test -workspace NeoSimulator.xcworkspace -scheme NeoSimulatorKit \
+            -destination 'platform=macOS,arch=arm64' \
+            -enableCodeCoverage NO \
+            -derivedDataPath "$NEOSIMULATOR_DERIVED_DATA_PATH"
+
+  inventory:
+    name: Module Graph and Live Inventory (Xcode 27.2)
+    runs-on: xcode-27
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      NEOSIMULATOR_DERIVED_DATA_PATH: ${{ github.workspace }}/.build/ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Select Xcode
+        run: sudo xcode-select --switch "$DEVELOPER_DIR"
+
       - name: Check module graph
         run: scripts/check-module-graph.py
 
@@ -62,13 +83,19 @@ jobs:
       - name: Check live CoreDevice inventory
         run: '"$NEOSIMULATOR_DERIVED_DATA_PATH/Build/Products/Release/CoreDeviceInventoryProbe"'
 
-      - name: Test package
-        # No coverage report is consumed; match the app and consumer's Debug build settings.
-        run: |
-          xcodebuild test -workspace NeoSimulator.xcworkspace -scheme NeoSimulatorKit \
-            -destination 'platform=macOS,arch=arm64' \
-            -enableCodeCoverage NO \
-            -derivedDataPath "$NEOSIMULATOR_DERIVED_DATA_PATH"
+  app:
+    name: App Bundle and Public SDK (Xcode 27.2)
+    runs-on: xcode-27
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      NEOSIMULATOR_DERIVED_DATA_PATH: ${{ github.workspace }}/.build/ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Select Xcode
+        run: sudo xcode-select --switch "$DEVELOPER_DIR"
 
       - name: Test app bundle
         run: scripts/test-app-bundle.sh
@@ -78,6 +105,14 @@ jobs:
         run: |
           xcodebuild build -scheme MinimalSimulatorApp -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$NEOSIMULATOR_DERIVED_DATA_PATH"
+
+  distribution:
+    name: Distribution Scripts
+    runs-on: macos-26
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Validate distribution scripts
         run: |
