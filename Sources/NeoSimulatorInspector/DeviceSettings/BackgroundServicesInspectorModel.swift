@@ -81,13 +81,9 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     var defaultProfileChoice: ProfileChoice {
         profileChoice(.inheritDefault, title: String(localized: "Use Default: \(profiles.defaultProfile.name)"))
     }
-    /// The choices after the default: All Services while the simulator names it, then the saved profiles.
+    /// Both built-in profiles stay available even when the simulator follows another default.
     var profileChoices: [ProfileChoice] {
-        let allServices = ServiceProfileSelection.profile(ServiceProfile.allServicesID)
-        let named =
-            selectedProfileSelection == allServices
-            ? [profileChoice(allServices, title: profiles.allServices.name)] : []
-        return named + profiles.profiles.map { profileChoice(.profile($0.id), title: $0.name) }
+        profiles.availableProfiles.map { profileChoice(.profile($0.id), title: $0.name) }
     }
     private func profileChoice(_ selection: ServiceProfileSelection, title: String) -> ProfileChoice {
         ProfileChoice(
@@ -127,7 +123,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     func saveProfile() {
         guard canSaveProfile, let device = selection.device, let configuration = services?.configuration else { return }
         let profile = selectedProfile
-        if profile.id == ServiceProfile.allServicesID {
+        if profile.isBuiltIn {
             let editor = ServiceProfileEditorModel(name: "", configuration: configuration)
             editor.save = { [profiles, deviceID = device.id] editor in
                 try profiles.create(name: editor.name, configuration: editor.configuration, assigningTo: deviceID)

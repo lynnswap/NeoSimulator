@@ -161,9 +161,8 @@ public final class BackgroundServicesState {
             return (update.services, Outcome(stillEnabledLabels: update.stillEnabledLabels, notStartedLabels: update.notStartedLabels))
         case .configuration(let configuration):
             var current = try await source.backgroundServices(for: device, catalog: catalog)
-            let labels = catalog.slimmable
-            let disabled = configuration.disabledLabels.intersection(labels).filter { current.canDisable($0) }
-            let enabling = current.disabledLabels.intersection(labels).subtracting(disabled)
+            let disabled = configuration.disabledLabels.intersection(catalog.slimmable).filter { current.canDisable($0) }
+            let enabling = current.disabledLabels.intersection(catalog.managed).subtracting(disabled)
             let disabling = disabled.subtracting(current.disabledLabels).union(disabled.intersection(current.loadedLabels))
             var notStarted: [String] = []
             if !enabling.isEmpty {

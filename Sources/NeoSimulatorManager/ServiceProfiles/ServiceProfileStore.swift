@@ -19,14 +19,14 @@ package final class ServiceProfile: Identifiable, BackgroundServiceEditing {
     package private(set) var categories: [BackgroundServiceCategoryModel] = []
     package var issue: String?
     @ObservationIgnored fileprivate weak var store: ServiceProfileStore?
-    package var canEdit: Bool { store != nil && id != Self.allServicesID }
-    /// The built-in profile keeps to the built-in categories, which nothing adds to.
+    package var isBuiltIn: Bool { id == Self.allServicesID || id == Self.minimalID }
+    package var canEdit: Bool { store != nil && !isBuiltIn }
     private var catalog: BackgroundServiceCatalog {
-        guard let store, canEdit else { return .builtIn }
-        return store.catalog
+        store?.catalog ?? .builtIn
     }
 
     package nonisolated static let allServicesID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    package nonisolated static let minimalID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1))
 
     fileprivate var record: Record { Record(id: id, name: name, configuration: configuration) }
 
@@ -343,12 +343,17 @@ package final class ServiceProfileStore {
 
     package static let defaultsKey = "BackgroundServiceProfiles"
     package private(set) var profiles: [ServiceProfile] = []
-    /// The built-in profile, which turns on every service that the categories list, including those in the custom
-    /// categories that it doesn't show.
+    /// Restores every managed service, including those in custom categories.
     package let allServices = ServiceProfile(
         record: .init(
             id: ServiceProfile.allServicesID, name: String(localized: "All Services"),
             configuration: ServiceConfiguration()))
+    /// Stops the built-in optional services. Services outside that catalog stay enabled.
+    package let minimal = ServiceProfile(
+        record: .init(
+            id: ServiceProfile.minimalID, name: String(localized: "Minimal"),
+            configuration: ServiceConfiguration(disabledLabels: BackgroundServiceCatalog.builtIn.slimmable)))
+    package var builtInProfiles: [ServiceProfile] { [allServices, minimal] }
     /// What devices that inherit take at each boot.
     package private(set) var defaultProfileID = ServiceProfile.allServicesID
     private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
@@ -378,14 +383,16 @@ package final class ServiceProfileStore {
     package init(fileURL: URL = ServiceProfileStore.defaultFileURL, legacyDefaults: UserDefaults? = .standard) {
         self.fileURL = fileURL
         self.legacyDefaults = legacyDefaults
-        allServices.store = self
-        allServices.showCatalog()
+        for profile in builtInProfiles {
+            profile.store = self
+            profile.showCatalog()
+        }
         reload()
     }
 
-    package var availableProfiles: [ServiceProfile] { [allServices] + profiles }
+    package var availableProfiles: [ServiceProfile] { builtInProfiles + profiles }
     package func profile(_ id: UUID) -> ServiceProfile? {
-        id == allServices.id ? allServices : profiles.first { $0.id == id }
+        availableProfiles.first { $0.id == id }
     }
     package func binding(for device: DeviceInventoryID) -> DeviceServiceProfile? { devices[device] }
     package var defaultProfile: ServiceProfile { profile(defaultProfileID) ?? allServices }
@@ -457,7 +464,8 @@ package final class ServiceProfileStore {
 
     package func delete(_ id: UUID) throws {
         var updated = state
-        updated.profiles.removeAll { $0.id == id }
+        guard let index = updated.profiles.firstIndex(where: { $0.id == id }) else { throw Failure.missingProfile }
+        updated.profiles.remove(at: index)
         if updated.defaultProfileID == id { updated.defaultProfileID = ServiceProfile.allServicesID }
         // Removing the association does not change the simulator's services.
         for (device, binding) in updated.devices where binding.selection == .profile(id) {
@@ -474,11 +482,12 @@ package final class ServiceProfileStore {
     }
 
     @discardableResult
-    package func assign(_ selection: ServiceProfileSelection, to device: DeviceInventoryID,
-                preservingOverrides: Bool = true) throws -> DeviceServiceProfile {
+    package func assign(_ selection: ServiceProfileSelection, to device: DeviceInventoryID) throws
+        -> DeviceServiceProfile
+    {
         if case .profile(let id) = selection, profile(id) == nil { throw Failure.missingProfile }
         var updated = state
-        let binding = DeviceServiceProfile(selection: selection, overrides: preservingOverrides ? updated.devices[device]?.overrides ?? [:] : [:])
+        let binding = DeviceServiceProfile(selection: selection)
         updated.devices[device] = binding
         try save(updated)
         return binding
@@ -771,6 +780,9 @@ package final class ServiceProfileStore {
             return profile
         }
         if profiles.map(\.id) != updated.map(\.id) { profiles = updated }
+        if catalogChanged {
+            for profile in builtInProfiles { profile.showCatalog() }
+        }
         let defaultID = loaded.defaultProfileID ?? ServiceProfile.allServicesID
         if defaultProfileID != defaultID { defaultProfileID = defaultID }
         if devices != loaded.devices { devices = loaded.devices }

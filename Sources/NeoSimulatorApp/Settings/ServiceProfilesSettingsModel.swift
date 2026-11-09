@@ -17,7 +17,7 @@ final class ServiceProfilesSettingsModel {
     init(store: ServiceProfileStore) { self.store = store }
 
     var selectedProfile: ServiceProfile { selectedProfileID.flatMap(store.profile) ?? store.allServices }
-    var canDelete: Bool { selectedProfile.id != ServiceProfile.allServicesID }
+    var canDelete: Bool { selectedProfile.canEdit }
     var defaultProfileID: UUID {
         get { store.defaultProfileID }
         set {
@@ -66,7 +66,7 @@ final class ServiceProfilesSettingsModel {
 
     // MARK: Categories, which every profile shares
 
-    /// Categories change beside a profile that can change, while the built-in profile shows its fixed categories.
+    /// Categories change beside an editable profile; built-in profiles show them read-only.
     var canEditCategories: Bool { selectedProfile.canEdit }
 
     /// The selected category if the app added it, which can gain and lose services, be renamed, and be deleted.

@@ -877,7 +877,7 @@ package final class SimulatorManagerModel {
         guard !stopping, !managingDeviceIDs.contains(identifier),
               let device = inventory.first(where: { $0.id == identifier }) else { return }
         do {
-            try serviceProfiles.assign(serviceProfiles.selection(for: identifier), to: identifier, preservingOverrides: false)
+            try serviceProfiles.assign(serviceProfiles.selection(for: identifier), to: identifier)
             enqueueServiceConfiguration(for: device)
         } catch { onError?(error) }
     }

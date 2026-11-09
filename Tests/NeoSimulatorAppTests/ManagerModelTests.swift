@@ -4781,20 +4781,22 @@ struct ManagerModelTests {
                 .first { $0.accessibilityLabel() == "Service Profiles" })
         let accessory = try #require(controller.splitViewItems.first?.topAlignedAccessoryViewControllers.first)
         let defaultMenu = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSPopUpButton }.first)
-        // The built-in profile drags out as a file, but stays first.
-        let builtIn = TestDraggingInfo(
-            item: try #require(controller.tableView(table, pasteboardWriterForRow: 0)), source: table)
+        // Built-in profiles drag out as files, but stay at the top.
+        for row in 0..<2 {
+            let builtIn = TestDraggingInfo(
+                item: try #require(controller.tableView(table, pasteboardWriterForRow: row)), source: table)
         defer { builtIn.draggingPasteboard.releaseGlobally() }
         #expect(
             controller.tableView(table, validateDrop: builtIn, proposedRow: 2, proposedDropOperation: .above).isEmpty)
-        let writer = try #require(controller.tableView(table, pasteboardWriterForRow: 3))
+        }
+        let writer = try #require(controller.tableView(table, pasteboardWriterForRow: 4))
         let drag = TestDraggingInfo(item: writer, source: table)
         defer { drag.draggingPasteboard.releaseGlobally() }
         #expect(controller.tableView(table, validateDrop: drag, proposedRow: 1, proposedDropOperation: .above) == .move)
-        #expect(!controller.tableView(table, acceptDrop: drag, row: 0, dropOperation: .above))
-        #expect(controller.tableView(table, acceptDrop: drag, row: 1, dropOperation: .above))
+        #expect(!controller.tableView(table, acceptDrop: drag, row: 1, dropOperation: .above))
+        #expect(controller.tableView(table, acceptDrop: drag, row: 2, dropOperation: .above))
         try await wait(timeout: .seconds(5)) {
-            table.selectedRow == 3
+            table.selectedRow == 4
         }
         #expect(store.profiles.map(\.id) == [third.id, first.id, second.id])
         #expect(controller.model.selectedProfile === second && store.profiles.first === third)
@@ -4807,12 +4809,15 @@ struct ManagerModelTests {
         #expect(inspector.defaultProfileChoice.title == "Use Default: Third")
         #expect(controller.model.selectedProfile === second)
         #expect(
-            inspector.profileChoices.map(\.id) == [.profile(third.id), .profile(first.id), .profile(second.id)])
+            inspector.profileChoices.map(\.id) == [
+                .profile(ServiceProfile.allServicesID), .profile(ServiceProfile.minimalID), .profile(third.id),
+                .profile(first.id), .profile(second.id),
+            ])
 
-        let downwardWriter = try #require(controller.tableView(table, pasteboardWriterForRow: 2))
+        let downwardWriter = try #require(controller.tableView(table, pasteboardWriterForRow: 3))
         let downward = TestDraggingInfo(item: downwardWriter, source: table)
         defer { downward.draggingPasteboard.releaseGlobally() }
-        #expect(controller.tableView(table, acceptDrop: downward, row: 4, dropOperation: .above))
+        #expect(controller.tableView(table, acceptDrop: downward, row: 5, dropOperation: .above))
         let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
         #expect(restored.profiles.map(\.id) == [third.id, second.id, first.id])
         #expect(controller.model.selectedProfile === second)
@@ -4853,7 +4858,7 @@ struct ManagerModelTests {
         let table = try #require(
             inspectorViews(controller.view).compactMap { $0 as? NSTableView }
                 .first { $0.accessibilityLabel() == "Service Profiles" })
-        try await wait(timeout: .seconds(5)) { table.numberOfRows == 2 }
+        try await wait(timeout: .seconds(5)) { table.numberOfRows == 3 }
 
         // Control-clicking the built-in profile offers to export it, but not to rename it.
         let row = table.rect(ofRow: 0)
@@ -4867,7 +4872,7 @@ struct ManagerModelTests {
         #expect(menu.items.map(\.title) == ["Duplicate", "Export…"])
 
         // A profile drags out as a file named after it, with what it had when the drag started.
-        let promise = try #require(controller.tableView(table, pasteboardWriterForRow: 1) as? NSFilePromiseProvider)
+        let promise = try #require(controller.tableView(table, pasteboardWriterForRow: 2) as? NSFilePromiseProvider)
         let delegate = try #require(promise.delegate)
         let name = delegate.filePromiseProvider(promise, fileNameForType: promise.fileType)
         #expect(name == "Search- Off.json")
@@ -4902,7 +4907,7 @@ struct ManagerModelTests {
         #expect(controller.model.selectedProfile === imported)
     }
 
-    @Test func serviceProfilesKeepDeviceOverridesAcrossSwitchesAndRelaunch() throws {
+    @Test func serviceProfilesKeepOverridesAcrossRelaunchAndClearThemOnSelection() throws {
         let domain = "NeoSimulator.ServiceProfiles.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer {
@@ -4918,17 +4923,15 @@ struct ManagerModelTests {
         try store.assign(.profile(slim.id), to: first)
         try store.assign(.profile(slim.id), to: second)
         try store.record([.service(label)], enabled: true, for: first, productFamily: "iPhone")
-        try store.assign(.profile(full.id), to: first)
-        // A matching base value must not discard an explicit per-device choice.
-        #expect(store.binding(for: first)?.overrides[label] == true)
-        try store.assign(.profile(slim.id), to: first)
         let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
         #expect(restored.profiles.map(\.id) == store.profiles.map(\.id))
         #expect(restored.profiles.map(\.name) == store.profiles.map(\.name))
         #expect(restored.profiles.map(\.configuration) == store.profiles.map(\.configuration))
         #expect(restored.configuration(for: first)?.disabledLabels == [])
         #expect(restored.configuration(for: second)?.disabledLabels == [label])
-        try restored.assign(.profile(slim.id), to: first, preservingOverrides: false)
+        try restored.assign(.profile(full.id), to: first)
+        #expect(restored.binding(for: first)?.overrides.isEmpty == true)
+        try restored.assign(.profile(slim.id), to: first)
         #expect(restored.configuration(for: first)?.disabledLabels == [label])
     }
 
@@ -4968,14 +4971,14 @@ struct ManagerModelTests {
         let named = try store.create(name: "Named", configuration: ServiceConfiguration())
         try store.setDefaultProfile(ServiceProfile.allServicesID)
         try store.assign(.profile(named.id), to: device)
-        #expect(store.configuration(for: device)?.disabledLabels == [label])
+        #expect(store.configuration(for: device)?.disabledLabels == [])
 
         try store.setDefaultProfile(common.id)
         try store.assign(.inheritDefault, to: device)
         let restored = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
         #expect(restored.defaultProfile.id == common.id)
         #expect(restored.selection(for: device) == .inheritDefault)
-        #expect(restored.configuration(for: device)?.disabledLabels == [label])
+        #expect(restored.configuration(for: device)?.disabledLabels == [other])
 
         // Saving the changes into what the device inherits leaves it inheriting. Into another profile, it chooses that one.
         try restored.update(named.id, configuration: ServiceConfiguration(disabledLabels: [label]), assigningTo: device)
@@ -5028,7 +5031,7 @@ struct ManagerModelTests {
         let device = simulator().id
         let label = "com.apple.searchd"
         #expect(store.profile(ServiceProfile.allServicesID)?.configuration.disabledLabels.isEmpty == true)
-        #expect(store.availableProfiles.count == 1 && store.availableProfiles.first === store.allServices)
+        #expect(store.availableProfiles.map(\.id) == [ServiceProfile.allServicesID, ServiceProfile.minimalID])
         try store.record([.service(label)], enabled: false, for: device, productFamily: "iPhone")
         let changed = try #require(store.binding(for: device))
         #expect(changed.selection == .inheritDefault)
@@ -5041,6 +5044,50 @@ struct ManagerModelTests {
         #expect(restored.configuration(for: device)?.disabledLabels.isEmpty == true)
         #expect(restored.binding(for: device)?.overrides.isEmpty == true)
         #expect(restored.profile(saved.id)?.configuration.disabledLabels == [label])
+    }
+
+    @Test func minimalIsReadOnlyAndItsEditableCopiesKeepIndependentConfigurations() throws {
+        let domain = "NeoSimulator.MinimalServiceProfile.\(UUID().uuidString)"
+        let fileURL = serviceProfileURL(domain)
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        let settings = ServiceProfilesSettingsModel(store: store)
+        let minimal = store.minimal
+        let original = minimal.configuration
+        #expect(original.disabledLabels.contains("com.apple.searchd"))
+        #expect(original.disabledLabels.contains("com.apple.navd"))
+        #expect(!original.disabledLabels.contains("com.apple.assistantd"))
+        settings.selectedProfileID = minimal.id
+        #expect(!minimal.canEdit && !settings.canDelete && !settings.canEditCategories)
+        minimal.setServices([.service("com.apple.searchd")], enabled: true)
+        #expect(minimal.configuration == original)
+
+        settings.duplicate(minimal)
+        let copy = settings.selectedProfile
+        #expect(copy.canEdit && copy.configuration == original)
+        copy.setServices([.service("com.apple.searchd")], enabled: true)
+        #expect(!copy.configuration.disabledLabels.contains("com.apple.searchd"))
+        #expect(minimal.configuration == original)
+
+        let category = try store.createCategory(named: "Agents")
+        let label = try store.addService("com.example.agent", to: category)
+        for profile in store.builtInProfiles {
+            let custom = try #require(profile.categories.first { $0.id == category })
+            #expect(custom.items.first?.label == label && custom.isEnabled)
+            #expect(!profile.configuration.disabledLabels.contains(label))
+        }
+        #expect(copy.configuration.disabledLabels == original.disabledLabels.subtracting(["com.apple.searchd"]))
+
+        let imported = try #require(
+            store.importProfiles(from: [
+                (name: "Minimal.json", contents: store.exportedFile(for: minimal))
+            ]).first)
+        #expect(imported.canEdit && imported.configuration == original)
+        try store.setDefaultProfile(minimal.id)
+        let restored = ServiceProfileStore(fileURL: fileURL, legacyDefaults: nil)
+        #expect(restored.defaultProfile === restored.minimal)
+        #expect(restored.profiles.map(\.id) == [copy.id, imported.id])
+        #expect(restored.profile(copy.id)?.configuration == copy.configuration)
     }
 
     @Test func savingAnExistingProfileOverwritesItAndKeepsOtherDevicesUnchanged() throws {
@@ -5070,7 +5117,7 @@ struct ManagerModelTests {
         #expect(restored.configuration(for: first) == current)
         #expect(restored.binding(for: second) == other)
 
-        try restored.assign(.profile(profile.id), to: second, preservingOverrides: false)
+        try restored.assign(.profile(profile.id), to: second)
         #expect(restored.configuration(for: second) == current)
         #expect(restored.binding(for: second)?.overrides.isEmpty == true)
     }
@@ -5229,7 +5276,10 @@ struct ManagerModelTests {
         #expect(saved.configuration.disabledLabels == [item.label])
         #expect(!model.hasProfileChanges)
         try await wait(timeout: .seconds(5)) { shownActions() == unchanged }
-        #expect(model.profileChoices.map(\.id) == [.profile(saved.id)])
+        #expect(
+            model.profileChoices.map(\.id) == [
+                .profile(ServiceProfile.allServicesID), .profile(ServiceProfile.minimalID), .profile(saved.id),
+            ])
         #expect(settings.settings.serviceProfiles.model.store.profile(saved.id) === saved)
         let profiles = controller.profileAccessory.profileButton
         try await wait(timeout: .seconds(5)) {
@@ -5560,7 +5610,10 @@ struct ManagerModelTests {
         }
         #expect(services.delegate?.tableView?(services, shouldSelectRow: 0) == false)
         controller.model.selectedProfileID = ServiceProfile.allServicesID
-        try await wait(timeout: .seconds(5)) { titles(categories) == builtIn && !actions[0].isEnabled(forSegment: 0) }
+        try await wait(timeout: .seconds(5)) {
+            titles(categories) == ["Custom"] + store.customCategories.map(\.name) + ["Built-in"] + builtIn
+                && !actions[0].isEnabled(forSegment: 0)
+        }
     }
 
     @Test func reusedServiceSwitchesShowTheirProfileWithoutMoving() async throws {
@@ -5655,7 +5708,7 @@ struct ManagerModelTests {
         #expect(sharedProfile.configuration.disabledLabels == [sharedLabel] && toggle.state == .off)
     }
 
-    @Test func selectingDefaultEnablesEveryServiceExceptTheOverriddenOnes() async throws {
+    @Test func selectingAllServicesDiscardsOverridesAndRestoresEveryManagedService() async throws {
         let domain = "NeoSimulator.ResetDefaultServiceProfile.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer {
@@ -5666,6 +5719,7 @@ struct ManagerModelTests {
         let device = simulator()
         let label = "com.apple.searchd"
         let other = "com.apple.searchtoold"
+        let required = "com.apple.gamed"
         let profile = try store.create(name: "Search Off", configuration: ServiceConfiguration(disabledLabels: [label, other]))
         try store.assign(.profile(profile.id), to: device.id)
         try store.record([.service(label)], enabled: false, for: device.id, productFamily: "iPhone")
@@ -5678,15 +5732,76 @@ struct ManagerModelTests {
         manager.inspect(device, selectionCount: 1)
         manager.selectServiceProfile(.profile(ServiceProfile.allServicesID), for: device.id)
         #expect(await events.next() == .readServices(device.id))
-        await source.completeServiceRead(disabled: [label, other])
+        await source.completeServiceRead(disabled: [label, other, required])
         #expect(await events.next() == .changeServices(device.id))
-        await source.completeServiceChange(disabled: [label])
+        await source.completeServiceChange(disabled: [])
         try await awaitServiceOperations(manager)
         #expect(
             store.binding(for: device.id)
-                == DeviceServiceProfile(selection: .profile(ServiceProfile.allServicesID), overrides: [label: false]))
-        #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels == [label])
-        #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: true)])
+                == DeviceServiceProfile(selection: .profile(ServiceProfile.allServicesID)))
+        #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels == [])
+        #expect(
+            await source.serviceChanges == [
+                .init(targets: [required, label, other].map { .service($0) }, enabled: true)
+            ])
+        try await manager.prepareForQuit()
+    }
+
+    @Test func selectingMinimalAndReselectingTheDefaultApplyExactConfigurations() async throws {
+        let domain = "NeoSimulator.ApplyMinimalServiceProfile.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let category = try store.createCategory(named: "Agents")
+        let custom = try store.addService("com.example.agent", to: category)
+        let required = "com.apple.gamed"
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        manager.inspect(device, selectionCount: 1)
+
+        manager.selectServiceProfile(.profile(store.minimal.id), for: device.id)
+        #expect(await events.next() == .readServices(device.id))
+        await source.completeServiceRead(disabled: [custom, required])
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [])
+        #expect(await events.next() == .changeServices(device.id))
+        let disabled = store.minimal.configuration.disabledLabels
+        await source.completeServiceChange(disabled: disabled)
+        try await awaitServiceOperations(manager)
+        let changes = await source.serviceChanges
+        #expect(changes.first == .init(targets: [required, custom].map { .service($0) }, enabled: true))
+        let stopping = try #require(changes.last)
+        #expect(!stopping.enabled && stopping.targets.contains(.service("com.apple.navd")))
+        #expect(!stopping.targets.contains(.service("com.apple.assistantd")))
+
+        try store.setDefaultProfile(store.minimal.id)
+        for choice in [ServiceProfileSelection.inheritDefault, .inheritDefault] {
+            try store.record([.service("com.apple.searchd")], enabled: true, for: device.id, productFamily: "iPhone")
+            manager.selectServiceProfile(choice, for: device.id)
+            #expect(await events.next() == .readServices(device.id))
+            await source.completeServiceRead(disabled: disabled.subtracting(["com.apple.searchd"]))
+            #expect(await events.next() == .changeServices(device.id))
+            await source.completeServiceChange(disabled: disabled)
+            try await awaitServiceOperations(manager)
+            #expect(store.binding(for: device.id) == DeviceServiceProfile(selection: .inheritDefault))
+            #expect(await source.serviceChanges.last == .init(targets: [.service("com.apple.searchd")], enabled: false))
+        }
+        let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
+        manager.setBackgroundServices([.service("com.apple.searchd")], enabled: true, for: device.id)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: disabled.subtracting(["com.apple.searchd"]))
+        try await awaitServiceOperations(manager)
+        inspector.saveProfile()
+        let editor = try #require(inspector.profileEditor)
+        editor.name = "My Minimal"
+        #expect(editor.commit())
+        let saved = try #require(store.profiles.first)
+        #expect(saved.configuration.disabledLabels == disabled.subtracting(["com.apple.searchd"]))
+        #expect(store.minimal.configuration.disabledLabels == disabled)
         try await manager.prepareForQuit()
     }
 
@@ -5796,10 +5911,11 @@ struct ManagerModelTests {
         let builtIn = try store.exportedFile(for: store.allServices)
         var file = try JSONDecoder().decode(File.self, from: builtIn)
         #expect(file.version == 1 && file.name == "All Services")
-        #expect(file.categories.map(\.name) == SimulatorBackgroundServiceCategory.all.map(\.name))
+        #expect(file.categories.map(\.name) == ["Agents"] + SimulatorBackgroundServiceCategory.all.map(\.name))
         #expect(
             file.categories.map { $0.services.map { $0.label ?? "" } }
-                == SimulatorBackgroundServiceCategory.all.map {
+                == [[label]]
+                + SimulatorBackgroundServiceCategory.all.map {
                     $0.services.map(\.label) + $0.requiredServices.map(\.label)
                 })
         #expect(file.categories.allSatisfy { $0.services.allSatisfy { $0.enabled == true } })
@@ -5839,7 +5955,7 @@ struct ManagerModelTests {
         #expect(Set(imported.map(\.id)).count == 3 && imported.allSatisfy { $0.canEdit && $0.id != profile.id })
         #expect(imported[0].configuration.disabledLabels == [searchd, "com.example.tool"])
         #expect(imported[1].configuration == profile.configuration)
-        #expect(other.customCategories.map(\.name) == ["Mine", "Tools", "Agents"])
+        #expect(other.customCategories.map(\.name) == ["Agents", "Mine", "Tools"])
         // A service that the file doesn't turn off is on.
         let tools = try #require(imported[0].categories.first { $0.category.name == "Tools" })
         #expect(tools.isCustom && tools.items.map(\.detail) == ["Builds things.", ""])
@@ -5933,9 +6049,12 @@ struct ManagerModelTests {
         await source.failServiceChange(disabled: [other], loaded: [other])
         try await awaitServiceOperations(manager)
         #expect(failure != nil)
-        #expect(store.binding(for: device.id)?.overrides[label] == true)
+        #expect(store.binding(for: device.id)?.overrides.isEmpty == true)
         #expect(manager.selection.device?.backgroundServices.configuration?.disabledLabels == [other])
-        #expect(await source.serviceChanges == [.init(targets: [.service(other)], enabled: false)])
+        #expect(
+            await source.serviceChanges == [
+                .init(targets: [label, other].sorted().map { .service($0) }, enabled: false)
+            ])
         manager.revertServiceProfile(for: device.id)
         #expect(await events.next() == .readServices(device.id))
         await source.completeServiceRead(disabled: [other], loaded: [other])
@@ -6404,7 +6523,7 @@ struct ManagerModelTests {
             ])
         let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
         try store.assign(.profile(profile.id), to: device.id)
-        #expect(store.configuration(for: device.id)?.disabledLabels.contains("com.apple.amsaccountsd") == true)
+        #expect(store.configuration(for: device.id)?.disabledLabels.contains("com.apple.amsaccountsd") == false)
         try await manager.prepareForQuit()
     }
 
