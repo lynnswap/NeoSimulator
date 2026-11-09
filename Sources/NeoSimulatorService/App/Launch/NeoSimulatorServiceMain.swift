@@ -103,7 +103,7 @@ import Synchronization
                                                      cleanup: HostApplication.requestTerminationAfterOwnerExit)
                 guard owner.isRunning(applicationURL: managerURL) else { ownerMonitor?.stop(); exit(EX_OK) }
             } else { ownerMonitor = nil }
-            let bootstrap = RendererBootstrap()
+            let bootstrap = RendererBootstrap(owner: options.owner)
             try bootstrap.checkForConflict()
             let controller = try await bootstrap.makeApplication(xcodeURL: options.xcodeURL, isManaged: options.isManaged,
                                                                  owner: options.owner, headless: options.isHeadless)

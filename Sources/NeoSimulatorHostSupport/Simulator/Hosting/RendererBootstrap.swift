@@ -7,9 +7,13 @@ import NeoSimulatorUI
 /// What the renderer process starts with, which composes the layers that its entry point does not see.
 @MainActor
 package final class RendererBootstrap {
-    private let conflicts = HostConflictMonitor()
+    private let conflicts: HostConflictMonitor
 
-    package init() {}
+    package init(owner: RendererOwnerIdentity? = nil) {
+        conflicts = HostConflictMonitor(allowsDeviceHub: { pid, _ in
+            owner.map { DeviceHubCompanions.allows(processIdentifier: pid, owner: $0) } ?? false
+        })
+    }
 
     /// Chooses the Xcode whose UI toolkit this process loads.
     package static func selectToolkit(xcodeURL: URL) throws {

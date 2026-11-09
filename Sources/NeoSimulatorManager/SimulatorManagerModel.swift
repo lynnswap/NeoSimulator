@@ -259,8 +259,11 @@ package final class SimulatorManagerModel {
 
     package init(rendererApplicationURL: URL,
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil,
+        deviceHubCompanions: DeviceHubCompanions? = nil,
          serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
-        let controller = SimulatorHostController(rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator)
+        let controller = SimulatorHostController(
+            rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator,
+            deviceHubCompanions: deviceHubCompanions)
         self.controller = controller
         makeDevicePosture = { DevicePostureModel(deviceID: $0) }
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }

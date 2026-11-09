@@ -45,6 +45,12 @@ package struct ManagedPreferenceState: Codable, Equatable, CustomStringConvertib
         deviceHubAutoStartSuppression: .trueValue
     )
 
+    // Xcode owns cold boots on the headless route and shuts them down when its last debug session stops.
+    package static let neo = ManagedPreferenceState(
+        xcodeSession: .falseValue,
+        deviceHubAutoStartSuppression: .trueValue
+    )
+
     package var effectiveRoute: SimulatorRoute {
         xcodeSession == .trueValue ? .coreSimulator : .deviceHub
     }
@@ -65,7 +71,7 @@ package enum SimulatorHost: String, CaseIterable, Sendable {
 
     package var targetState: ManagedPreferenceState {
         switch self {
-        case .neo: .coreSimulator
+        case .neo: .neo
         case .deviceHub: .deviceHub
         }
     }

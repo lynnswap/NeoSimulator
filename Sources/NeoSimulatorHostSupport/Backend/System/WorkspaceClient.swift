@@ -188,10 +188,15 @@ package struct WorkspaceClient: Sendable {
 
     package var openDeviceHub: @MainActor @Sendable (URL) async throws -> URL
     package var quitNeoHost: @MainActor @Sendable (URL, [RendererRegistration], Bool?) async throws -> Int
+    package var prepareDeviceHubCompanion: @MainActor @Sendable (URL) async throws -> Void = { _ in }
+    package var stopDeviceHubCompanions: @MainActor @Sendable () async throws -> Void = {}
 
     @MainActor package static var live: WorkspaceClient { live(headlessRenderers: false) }
 
-    @MainActor package static func live(headlessRenderers: Bool) -> WorkspaceClient { WorkspaceClient(
+    @MainActor package static func live(headlessRenderers: Bool, deviceHubCompanions: DeviceHubCompanions? = nil)
+        -> WorkspaceClient
+    {
+        WorkspaceClient(
         runningXcodes: {
             runningApplications(
                 withBundleIdentifier: ToolConstants.xcodeBundleIdentifier
@@ -212,9 +217,15 @@ package struct WorkspaceClient: Sendable {
                 try CodeSignatureValidator.live.validateAppleApplication(url, ToolConstants.deviceHubBundleIdentifier)
                 expectedURLs.append(url)
             }
+                let competing = running.filter {
+                    !(deviceHubCompanions?.allows(processIdentifier: $0.processIdentifier, bundleURL: $0.bundleURL)
+                        ?? false)
+                }
             return try await terminateApplications(
                 ManagedApplicationIdentity(displayName: "Device Hub", bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
-                    expectedURLs: expectedURLs, errorIdentifier: "device-hub", terminationRequest: .deviceHubHandoff)
+                        expectedURLs: expectedURLs, errorIdentifier: "device-hub", terminationRequest: .deviceHubHandoff
+                    ),
+                    processIdentifiers: Set(competing.map(\.processIdentifier))
             )
         },
         terminateNeoHosts: { expectedApplicationURL in
@@ -229,6 +240,7 @@ package struct WorkspaceClient: Sendable {
             )
         },
         openNeoHost: { applicationURL, xcodeURL, deviceIdentifier in
+                try await deviceHubCompanions?.start(at: xcodeURL.appendingPathComponent(ToolConstants.deviceHubPath))
             guard Bundle(url: applicationURL)?.bundleIdentifier
                     == ToolConstants.neoHostBundleIdentifier
             else {
@@ -310,6 +322,7 @@ package struct WorkspaceClient: Sendable {
             }
         },
         openDeviceHub: { applicationURL in
+                try await deviceHubCompanions?.stop()
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.allowsRunningApplicationSubstitution = false
@@ -340,9 +353,21 @@ package struct WorkspaceClient: Sendable {
                 )
                 return true
             })
-        }
+            },
+            prepareDeviceHubCompanion: { try await deviceHubCompanions?.start(at: $0) },
+            stopDeviceHubCompanions: { try await deviceHubCompanions?.stop() }
 
     ) }
+
+    @MainActor package static func terminateDeviceHubCompanion(_ application: NSRunningApplication, at url: URL)
+        async throws
+    {
+        let identity = ManagedApplicationIdentity(
+            displayName: "Device Hub", bundleIdentifier: ToolConstants.deviceHubBundleIdentifier,
+            expectedURLs: [url], errorIdentifier: "device-hub-companion", terminationRequest: .deviceHubHandoff)
+        try await ApplicationTerminationWaiter(application: application, identity: identity, timeoutInterval: 10)
+            .terminate()
+    }
 
     @MainActor private static func waitForPreviousRendererOwners(at applicationURL: URL) async throws {
         let applications = NSRunningApplication.runningApplications(withBundleIdentifier: ToolConstants.neoHostBundleIdentifier)

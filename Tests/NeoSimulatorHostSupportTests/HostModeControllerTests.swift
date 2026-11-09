@@ -404,10 +404,16 @@ struct HostModeControllerTests {
     @Test func neoAndDeviceHubModesRoundTripTheOriginalAbsentState() async throws {
         let fixture = try ControllerFixture()
         fixture.workspace.deviceHubCount = 1
+        fixture.workspace.onOpenNeoHost = { _ in
+            #expect(
+                fixture.workspace.preparedDeviceHubURLs == [
+                    fixture.installations.targetXcodeURL.appendingPathComponent(ToolConstants.deviceHubPath)
+                ])
+        }
         fixture.workspace.onTerminateDeviceHubs = {
             #expect(
                 fixture.runner.storedBoolean(ToolConstants.xcodePreference)
-                    == .trueValue
+                    == .falseValue
             )
             #expect(
                 fixture.runner.storedBoolean(ToolConstants.deviceHubPreference)
@@ -417,7 +423,7 @@ struct HostModeControllerTests {
 
         let neo = try await fixture.controller.use(.neo)
         #expect(neo.didChangePreferences)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
         #expect(neo.receiptURL != nil)
         #expect(neo.terminatedDeviceHubCount == 1)
@@ -460,6 +466,7 @@ struct HostModeControllerTests {
         #expect(deviceHub.receiptURL == nil)
         #expect(deviceHub.terminatedDeviceHubCount == 0)
         #expect(deviceHub.terminatedNeoHostCount == 1)
+        #expect(fixture.workspace.stoppedDeviceHubCompanions == 1)
         #expect(
             fixture.workspace.events
                 == [
@@ -501,7 +508,7 @@ struct HostModeControllerTests {
         )
         let fixture = try ControllerFixture(initialState: original)
 
-        _ = try await fixture.controller.use(.neo)
+        _ = try await fixture.controller.use(.deviceHub)
         let loadedReceipt = try fixture.receiptStore.load()
         let receipt = try #require(loadedReceipt)
         #expect(receipt.original == original)
@@ -510,7 +517,7 @@ struct HostModeControllerTests {
         fixture.workspace.onTerminateNeoHosts = {
             #expect(
                 fixture.runner.storedBoolean(ToolConstants.xcodePreference)
-                    == .trueValue
+                    == .absent
             )
         }
         let restored = try await fixture.controller.restore()
@@ -522,8 +529,8 @@ struct HostModeControllerTests {
         #expect(
             fixture.workspace.events
                 == [
-                    "terminate-device-hubs",
-                    "open-neo-host",
+                    "terminate-neo-hosts",
+                    "open-device-hub",
                     "terminate-neo-hosts",
                 ]
         )
@@ -778,7 +785,7 @@ struct HostModeControllerTests {
             #expect(SimulatorHostFailure(error).kind == .preferencesChanged)
         }
 
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
         let status = try await fixture.controller.routeStatus()
         #expect(status.receiptStatus == .ambiguousIntermediate)
@@ -787,7 +794,7 @@ struct HostModeControllerTests {
     @Test func externalPreferenceChangeIsReportedAsAConflict() async throws {
         let fixture = try ControllerFixture()
         _ = try await fixture.controller.use(.neo)
-        fixture.runner.setStoredValue(false, for: ToolConstants.xcodePreference)
+        fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
 
         let status = try await fixture.controller.routeStatus()
         #expect(status.receiptStatus.hasConflict)
@@ -870,7 +877,7 @@ struct HostModeControllerTests {
         let receipt = try #require(loadedReceipt)
         #expect(
             receipt.pending
-                == PendingMutation(before: .deviceHub, target: .coreSimulator)
+                == PendingMutation(before: .deviceHub, target: .neo)
         )
     }
 
@@ -886,7 +893,7 @@ struct HostModeControllerTests {
             stateReadCount += 1
             if stateReadCount == 3 {
                 fixture.runner.setStoredValue(
-                    true,
+                    false,
                     for: ToolConstants.xcodePreference
                 )
             }
@@ -910,11 +917,14 @@ struct HostModeControllerTests {
 
         #expect(fixture.runner.mutationCount == 0)
         #expect(fixture.workspace.events == eventsBeforeRetry)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
-    @Test func pendingAppliedMutationIsFinalizedBeforeTheNextUse() async throws {
+    @Test(arguments: [ManagedPreferenceState.coreSimulator, .neo])
+    func pendingAppliedMutationIsFinalizedAndLegacyHeadlessSessionsMigrate(_ previous: ManagedPreferenceState)
+        async throws
+    {
         let fixture = try ControllerFixture()
         let xcode = try await InstallationInspector(
             runner: fixture.runner,
@@ -928,20 +938,39 @@ struct HostModeControllerTests {
         )
         receipt.pending = PendingMutation(
             before: .deviceHub,
-            target: .coreSimulator
+            target: previous
         )
         try fixture.receiptStore.withExclusiveLock {
             try fixture.receiptStore.save(receipt)
         }
-        fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
+        fixture.runner.setStoredValue(previous.xcodeSession.booleanValue, for: ToolConstants.xcodePreference)
         fixture.runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
 
         let report = try await fixture.controller.use(.neo)
-        #expect(!report.didChangePreferences)
+        #expect(report.didChangePreferences == (previous != .neo))
         let loadedReceipt = try fixture.receiptStore.load()
         let recovered = try #require(loadedReceipt)
-        #expect(recovered.expectedCurrent == .coreSimulator)
+        #expect(recovered.expectedCurrent == .neo)
         #expect(recovered.pending == nil)
+        #expect(recovered.original == .deviceHub)
+        _ = try await fixture.controller.restore()
+        #expect(try await fixture.controller.routeStatus().preferences == .deviceHub)
+    }
+
+    @Test func failedCompanionStartupLeavesTheModeRestorableWithoutOpeningARenderer() async throws {
+        let fixture = try ControllerFixture()
+        fixture.workspace.onPrepareDeviceHub = { _ in throw HostOperationError.io("launch", "companion failed") }
+        do {
+            _ = try await fixture.controller.use(.neo)
+            Issue.record("Opened a renderer without its Xcode companion")
+        } catch let error as HostOperationError {
+            #expect(error.identifier == "neo-host-launch-partial-success")
+        }
+        #expect(fixture.workspace.openedNeoHosts.isEmpty)
+        #expect(try await fixture.controller.routeStatus().preferences == .neo)
+        _ = try await fixture.controller.restore()
+        #expect(fixture.workspace.stoppedDeviceHubCompanions == 1)
+        #expect(try await fixture.controller.routeStatus().preferences == .deviceHub)
     }
 
     @Test func ambiguousIntermediateIsNotOverwrittenByTheNextUse() async throws {
@@ -1038,7 +1067,7 @@ struct HostModeControllerTests {
             #expect(failure.failureReason == reason)
             #expect(failure.recoverySuggestion == recovery + " The preferences remain managed; use Restore Original Settings… to undo them.")
         }
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(try fixture.receiptStore.load() != nil)
 
         _ = try await fixture.controller.restore()
@@ -1060,7 +1089,7 @@ struct HostModeControllerTests {
             #expect(error.category == .temporary)
         }
 
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.workspace.openedNeoHosts.isEmpty)
         #expect(
             fixture.workspace.events
@@ -1145,7 +1174,7 @@ struct HostModeControllerTests {
         fixture.workspace.onOpenNeoHost = { _ in
             switching = Task { _ = try await fixture.controller.use(.deviceHub) }
             #expect(await !switching!.ends(before: .now + .milliseconds(50)))
-            #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+            #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         }
 
         let report = try await fixture.controller.use(.neo)
@@ -1172,7 +1201,7 @@ struct HostModeControllerTests {
     }
 
     @Test func neoHostLaunchFailureWithoutAReceiptDoesNotSuggestRestore() async throws {
-        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        let fixture = try ControllerFixture(initialState: .neo)
         fixture.workspace.openNeoHostError = HostOperationError.io("open", "injected open failure")
 
         do {
@@ -1309,7 +1338,7 @@ struct HostModeControllerTests {
     }
 
     @Test func savedNeoSelectionAndRendererLaunchDoNotAccessOtherAppsPreferences() async throws {
-        let fixture = try ControllerFixture(initialState: .coreSimulator)
+        let fixture = try ControllerFixture(initialState: .neo)
         _ = try await fixture.controller.use(.neo)
         #expect(try fixture.receiptStore.load() == nil)
         fixture.runner.failPreferenceReads = true
@@ -1329,7 +1358,7 @@ struct HostModeControllerTests {
     @Test func beginningASessionAppliesThePreferenceWithoutOpeningAScreen() async throws {
         let fixture = try ControllerFixture()
         #expect(try await fixture.controller.beginSession() == .neo)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.workspace.events == ["terminate-device-hubs"])
     }
 
@@ -1343,7 +1372,7 @@ struct HostModeControllerTests {
         let fixture = try ControllerFixture(initialState: original)
         _ = try await fixture.controller.beginSession()
         _ = try await fixture.controller.beginSession()
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
         #expect(try fixture.receiptStore.load()?.original == original)
         _ = try await fixture.controller.restore()
@@ -1358,6 +1387,7 @@ struct HostModeControllerTests {
         try fixture.receiptStore.saveHostSelection(.deviceHub)
         #expect(try await fixture.controller.selectionStatus().host == .deviceHub)
         #expect(try await fixture.controller.beginSession() == .deviceHub)
+        #expect(fixture.workspace.stoppedDeviceHubCompanions == 1)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(fixture.workspace.openedDeviceHubs.isEmpty)
     }
