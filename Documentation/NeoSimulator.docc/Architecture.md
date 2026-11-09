@@ -50,7 +50,10 @@ launches reuse the bridge without presenting another host.
 The bridge's launch arguments identify its manager by PID and launch date.
 The manager and its renderers use this identity to distinguish bridges from
 competing hosts. A bridge that exits is replaced while hosting is active and
-exits when its manager dies. Opening Device Hub normally requests a host change.
+exits when its manager dies. Xcode's Run requests retain the existing screen
+opening policy: only explicitly opened Neo screens are presented. Opening Device
+Hub normally, or choosing Devices and Simulators in Xcode, requests a host change
+and forwards any device-management URL after the bridge has exited.
 Selecting Device Hub stops bridges, closes managed
 renderers, changes the route, and opens Device Hub normally. Guests keep running.
 

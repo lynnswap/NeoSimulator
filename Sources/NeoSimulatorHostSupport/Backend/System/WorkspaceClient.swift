@@ -369,6 +369,14 @@ package struct WorkspaceClient: Sendable {
             .terminate()
     }
 
+    @MainActor package static func openDeviceHubRequest(_ request: URL, at applicationURL: URL) async throws {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.allowsRunningApplicationSubstitution = false
+        _ = try await NSWorkspace.shared.open(
+            [request], withApplicationAt: applicationURL, configuration: configuration)
+    }
+
     @MainActor private static func waitForPreviousRendererOwners(at applicationURL: URL) async throws {
         let applications = NSRunningApplication.runningApplications(withBundleIdentifier: ToolConstants.neoHostBundleIdentifier)
             .filter { !$0.isTerminated }

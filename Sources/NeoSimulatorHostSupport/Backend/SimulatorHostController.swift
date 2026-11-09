@@ -335,9 +335,11 @@ package actor SimulatorHostController {
         }
     }
 
-    package func selectHost(_ host: SimulatorHost, xcodeURL: URL? = nil) async throws {
+    package func selectHost(_ host: SimulatorHost, xcodeURL: URL? = nil, deviceHubURL: URL? = nil) async throws {
         await cancelConnectionSynchronization()
-        try await operation(.hostTransition) { try await self.select(host, xcodeURL: xcodeURL) }
+        try await operation(.hostTransition) {
+            try await self.select(host, xcodeURL: xcodeURL, deviceHubURL: deviceHubURL)
+        }
     }
 
     package func activate(xcodeURL: URL? = nil) async throws {
@@ -677,7 +679,7 @@ package actor SimulatorHostController {
         }
     }
 
-    private func select(_ host: SimulatorHost, xcodeURL: URL?) async throws {
+    private func select(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) async throws {
         let xcode = try await resolveXcode(xcodeURL)
         let renderers = try await registeredRenderers()
         let existing = xcodeURL == nil ? renderers.first : renderers.first { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }
@@ -688,6 +690,9 @@ package actor SimulatorHostController {
             throw error
         }
         allowsSessionHosting = true
+        if host == .deviceHub, let deviceHubURL {
+            try await WorkspaceClient.openDeviceHubRequest(deviceHubURL, at: xcode.deviceHubApplicationURL)
+        }
         if host == .neo {
             if let existing { send("activate", to: existing) }
             else if let launched = try await registeredRenderers().first(where: { sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) { send("show-browser", to: launched) }

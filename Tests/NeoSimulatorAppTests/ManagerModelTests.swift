@@ -7471,7 +7471,7 @@ actor ManagerModelSource: SimulatorManagerSource {
             disabled: disabled, loaded: loaded, productFamily: "iPhone", catalog: serviceCatalog)
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }
-    func selectHost(_ host: SimulatorHost, xcodeURL: URL?) throws { throw Failure.unavailable }
+    func selectHost(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) throws { throw Failure.unavailable }
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
         SimulatorScreenOpenRequest(deviceID: deviceID) { _ = self.cancelledOpens.withLock { $0.insert(deviceID) } }
     }

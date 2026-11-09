@@ -49,7 +49,7 @@ import Synchronization
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--help"] {
             print(
-                "usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS [--headless | --device-hub-proxy]] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app"
+                "usage: NeoSimulatorRenderer [--managed --owner-pid PID --owner-launch-date SECONDS [--headless | --device-hub-proxy]] [--creation-catalog] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app"
             )
             return
         }

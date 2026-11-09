@@ -109,13 +109,7 @@ final class DeviceHubProxy: NSObject, NSApplicationDelegate {
         guard let value = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
             let url = URLComponents(string: value), url.scheme == "devices"
         else { return }
-        if url.host == "device", url.path == "/open",
-            let id = url.queryItems?.first(where: { $0.name == "id" })?.value, let id = UUID(uuidString: id)
-        {
-            send("open-device", device: id)
-        } else {
-            openDeviceHub()
-        }
+        if url.host == "manage", let request = url.url { openDeviceHub(request) }
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
@@ -125,14 +119,14 @@ final class DeviceHubProxy: NSObject, NSApplicationDelegate {
         return false
     }
 
-    private func openDeviceHub() {
-        send("open-device-hub")
+    private func openDeviceHub(_ request: URL? = nil) {
+        send("open-device-hub", request: request)
     }
 
-    private func send(_ action: String, device: UUID? = nil) {
+    private func send(_ action: String, request: URL? = nil) {
         guard let owner = options.owner else { return }
         var info = ["pid": String(ProcessInfo.processInfo.processIdentifier), "action": action]
-        if let device { info["device"] = device.uuidString }
+        if let request { info["url"] = request.absoluteString }
         DistributedNotificationCenter.default().postNotificationName(
             DeviceHubCompanions.requestNotification,
             object: DeviceHubCompanions.token(for: owner), userInfo: info, deliverImmediately: true)

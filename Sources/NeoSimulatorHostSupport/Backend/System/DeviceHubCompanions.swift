@@ -8,15 +8,19 @@ import Synchronization
 /// Keeps Xcode on its externally managed simulator route without launching another display host.
 @MainActor
 package final class DeviceHubCompanions {
+    private struct Companion {
+        let process: Process
+        var application: NSRunningApplication?
+    }
+
     nonisolated private let owner = Mutex<RendererOwnerIdentity?>(nil)
-    private var companions: [URL: Process] = [:]
+    private var companions: [URL: Companion] = [:]
     private var launches: [URL: Task<Void, any Error>] = [:]
     private var workspaceObservers: [any NSObjectProtocol] = []
     private var enabled = false
     private let rendererURL: URL
     private var requestObserver: (any NSObjectProtocol)?
-    package var onOpenDeviceHub: ((URL) -> Void)?
-    package var onOpenDevice: ((UUID, URL) -> Void)?
+    package var onOpenDeviceHub: ((URL, URL?) -> Void)?
     package var onError: ((any Error) -> Void)?
 
     package init(rendererApplicationURL: URL) {
@@ -61,17 +65,13 @@ package final class DeviceHubCompanions {
                 guard let pid = notification.userInfo?["pid"] as? String,
                     let pid = pid_t(pid), let action = notification.userInfo?["action"] as? String
                 else { return }
-                let device = (notification.userInfo?["device"] as? String).flatMap(UUID.init(uuidString:))
+                let request = (notification.userInfo?["url"] as? String).flatMap(URL.init(string:))
                 MainActor.assumeIsolated {
                     guard let self, self.enabled,
-                        let url = self.companions.first(where: { $0.value.processIdentifier == pid })?.key
+                        let url = self.companions.first(where: { $0.value.process.processIdentifier == pid })?.key
                     else { return }
                     let xcode = url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-                    if action == "open-device", let device {
-                        self.onOpenDevice?(device, xcode)
-                    } else if action == "open-device-hub" {
-                        self.onOpenDeviceHub?(xcode)
-                    }
+                    if action == "open-device-hub" { self.onOpenDeviceHub?(xcode, request) }
                 }
             }
         }
@@ -116,28 +116,10 @@ package final class DeviceHubCompanions {
         for task in launches.values {
             do { try await task.value } catch { if failure == nil { failure = error } }
         }
-        for (url, process) in companions {
+        for (url, companion) in companions {
             do {
-                try await terminate(process)
+                try await terminate(companion, at: url)
                 companions.removeValue(forKey: url)
-            } catch { if failure == nil { failure = error } }
-        }
-        // A host selection can survive its manager crashing before it released the previous companions.
-        for application in NSRunningApplication.runningApplications(
-            withBundleIdentifier: ToolConstants.deviceHubBundleIdentifier)
-        {
-            guard let previousOwner = Self.companionOwner(processIdentifier: application.processIdentifier),
-                let url = application.bundleURL,
-                application.executableURL?.standardizedFileURL == executableURL.standardizedFileURL
-            else { continue }
-            if let manager = NSRunningApplication(processIdentifier: previousOwner.processIdentifier),
-                !manager.isTerminated, manager.launchDate == previousOwner.launchDate
-            {
-                if kill(previousOwner.processIdentifier, 0) == 0 || errno != ESRCH { continue }
-            }
-            do {
-                try CodeSignatureValidator.live.validateAppleApplication(url, ToolConstants.deviceHubBundleIdentifier)
-                try await WorkspaceClient.terminateDeviceHubCompanion(application, at: url)
             } catch { if failure == nil { failure = error } }
         }
         if let failure { throw failure }
@@ -146,7 +128,7 @@ package final class DeviceHubCompanions {
     private func prepare(at applicationURL: URL) -> Task<Void, any Error> {
         let url = applicationURL.standardizedFileURL.resolvingSymlinksInPath()
         if let task = launches[url] { return task }
-        if let process = companions[url], process.isRunning { return Task {} }
+        if let companion = companions[url], companion.process.isRunning { return Task {} }
 
         let task = Task { [self] in
             defer { launches.removeValue(forKey: url) }
@@ -166,7 +148,9 @@ package final class DeviceHubCompanions {
             process.standardError = FileHandle.standardError
             process.terminationHandler = { [weak self] process in
                 Task { @MainActor in
-                    guard let self, self.companions[url]?.processIdentifier == process.processIdentifier else { return }
+                    guard let self, self.companions[url]?.process.processIdentifier == process.processIdentifier else {
+                        return
+                    }
                     self.companions.removeValue(forKey: url)
                     guard self.enabled, self.launches[url] == nil else { return }
                     let task = self.prepare(at: url)
@@ -174,7 +158,7 @@ package final class DeviceHubCompanions {
                 }
             }
             try process.run()
-            companions[url] = process
+            companions[url] = Companion(process: process)
             do {
                 try await WorkspaceClient.waitForNeoHostStartup(
                     resultURL: resultURL, processIdentifier: process.processIdentifier,
@@ -188,11 +172,12 @@ package final class DeviceHubCompanions {
                         "device-hub-proxy-identity",
                         "The simulator display bridge did not register with LaunchServices.")
                 }
+                companions[url]?.application = application
             } catch let error {
-                companions.removeValue(forKey: url)
+                let companion = companions.removeValue(forKey: url) ?? Companion(process: process)
                 try await WorkspaceClient.finishFailedNeoHostLaunch(error, processIdentifier: process.processIdentifier)
                 {
-                    try await self.terminate(process)
+                    try await self.terminate(companion, at: url)
                 }
             }
         }
@@ -202,8 +187,11 @@ package final class DeviceHubCompanions {
 
     private var executableURL: URL { rendererURL.appendingPathComponent("Contents/MacOS/NeoSimulatorRenderer") }
 
-    private func terminate(_ process: Process) async throws {
-        if process.isRunning, kill(process.processIdentifier, SIGKILL) != 0, errno != ESRCH {
+    private func terminate(_ companion: Companion, at url: URL) async throws {
+        let process = companion.process
+        if let application = companion.application {
+            try await WorkspaceClient.terminateDeviceHubCompanion(application, at: url)
+        } else if process.isRunning, kill(process.processIdentifier, SIGKILL) != 0, errno != ESRCH {
             throw HostOperationError.io(
                 "device-hub-proxy-stop",
                 "Could not stop the simulator display bridge: \(String(cString: strerror(errno)))")

@@ -33,7 +33,7 @@ struct HostLaunchOptions {
         var index = 0
         func invalid() -> SimulatorError {
             .invalidArguments(
-                "Expected [--managed --owner-pid PID --owner-launch-date SECONDS [--headless | --device-hub-proxy]] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app"
+                "Expected [--managed --owner-pid PID --owner-launch-date SECONDS [--headless | --device-hub-proxy]] [--creation-catalog] [--validate-runtime [--include-native-bindings]] [--startup-result /absolute/path] [--device UDID] [--device-set /absolute/path] --xcode /absolute/path/to/Xcode.app"
             )
         }
         while index < arguments.count {

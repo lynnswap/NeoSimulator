@@ -16,14 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var deviceHubCompanions: DeviceHubCompanions = {
         let companions = DeviceHubCompanions(rendererApplicationURL: rendererURL)
         companions.onError = { [weak self] error in self?.present(error) }
-        companions.onOpenDeviceHub = { [weak self] xcode in self?.model.select(.deviceHub, xcodeURL: xcode) }
-        companions.onOpenDevice = { [weak self] device, xcode in
-            guard let self else { return }
-            self.processObservation.refresh()
-            let matches = self.model.devices.filter {
-                $0.identifier == device.uuidString && ($0.ownerXcodeURL ?? $0.catalogXcodeURL) == xcode
-            }
-            if matches.count == 1, let known = matches.first { self.model.openDevice(known.inventoryID) }
+        companions.onOpenDeviceHub = { [weak self] xcode, request in
+            self?.model.select(.deviceHub, xcodeURL: xcode, deviceHubURL: request)
         }
         return companions
     }()

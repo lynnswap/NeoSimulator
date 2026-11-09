@@ -98,7 +98,7 @@ package protocol SimulatorManagerSource: DeviceStateSource {
     func endSession() async throws
     func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func installedXcodes() async throws -> [SimulatorXcode]
-    func selectHost(_ host: SimulatorHost, xcodeURL: URL?) async throws
+    func selectHost(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) async throws
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest
     func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?, bootIfNeeded: Bool) async throws
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws
@@ -304,11 +304,11 @@ package final class SimulatorManagerModel {
         }
     }
 
-    package func select(_ host: SimulatorHost, xcodeURL: URL? = nil) {
+    package func select(_ host: SimulatorHost, xcodeURL: URL? = nil, deviceHubURL: URL? = nil) {
         perform("Switching simulator app…") {
             try await self.requestHostPreferenceAccess?()
             if host == .deviceHub { try await self.beforeStoppingScreens?() }
-            try await self.controller.selectHost(host, xcodeURL: xcodeURL)
+            try await self.controller.selectHost(host, xcodeURL: xcodeURL, deviceHubURL: deviceHubURL)
         }
     }
 
