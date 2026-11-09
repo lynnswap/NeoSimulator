@@ -115,10 +115,12 @@ scripts/build-documentation.sh ''
 python3 -m http.server 8000 --directory .build/documentation
 ```
 
-Then open `http://localhost:8000`. The Documentation workflow builds the site for
-pull requests that change the documented sources. On pushes to main, it builds
-the site and deploys it to GitHub Pages, so the repository's Pages source must be
-**GitHub Actions**.
+Then open `http://localhost:8000`.
+
+The Documentation workflow builds and deploys the site to GitHub Pages on pushes
+to main, so the repository's Pages source must be **GitHub Actions**. Pull requests
+run the app and SDK checks; documentation builds and distribution-script validation
+run after merging to main. Release checks also validate the distribution scripts.
 
 ## Releases
 
