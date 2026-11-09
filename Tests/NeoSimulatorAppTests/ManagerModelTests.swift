@@ -1743,7 +1743,19 @@ struct ManagerModelTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let catalog = ScreenCaptureSourceCatalog(defaults: defaults)
-        let session = RemoteDeviceScreenSession(device: a, captureSources: catalog) { _, _, _ in TestRemoteScreenTransport() }
+        let connecting = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
+        var connections = connecting.stream.makeAsyncIterator()
+        var attempts = 0
+        defer { resume.continuation.finish() }
+        let session = RemoteDeviceScreenSession(device: a, captureSources: catalog) { _, _, _ in
+            attempts += 1
+            if attempts == 2 {
+                connecting.continuation.yield(())
+                var permits = resume.stream.makeAsyncIterator()
+                _ = await permits.next()
+            }
+            return TestRemoteScreenTransport()
+        }
         try await session.start()
         let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
         app.screens.attach(controller)
@@ -1762,12 +1774,16 @@ struct ManagerModelTests {
         try await wait(timeout: .seconds(5)) { app.screens.compactScreen(for: aID) != nil }
         let additional = try #require(
             app.screens.compactScreen(for: aID)?.commandTarget as? RemoteDeviceWindowController)
+        #expect(await connections.next() != nil)
         #expect(pane.liveDeviceIdentifier == aID && controller.isEmbedded)
         #expect(
             additional.presentationViewController.supplementalTarget(forAction: action, sender: command) as AnyObject?
                 === additional)
+        #expect(!additional.validateMenuItem(command))
+        resume.continuation.yield(())
+        try await wait(timeout: .seconds(5)) { additional.session.state == .connected }
         #expect(additional.validateMenuItem(command))
-        try await session.stop()
+        try await app.screens.stopAll()
     }
 
     @Test(arguments: [false, true])
