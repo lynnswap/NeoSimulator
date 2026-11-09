@@ -188,7 +188,7 @@ package struct WorkspaceClient: Sendable {
 
     package var openDeviceHub: @MainActor @Sendable (URL) async throws -> URL
     package var quitNeoHost: @MainActor @Sendable (URL, [RendererRegistration], Bool?) async throws -> Int
-    package var prepareDeviceHubCompanion: @MainActor @Sendable (URL) async throws -> Void = { _ in }
+    package var prepareDeviceHubCompanionForXcode: @MainActor @Sendable (URL) async throws -> Void = { _ in }
     package var stopDeviceHubCompanions: @MainActor @Sendable () async throws -> Void = {}
 
     @MainActor package static var live: WorkspaceClient { live(headlessRenderers: false) }
@@ -239,7 +239,7 @@ package struct WorkspaceClient: Sendable {
             )
         },
         openNeoHost: { applicationURL, xcodeURL, deviceIdentifier in
-                try await deviceHubCompanions?.start(at: xcodeURL.appendingPathComponent(ToolConstants.deviceHubPath))
+                try await deviceHubCompanions?.start(xcodeURL: xcodeURL)
             guard Bundle(url: applicationURL)?.bundleIdentifier
                     == ToolConstants.neoHostBundleIdentifier
             else {
@@ -353,7 +353,7 @@ package struct WorkspaceClient: Sendable {
                 return true
             })
             },
-            prepareDeviceHubCompanion: { try await deviceHubCompanions?.start(at: $0) },
+            prepareDeviceHubCompanionForXcode: { try await deviceHubCompanions?.start(xcodeURL: $0) },
             stopDeviceHubCompanions: { try await deviceHubCompanions?.stop() }
 
     ) }

@@ -406,8 +406,8 @@ struct HostModeControllerTests {
         fixture.workspace.deviceHubCount = 1
         fixture.workspace.onOpenNeoHost = { _ in
             #expect(
-                fixture.workspace.preparedDeviceHubURLs == [
-                    fixture.installations.targetXcodeURL.appendingPathComponent(ToolConstants.deviceHubPath)
+                fixture.workspace.preparedDeviceHubXcodeURLs == [
+                    fixture.installations.targetXcodeURL
                 ])
         }
         fixture.workspace.onTerminateDeviceHubs = {

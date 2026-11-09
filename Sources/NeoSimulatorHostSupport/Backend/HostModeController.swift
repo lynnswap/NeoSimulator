@@ -128,7 +128,7 @@ package struct HostModeController {
             }
             switch host {
             case .neo(let renderer):
-                try await workspace.prepareDeviceHubCompanion(xcode.deviceHubApplicationURL)
+                try await workspace.prepareDeviceHubCompanionForXcode(xcode.applicationURL)
                 if launchDisplay { _ = try await workspace.openNeoHost(renderer.applicationURL, xcode.applicationURL, initialDeviceIdentifier) }
             case .deviceHub:
                 try await workspace.stopDeviceHubCompanions()

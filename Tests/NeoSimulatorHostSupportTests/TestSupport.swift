@@ -159,7 +159,7 @@ final class WorkspaceRecorder {
     var openedDeviceHubs: [URL] = []
     var openDeviceHubError: (any Error)?
     var openNeoHostError: (any Error)?
-    var preparedDeviceHubURLs: [URL] = []
+    var preparedDeviceHubXcodeURLs: [URL] = []
     var stoppedDeviceHubCompanions = 0
     var onPrepareDeviceHub: ((URL) async throws -> Void)?
     var onOpenNeoHost: ((NeoHostOpen) async throws -> Void)?
@@ -209,8 +209,8 @@ final class WorkspaceRecorder {
                 return applicationURL
             },
             quitNeoHost: { _, _, _ in self.neoHostCount },
-            prepareDeviceHubCompanion: { url in
-                self.preparedDeviceHubURLs.append(url)
+            prepareDeviceHubCompanionForXcode: { url in
+                self.preparedDeviceHubXcodeURLs.append(url)
                 try await self.onPrepareDeviceHub?(url)
             },
             stopDeviceHubCompanions: { self.stoppedDeviceHubCompanions += 1 }
