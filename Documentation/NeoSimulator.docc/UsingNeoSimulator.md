@@ -336,18 +336,29 @@ unavailable. Start a simulator to change its background services; physical
 devices and virtual machines do not offer them.
 
 Choose the **Default Profile** in **Settings → Service Profiles**. It starts as
-**All Services**, the built-in preset that enables all managed services. Each
-simulator's **Startup Profile** menu offers **Use Default: <profile name>** to follow
-that choice, or a saved profile to use independently. **Open Settings…** opens the
+**All Services**, the built-in preset that restores all managed services to ON.
+**Minimal** turns off the optional services in NeoSimulator's built-in catalog,
+keeping required services enabled. Custom services outside the built-in catalog
+stay ON. Both presets are read-only. Control-click either preset and choose
+**Duplicate** to make an editable copy. Starting from Minimal lets you turn on
+just the services you need. Copies don't automatically turn off services added
+to NeoSimulator's built-in catalog in later updates.
+
+Each simulator's **Profile** menu offers **Use Default: <profile name>**
+to follow that choice, or either built-in preset or a saved profile to use
+independently. Selecting a profile clears that simulator's individual changes
+and applies the chosen configuration. Selecting All Services restores services
+that Minimal or individual switches turned off. **Open Settings…** opens the
 shared profile editor without changing the selection.
 
 Individual service switches are saved as overrides. They stay in effect when
-the profile changes; **Revert** clears them. **Save** updates the selected named
-profile, or asks for a name when using the built-in All Services profile.
+the shared default changes or a profile's definition is edited; **Revert** clears
+them and reapplies the selected profile. **Save** updates the selected named
+profile, or asks for a name when using either built-in preset.
 Startup-profile selections and overrides survive simulator erases.
 
 Changing the default profile or editing a profile takes effect at the next
-simulator start. Selecting a simulator's Startup Profile also applies it
+simulator start. Selecting a simulator's Profile also applies it
 immediately when that simulator is running. Automatic application works while
 NeoSimulator is open, including starts from Xcode. Opening NeoSimulator leaves
 already-running simulators unchanged.
@@ -357,9 +368,10 @@ profiles in **Settings → Service Profiles** and add categories of your own. Th
 **+** below the categories adds one, and the **+** below its services adds a
 service by its launchd label. Your categories appear above the built-in ones in
 each of your profiles and in the inspector, and each profile turns their
-services on and off. All Services shows only the built-in categories, and still
-turns on every service, including yours. Control-click one of your categories
-to rename or delete it, or one of its services to remove it. Removing a service
+services on and off. Both built-in presets also show your custom categories,
+read-only. Duplicate a preset to change which custom services it turns off.
+Control-click one of your categories to rename or delete it, or one of its
+services to remove it. Removing a service
 leaves running simulators as they are, so a service that is off stays off.
 Built-in categories can't be changed, and NeoSimulator doesn't add services that
 simulators need or that stop a simulator from working while they're off.

@@ -58,7 +58,8 @@ final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAcc
         let choices = model.profileChoices
         if !choices.isEmpty {
             menu.addItem(.separator())
-            for choice in choices {
+            for (index, choice) in choices.enumerated() {
+                if index == model.profiles.builtInProfiles.count { menu.addItem(.separator()) }
                 menu.addItem(profileItem(choice))
             }
         }

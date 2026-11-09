@@ -230,7 +230,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         // Encoding the profile's names and labels can't fail.
         guard let contents = try? model.store.exportedFile(for: profile) else { return nil }
         return ServiceProfileFilePromise(
-            movedProfile: profile.id == ServiceProfile.allServicesID ? nil : profile.id,
+            movedProfile: profile.isBuiltIn ? nil : profile.id,
             fileName: model.exportFileName(for: profile), contents: contents)
     }
 
@@ -238,8 +238,8 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         guard let source = info.draggingSource as? NSTableView, source === table,
               let value = info.draggingPasteboard.string(forType: Self.profileDragType),
               let id = UUID(uuidString: value),
-            id != ServiceProfile.allServicesID,
-              profiles.contains(where: { $0.id == id }) else { return nil }
+            profiles.contains(where: { $0.id == id && !$0.isBuiltIn })
+        else { return nil }
         return id
     }
 
@@ -254,7 +254,8 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
                    proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         if draggedProfile(info) != nil {
-            tableView.setDropRow(max(1, min(row, profiles.count)), dropOperation: .above)
+            tableView.setDropRow(
+                max(model.store.builtInProfiles.count, min(row, profiles.count)), dropOperation: .above)
             return .move
         }
         guard !droppedFiles(info).isEmpty else { return [] }
@@ -266,7 +267,9 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo,
                    row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
         if let id = draggedProfile(info) {
-            guard dropOperation == .above, row >= 1, row <= profiles.count else { return false }
+            guard dropOperation == .above, row >= model.store.builtInProfiles.count, row <= profiles.count else {
+                return false
+            }
             return model.move(id, before: row < profiles.count ? profiles[row].id : nil)
         }
         let files = droppedFiles(info)
@@ -287,7 +290,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         duplicate.target = self
         duplicate.representedObject = profile
         menu.addItem(duplicate)
-        if profile.id != ServiceProfile.allServicesID {
+        if profile.canEdit {
             let rename = NSMenuItem(title: "Rename…", action: #selector(renameProfile(_:)), keyEquivalent: "")
             rename.target = self
             rename.representedObject = profile
@@ -297,7 +300,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         export.target = self
         export.representedObject = profile
         menu.addItem(export)
-        if profile.id != ServiceProfile.allServicesID {
+        if profile.canEdit {
             menu.addItem(.separator())
             let delete = NSMenuItem(title: "Delete", action: #selector(deleteProfile(_:)), keyEquivalent: "")
             delete.target = self
@@ -372,7 +375,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         if let profile = sender.representedObject as? ServiceProfile { confirmDeletion(profile) }
     }
     private func confirmDeletion(_ profile: ServiceProfile) {
-        guard profile.id != ServiceProfile.allServicesID, let window = view.window else { return }
+        guard profile.canEdit, let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "Delete Service Profile?"
         alert.informativeText = "The simulators keep their current services. Devices using this profile will follow the default profile at their next start."
@@ -396,7 +399,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
 /// A dragged profile, which moves within the list and becomes a JSON file where it drops outside the app. Its
 /// file's contents come from when the drag starts.
 private final class ServiceProfileFilePromise: NSFilePromiseProvider, NSFilePromiseProviderDelegate {
-    /// The profile that the drag moves within the list, or `nil` for the built-in profile, which stays first.
+    /// The profile that the drag moves within the list, or `nil` for a built-in profile, which stays at the top.
     let movedProfile: UUID?
     private let fileName: String
     private let contents: Data
@@ -486,7 +489,7 @@ private final class ServiceProfileCell: NSTableCellView {
     required init?(coder: NSCoder) { nil }
 
     func configure(profile: ServiceProfile) {
-        subtitle.isHidden = profile.id != ServiceProfile.allServicesID
+        subtitle.isHidden = !profile.isBuiltIn
         textField?.identifier = NSUserInterfaceItemIdentifier(profile.id.uuidString)
         textField?.isEditable = profile.canEdit
         textField?.isSelectable = profile.canEdit
