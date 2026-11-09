@@ -29,9 +29,13 @@ concurrency:
 
 jobs:
   package:
-    name: Package (Xcode 27.2)
+    name: ${{ matrix.test-target }} (Xcode 27.2)
     runs-on: xcode-27
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        test-target: [NeoSimulatorHostSupportTests, NeoSimulatorAppTests]
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       NEOSIMULATOR_DERIVED_DATA_PATH: ${{ github.workspace }}/.build/ci
@@ -52,6 +56,7 @@ jobs:
         run: |
           xcodebuild test -workspace NeoSimulator.xcworkspace -scheme NeoSimulatorKit \
             -destination 'platform=macOS,arch=arm64' \
+            -only-testing:${{ matrix.test-target }} \
             -enableCodeCoverage NO \
             -derivedDataPath "$NEOSIMULATOR_DERIVED_DATA_PATH"
 
