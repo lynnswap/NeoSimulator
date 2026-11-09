@@ -120,7 +120,8 @@ package struct DeviceCommand {
                       isEnabled: { $0.session.canResizeApp },
                       state: { $0.session.isResizingApp || $0.session.isStartingAppResize ? .on : .off }) { $0.toggleAppResize() },
         // File: Save Screen becomes Record Screen with Option, or Stop Recording while recording.
-        DeviceCommand(id: .saveScreen, title: "Save Screen", key: "s",
+            DeviceCommand(
+                id: .saveScreen, title: "Save Screen",
                       toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32,
                                        optionAlternate: .init(id: .recordScreen, symbol: "record.circle",
                                                               imageDescription: "Start Recording", toolTip: "Record Screen"),
@@ -137,7 +138,6 @@ package struct DeviceCommand {
                       isEnabled: { $0.session.canStartRecording }) { $0.chooseRecordingDestination() },
         DeviceCommand(id: .stopRecording, title: "Stop Recording",
                       isEnabled: { $0.session.recording.map { !$0.isStopping } ?? false }) { $0.session.stopRecording() },
-        // NeoSimulator shortcut; Simulator.app assigns it to Trigger iCloud Sync.
         DeviceCommand(id: .importFiles, title: "Install App or Import Media…",
                       isEnabled: { $0.session.canPerformToolOperation }) { $0.chooseFilesToImport() },
         // Edit

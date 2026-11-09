@@ -597,7 +597,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func installMenu() {
+    func installMenu() {
         let main = NSMenu()
         let app = addSubmenu("NeoSimulator", to: main)
         addItem("About NeoSimulator", action: #selector(NSApplication.orderFrontNeoSimulatorAboutPanel(_:)), to: app, target: NSApp)
@@ -621,7 +621,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addDevicesMenu("Open Simulator", to: file)
         simulatorMenus.addCloseWindowCommands(to: file)
         file.addItem(.separator())
-        addItem("Save Screenshot…", action: #selector(RemoteDeviceWindowController.saveScreenshot(_:)), key: "s", to: file).target = nil
+        addItem(
+            "Save Service Profile", action: #selector(ManagerWindowController.saveServiceProfile(_:)), key: "s",
+            to: file
+        ).target = nil
+        addItem("Save Screenshot…", action: #selector(RemoteDeviceWindowController.saveScreenshot(_:)), to: file)
+            .target = nil
         simulatorMenus.addScreenshotDestinationCommand(to: file)
         addItem("Record Screen", action: #selector(RemoteDeviceWindowController.recordScreen(_:)), key: "r", to: file).target = nil
         let recordTo = addItem("Record Screen…", action: #selector(RemoteDeviceWindowController.recordScreenTo(_:)), key: "r", to: file)

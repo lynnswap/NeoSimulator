@@ -136,6 +136,7 @@ private struct ProfileFile: Codable {
     static let currentVersion = 1
 
     var version: Int
+    var id: UUID?
     var name: String
     var categories: [Category]
 }
@@ -296,6 +297,22 @@ package final class ServiceProfileStore {
         var catalog: BackgroundServiceCatalog {
             BackgroundServiceCatalog(customCategories.map(\.category) + SimulatorBackgroundServiceCategory.all)
         }
+
+        func configuration(for device: DeviceInventoryID, builtIn: [ServiceProfile.Record]) -> ServiceConfiguration? {
+            func definition(_ id: UUID) -> ServiceConfiguration? {
+                builtIn.first { $0.id == id }?.configuration ?? profiles.first { $0.id == id }?.configuration
+            }
+            let binding = devices[device] ?? DeviceServiceProfile()
+            let configuration: ServiceConfiguration?
+            switch binding.selection {
+            case .inheritDefault:
+                configuration =
+                    definition(defaultProfileID ?? ServiceProfile.allServicesID)
+                    ?? definition(ServiceProfile.allServicesID)
+            case .profile(let id): configuration = definition(id)
+            }
+            return configuration?.applying(binding.overrides)
+        }
     }
 
     package enum Failure: Error, LocalizedError {
@@ -306,6 +323,7 @@ package final class ServiceProfileStore {
         case wedgingService(String)
         case unreadableFile, unsupportedProfileVersion, missingValue, wrongValue
         case conflictingService(String)
+        case conflictingProfile
 
         package var errorDescription: String? {
             switch self {
@@ -324,6 +342,8 @@ package final class ServiceProfileStore {
             case .missingValue: "The value is missing."
             case .wrongValue: "The value is of the wrong type."
             case .conflictingService(let label): "The profile turns “\(label)” both on and off."
+            case .conflictingProfile:
+                "The selected files contain different versions of the same profile. Import one version at a time."
             }
         }
     }
@@ -362,8 +382,10 @@ package final class ServiceProfileStore {
     /// The custom categories above the built-in ones, which every profile and simulator switches.
     package private(set) var catalog = BackgroundServiceCatalog.builtIn
     package var customCategoryIDs: Set<String> { Set(customCategories.map(\.categoryID)) }
-    /// Receives each change to ``catalog``, so that what reads and changes simulators can take it in.
-    @ObservationIgnored package var catalogDidChange: (@MainActor (BackgroundServiceCatalog) -> Void)?
+    /// Receives every committed update. The predicate identifies definition edits that request application now;
+    /// choices and catalog edits alone preserve live services.
+    @ObservationIgnored package var didChange:
+        (@MainActor (_ requiresApplication: (DeviceInventoryID) -> Bool) -> Void)?
     private var state: State {
         State(
             profiles: profiles.map(\.record), defaultProfileID: defaultProfileID, devices: devices,
@@ -410,15 +432,15 @@ package final class ServiceProfileStore {
     /// A failed store read or missing profile cannot supply a configuration.
     package func configuration(for device: DeviceInventoryID) -> ServiceConfiguration? {
         guard loadFailure == nil else { return nil }
-        return resolvedProfile(for: device)?.configuration.applying(devices[device]?.overrides ?? [:])
+        return state.configuration(for: device, builtIn: builtInProfiles.map(\.record))
     }
 
     package func reload() {
         do {
             let loaded = try readState()
-            apply(loaded)
             issue = nil
             loadFailure = nil
+            apply(loaded, applyingProfileChanges: true)
         } catch {
             loadFailure = error
             issue = "Unable to read service profiles: \(error.localizedDescription)"
@@ -431,7 +453,7 @@ package final class ServiceProfileStore {
         var updated = state
         updated.profiles.append(profile.record)
         if let device { updated.devices[device] = DeviceServiceProfile(selection: .profile(profile.id)) }
-        try save(updated, adding: profile)
+        try save(updated, adding: profile, applyingProfileChanges: true)
         return profile
     }
 
@@ -445,7 +467,16 @@ package final class ServiceProfileStore {
             let inherits = selection(for: device) == .inheritDefault && defaultProfileID == id
             updated.devices[device] = DeviceServiceProfile(selection: inherits ? .inheritDefault : .profile(id))
         }
-        try save(updated)
+        try save(updated, applyingProfileChanges: true)
+    }
+
+    /// Promotes only this device's explicit edits into the latest shared definition, keeping an inherited choice.
+    package func saveChanges(for device: DeviceInventoryID) throws {
+        if let loadFailure { throw loadFailure }
+        guard let profile = resolvedProfile(for: device), let configuration = configuration(for: device) else {
+            throw Failure.missingProfile
+        }
+        try update(profile.id, configuration: configuration, assigningTo: device)
     }
 
     package func move(_ id: UUID, before nextID: UUID?) throws {
@@ -506,8 +537,11 @@ package final class ServiceProfileStore {
         let affected = configuration.set(targets, enabled: enabled, productFamily: productFamily, catalog: catalog)
         guard !affected.isEmpty else { return }
         var updated = state
-        // A change stays explicit even if it matches the profile now, because the profile can change later.
-        for label in affected { updated.devices[device, default: DeviceServiceProfile()].overrides[label] = enabled }
+        let profile = resolvedProfile(for: device)?.configuration
+        for label in affected {
+            let matchesProfile = profile.map { !$0.disabledLabels.contains(label) == enabled } ?? false
+            updated.devices[device, default: DeviceServiceProfile()].overrides[label] = matchesProfile ? nil : enabled
+        }
         try save(updated)
     }
 
@@ -654,32 +688,54 @@ package final class ServiceProfileStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(
-            ProfileFile(version: ProfileFile.currentVersion, name: profile.name, categories: categories))
+            ProfileFile(version: ProfileFile.currentVersion, id: profile.id, name: profile.name, categories: categories)
+        )
     }
 
-    /// Adds the profile that each JSON file describes as a new profile, with the categories that it lists.
+    /// Imports each JSON file, updating a custom profile with the same ID or adding a new profile.
     ///
     /// A category with the name and services of one that's here, built in or custom, is that category. Any other
     /// becomes a new custom category, so a file can add categories and services, and never changes one that's here.
     /// Nothing changes unless every file imports.
+    ///
+    /// A file without an ID is a new profile. Built-in profiles import as editable copies.
     /// - Parameter files: Each file's name, which a failure names, and its contents.
-    /// - Returns: The new profiles, in the order of the files.
+    /// - Returns: The imported profiles, in the order of the files.
     /// - Throws: ``ImportFailure`` for a file that can't import.
     @discardableResult
     package func importProfiles(from files: [(name: String, contents: Data)]) throws -> [ServiceProfile] {
+        let imported = try importing(files)
+        try save(imported.state, applyingProfileChanges: true)
+        return imported.ids.compactMap { profile($0) }
+    }
+
+    /// Validates all files and identifies the existing profiles that importing them would replace.
+    package func profilesReplacedByImport(from files: [(name: String, contents: Data)]) throws -> [ServiceProfile] {
+        let ids = Set(try importing(files).ids)
+        return profiles.filter { ids.contains($0.id) }
+    }
+
+    private func importing(_ files: [(name: String, contents: Data)]) throws -> (state: State, ids: [UUID]) {
         if let loadFailure { throw loadFailure }
         var updated = state
-        var imported: [ServiceProfile.Record] = []
+        var ids: [UUID] = []
         for file in files {
             do {
-                imported.append(try add(try ProfileFile(reading: file.contents), to: &updated))
+                let record = try add(try ProfileFile(reading: file.contents), to: &updated)
+                if let index = updated.profiles.firstIndex(where: { $0.id == record.id }) {
+                    if ids.contains(record.id), updated.profiles[index] != record {
+                        throw FieldFailure(field: "id", reason: Failure.conflictingProfile)
+                    }
+                    updated.profiles[index] = record
+                } else {
+                    updated.profiles.append(record)
+                }
+                ids.append(record.id)
             } catch let failure as FieldFailure {
                 throw ImportFailure(file: file.name, field: failure.field, reason: failure.reason)
             }
         }
-        updated.profiles += imported
-        try save(updated)
-        return imported.compactMap { profile($0.id) }
+        return (updated, ids)
     }
 
     /// Adds the categories of `file` that `state` lacks, and returns the record of its profile.
@@ -728,8 +784,10 @@ package final class ServiceProfileStore {
                 CustomServiceCategory(id: UUID(), name: name, labels: requiredLast(valid), summaries: summaries))
         }
         let disabled = enabled.filter { !$0.value }.keys
+        // Presets stay read-only; importing their files makes custom profiles.
+        let id = file.id.flatMap { id in builtInProfiles.contains { $0.id == id } ? nil : id } ?? UUID()
         return ServiceProfile.Record(
-            id: UUID(), name: name, configuration: ServiceConfiguration(disabledLabels: Set(disabled)))
+            id: id, name: name, configuration: ServiceConfiguration(disabledLabels: Set(disabled)))
     }
 
     private func validName(_ name: String, empty: Failure = .emptyName) throws -> String {
@@ -738,12 +796,14 @@ package final class ServiceProfileStore {
         return name
     }
 
-    private func save(_ updated: State, adding profile: ServiceProfile? = nil) throws {
+    private func save(_ updated: State, adding profile: ServiceProfile? = nil, applyingProfileChanges: Bool = false)
+        throws
+    {
         if let loadFailure { throw loadFailure }
         guard updated != state else { return }
         let data = try JSONEncoder().encode(updated)
         try write(data)
-        apply(updated, adding: profile)
+        apply(updated, adding: profile, applyingProfileChanges: applyingProfileChanges)
     }
 
     private func readState() throws -> State {
@@ -764,12 +824,18 @@ package final class ServiceProfileStore {
         try data.write(to: fileURL, options: .atomic)
     }
 
-    private func apply(_ loaded: State, adding profile: ServiceProfile? = nil) {
+    private func apply(_ loaded: State, adding profile: ServiceProfile? = nil, applyingProfileChanges: Bool = false) {
+        let previous = state
         if customCategories != loaded.customCategories { customCategories = loaded.customCategories }
         let catalog = loaded.catalog
         let catalogChanged = catalog != self.catalog
         if catalogChanged { self.catalog = catalog }
         var existing = Dictionary(profiles.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let definitionsChanged =
+            applyingProfileChanges
+            && loaded.profiles.contains { record in
+                existing[record.id]?.configuration != record.configuration
+            }
         if let profile { existing[profile.id] = profile }
         let updated = loaded.profiles.map { record in
             let profile = existing[record.id] ?? ServiceProfile(record: record)
@@ -786,6 +852,11 @@ package final class ServiceProfileStore {
         let defaultID = loaded.defaultProfileID ?? ServiceProfile.allServicesID
         if defaultProfileID != defaultID { defaultProfileID = defaultID }
         if devices != loaded.devices { devices = loaded.devices }
-        if catalogChanged { catalogDidChange?(catalog) }
+        let builtIn = builtInProfiles.map(\.record)
+        didChange? { device in
+            guard definitionsChanged else { return false }
+            return previous.configuration(for: device, builtIn: builtIn)?.disabledLabels.intersection(catalog.slimmable)
+                != loaded.configuration(for: device, builtIn: builtIn)?.disabledLabels.intersection(catalog.slimmable)
+        }
     }
 }

@@ -207,7 +207,7 @@ or stopping Resize App. Captures made while resizing use the app's display.
 
 | Operation | Shortcut | Result |
 | --- | --- | --- |
-| File → Save Screen | Command-S | PNG screenshot |
+| File → Save Screen | — | PNG screenshot |
 | File → Record Screen | Command-R | Start a recording immediately |
 | File → Stop Recording | — | Finish the movie |
 | Edit → Copy Screen | Control-Command-C | Unmasked PNG on the Mac pasteboard |
@@ -353,15 +353,29 @@ shared profile editor without changing the selection.
 
 Individual service switches are saved as overrides. They stay in effect when
 the shared default changes or a profile's definition is edited; **Revert** clears
-them and reapplies the selected profile. **Save** updates the selected named
-profile, or asks for a name when using either built-in preset.
+them and reapplies the selected profile. **Save** merges that simulator's
+individual changes into the latest selected named profile, or asks for a name
+when using either built-in preset. A simulator's observed state alone cannot
+overwrite a shared profile.
+Save and Revert appear beside the filter only while changes remain. Returning a
+switch to the selected profile removes its override. **File → Save Service
+Profile** (Command-S) saves the changes while the Background Services pane shows.
 Startup-profile selections and overrides survive simulator erases.
 
-Changing the default profile or editing a profile takes effect at the next
-simulator start. Selecting a simulator's Profile also applies it
-immediately when that simulator is running. Automatic application works while
-NeoSimulator is open, including starts from Xcode. Opening NeoSimulator leaves
-already-running simulators unchanged.
+Editing a profile in Settings or saving changes from the inspector applies it
+to running simulators that use it, including those inheriting it as the default.
+Their individual overrides remain in effect. A simulator being managed takes
+the update when that operation finishes; a stopped simulator takes it at its
+next start. If application fails, NeoSimulator reports the error and preserves
+the shared definition. Use **Revert** to reapply the selected profile when the
+device's services differ.
+
+Changing which profile is the default, by itself, leaves running simulators
+unchanged until their next start. Explicitly editing the new default's
+definition applies it to its current followers immediately. Selecting a
+simulator's Profile also applies it immediately when that simulator is running.
+Automatic application works while NeoSimulator is open, including starts from
+Xcode. Opening NeoSimulator leaves already-running simulators unchanged.
 
 To switch services that the built-in categories don't list, select one of your
 profiles in **Settings → Service Profiles** and add categories of your own. The
@@ -394,6 +408,7 @@ with the category's services:
       ]
     }
   ],
+  "id" : "9B7E31F8-8613-4AC2-9BDD-26A89873B7CD",
   "name" : "Quiet",
   "version" : 1
 }
@@ -403,8 +418,18 @@ Change `enabled` to turn a service on or off, or add categories and services of
 your own; a service without `enabled` is on. The file doesn't say which
 simulators use the profile or which profile is the default. To add profiles from
 files, choose **Import…** from the **+** below the profiles, or drop the files on
-the profiles. Each file becomes a new profile. A category with the name and
-services of one that you have is that category; any other becomes a new category
-of yours, and your existing categories stay as they are. Services that simulators
+the profiles. A file with the same `id` as an existing custom profile updates
+that profile's name and services after you confirm **Replace**, keeping its
+position, device assignments, and default selection. **Cancel** leaves the whole
+import unchanged. Running simulators that use it receive the update. A new ID
+adds a profile and preserves the ID for later updates; a file without an ID
+always adds a new profile. To distribute updates to a team, keep the same ID
+when exporting a revised profile. Import only one version of a given profile at
+a time. Built-in presets import as editable copies;
+duplicate a preset before distributing it as an updatable custom profile.
+
+A category with the name and services of one that you have is that category;
+any other becomes a new category of yours, and your existing categories stay as
+they are. Services that simulators
 need stay on. If a file can't be imported, nothing changes, and NeoSimulator
 names the file and the field.

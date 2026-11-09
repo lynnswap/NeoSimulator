@@ -5,13 +5,14 @@ import AppKit
 import ObservationBridge
 import SwiftUI
 
-/// Lists the selected simulator's background services, with the profile controls above and the filter below.
+/// Lists the selected simulator's background services, with the profile above and its actions beside the filter.
 @MainActor
 final class BackgroundServicesViewController: NSViewController {
     let model: BackgroundServicesInspectorModel
     let profileAccessory: BackgroundServicesProfileAccessoryViewController
     private lazy var outline = BackgroundServiceOutlineController(categories: model.categories)
-    var searchAccessory: BackgroundServiceSearchAccessoryViewController { outline.searchAccessory }
+    private(set) lazy var actionsAccessory = BackgroundServicesActionsAccessoryViewController(
+        model: model, list: outline.model)
     private lazy var unavailable = NSHostingView(rootView: BackgroundServicesUnavailable(model: model))
     private var accessoriesObservation: PortableObservationTracking.Token?
     private var observation: PortableObservationTracking.Token?
@@ -33,7 +34,7 @@ final class BackgroundServicesViewController: NSViewController {
     /// Adds this page's accessories to the split view item that shows the page.
     func addAccessories(to item: NSSplitViewItem) {
         item.addTopAlignedAccessoryViewController(profileAccessory)
-        item.addBottomAlignedAccessoryViewController(searchAccessory)
+        item.addBottomAlignedAccessoryViewController(actionsAccessory)
     }
 
     override func loadView() {
@@ -73,8 +74,7 @@ final class BackgroundServicesViewController: NSViewController {
 
     private func updateAccessories() {
         profileAccessory.isHidden = !model.showsAccessories
-        searchAccessory.isHidden = !model.showsAccessories
-        searchAccessory.searchField.isEnabled = model.canFilter
+        actionsAccessory.isHidden = !model.showsAccessories
     }
 
     private func update() {

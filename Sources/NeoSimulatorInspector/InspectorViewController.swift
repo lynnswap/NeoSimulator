@@ -96,6 +96,13 @@ package final class InspectorViewController: NSViewController {
     package func finishPreviews() async throws { try await deviceInspector.finishPreviews() }
     package func resumeAfterCancelledQuit() { deviceInspector.resumeAfterCancelledQuit() }
 
+    package var canSaveServiceProfile: Bool { model.showsServices && model.services.canSaveProfile }
+
+    package func saveServiceProfile() {
+        guard canSaveServiceProfile else { return }
+        model.services.saveProfile()
+    }
+
     @objc private func changePage(_ sender: NSSegmentedControl) {
         guard let page = InspectorModel.Page(rawValue: sender.selectedSegment) else { return }
         model.toggle(page)

@@ -322,7 +322,7 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     @objc private func chooseProfilesToImport(_ sender: Any?) {
         guard let window = view.window else { return }
         let panel = NSOpenPanel()
-        panel.message = "Choose JSON files of service profiles to add."
+        panel.message = "Choose service profile JSON files to import."
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -333,7 +333,30 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
     }
     private func importProfiles(from urls: [URL]) {
         Task { [weak self, model] in
-            do { try await model.importProfiles(from: urls) } catch {
+            do {
+                try await model.importProfiles(from: urls) { [weak self] profiles in
+                    guard let window = self?.view.window else { return false }
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    if let profile = profiles.first, profiles.count == 1 {
+                        alert.messageText = "Replace “\(profile.name)”?"
+                        alert.informativeText =
+                            "The existing profile will be replaced by the imported version. "
+                            + "Simulators using it will receive the updated settings. This can’t be undone."
+                    } else {
+                        alert.messageText = "Replace \(profiles.count) Service Profiles?"
+                        let names = profiles.map { "“\($0.name)”" }.formatted(.list(type: .and))
+                        alert.informativeText =
+                            "\(names) will be replaced by the imported versions. "
+                            + "Simulators using them will receive the updated settings. This can’t be undone."
+                    }
+                    let replace = alert.addButton(withTitle: "Replace")
+                    replace.hasDestructiveAction = true
+                    replace.keyEquivalent = ""
+                    alert.addButton(withTitle: "Cancel")
+                    return await alert.beginSheetModal(for: window) == .alertFirstButtonReturn
+                }
+            } catch {
                 self?.showFailure("Unable to Import Service Profiles", error)
             }
         }

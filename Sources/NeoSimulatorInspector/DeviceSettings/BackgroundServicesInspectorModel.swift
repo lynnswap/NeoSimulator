@@ -99,18 +99,23 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
             manager.selectServiceProfile(newValue, for: device.id)
         }
     }
+    private var hasConfigurationChanges: Bool {
+        guard let device = selection.device, let configuration = profiles.configuration(for: device.id),
+            let profile = profiles.resolvedProfile(for: device.id)
+        else { return false }
+        return configuration != profile.configuration
+    }
     var hasProfileChanges: Bool {
-        if let device = selection.device, profiles.binding(for: device.id)?.overrides.isEmpty == false { return true }
-        let current =
-            services?.configuration ?? selection.device.flatMap { profiles.configuration(for: $0.id) }
-            ?? ServiceConfiguration()
+        if hasConfigurationChanges { return true }
+        guard let device = selection.device, device.canInspectBackgroundServices,
+            let current = services?.configuration, let intended = profiles.configuration(for: device.id)
+        else { return false }
         let required = serviceState?.platformRequiredLabels ?? []
         return current.disabledLabels.subtracting(required)
-            != selectedProfile.configuration.disabledLabels.subtracting(required)
+            != intended.disabledLabels.subtracting(required)
     }
     var canSaveProfile: Bool {
-        !holdsChanges && selection.device?.canInspectBackgroundServices == true && serviceState != nil
-            && issue == nil && profiles.issue == nil && hasProfileChanges
+        !holdsChanges && profiles.issue == nil && hasConfigurationChanges
     }
     var canRevertProfile: Bool {
         guard !holdsChanges, hasProfileChanges, let device = selection.device else { return false }
@@ -121,7 +126,8 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
     func openProfileSettings() { showProfileSettings(selectedProfile.id) }
 
     func saveProfile() {
-        guard canSaveProfile, let device = selection.device, let configuration = services?.configuration else { return }
+        guard canSaveProfile, let device = selection.device, let configuration = profiles.configuration(for: device.id)
+        else { return }
         let profile = selectedProfile
         if profile.isBuiltIn {
             let editor = ServiceProfileEditorModel(name: "", configuration: configuration)
@@ -130,7 +136,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
             }
             profileEditor = editor
         } else {
-            do { try profiles.update(profile.id, configuration: configuration, assigningTo: device.id) } catch {
+            do { try profiles.saveChanges(for: device.id) } catch {
                 actionIssue = error.localizedDescription
             }
         }

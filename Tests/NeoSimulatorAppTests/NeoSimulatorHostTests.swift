@@ -3125,6 +3125,7 @@ struct InputFocusTests {
     }
 
     @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
+        #expect(DeviceCommand.command(.saveScreen).key.isEmpty)
         let menus = MenuController(application: nil)
         let file = NSMenu(title: "File")
         menus.addScreenshotDestinationCommand(to: file)

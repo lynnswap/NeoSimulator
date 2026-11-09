@@ -153,9 +153,11 @@ final class ServiceProfilesSettingsModel {
         try await writeFile(store.exportedFile(for: profile), to: url)
     }
 
-    /// Adds the profile in each JSON file and selects the first. Nothing changes unless every file imports.
-    func importProfiles(from urls: [URL]) async throws {
+    /// Imports every file after confirming replacements, then selects the first imported profile.
+    func importProfiles(from urls: [URL], confirmingReplacement: ([ServiceProfile]) async -> Bool) async throws {
         let files = try await readFiles(at: urls)
+        let replacements = try store.profilesReplacedByImport(from: files)
+        if !replacements.isEmpty, !(await confirmingReplacement(replacements)) { return }
         if let first = try store.importProfiles(from: files).first { selectedProfileID = first.id }
     }
 }
