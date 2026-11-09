@@ -22,6 +22,7 @@ package final class DeviceScreenViewController: NSViewController, NSMenuItemVali
     private let model: SimulatorManagerModel
     private let screens: DeviceScreens
     private let artworkCache: DeviceArtworkCache
+    private let previewVerticalOffset: CGFloat
     let liveScreenContainer = NSViewController()
     let canvasAccessory = DeviceCanvasAccessoryViewController()
     private weak var splitViewItem: NSSplitViewItem?
@@ -56,10 +57,14 @@ package final class DeviceScreenViewController: NSViewController, NSMenuItemVali
     private var screenMove: Task<Void, any Error>?
     private var screenMoveGeneration = 0
 
-    package init(model: SimulatorManagerModel, screens: DeviceScreens, artworkCache: DeviceArtworkCache) {
+    package init(
+        model: SimulatorManagerModel, screens: DeviceScreens, artworkCache: DeviceArtworkCache,
+        previewVerticalOffset: CGFloat = -24
+    ) {
         self.model = model
         self.screens = screens
         self.artworkCache = artworkCache
+        self.previewVerticalOffset = previewVerticalOffset
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -128,7 +133,7 @@ package final class DeviceScreenViewController: NSViewController, NSMenuItemVali
             deviceImage.heightAnchor.constraint(equalToConstant: 192),
             viewScreen.widthAnchor.constraint(greaterThanOrEqualToConstant: 112),
             previewStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            previewStack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -24),
+            previewStack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: previewVerticalOffset),
             previewStack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
             previewStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
             deviceName.widthAnchor.constraint(lessThanOrEqualTo: previewStack.widthAnchor),
@@ -178,7 +183,7 @@ package final class DeviceScreenViewController: NSViewController, NSMenuItemVali
     }
 
     private func updateViewScreen() {
-        let device = previewDevice
+        let device = previewDevice.flatMap { preview in model.inventory.first { $0.id == preview.id } }
         let isOpening = device.map { model.openingDeviceIDs.contains($0.id) } == true
         let isShutdown: Bool
         if case .simulator(let simulator)? = device { isShutdown = simulator.state == "Shutdown" } else { isShutdown = false }
@@ -472,26 +477,20 @@ package final class DeviceScreenViewController: NSViewController, NSMenuItemVali
         }
     }
 
-    /// Moves the device's open screen to its compact window once the screen can leave the pane.
+    /// Opens a separate interactive window while the selected screen stays in the pane.
     package func switchToCompactWindow(for identifier: DeviceInventoryID,
                                while isCurrent: @escaping @MainActor () -> Bool) async throws {
-        try await performScreenMove { [self] in
-            guard isCurrent(), let screen = screens.screen(for: identifier) else { return }
-            try await screen.preparePresentationMove()
-            guard isCurrent() else { return }
-            try await screen.showCompactWindow()
-            showDevicePreview(ifDisplaying: identifier)
-        }
+        guard isCurrent() else { return }
+        try await screens.showCompactWindow(for: identifier, while: isCurrent)
     }
 
     /// Shows the screen in its compact window, bringing that window forward. With `unlessCompact`, a screen already in
     /// its compact window stays as it is.
     package func showCompactWindow(of screen: DeviceScreen, unlessCompact: Bool = false,
                            while isCurrent: @escaping @MainActor () -> Bool) async throws {
-        try await performScreenMove { [self] in
-            guard isCurrent() else { return }
-            if !unlessCompact || screen.presentation != .compact { try await screen.showCompactWindow() }
-            showDevicePreview(ifDisplaying: screen.id)
+        guard isCurrent() else { return }
+        if !unlessCompact || screen.presentation != .compact {
+            try await screens.showCompactWindow(for: screen.id, while: isCurrent)
         }
     }
 

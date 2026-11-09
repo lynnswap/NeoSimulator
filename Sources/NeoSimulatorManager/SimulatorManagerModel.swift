@@ -164,6 +164,7 @@ package final class SimulatorManagerModel {
     package let frameworks: UIFrameworkSettings
     @ObservationIgnored package var onError: ((any Error) -> Void)?
     @ObservationIgnored package var onDeviceOpenRequested: ((DeviceInventoryID) -> Void)?
+    @ObservationIgnored package var onScreenOpenFailure: ((DeviceInventoryID, any Error) -> Void)?
     @ObservationIgnored package var onOpenRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
     @ObservationIgnored package var requestHostPreferenceAccess: (() async throws -> Void)?
     @ObservationIgnored package var retryDeviceObservation: (@MainActor () async -> Void)?
@@ -324,7 +325,9 @@ package final class SimulatorManagerModel {
         let request = controller.makeScreenOpenRequest(for: identifier)
         enqueue(PendingOperation(activity: "Opening simulator…", deviceID: identifier, openDevice: request,
                                  attachesRunningDevice: true) { attaches in
-            try await self.controller.openDevice(request, xcodeURL: nil, bootIfNeeded: !attaches)
+                do { try await self.controller.openDevice(request, xcodeURL: nil, bootIfNeeded: !attaches) } catch {
+                    self.onScreenOpenFailure?(identifier, error); throw error
+                }
             try Task.checkCancellation()
             await self.deviceScreenDidConnect(identifier)
         })

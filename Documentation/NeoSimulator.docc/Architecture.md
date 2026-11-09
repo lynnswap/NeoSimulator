@@ -88,11 +88,13 @@ manager's. The manager loads one SimulatorKit/DeviceKit UI toolkit for its
 process lifetime while device operations retain their own Xcode contexts.
 Objective-C framework classes cannot be unloaded.
 
-Moving a screen between the main pane and a compact window retains its
-connection, input queue, recording, and captures. It does not invoke close
-policy. Restart finishes recording and disconnects presentation before changing
-the guest, then reconnects the retained controller. Management operations report
-completed steps and per-device failures.
+Main and compact windows have separate screen connections and input queues for
+the same guest. They share the manager's device registry, and each retains its
+own recording and captures. The manager opens a compact window before connecting
+its screen, then gives that window to the presentation controller. Closing a
+compact window releases its connection and leaves the guest and main screen
+running. Restart prepares and reconnects both presentations. Management
+operations report completed steps and per-device failures.
 
 A renderer reports a successful start only after it has subscribed to the device
 set and checked once more for a competing host. Neo identifies an app to

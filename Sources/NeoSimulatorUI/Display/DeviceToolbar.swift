@@ -64,13 +64,18 @@ package final class DeviceToolbar: NSObject, NSToolbarDelegate {
     /// Preserves the plugin's toolbar and delegate while adding the host's presentation action.
     package func attachPluginToolbar(_ toolbar: NSToolbar, to window: NSWindow) {
         pluginDelegate?.restore()
+        if toolbar.responds(to: NSSelectorFromString("setMinimumInlineWindowTitleWidth:")) {
+            toolbar.setValue(0.0, forKey: "minimumInlineWindowTitleWidth")
+        }
         let delegate = PluginToolbarDelegate(toolbar: toolbar, owner: self)
         pluginDelegate = delegate
         toolbar.delegate = delegate
         window.toolbar = toolbar
         updateMainWindowAction(in: toolbar)
         if commands.contains(.captureKeyboard), !toolbar.items.contains(where: { $0.itemIdentifier.rawValue == DeviceCommand.ID.captureKeyboard.rawValue }) {
-            toolbar.insertItem(withItemIdentifier: NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue), at: 0)
+            toolbar.insertItem(
+                withItemIdentifier: NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue),
+                at: leadingControlIndex(in: toolbar))
         }
         configureItems()
     }
@@ -125,6 +130,7 @@ package final class DeviceToolbar: NSObject, NSToolbarDelegate {
     package func style(forWidth width: CGFloat, title: String, subtitle: String,
                preferences: any PreferenceStore) -> NSWindow.ToolbarStyle {
         if preferences.usesCompactTitleBar { return .unifiedCompact }
+        if showsMainWindowAction && preferences.usesMonobar { return .unified }
         return preferences.usesMonobar && unifiedWidth(title: title, subtitle: subtitle) <= width ? .unified : .expanded
     }
 
@@ -163,7 +169,13 @@ package final class DeviceToolbar: NSObject, NSToolbarDelegate {
         updateResizeAction(in: toolbar)
         if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == Self.mainWindowItem }) {
             if !showsMainWindowAction { toolbar.removeItem(at: index) }
-        } else if showsMainWindowAction { toolbar.insertItem(withItemIdentifier: Self.mainWindowItem, at: 0) }
+        } else if showsMainWindowAction {
+            toolbar.insertItem(withItemIdentifier: Self.mainWindowItem, at: leadingControlIndex(in: toolbar))
+        }
+    }
+
+    private func leadingControlIndex(in toolbar: NSToolbar) -> Int {
+        toolbar.items.firstIndex { $0.itemIdentifier != .flexibleSpace } ?? toolbar.items.count
     }
 
     private func updateResizeAction(in toolbar: NSToolbar) {
@@ -171,7 +183,9 @@ package final class DeviceToolbar: NSObject, NSToolbarDelegate {
         let supports = controller?.session.supportsAppResize == true
         if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == id }) {
             if !supports { toolbar.removeItem(at: index) }
-        } else if supports { toolbar.insertItem(withItemIdentifier: id, at: 0) }
+        } else if supports {
+            toolbar.insertItem(withItemIdentifier: id, at: leadingControlIndex(in: toolbar))
+        }
     }
 
     package func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -244,9 +258,11 @@ package final class DeviceToolbar: NSObject, NSToolbarDelegate {
         }
 
         func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            let identifiers = original?.toolbarDefaultItemIdentifiers?(toolbar) ?? []
+            var identifiers = original?.toolbarDefaultItemIdentifiers?(toolbar) ?? []
             let capture = owner?.commands.contains(.captureKeyboard) == true ? [NSToolbarItem.Identifier(DeviceCommand.ID.captureKeyboard.rawValue)] : []
-            return (owner?.showsMainWindowAction == true ? [DeviceToolbar.mainWindowItem] : []) + capture + identifiers
+            let hostItems = (owner?.showsMainWindowAction == true ? [DeviceToolbar.mainWindowItem] : []) + capture
+            identifiers.insert(contentsOf: hostItems, at: identifiers.prefix { $0 == .flexibleSpace }.count)
+            return identifiers
         }
 
         func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {

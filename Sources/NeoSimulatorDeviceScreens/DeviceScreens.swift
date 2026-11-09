@@ -14,10 +14,22 @@ import NeoSimulatorCompactWindow
 @MainActor @Observable
 package final class DeviceScreens {
     private var entries: [DeviceInventoryID: DeviceScreen] = [:]
+    private var compactEntries: [DeviceInventoryID: DeviceScreen] = [:]
+    private var pendingCompactWindows: [DeviceInventoryID: PendingCompactWindowController] = [:]
+    private var connectingCompactWindows: [DeviceInventoryID: PendingCompactWindowController] = [:]
+    private struct CompactOpening {
+        let pending: PendingCompactWindowController
+        let task: Task<Void, any Error>
+    }
+    private var compactOpenings: [DeviceInventoryID: CompactOpening] = [:]
+    private struct ContextKey: Hashable {
+        let xcodeURL: URL
+        let compact: Bool
+    }
     /// The Xcode whose SimulatorKit UI toolkit the manager loaded, which also supplies device artwork.
     package private(set) var displayXcodeURL: URL?
     @ObservationIgnored private let model: SimulatorManagerModel
-    @ObservationIgnored private var contexts: [URL: SimulatorScreens] = [:]
+    @ObservationIgnored private var contexts: [ContextKey: SimulatorScreens] = [:]
     /// Invalidated contexts remain available until their native resources have finished closing.
     @ObservationIgnored private var retiredContexts: [SimulatorContext] = []
     @ObservationIgnored private lazy var hostTakeovers = HostTakeovers<SimulatorContext>(didBegin: { [weak self] in
@@ -33,6 +45,9 @@ package final class DeviceScreens {
     @ObservationIgnored private var remoteHostCleanup: Task<Void, Never>?
     @ObservationIgnored package var onError: ((any Error) -> Void)?
     @ObservationIgnored package var onShowInMainWindow: ((DeviceInventoryID) -> Void)?
+    @ObservationIgnored package var onCompactWindowClosed: ((DeviceInventoryID) -> Void)?
+    @ObservationIgnored package var makeCompactPreview: ((InventoryDevice) -> NSViewController)?
+    @ObservationIgnored package var makeCompactDeviceMenu: ((InventoryDevice, NSWindow) -> NSMenu)?
     /// Edit ▸ Automatically Sync Pasteboard for every simulator screen, whichever host presents it.
     @ObservationIgnored package private(set) lazy var pasteboardSync = PasteboardSync { [weak self] in
         self?.simulatorControllers.map(\.session) ?? []
@@ -61,14 +76,85 @@ package final class DeviceScreens {
         if let locationObserver { DistributedNotificationCenter.default().removeObserver(locationObserver) }
     }
 
-    package var identifiers: Set<DeviceInventoryID> { Set(entries.keys) }
+    package var identifiers: Set<DeviceInventoryID> { Set(entries.keys).union(compactEntries.keys) }
+
+    private var allScreens: [DeviceScreen] { Array(entries.values) + Array(compactEntries.values) }
+    package func compactScreen(for identifier: DeviceInventoryID) -> DeviceScreen? { compactEntries[identifier] }
+
+    package func compactWindow(for identifier: DeviceInventoryID) -> NSWindow? {
+        if let screen = compactEntries[identifier] {
+            return switch screen.controller {
+            case .simulator(let controller): controller.window
+            case .remote(let controller): controller.window
+            }
+        }
+        return pendingCompactWindows[identifier]?.preparedWindow
+    }
+
+    package func prepareCompactWindow(for device: InventoryDevice) {
+        if let window = compactWindow(for: device.id) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            pendingCompactWindow(for: device).preparedWindow.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func pendingCompactWindow(for device: InventoryDevice) -> PendingCompactWindowController {
+        if let pending = pendingCompactWindows[device.id] { return pending }
+        let pending = PendingCompactWindowController(
+            device: device, preview: makeCompactPreview?(device),
+            showMain: { [weak self] in
+                self?.showInMainWindow(device.id, closingCompact: true)
+            }, deviceMenu: { [weak self] window in self?.makeCompactDeviceMenu?(device, window) ?? NSMenu() })
+        pending.onClose = { [weak self, weak pending] in
+            guard let self, let pending, self.pendingCompactWindows[device.id] === pending else { return }
+            if self.compactOpenings[device.id]?.pending === pending { self.compactOpenings[device.id]?.task.cancel() }
+            self.pendingCompactWindows.removeValue(forKey: device.id)
+            self.onCompactWindowClosed?(device.id)
+        }
+        pendingCompactWindows[device.id] = pending
+        return pending
+    }
+
+    package func showCompactWindowFailure(_ error: any Error, for identifier: DeviceInventoryID) {
+        pendingCompactWindows[identifier]?.showFailure(error)
+    }
+
+    private func showInMainWindow(_ identifier: DeviceInventoryID, closingCompact: Bool) {
+        onShowInMainWindow?(identifier)
+        if closingCompact {
+            Task { [weak self] in
+                do { try await self?.closeCompactScreen(for: identifier) } catch { self?.onError?(error) }
+            }
+        }
+    }
+
+    package func closeCompactScreen(for identifier: DeviceInventoryID) async throws {
+        if let compact = compactEntries[identifier] {
+            switch compact.controller {
+            case .simulator(let controller):
+                let device = controller.session.device.identity
+                for context in contexts.values where context.screen(for: device)?.controller === controller {
+                    try await context.context.releaseSession(device)
+                }
+            case .remote(let controller): try await controller.stopAndClose()
+            }
+        } else {
+            pendingCompactWindows[identifier]?.preparedWindow.close()
+        }
+    }
+
+    package func contains(_ screen: DeviceScreen) -> Bool {
+        entries[screen.id] === screen || compactEntries[screen.id] === screen
+    }
 
     package func screen(for identifier: DeviceInventoryID) -> DeviceScreen? { entries[identifier] }
 
     /// CoreDevice identifiers of open native canvases. Evaluating DeviceKit activity for
     /// other devices can start their native HID services and interfere with SimulatorKit input.
     package var nativeCanvasDeviceIdentifiers: Set<UUID> {
-        Set(entries.values.filter(\.usesNativeCanvas).compactMap { screen in
+        Set(
+            allScreens.filter(\.usesNativeCanvas).compactMap { screen in
             guard case .simulator(let simulator) = model.inventory.first(where: { $0.id == screen.id }) else { return nil }
             return simulator.coreDevice.flatMap { UUID(uuidString: $0.identifier) }
         })
@@ -77,84 +163,114 @@ package final class DeviceScreens {
     // MARK: Registration
 
     @discardableResult
-    private func attach(_ presentation: SimulatorScreen, as identifier: DeviceInventoryID) throws -> DeviceScreen {
+    private func attach(_ presentation: SimulatorScreen, as identifier: DeviceInventoryID, compact: Bool = false) throws
+        -> DeviceScreen
+    {
         guard !presentation.isClosed else { throw CancellationError() }
         let controller = presentation.controller
-        let screen = attach(controller, as: identifier)
+        let screen = attach(controller, as: identifier, compact: compact)
         presentation.onEnd = { [weak self, weak controller] _ in
             guard let self, let controller,
-                  case .simulator(let current) = self.entries[identifier]?.controller,
+                case .simulator(let current) = (compact ? self.compactEntries[identifier] : self.entries[identifier])?
+                    .controller,
                   current === controller else { return }
-            self.remove([identifier])
+            self.remove([identifier], compact: compact)
         }
         return screen
     }
 
     /// Registers a simulator presentation's controller, or returns its existing screen.
     @discardableResult
-    package func attach(_ controller: DeviceWindowController, as identifier: DeviceInventoryID) -> DeviceScreen {
-        if let screen = entries[identifier], case .simulator(let current) = screen.controller, current === controller {
+    package func attach(_ controller: DeviceWindowController, as identifier: DeviceInventoryID, compact: Bool = false)
+        -> DeviceScreen
+    {
+        if let screen = compact ? compactEntries[identifier] : entries[identifier],
+            case .simulator(let current) = screen.controller, current === controller
+        {
             return screen
         }
         let screen = DeviceScreen(id: identifier, controller: .simulator(controller), model: model, screens: self)
-        controller.onShowInMainWindow = { [weak self] in self?.onShowInMainWindow?(identifier) }
-        insert(screen)
+        controller.onShowInMainWindow = { [weak self] in self?.showInMainWindow(identifier, closingCompact: compact) }
+        insert(screen, compact: compact)
         return screen
     }
 
     /// Registers a remote screen until its controller closes.
     @discardableResult
-    package func attach(_ controller: RemoteDeviceWindowController) -> DeviceScreen {
+    package func attach(_ controller: RemoteDeviceWindowController, compact: Bool = false) -> DeviceScreen {
         let identifier = DeviceInventoryID.coreDevice(controller.device.identifier)
         let screen = DeviceScreen(id: identifier, controller: .remote(controller), model: model, screens: self)
         controller.onClose = { [weak self, weak screen] in
-            guard let self, let screen, self.entries[identifier] === screen else { return }
-            self.remove([identifier])
+            guard let self, let screen, self.contains(screen) else { return }
+            self.remove([identifier], compact: compact)
         }
-        controller.onShowInMainWindow = { [weak self] in self?.onShowInMainWindow?(identifier) }
+        controller.onShowInMainWindow = { [weak self] in self?.showInMainWindow(identifier, closingCompact: compact) }
         controller.onConnect = { [weak self, weak screen] in
-            guard let self, let screen, self.entries[identifier] === screen else { return }
+            guard let self, let screen, self.contains(screen) else { return }
             await self.model.deviceScreenDidConnect(identifier)
         }
         controller.canInstallApplications = { [weak self] in self?.model.canInstallApplications(on: identifier) == true }
         controller.installApplications = { [weak self] urls in
             self?.model.installApplications(at: urls, on: identifier)
         }
-        insert(screen)
+        insert(screen, compact: compact)
         return screen
     }
 
-    private func insert(_ screen: DeviceScreen) {
-        entries.updateValue(screen, forKey: screen.id)?.stopObserving()
+    private func insert(_ screen: DeviceScreen, compact: Bool) {
+        if compact {
+            compactEntries.updateValue(screen, forKey: screen.id)?.stopObserving()
+        } else {
+            entries.updateValue(screen, forKey: screen.id)?.stopObserving()
+        }
         screen.startObserving()
         publishOpenScreens()
     }
 
-    private func remove(_ identifiers: [DeviceInventoryID]) {
-        let removed = identifiers.compactMap { entries.removeValue(forKey: $0) }
+    private func remove(_ identifiers: [DeviceInventoryID], compact: Bool = false) {
+        let removed = identifiers.compactMap {
+            compact ? compactEntries.removeValue(forKey: $0) : entries.removeValue(forKey: $0)
+        }
         guard !removed.isEmpty else { return }
         for screen in removed { screen.stopObserving() }
         publishOpenScreens()
+        if compact {
+            for identifier in identifiers {
+                if let pending = pendingCompactWindows[identifier],
+                    !removed.contains(where: { screen in
+                        guard screen.id == identifier else { return false }
+                        return switch screen.controller {
+                        case .simulator(let controller): controller.window === pending.preparedWindow
+                        case .remote(let controller): controller.window === pending.preparedWindow
+                        }
+                    })
+                {
+                    continue
+                }
+                pendingCompactWindows.removeValue(forKey: identifier)
+                onCompactWindowClosed?(identifier)
+            }
+        }
     }
 
     private func publishOpenScreens() {
-        model.setOpenDeviceScreens(isQuitting ? [] : Set(entries.keys))
+        model.setOpenDeviceScreens(isQuitting ? [] : identifiers)
     }
 
     private var simulatorIdentifiers: [DeviceInventoryID] {
-        entries.compactMap { identifier, screen in
-            if case .simulator = screen.controller { identifier } else { nil }
+        allScreens.compactMap { screen in
+            if case .simulator = screen.controller { screen.id } else { nil }
         }
     }
 
     private var simulatorControllers: [DeviceWindowController] {
-        entries.values.compactMap { screen in
+        allScreens.compactMap { screen in
             if case .simulator(let controller) = screen.controller { controller } else { nil }
         }
     }
 
-    private var remoteControllers: [DeviceInventoryID: RemoteDeviceWindowController] {
-        entries.compactMapValues { screen in
+    private var remoteControllers: [RemoteDeviceWindowController] {
+        allScreens.compactMap { screen in
             if case .remote(let controller) = screen.controller { controller } else { nil }
         }
     }
@@ -174,7 +290,7 @@ package final class DeviceScreens {
         guard case .simulator(let udid, let path) = request.deviceID.destination else { return }
         let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
         var previousPresentation: SimulatorScreenRestoration.Presentation?
-        for (url, previous) in contexts where url != sourceURL {
+        for (key, previous) in contexts where key.xcodeURL != sourceURL {
             if let screen = previous.screen(for: identifier) {
                 previousPresentation = entries[request.deviceID]?.presentation
                     ?? .init(isEmbedded: screen.controller.isEmbedded, window: screen.controller.window)
@@ -202,10 +318,11 @@ package final class DeviceScreens {
         }
     }
 
-    private func simulatorScreens(for sourceURL: URL) async throws -> SimulatorScreens {
-        if let current = contexts[sourceURL] {
+    private func simulatorScreens(for sourceURL: URL, compact: Bool = false) async throws -> SimulatorScreens {
+        let key = ContextKey(xcodeURL: sourceURL, compact: compact)
+        if let current = contexts[key] {
             if !current.context.isStopped { return current }
-            contexts.removeValue(forKey: sourceURL)
+            contexts.removeValue(forKey: key)
             retiredContexts.append(current.context)
         }
         // A failed cleanup must finish before another context attaches input to the same devices.
@@ -217,7 +334,7 @@ package final class DeviceScreens {
         var configuration = SimulatorContextConfiguration()
         configuration.pasteboardSync = pasteboardSync
         configuration.deviceRegistry = model.registry
-        configuration.offersLifetimeChoice = true
+        configuration.offersLifetimeChoice = !compact
         configuration.onError = { [weak self] error in self?.onError?(error) }
         configuration.onHostConflictBegan = { [weak self] context, name in
             guard let self else { return }
@@ -232,6 +349,12 @@ package final class DeviceScreens {
         }
         configuration.guestLifetime = ManagedGuestLifetime(windowClosed: { [weak self] device, choice, finishing in
             guard let self else { return }
+                if compact {
+                    Task {
+                        do { try await finishing.value } catch { self.onError?(error) }
+                    }
+                    return
+                }
             let keepRunning = choice == .keepRunning
                 || (choice == nil && HostPreferences.defaults.bool(forKey: HostPreferences.detachOnWindowClose))
             self.model.closeDevice(device.inventoryID, keepingDeviceRunning: keepRunning, after: finishing)
@@ -244,7 +367,13 @@ package final class DeviceScreens {
         })
         let created = try await SimulatorContext.load(xcodeURL: sourceURL, configuration: configuration)
         let screens: SimulatorScreens
-        do { screens = try await SimulatorScreens(context: created) }
+        do {
+            screens = try await SimulatorScreens(
+                context: created,
+                makeWindow: { [weak self] device in
+                    compact ? self?.connectingCompactWindows[device.identity.inventoryID]?.takeWindow() : nil
+                })
+        }
         catch {
             do { try await Task { try await self.retire(created) }.value }
             catch { onError?(error) }
@@ -255,12 +384,12 @@ package final class DeviceScreens {
             throw CancellationError()
         }
         // Two devices can finish loading the same Xcode concurrently.
-        if let current = contexts[sourceURL], !current.context.isStopped {
+        if let current = contexts[key], !current.context.isStopped {
             try await retire(created)
             return current
         }
-        if let stopped = contexts.removeValue(forKey: sourceURL) { retiredContexts.append(stopped.context) }
-        contexts[sourceURL] = screens
+        if let stopped = contexts.removeValue(forKey: key) { retiredContexts.append(stopped.context) }
+        contexts[key] = screens
         return screens
     }
 
@@ -289,18 +418,22 @@ package final class DeviceScreens {
                 guard case .simulator(let simulator) = device, device.supports(action), entries[device.id] != nil,
                       case .simulator(let udid, let path) = device.id.destination else { continue }
                 let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-                guard let screens = contexts.values.first(where: { !$0.context.isStopped && $0.screen(for: identifier) != nil }) else { continue }
+                let presentations = contexts.values.filter {
+                    !$0.context.isStopped && $0.screen(for: identifier) != nil
+                }
+                if action == .restart || action == .erase, !presentations.isEmpty { prepared.append(device) }
+                for screens in presentations {
                 switch action {
                 case .restart, .erase:
                     if simulator.state == "Booted" {
                         try await screens.context.prepareForManagedRestart(identifier)
-                        prepared.append(device)
                     } else {
                         try await screens.screen(for: identifier)?.close()
                     }
                 case .shutdown, .forceShutdown, .remove:
                     try await screens.screen(for: identifier)?.close()
                 default: break
+                }
                 }
             }
         } catch {
@@ -319,27 +452,119 @@ package final class DeviceScreens {
         for device in devices {
             guard case .simulator(let udid, let path) = device.id.destination else { continue }
             let identifier = SimulatorDeviceIdentifier(udid, deviceSetPath: path)
-            guard let screens = contexts.values.first(where: { !$0.context.isStopped && $0.screen(for: identifier) != nil }) else { continue }
-            do { try await screens.context.finishManagedRestart(identifier) }
-            catch is CancellationError {}
-            catch { failures.append("\(device.name): \(error.localizedDescription)") }
+            for screens in contexts.values where !screens.context.isStopped && screens.screen(for: identifier) != nil {
+                do { try await screens.context.finishManagedRestart(identifier) } catch is CancellationError {} catch {
+                    failures.append("\(device.name): \(error.localizedDescription)")
+                }
+            }
         }
         if !failures.isEmpty { throw SimulatorError.operation(failures.joined(separator: "\n")) }
     }
 
     /// The open simulator screens to reopen after relaunching, ordered so the main window's screen opens last.
     package func restorations() -> [SimulatorScreenRestoration] {
-        contexts.flatMap { xcode, context in
+        contexts.filter { !$0.key.compact }.flatMap { key, context in
             context.openScreens.compactMap { presentation -> SimulatorScreenRestoration? in
                 let device = presentation.device.id
                 guard let screen = entries[device.inventoryID] else { return nil }
-                return SimulatorScreenRestoration(device: device, xcodeURL: xcode, presentation: screen.presentation)
+                return SimulatorScreenRestoration(
+                    device: device, xcodeURL: key.xcodeURL, presentation: screen.presentation)
             }
         }.sorted { $0.presentation.restorationOrder < $1.presentation.restorationOrder }
     }
 
     package func setDeviceBezelsVisible(_ visible: Bool) {
         for controller in simulatorControllers { controller.setDeviceBezelVisible(visible) }
+    }
+
+    /// Opens a second interactive presentation in the window already shown for this request.
+    package func showCompactWindow(for identifier: DeviceInventoryID, while isCurrent: @escaping @MainActor () -> Bool)
+        async throws
+    {
+        guard !isQuitting, isCurrent(), let main = entries[identifier] else { return }
+        if let compact = compactEntries[identifier] {
+            try await compact.showCompactWindow()
+            return
+        }
+        let device: InventoryDevice =
+            switch main.controller {
+            case .simulator(let controller):
+                .simulator(SimulatorHostDevice(presenting: controller.session.device, ownerXcodeURL: nil))
+            case .remote(let controller): .remote(controller.device)
+            }
+        let pending = pendingCompactWindow(for: device)
+        pending.showLoading()
+        pending.preparedWindow.makeKeyAndOrderFront(nil)
+        let task: Task<Void, any Error>
+        if let opening = compactOpenings[identifier], opening.pending === pending {
+            task = opening.task
+        } else {
+            let previous = compactOpenings[identifier]?.task
+            task = Task { [self] in
+                _ = await previous?.result
+                try Task.checkCancellation()
+                guard pendingCompactWindows[identifier] === pending, isCurrent() else { return }
+                try await connectCompactWindow(for: main, in: pending, while: isCurrent)
+            }
+            compactOpenings[identifier] = CompactOpening(pending: pending, task: task)
+        }
+        defer {
+            if compactOpenings[identifier]?.pending === pending { compactOpenings.removeValue(forKey: identifier) }
+        }
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func connectCompactWindow(
+        for main: DeviceScreen, in pending: PendingCompactWindowController,
+        while isCurrent: @escaping @MainActor () -> Bool
+    ) async throws {
+        let identifier = main.id
+        do {
+            let compact: DeviceScreen
+            switch main.controller {
+            case .simulator(let controller):
+                let device = controller.session.device.identity
+                guard
+                    let key = contexts.first(where: {
+                        !$0.key.compact && $0.value.screen(for: device)?.controller === controller
+                    })?.key
+                else { throw SimulatorError.operation("The simulator's presentation context is unavailable.") }
+                let presenter = try await simulatorScreens(for: key.xcodeURL, compact: true)
+                guard pendingCompactWindows[identifier] === pending, isCurrent() else { return }
+                connectingCompactWindows[identifier] = pending
+                defer { connectingCompactWindows.removeValue(forKey: identifier) }
+                do {
+                    let presentation = try await presenter.open(device)
+                    try Task.checkCancellation()
+                    compact = try attach(presentation, as: identifier, compact: true)
+                } catch {
+                    do { try await presenter.context.releaseSession(device) } catch let cleanupError {
+                        throw SimulatorError.operation(
+                            "\(error.localizedDescription) Closing the compact screen also failed: \(cleanupError.localizedDescription)"
+                        )
+                    }
+                    throw error
+                }
+            case .remote(let controller):
+                let additional = controller.makeAdditionalWindow(in: pending.takeWindow())
+                compact = attach(additional, compact: true)
+                additional.connectIfNeeded()
+            }
+            guard !isQuitting, isCurrent(), entries[identifier] === main, pendingCompactWindows[identifier] === pending
+            else {
+                try await closeCompactScreen(for: identifier)
+                return
+            }
+            try await compact.showCompactWindow()
+            pendingCompactWindows.removeValue(forKey: identifier)
+        } catch {
+            if pendingCompactWindows[identifier] === pending { pending.showFailure(error) }
+            throw error
+        }
     }
 
     // MARK: Remote screens
@@ -367,8 +592,8 @@ package final class DeviceScreens {
 
     private func updateRemoteScreens() {
         if model.isRemoteInventoryComplete {
-            for (identifier, controller) in remoteControllers {
-                controller.updateInventory(model.inventory.first { $0.id == identifier })
+            for controller in remoteControllers {
+                controller.updateInventory(model.inventory.first { $0.id == .coreDevice(controller.device.identifier) })
             }
         }
         let host = model.status?.host
@@ -394,7 +619,7 @@ package final class DeviceScreens {
     /// a cancellation leaves the remaining screens open.
     package func stopRemoteScreens(for identifiers: Set<DeviceInventoryID>? = nil) async throws {
         var failures: [String] = []
-        let targets = remoteControllers.filter { identifiers?.contains($0.key) ?? true }.map(\.value)
+        let targets = remoteControllers.filter { identifiers?.contains(.coreDevice($0.device.identifier)) ?? true }
         for controller in targets {
             do { try await controller.stopAndClose() }
             catch is CancellationError {
@@ -420,6 +645,14 @@ package final class DeviceScreens {
     /// resume posture observation.
     package func stopAll() async throws {
         do {
+            let pending = Array(pendingCompactWindows.values)
+            pendingCompactWindows.removeAll()
+            let opening = Array(compactOpenings.values)
+            for request in opening { request.task.cancel() }
+            connectingCompactWindows.removeAll()
+            for window in pending { window.preparedWindow.close() }
+            for request in opening { _ = await request.task.result }
+            compactOpenings.removeAll()
             await model.stopDevicePostures()
             retiredContexts.append(contentsOf: contexts.values.map(\.context))
             contexts.removeAll()
@@ -430,7 +663,9 @@ package final class DeviceScreens {
                     retiredContexts.removeAll { $0 === context }
                 } catch { failures.append(error.localizedDescription) }
             }
-            remove(simulatorIdentifiers)
+            let simulatorIDs = simulatorIdentifiers
+            remove(simulatorIDs)
+            remove(simulatorIDs, compact: true)
             do { try await stopRemoteScreens() }
             catch is CancellationError {
                 if failures.isEmpty { throw CancellationError() }
@@ -445,4 +680,148 @@ package final class DeviceScreens {
 
 private extension SimulatorDeviceIdentifier {
     var inventoryID: DeviceInventoryID { .simulator(udid: identifier, deviceSetPath: deviceSetPath) }
+}
+
+@MainActor
+private final class PendingCompactWindowController: NSWindowController, NSToolbarDelegate, NSMenuDelegate {
+    let preparedWindow: DeviceWindow
+    var onClose: (() -> Void)?
+    private let progress = NSProgressIndicator()
+    private let loadingView = NSView()
+    private let previewRoot = NSViewController()
+    private let status = NSTextField(wrappingLabelWithString: "")
+    private var closeObservation: (any NSObjectProtocol)?
+    private let showMain: () -> Void
+    private let deviceMenu: (NSWindow) -> NSMenu
+    init(
+        device: InventoryDevice, preview: NSViewController?, showMain: @escaping () -> Void,
+        deviceMenu: @escaping (NSWindow) -> NSMenu
+    ) {
+        self.showMain = showMain
+        self.deviceMenu = deviceMenu
+        let size: NSSize =
+            switch device.family {
+            case "iPad": NSSize(width: 460, height: 620)
+            case "Apple TV", "Apple Vision", "Mac": NSSize(width: 620, height: 460)
+            case "Apple Watch": NSSize(width: 300, height: 400)
+            default: NSSize(width: 300, height: 620)
+            }
+        preparedWindow = DeviceWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered,
+            defer: false)
+        super.init(window: preparedWindow)
+        preparedWindow.title = device.name
+        preparedWindow.titleVisibility = .hidden
+        preparedWindow.appearance = NSAppearance(named: .darkAqua)
+        preparedWindow.isReleasedWhenClosed = false
+        preparedWindow.tabbingMode = .disallowed
+        preparedWindow.toolbarStyle = .unified
+        preparedWindow.titlebarSeparatorStyle = .none
+        let toolbar = NSToolbar(identifier: "CompactDevicePreview.\(UUID().uuidString)")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        preparedWindow.toolbar = toolbar
+        closeObservation = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: preparedWindow, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onClose?() }
+        }
+        let preview = preview ?? NSViewController()
+        previewRoot.addChild(preview)
+        status.alignment = .center
+        status.textColor = .secondaryLabelColor
+        status.isHidden = true
+        let stack = NSStackView(views: [preview.view, status])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        previewRoot.view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: previewRoot.view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: previewRoot.view.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: previewRoot.view.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: previewRoot.view.bottomAnchor),
+        ])
+        progress.style = .spinning
+        progress.translatesAutoresizingMaskIntoConstraints = false
+        loadingView.addSubview(progress)
+        NSLayoutConstraint.activate([
+            progress.centerXAnchor.constraint(equalTo: loadingView.centerXAnchor),
+            progress.centerYAnchor.constraint(equalTo: loadingView.centerYAnchor),
+        ])
+        preparedWindow.contentViewController = previewRoot
+        preparedWindow.setContentSize(size)
+        preparedWindow.center()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    isolated deinit {
+        if let closeObservation { NotificationCenter.default.removeObserver(closeObservation) }
+    }
+
+    func takeWindow() -> DeviceWindow {
+        window = nil
+        return preparedWindow
+    }
+
+    func showFailure(_ error: any Error) {
+        progress.stopAnimation(nil)
+        status.stringValue = error.localizedDescription
+        status.isHidden = false
+        preparedWindow.contentViewController = previewRoot
+    }
+
+    func showLoading() {
+        status.isHidden = true
+        preparedWindow.contentViewController = nil
+        preparedWindow.contentView = loadingView
+        progress.startAnimation(nil)
+    }
+
+    @objc private func returnToMain(_ sender: Any?) { showMain() }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, NSToolbarItem.Identifier("ShowInMainWindow"), NSToolbarItem.Identifier("DeviceActions")]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar: Bool
+    ) -> NSToolbarItem? {
+        if identifier.rawValue == "ShowInMainWindow" {
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "Show in Main Window"
+            item.image = NSImage(
+                systemSymbolName: "arrow.down.backward.and.arrow.up.forward", accessibilityDescription: item.label)
+            item.target = self
+            item.action = #selector(returnToMain(_:))
+            return item
+        }
+        guard identifier.rawValue == "DeviceActions" else { return nil }
+        let item = NSMenuToolbarItem(itemIdentifier: identifier)
+        item.label = "More Actions"
+        item.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: item.label)
+        item.showsIndicator = false
+        item.menu = NSMenu(title: "Device Actions")
+        item.menu.autoenablesItems = false
+        item.menu.delegate = self
+        return item
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        menu.addItem(NSMenuItem(title: "", action: nil, keyEquivalent: ""))
+        let source = deviceMenu(preparedWindow)
+        for item in source.items {
+            source.removeItem(item)
+            menu.addItem(item)
+        }
+    }
 }

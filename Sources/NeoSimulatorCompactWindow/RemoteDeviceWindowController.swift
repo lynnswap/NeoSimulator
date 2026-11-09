@@ -110,7 +110,8 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     private let presentAlert: @MainActor (NSAlert, NSWindow) async -> NSApplication.ModalResponse
     private let presentCompactWindow: @MainActor (NSWindow) -> Void
 
-    package init(device: CoreDeviceDevice, session: RemoteDeviceScreenSession? = nil,
+    package init(
+        device: CoreDeviceDevice, session: RemoteDeviceScreenSession? = nil, preparedWindow: NSWindow? = nil,
          writeImage: @escaping @MainActor (CGImage, URL) async throws -> Void = { image, destination in
              try await RemoteDeviceWindowController.writeScreenshot(image, to: destination)
          },
@@ -133,9 +134,13 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         self.presentAlert = presentAlert
         self.presentCompactWindow = presentCompactWindow
         inputView = RemoteDeviceInputView(session: session)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 780),
+        let window =
+            preparedWindow
+            ?? NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 780),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = device.name
+        window.titleVisibility = .visible
         window.subtitle = [device.platform, device.osVersion].compactMap { $0 }.joined(separator: " ")
         window.minSize = NSSize(width: 240, height: 280)
         window.isReleasedWhenClosed = false
@@ -143,7 +148,7 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         window.tabbingMode = .automatic
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.acceptsMouseMovedEvents = true
-        window.toolbarStyle = .unifiedCompact
+        window.toolbarStyle = .unified
         super.init(window: window)
         presentationViewController.owner = self
         window.delegate = self
@@ -250,6 +255,13 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         update()
     }
     package required init?(coder: NSCoder) { nil }
+
+    package func makeAdditionalWindow(in window: NSWindow) -> RemoteDeviceWindowController {
+        RemoteDeviceWindowController(
+            device: device, session: session.makeAdditionalSession(), preparedWindow: window, writeImage: writeImage,
+            presentSavePanel: presentSavePanel, presentCompactWindow: presentCompactWindow,
+            presentAlert: presentAlert)
+    }
 
     package func embed(in parent: NSViewController) async throws {
         guard presentationViewController.parent !== parent else { return }

@@ -22,7 +22,8 @@ Choose **Capture Keyboard** above the device screen or in **I/O → Keyboard**
 to send Mac shortcuts to the device. Click the button again or hold Escape for
 one second to release the keyboard. Capture ends when the screen loses focus,
 its presentation moves, or NeoSimulator becomes inactive. macOS must allow
-NeoSimulator in **System Settings → Privacy & Security → Accessibility**;
+NeoSimulator in **System Settings → Privacy & Security → Device Control and Data Access**
+(**Accessibility** on macOS 26);
 NeoSimulator reports an error if it cannot create the keyboard event tap.
 
 **Use the Same Keyboard Language as macOS** defaults to on. It applies the Mac's

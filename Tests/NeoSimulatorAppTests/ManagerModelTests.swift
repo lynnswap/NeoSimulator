@@ -945,7 +945,7 @@ struct ManagerModelTests {
         controller.selectDevice(.coreDevice("A"))
         #expect(outline.isItemExpanded(group))
         let search = try #require(inspectorViews(content).compactMap { $0 as? NSSearchField }
-            .first { $0.placeholderString == "Search Devices" })
+                .first { $0.placeholderString == "Search" })
         search.stringValue = "Alpha"
         controller.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         search.stringValue = ""
@@ -1032,7 +1032,9 @@ struct ManagerModelTests {
         await model.refresh()
         var requested: [DeviceInventoryID] = []
         model.onDeviceOpenRequested = { requested.append($0) }
-        let controller = ManagerWindowController(model: model, screens: DeviceScreens(model: model),
+        let screens = DeviceScreens(model: model)
+        let controller = ManagerWindowController(
+            model: model, screens: screens,
                                                  menus: MenuController(application: nil))
         controller.window?.setFrameAutosaveName("")
         defer { controller.window?.close() }
@@ -1042,9 +1044,15 @@ struct ManagerModelTests {
             .first { $0.title == "View Screen" })
         viewScreen.performClick(nil)
         #expect(requested == [.coreDevice("A")])
-        try await wait(timeout: .seconds(5)) {
-            !model.isBusy
-        }
+        try await wait(timeout: .seconds(5)) { !model.isBusy }
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
+        #expect(requested == [.coreDevice("A"), .coreDevice("A")])
+        #expect(controller.presentationIntent.placement == .compact)
+        let compactWindow = try #require(screens.compactWindow(for: .coreDevice("A")))
+        #expect(compactWindow.isVisible)
+        try await wait(timeout: .seconds(5)) { !model.isBusy }
+        compactWindow.close()
     }
 
     @Test func sidebarOptionsRestoreAndUseNativeFallbacks() throws {
@@ -1262,8 +1270,8 @@ struct ManagerModelTests {
         let pane = main.deviceScreenViewController
         defer { main.window?.close() }
         let transport = TestRemoteScreenTransport()
-        let session = RemoteDeviceScreenSession(device: a) { _, _, _ in TestRemoteScreenTransport() }
-        let backgroundSession = RemoteDeviceScreenSession(device: c) { _, _, _ in transport }
+        let session = RemoteDeviceScreenSession(device: a) { _, _, _ in transport }
+        let backgroundSession = RemoteDeviceScreenSession(device: c) { _, _, _ in TestRemoteScreenTransport() }
         try await session.start()
         try await backgroundSession.start()
         let controller = RemoteDeviceWindowController(device: a, session: session, presentCompactWindow: { _ in })
@@ -1281,6 +1289,7 @@ struct ManagerModelTests {
             outline.item(atRow: row).map { main.sidebar.outlineView(outline, shouldSelectItem: $0) } == true
         }
         try #require(rows.count == 3)
+        try await main.presentConnectedScreen(cID, purpose: .automatic, preserving: .compact)
         let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
         var releases = releasing.stream.makeAsyncIterator()
         transport.onReleaseInputs = {
@@ -1289,20 +1298,18 @@ struct ManagerModelTests {
             var permits = resume.stream.makeAsyncIterator()
             _ = await permits.next()
         }
-        let compacting = Task { try await main.presentConnectedScreen(cID, purpose: .automatic, preserving: .compact) }
-        try #require(await releases.next() != nil)
         outline.selectRowIndexes(IndexSet(rows.prefix(2)), byExtendingSelection: false)
+        try #require(await releases.next() != nil)
         outline.selectRowIndexes(IndexSet(integer: rows[2]), byExtendingSelection: true)
         try #require(main.selectedIdentifiers.count == 3)
         resume.continuation.yield(())
-        try await compacting.value
         try await wait(timeout: .seconds(5)) {
             pane.liveDeviceIdentifier == nil && pane.liveCommandTarget == nil
         }
         #expect(controller.presentationViewController.parent == nil)
         #expect(main.selectedIdentifiers.count == 3 && model.selection.device == nil)
-        try await session.stop()
-        try await backgroundSession.stop()
+        #expect(app.screens.compactScreen(for: cID) != nil)
+        try await app.screens.stopAll()
     }
 
     @Test func aContextMenuLeavesTheSelectionAndPresentationOfAnyRow() async throws {
@@ -1332,14 +1339,13 @@ struct ManagerModelTests {
         try await main.presentConnectedScreen(aID, purpose: .requested)
         let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
         #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-        try await wait(timeout: .seconds(5)) {
-            pane.liveDeviceIdentifier == nil && !aController.isEmbedded
-        }
-        let compactIntent = main.presentationIntent
+        try await wait(timeout: .seconds(5)) { app.screens.compactScreen(for: aID) != nil }
+        #expect(pane.liveDeviceIdentifier == aID && aController.isEmbedded)
+        var compactIntent = main.presentationIntent
         main.sidebar.update()
         let content = try #require(main.window?.contentView)
         let fields = inspectorViews(content)
-        let search = try #require(fields.compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "Search Devices" })
+        let search = try #require(fields.compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "Search" })
         search.stringValue = "B"
         main.sidebar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
         search.stringValue = ""
@@ -1349,6 +1355,8 @@ struct ManagerModelTests {
         #expect(model.canViewScreen(.remote(a)))
         #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
         #expect(model.openingDeviceIDs.isEmpty)
+        await pane.waitForScreenMoves()
+        compactIntent = main.presentationIntent
         let aRow = outline.selectedRow
         try #require(aRow >= 0)
         main.sidebar.updateDeviceMenu(for: aRow)
@@ -1359,7 +1367,7 @@ struct ManagerModelTests {
         main.sidebar.updateDeviceMenu(for: bRow)
         #expect(main.presentationIntent.revision == compactIntent.revision && main.presentationIntent.placement == .compact)
         #expect(main.selectedIdentifiers == [aID] && outline.selectedRow == aRow)
-        #expect(pane.liveDeviceIdentifier == nil && !bController.isEmbedded)
+        #expect(pane.liveDeviceIdentifier == aID && !bController.isEmbedded)
         #expect(model.selection.device?.id == aID && main.inspectorController.deviceInspector.inspection.device?.id == aID)
         try await aSession.stop()
         try await bSession.stop()
@@ -1500,15 +1508,19 @@ struct ManagerModelTests {
             #expect(compactPresentations == 1 && main.selectedIdentifiers == [bID] && pane.liveDeviceIdentifier == nil)
         }
         if initial {
-            let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
+            let window = try #require(main.window)
+            window.orderFront(nil)
+            #expect(window.isVisible)
+            let compact = try #require(
+                window.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
             #expect(!compact.isHidden && compact.isEnabled)
             #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-            try await wait(timeout: .seconds(5)) {
-                pane.liveDeviceIdentifier == nil && !controller.isEmbedded
-            }
-            #expect(compact.isHidden && !compact.isEnabled)
+            try await wait(timeout: .seconds(5)) { app.screens.compactScreen(for: aID) != nil }
+            #expect(window.isVisible)
+            #expect(pane.liveDeviceIdentifier == aID && controller.isEmbedded)
+            #expect(!compact.isHidden && compact.isEnabled)
             try await main.presentConnectedScreen(aID, purpose: .requested)
-            #expect(pane.liveDeviceIdentifier == nil && !controller.isEmbedded)
+            #expect(pane.liveDeviceIdentifier == aID && controller.isEmbedded)
             main.showDevice(aID)
             try await wait(timeout: .seconds(5)) {
                 pane.liveDeviceIdentifier == aID && controller.isEmbedded
@@ -1516,6 +1528,200 @@ struct ManagerModelTests {
         }
         try await session.stop()
         main.window?.close()
+    }
+
+
+    @Test(arguments: [false, true])
+    func doubleClickShowsAWindowBeforeTheSimulatorOpens(_ closesWhileOpening: Bool) async throws {
+        _ = NSApplication.shared
+        let device = simulator(state: "Shutdown")
+        let source = ManagerModelSource(devices: [device])
+        var events = source.events.makeAsyncIterator()
+        let model = SimulatorManagerModel(source: source)
+        model.registry.stopReading()
+        await model.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = model
+        let main = app.prepareMainWindow()
+        main.window?.setFrameAutosaveName("")
+        defer { main.window?.close() }
+        main.selectDevice(device.id)
+        let content = try #require(main.window?.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
+        let compact = try #require(app.screens.compactWindow(for: device.id))
+        #expect(compact.isVisible && app.screens.compactScreen(for: device.id) == nil)
+        #expect(compact.frame.width / compact.frame.height < 0.53, "Initial compact frame: \(compact.frame)")
+        #expect(model.openingDeviceIDs.contains(device.id))
+        while let event = await events.next() {
+            if event == .open(device.id) { break }
+        }
+        if closesWhileOpening {
+            compact.close()
+            #expect(app.screens.compactWindow(for: device.id) == nil && main.presentationIntent.placement == .main)
+            await source.completeOpen()
+        } else {
+            await source.failOpen()
+        }
+        try await wait { !model.isBusy }
+        if !closesWhileOpening {
+            #expect(compact.isVisible)
+            let labels = inspectorViews(try #require(compact.contentView)).compactMap { $0 as? NSTextField }
+            #expect(labels.contains { $0.stringValue == ManagerModelSource.Failure.unavailable.localizedDescription })
+            await source.setDevices([simulator(state: "Booted")])
+            await model.refresh()
+            try await wait { model.canManage(.rename("Renamed"), deviceIDs: [device.id]) }
+            let item = try #require(compact.toolbar?.items.compactMap { $0 as? NSMenuToolbarItem }.first)
+            let menu = item.menu
+            menu.delegate?.menuNeedsUpdate?(menu)
+            #expect(menu.items.first?.title == "" && menu.items.dropFirst().first?.title == "View Screen")
+            #expect(menu.items.contains { $0.title == "Shut Down" } && !menu.items.contains { $0.title == "Start" })
+            let rename = try #require(menu.items.first { $0.title == "Rename…" })
+            try #require(rename.isEnabled)
+            #expect(NSApp.sendAction(try #require(rename.action), to: rename.target, from: rename))
+            try await wait { compact.attachedSheet != nil }
+            #expect(main.window?.attachedSheet == nil)
+            compact.endSheet(try #require(compact.attachedSheet), returnCode: .alertSecondButtonReturn)
+            compact.close()
+        }
+        #expect(app.screens.compactScreen(for: device.id) == nil)
+        try await model.quitRenderer(keepingDevicesRunning: true)
+    }
+
+    @Test(arguments: ["sheet", "close", "independent"])
+    func aPendingCompactWindowFollowsItsOwnLifetimeDuringMainPresentation(_ mode: String) async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(
+            Data(
+                #"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"}}},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#
+                    .utf8))
+        let a = try #require(devices.first), b = try #require(devices.last)
+        let aID = DeviceInventoryID.coreDevice(a.identifier), bID = DeviceInventoryID.coreDevice(b.identifier)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.registry.stopReading()
+        await model.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = model
+        let main = app.prepareMainWindow()
+        let window = try #require(main.window)
+        window.setFrameAutosaveName("")
+        defer { window.close() }
+        let transport = TestRemoteScreenTransport()
+        let aSession = RemoteDeviceScreenSession(device: a) { _, _, _ in transport }
+        let bSession = RemoteDeviceScreenSession(device: b) { _, _, _ in TestRemoteScreenTransport() }
+        try await aSession.start()
+        try await bSession.start()
+        let aController = RemoteDeviceWindowController(device: a, session: aSession, presentCompactWindow: { _ in })
+        app.screens.attach(aController)
+        app.screens.attach(RemoteDeviceWindowController(device: b, session: bSession, presentCompactWindow: { _ in }))
+        main.selectDevice(aID)
+        try await main.presentConnectedScreen(aID, purpose: .requested)
+        main.selectDevice(bID)
+        app.screens.prepareCompactWindow(for: .remote(b))
+        let pending = try #require(app.screens.compactWindow(for: bID))
+        if mode != "sheet" {
+            let releasing = AsyncStream<Void>.makeStream(), resume = AsyncStream<Void>.makeStream()
+            var releases = releasing.stream.makeAsyncIterator()
+            transport.onReleaseInputs = {
+                transport.onReleaseInputs = nil
+                releasing.continuation.yield(())
+                var permits = resume.stream.makeAsyncIterator()
+                _ = await permits.next()
+            }
+            let opening = Task { try await main.presentConnectedScreen(bID, purpose: .requested) }
+            #expect(await releases.next() != nil)
+            let compact: Task<Void, any Error>?
+            if mode == "close" {
+                pending.close()
+                compact = nil
+            } else {
+                compact = Task {
+                    try await main.deviceScreenViewController.switchToCompactWindow(for: bID, while: { true })
+                }
+                do { try await wait { app.screens.compactScreen(for: bID) != nil } } catch { Issue.record(error) }
+            }
+            resume.continuation.yield(())
+            try await compact?.value
+            try await opening.value
+            #expect((app.screens.compactWindow(for: bID) == nil) == (mode == "close"))
+        } else {
+            let sheet = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            window.beginSheet(sheet, completionHandler: { _ in })
+            await #expect(throws: RemoteDeviceWindowError.self) {
+                try await main.presentConnectedScreen(bID, purpose: .requested)
+            }
+            #expect(app.screens.compactScreen(for: bID) != nil && aController.isEmbedded)
+            window.endSheet(sheet)
+        }
+        try await app.screens.stopAll()
+    }
+
+    @Test func compactWindowKeepsBothPresentationsInteractive() async throws {
+        _ = NSApplication.shared
+        let devices = try CoreDeviceInventoryDecoder.decode(
+            Data(
+                #"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.viewdevicescreen"}]}]}}"#
+                    .utf8))
+        let device = try #require(devices.first)
+        let identifier = DeviceInventoryID.coreDevice(device.identifier)
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: devices.map(InventoryDevice.remote)))
+        model.registry.stopReading()
+        await model.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = model
+        let main = app.prepareMainWindow()
+        let window = try #require(main.window)
+        window.setFrameAutosaveName("")
+        defer { window.close() }
+        window.orderFront(nil)
+        let mainTransport = TestRemoteScreenTransport(), compactTransport = TestRemoteScreenTransport()
+        var connections = 0
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in
+            connections += 1
+            return connections == 1 ? mainTransport : compactTransport
+        }
+        try await session.start()
+        var presentations = 0
+        let controller = RemoteDeviceWindowController(
+            device: device, session: session,
+            presentCompactWindow: {
+                presentations += 1
+                $0.orderFront(nil)
+            })
+        let screen = app.screens.attach(controller)
+        main.selectDevice(identifier)
+        try await main.presentConnectedScreen(identifier, purpose: .requested)
+        let content = try #require(window.contentView)
+        let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
+        #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
+        let preparedWindow = try #require(app.screens.compactWindow(for: identifier))
+        #expect(preparedWindow.isVisible)
+        try await wait {
+            (app.screens.compactScreen(for: identifier)?.commandTarget as? RemoteDeviceWindowController)?.session.state
+                == .connected
+        }
+        await main.deviceScreenViewController.waitForScreenMoves()
+        let compact = try #require(app.screens.compactScreen(for: identifier))
+        let additional = try #require(compact.commandTarget as? RemoteDeviceWindowController)
+        #expect(additional.window === preparedWindow)
+        #expect(window.isVisible && additional.window?.isVisible == true)
+        #expect(main.deviceScreenViewController.liveScreen === screen && controller.isEmbedded)
+        #expect(additional.session !== session && additional.session.contentView !== session.contentView)
+        screen.perform("home")
+        compact.perform("home")
+        try await wait { mainTransport.buttons == [.down, .up] && compactTransport.buttons == [.down, .up] }
+        #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
+        try await wait { presentations == 2 }
+        #expect(connections == 2 && app.screens.compactScreen(for: identifier) === compact)
+        additional.performScreenAction("compact")
+        try await wait { app.screens.compactScreen(for: identifier) == nil }
+        #expect(app.screens.compactScreen(for: identifier) == nil && app.screens.screen(for: identifier) === screen)
+        #expect(session.state == .connected && controller.isEmbedded)
+        screen.perform("home")
+        try await wait { mainTransport.buttons.count == 4 }
+        try await app.screens.stopAll()
     }
 
     @Test func screenSourceCommandReachesTheRemoteScreenInEitherWindow() async throws {
@@ -1553,11 +1759,14 @@ struct ManagerModelTests {
         #expect(controller.validateMenuItem(command))
         let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
         #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-        try await wait(timeout: .seconds(5)) {
-            pane.liveDeviceIdentifier == nil && !controller.isEmbedded
-        }
-        #expect(controller.presentationViewController.supplementalTarget(forAction: action, sender: command) as AnyObject? === controller)
-        #expect(controller.validateMenuItem(command))
+        try await wait(timeout: .seconds(5)) { app.screens.compactScreen(for: aID) != nil }
+        let additional = try #require(
+            app.screens.compactScreen(for: aID)?.commandTarget as? RemoteDeviceWindowController)
+        #expect(pane.liveDeviceIdentifier == aID && controller.isEmbedded)
+        #expect(
+            additional.presentationViewController.supplementalTarget(forAction: action, sender: command) as AnyObject?
+                === additional)
+        #expect(additional.validateMenuItem(command))
         try await session.stop()
     }
 
@@ -1602,16 +1811,15 @@ struct ManagerModelTests {
         } else {
             let compact = try #require(main.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "CompactDeviceWindow" })
             #expect(NSApp.sendAction(try #require(compact.action), to: compact.target, from: compact))
-            try await wait(timeout: .seconds(5)) {
-                pane.liveDeviceIdentifier == nil && !aController.isEmbedded
-            }
+            try await wait(timeout: .seconds(5)) { app.screens.compactScreen(for: aID) != nil }
         }
         await source.completeWrite()
         try await wait(timeout: .seconds(5)) {
-            !model.isBusy && bController.isEmbedded == selectsAnotherDevice && !aController.isEmbedded
+            !model.isBusy && bController.isEmbedded == selectsAnotherDevice
+                && aController.isEmbedded != selectsAnotherDevice
         }
         #expect(main.selectedIdentifiers == [selectsAnotherDevice ? bID : aID])
-        #expect(pane.liveDeviceIdentifier == (selectsAnotherDevice ? bID : nil))
+        #expect(pane.liveDeviceIdentifier == (selectsAnotherDevice ? bID : aID))
         #expect(aSession.state == .connected)
         try await aSession.stop()
         try await bSession.stop()

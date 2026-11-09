@@ -104,10 +104,20 @@ public final class SimulatorScreens {
     ///   is cancelled.
     public init(context: SimulatorContext) async throws {
         self.context = context
+        try await install(presenter: DeviceWindowPresenter())
+    }
+
+    package init(context: SimulatorContext, makeWindow: @escaping (AvailableDevice) -> DeviceWindow?) async throws {
+        self.context = context
+        try await install(presenter: DeviceWindowPresenter(makeWindow: makeWindow))
+    }
+
+    private func install(presenter: DeviceWindowPresenter) async throws {
+        let context = context
         try await mappingToSimulatorError {
             try await context.installPresentation(load: {
                 _ = try await SimulatorPresentationRuntime.load(xcodeURL: context.xcodeURL)
-            }, presenter: DeviceWindowPresenter(), conflicts: HostConflictMonitor())
+                }, presenter: presenter, conflicts: HostConflictMonitor())
         }
     }
 

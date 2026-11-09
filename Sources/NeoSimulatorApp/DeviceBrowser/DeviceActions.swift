@@ -12,6 +12,7 @@ final class DeviceActions: NSObject {
     private struct ManagementRequest {
         let action: DeviceManagementAction
         let identifiers: Set<DeviceInventoryID>
+        weak var window: NSWindow? = nil
     }
 
     private let model: SimulatorManagerModel
@@ -26,7 +27,8 @@ final class DeviceActions: NSObject {
         self.liveScreen = liveScreen
     }
 
-    func populate(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true) {
+    func populate(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true, window: NSWindow? = nil)
+    {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
         if includesViewScreen, devices.count == 1, model.canViewScreen(devices[0]) {
@@ -61,7 +63,7 @@ final class DeviceActions: NSObject {
             for (title, action) in operations {
                 let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
                 item.target = self
-                item.representedObject = ManagementRequest(action: action, identifiers: identifiers)
+                item.representedObject = ManagementRequest(action: action, identifiers: identifiers, window: window)
                 item.isEnabled = model.canManage(action, deviceIDs: identifiers)
                 menu.addItem(item)
             }
@@ -165,9 +167,9 @@ final class DeviceActions: NSObject {
         guard devices.count == request.identifiers.count, model.supports(request.action, devices: devices),
               model.canManage(request.action, deviceIDs: request.identifiers) else { return }
         switch request.action {
-        case .rename: presentNameEditor(for: devices[0], cloning: false)
-        case .clone: presentNameEditor(for: devices[0], cloning: true)
-        case .erase, .remove: confirmManagement(request.action, devices: devices)
+        case .rename: presentNameEditor(for: devices[0], cloning: false, in: request.window)
+        case .clone: presentNameEditor(for: devices[0], cloning: true, in: request.window)
+        case .erase, .remove: confirmManagement(request.action, devices: devices, in: request.window)
         case .start:
             // A simulator starts as its screen opens, as Start on a stopped simulator's screen does.
             for device in devices where device.id.isSimulator { model.openScreen(for: device) }
@@ -217,8 +219,8 @@ final class DeviceActions: NSObject {
         }
     }
 
-    private func presentNameEditor(for device: InventoryDevice, cloning: Bool) {
-        guard let window else { return }
+    private func presentNameEditor(for device: InventoryDevice, cloning: Bool, in presentingWindow: NSWindow?) {
+        guard let window = presentingWindow ?? window else { return }
         let alert = NSAlert()
         alert.messageText = cloning ? "Clone \(device.name)" : "Rename \(device.name)"
         alert.informativeText = cloning ? "Enter a name for the new simulator." : "Enter a new device name."
@@ -242,8 +244,10 @@ final class DeviceActions: NSObject {
         }
     }
 
-    private func confirmManagement(_ action: DeviceManagementAction, devices: [InventoryDevice]) {
-        guard let window else { return }
+    private func confirmManagement(
+        _ action: DeviceManagementAction, devices: [InventoryDevice], in presentingWindow: NSWindow?
+    ) {
+        guard let window = presentingWindow ?? window else { return }
         let removing: Bool
         if case .remove = action { removing = true } else { removing = false }
         let subject = devices.count == 1 ? "“\(devices[0].name)”" : "\(devices.count) devices"

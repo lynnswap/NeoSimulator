@@ -93,6 +93,13 @@ package final class RemoteDeviceScreenSession {
     /// True when connecting failed because no connected capture source is chosen for this device.
     package var needsCaptureSource: Bool { lastError is RemoteScreenCaptureSourceError }
 
+    /// Opens another presentation of the same guest through the same transport factory.
+    package func makeAdditionalSession() -> RemoteDeviceScreenSession {
+        RemoteDeviceScreenSession(
+            device: device, captureSources: captureSources, makeResizeTransport: makeResizeTransport,
+            readDisplay: readDisplay, makeTransport: makeTransport)
+    }
+
     package convenience init(device: CoreDeviceDevice) {
         let sources = ScreenCaptureSourceCatalog.shared
         self.init(device: device, captureSources: sources, makeResizeTransport: CoreDeviceScreenTransport.resizeTransport,

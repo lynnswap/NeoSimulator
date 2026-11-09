@@ -95,6 +95,31 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         window.toolbarStyle = .unified
         super.init(window: window)
         sidebar.onSelectionChange = { [weak self] in self?.sidebarSelectionChanged(byUser: $0) }
+        sidebar.onOpenCompactScreen = { [weak self] in self?.openCompactScreen(for: $0) }
+        screens.onCompactWindowClosed = { [weak self] identifier in
+            guard let self, self.selectedIdentifiers == [identifier], self.presentationIntent.placement == .compact
+            else { return }
+            self.requestPresentation(.main)
+        }
+        model.onScreenOpenFailure = { [weak screens] in screens?.showCompactWindowFailure($1, for: $0) }
+        screens.makeCompactPreview = { [weak self] device in
+            guard let self else { return NSViewController() }
+            let preview = DeviceScreenViewController(
+                model: self.model, screens: self.screens, artworkCache: self.artworkCache, previewVerticalOffset: 24)
+            preview.showPreview(of: device, selectionCount: 1)
+            preview.onViewScreen = { [weak self] in
+                guard let self else { return }
+                self.model.toggleScreen(for: device)
+                self.screens.compactWindow(for: device.id)?.makeKeyAndOrderFront(nil)
+            }
+            return preview
+        }
+        screens.makeCompactDeviceMenu = { [weak self] device, window in
+            let menu = NSMenu(title: "Device Actions")
+            guard let self, let current = self.model.inventory.first(where: { $0.id == device.id }) else { return menu }
+            self.deviceActions.populate(menu, devices: [current], window: window)
+            return menu
+        }
         sidebar.populateDeviceMenu = { [weak self] in
             self?.deviceActions.populate($0, devices: $1, includesViewScreen: false)
         }
@@ -183,16 +208,30 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         }
         let revision = presentationIntent.revision
         let selected = selectedIdentifiers == [identifier]
-        guard selected || purpose == .automatic else { return }
-        switch selected ? presentationIntent.placement : presentation ?? screen.presentation {
+        let compactWindow = screens.compactWindow(for: identifier)
+        let hasCompactWindow = compactWindow != nil
+        guard selected || purpose == .automatic || hasCompactWindow else { return }
+        switch hasCompactWindow
+            ? .compact : selected ? presentationIntent.placement : presentation ?? screen.presentation
+        {
         case .main:
             guard selected else { return }
             try await deviceScreenViewController.embedScreen(for: identifier, preservingFocus: purpose == .automatic,
                                                              while: { self.isCurrentPresentation(identifier, revision: revision) })
         case .compact:
+            var embeddingFailure: (any Error)?
+            if selected {
+                do {
+                    try await deviceScreenViewController.embedScreen(
+                        for: identifier, preservingFocus: purpose == .automatic,
+                        while: { self.isCurrentPresentation(identifier, revision: revision) })
+                } catch { embeddingFailure = error }
+            }
             try await deviceScreenViewController.showCompactWindow(of: screen, unlessCompact: true, while: {
-                self.presentationIntent.revision == revision || self.selectedIdentifiers != [identifier]
+                    !self.screens.isQuitting && self.screens.screen(for: identifier) === screen
+                        && (compactWindow == nil || self.screens.compactWindow(for: identifier) === compactWindow)
             })
+            if let embeddingFailure { throw embeddingFailure }
         case .hidden: break
         }
     }
@@ -214,7 +253,6 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
                 await pane.waitForScreenMoves()
             case .compact:
                 try await pane.showCompactWindow(of: screen, while: keepsRestoredPresentation)
-                if presentationIntent.revision == revision { window?.orderOut(nil) }
             case .hidden:
                 try await pane.detachScreen(screen, while: keepsRestoredPresentation)
             }
@@ -296,21 +334,32 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         menus.updateKeyEquivalents(for: screen.simulatorCapabilities)
     }
 
+    private func openCompactScreen(for device: InventoryDevice) {
+        screens.prepareCompactWindow(for: device)
+        if screens.screen(for: device.id) == nil {
+            if !model.openingDeviceIDs.contains(device.id) { model.openScreen(for: device) }
+            requestPresentation(.compact)
+            screens.prepareCompactWindow(for: device)
+        } else {
+            showCompactScreen(for: device.id)
+        }
+    }
+
     @objc private func showCompactDeviceWindow(_ sender: Any?) {
-        guard let identifier = deviceScreenViewController.liveDeviceIdentifier, window?.attachedSheet == nil,
-              window?.styleMask.contains(.fullScreen) == false, selectedIdentifiers == [identifier] else { return }
+        guard let identifier = deviceScreenViewController.liveDeviceIdentifier else { return }
+        showCompactScreen(for: identifier)
+    }
+
+    private func showCompactScreen(for identifier: DeviceInventoryID) {
+        guard selectedIdentifiers == [identifier] else { return }
+        if let device = selectedDevices.first { screens.prepareCompactWindow(for: device) }
         requestPresentation(.compact)
-        let revision = presentationIntent.revision
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await deviceScreenViewController.switchToCompactWindow(for: identifier, while: {
-                    self.isCurrentPresentation(identifier, revision: revision)
+                        !self.screens.isQuitting && self.screens.compactWindow(for: identifier) != nil
                 })
-                // The compact window replaces this one, unless a later choice or the screen's close stopped the move.
-                if isCurrentPresentation(identifier, revision: revision), screens.screen(for: identifier) != nil {
-                    window?.orderOut(nil)
-                }
             } catch is CancellationError {}
             catch { onError?(error) }
         }
@@ -318,8 +367,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard item.action == #selector(showCompactDeviceWindow(_:)) else { return true }
-        return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil
-            && window?.styleMask.contains(.fullScreen) == false
+        return deviceScreenViewController.liveDeviceIdentifier != nil
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
@@ -327,7 +375,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
             return selectedDevices.count == 1 && window?.attachedSheet == nil
         }
         if item.itemIdentifier == compactIdentifier {
-            return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil && window?.styleMask.contains(.fullScreen) == false
+            return deviceScreenViewController.liveDeviceIdentifier != nil && window?.attachedSheet == nil
         }
         return true
     }
@@ -378,9 +426,11 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         }
         if itemIdentifier == compactIdentifier {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = "Switch to Compact Window"
-            item.toolTip = "Switch to Compact Window"
-            item.image = NSImage(systemSymbolName: "arrow.up.forward.and.arrow.down.backward", accessibilityDescription: "Switch to Compact Window")
+            item.label = "Open Compact Window"
+            item.toolTip = "Open Compact Window"
+            item.image = NSImage(
+                systemSymbolName: "arrow.up.forward.and.arrow.down.backward",
+                accessibilityDescription: "Open Compact Window")
             item.target = self
             item.action = #selector(showCompactDeviceWindow(_:))
             item.isHidden = deviceScreenViewController.liveDeviceIdentifier == nil
