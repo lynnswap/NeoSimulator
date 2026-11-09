@@ -99,11 +99,14 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
             manager.selectServiceProfile(newValue, for: device.id)
         }
     }
-    private var hasOverrides: Bool {
-        selection.device.flatMap { profiles.binding(for: $0.id) }?.overrides.isEmpty == false
+    private var hasConfigurationChanges: Bool {
+        guard let device = selection.device, let configuration = profiles.configuration(for: device.id),
+            let profile = profiles.resolvedProfile(for: device.id)
+        else { return false }
+        return configuration != profile.configuration
     }
     var hasProfileChanges: Bool {
-        if hasOverrides { return true }
+        if hasConfigurationChanges { return true }
         guard let device = selection.device, device.canInspectBackgroundServices,
             let current = services?.configuration, let intended = profiles.configuration(for: device.id)
         else { return false }
@@ -112,7 +115,7 @@ final class BackgroundServicesInspectorModel: BackgroundServiceEditing {
             != intended.disabledLabels.subtracting(required)
     }
     var canSaveProfile: Bool {
-        !holdsChanges && profiles.issue == nil && hasOverrides
+        !holdsChanges && profiles.issue == nil && hasConfigurationChanges
     }
     var canRevertProfile: Bool {
         guard !holdsChanges, hasProfileChanges, let device = selection.device else { return false }

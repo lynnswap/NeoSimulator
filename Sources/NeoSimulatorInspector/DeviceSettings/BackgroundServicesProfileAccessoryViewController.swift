@@ -2,14 +2,11 @@ import AppKit
 import NeoSimulatorManager
 import ObservationBridge
 
-/// Chooses the selected simulator's service profile above its services, and saves or reverts their changes.
+/// Chooses the selected simulator's service profile above its services.
 @MainActor
 final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAccessoryViewController {
     let model: BackgroundServicesInspectorModel
     let profileButton = NSPopUpButton()
-    let revertButton = NSButton(title: "Revert", target: nil, action: nil)
-    let saveButton = NSButton(title: "Save", target: nil, action: nil)
-    private let actions = NSStackView()
     private var observation: PortableObservationTracking.Token?
 
     init(model: BackgroundServicesInspectorModel) {
@@ -31,18 +28,8 @@ final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAcc
         let profile = NSStackView(views: [label, profileButton])
         profile.distribution = .fill
         profile.alignment = .firstBaseline
-        revertButton.target = self
-        revertButton.action = #selector(revert)
-        saveButton.target = self
-        saveButton.action = #selector(save)
-        saveButton.tintProminence = .primary
-        actions.addView(revertButton, in: .leading)
-        actions.addView(saveButton, in: .trailing)
-        let controls = NSStackView(views: [profile, actions])
-        controls.orientation = .vertical
-        controls.alignment = .width
-        controls.frame.size = controls.fittingSize
-        view = controls
+        profile.frame.size = profile.fittingSize
+        view = profile
     }
 
     override func viewDidLoad() {
@@ -70,10 +57,6 @@ final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAcc
         profileButton.menu = menu
         selectProfile()
         profileButton.isEnabled = !model.holdsChanges && model.profiles.issue == nil
-        // The actions show while the simulator's services differ from its profile, even while they cannot run.
-        actions.isHidden = !model.hasProfileChanges
-        revertButton.isEnabled = model.canRevertProfile
-        saveButton.isEnabled = model.canSaveProfile
     }
 
     private func profileItem(_ choice: BackgroundServicesInspectorModel.ProfileChoice) -> NSMenuItem {
@@ -101,8 +84,4 @@ final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAcc
         selectProfile()
         model.openProfileSettings()
     }
-
-    @objc private func revert() { model.revertProfile() }
-
-    @objc private func save() { model.saveProfile() }
 }

@@ -366,8 +366,23 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        guard item.action == #selector(showCompactDeviceWindow(_:)) else { return true }
-        return deviceScreenViewController.liveDeviceIdentifier != nil
+        switch item.action {
+        case #selector(showCompactDeviceWindow(_:)):
+            return deviceScreenViewController.liveDeviceIdentifier != nil
+        case #selector(saveServiceProfile(_:)):
+            return canSaveServiceProfile
+        default:
+            return true
+        }
+    }
+
+    private var canSaveServiceProfile: Bool {
+        window?.attachedSheet == nil && inspectorController.canSaveServiceProfile
+    }
+
+    @objc func saveServiceProfile(_ sender: Any?) {
+        guard canSaveServiceProfile else { return }
+        inspectorController.saveServiceProfile()
     }
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {

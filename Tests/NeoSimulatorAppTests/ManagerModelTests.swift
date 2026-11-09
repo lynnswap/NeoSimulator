@@ -2015,7 +2015,10 @@ struct ManagerModelTests {
         let accessory = try #require(inspector.topAlignedAccessoryViewControllers.first)
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
-        let searchAccessory = try #require(inspector.bottomAlignedAccessoryViewControllers.compactMap { $0 as? BackgroundServiceSearchAccessoryViewController }.first)
+        let searchAccessory = try #require(
+            inspector.bottomAlignedAccessoryViewControllers.compactMap {
+                $0 as? BackgroundServicesActionsAccessoryViewController
+            }.first)
         let profileAccessory = try #require(
             inspector.topAlignedAccessoryViewControllers.compactMap {
                 $0 as? BackgroundServicesProfileAccessoryViewController
@@ -4858,7 +4861,7 @@ struct ManagerModelTests {
         #expect(store.defaultProfile === first)
     }
 
-    @Test func serviceProfilesDragOutAsFilesThatDropInAsNewProfiles() async throws {
+    @Test func serviceProfilesDragOutAsFilesThatUpdateTheSameProfileWhenDroppedBack() async throws {
         let domain = "NeoSimulator.ProfileFileDrags.\(UUID().uuidString)"
         let directory = FileManager.default.temporaryDirectory.appending(path: domain, directoryHint: .isDirectory)
         defer {
@@ -4912,7 +4915,30 @@ struct ManagerModelTests {
         let file = directory.appending(path: name)
         #expect(await write(to: file) == nil)
 
-        // Dropping the file adds a profile with what the file has, and only a file of profiles drops.
+        // Cancelling a replacement leaves the profile and selection untouched.
+        let saved = try Data(contentsOf: store.fileURL)
+        let selection = controller.model.selectedProfileID
+        let cancelled = TestDraggingInfo([file])
+        defer { cancelled.draggingPasteboard.releaseGlobally() }
+        #expect(controller.tableView(table, acceptDrop: cancelled, row: -1, dropOperation: .on))
+        try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+        let confirmation = try #require(window.attachedSheet)
+        let confirmationContent = try #require(confirmation.contentView)
+        let replace = try #require(
+            inspectorViews(confirmationContent).compactMap { $0 as? NSButton }.first {
+                $0.title == "Replace"
+            })
+        #expect(replace.hasDestructiveAction && replace.keyEquivalent.isEmpty)
+        let cancel = try #require(
+            inspectorViews(confirmationContent).compactMap { $0 as? NSButton }.first {
+                $0.title == "Cancel"
+            })
+        #expect(cancel.keyEquivalent == "\u{1b}")
+        window.endSheet(confirmation, returnCode: .alertSecondButtonReturn)
+        try await wait(timeout: .seconds(5)) { window.attachedSheet == nil }
+        #expect(try Data(contentsOf: store.fileURL) == saved && controller.model.selectedProfileID == selection)
+
+        // Dropping the file updates the same profile after confirmation; only profile files drop.
         let notes = directory.appending(path: "Notes.txt")
         try Data().write(to: notes)
         for (url, operation) in [(notes, NSDragOperation()), (file, .copy)] {
@@ -4923,9 +4949,11 @@ struct ManagerModelTests {
                     == operation)
             #expect(controller.tableView(table, acceptDrop: drop, row: -1, dropOperation: .on) == !operation.isEmpty)
         }
-        try await wait(timeout: .seconds(5)) { store.profiles.count == 2 }
+        try await wait(timeout: .seconds(5)) { window.attachedSheet != nil }
+        window.endSheet(try #require(window.attachedSheet), returnCode: .alertFirstButtonReturn)
+        try await wait(timeout: .seconds(5)) { profile.name == "Search: Off" && profile.configuration == search }
         let imported = try #require(store.profiles.last)
-        #expect(imported.id != profile.id && imported.name == "Search: Off" && imported.configuration == search)
+        #expect(store.profiles.count == 1 && imported === profile)
         #expect(controller.model.selectedProfile === imported)
     }
 
@@ -4951,6 +4979,9 @@ struct ManagerModelTests {
         #expect(restored.profiles.map(\.configuration) == store.profiles.map(\.configuration))
         #expect(restored.configuration(for: first)?.disabledLabels == [])
         #expect(restored.configuration(for: second)?.disabledLabels == [label])
+        try restored.record([.service(label)], enabled: false, for: first, productFamily: "iPhone")
+        #expect(restored.configuration(for: first) == slim.configuration)
+        #expect(restored.binding(for: first)?.overrides.isEmpty == true)
         try restored.assign(.profile(full.id), to: first)
         #expect(restored.binding(for: first)?.overrides.isEmpty == true)
         try restored.assign(.profile(slim.id), to: first)
@@ -4978,10 +5009,10 @@ struct ManagerModelTests {
         #expect(store.resolvedProfile(for: device) === common)
         #expect(store.configuration(for: device)?.disabledLabels == [label])
 
-        // A choice that matches the profile today stays explicit when the profile changes.
+        // Returning a switch to the profile removes its override and follows later profile edits.
         try store.record([.service(other)], enabled: true, for: device, productFamily: "iPhone")
         try store.update(common.id, configuration: ServiceConfiguration(disabledLabels: [other]))
-        #expect(store.configuration(for: device)?.disabledLabels == [label])
+        #expect(store.configuration(for: device)?.disabledLabels == [label, other])
 
         let oldSelection = try JSONSerialization.data(withJSONObject: [
             "selection": ["doNotApply": [:]], "overrides": [label: false],
@@ -5126,6 +5157,7 @@ struct ManagerModelTests {
         try store.assign(.profile(profile.id), to: first)
         try store.assign(.profile(profile.id), to: second)
         try store.record([.service("com.apple.searchd")], enabled: false, for: first, productFamily: "iPhone")
+        try store.record([.service("com.apple.searchtoold")], enabled: false, for: first, productFamily: "iPhone")
         try store.record([.service("com.apple.searchtoold")], enabled: false, for: second, productFamily: "iPhone")
         let other = try #require(store.binding(for: second))
         let current = try #require(store.configuration(for: first))
@@ -5138,6 +5170,7 @@ struct ManagerModelTests {
         #expect(restored.binding(for: first) == DeviceServiceProfile(selection: .profile(profile.id)))
         #expect(restored.configuration(for: first) == current)
         #expect(restored.binding(for: second) == other)
+        #expect(restored.configuration(for: second) == current)
 
         try restored.assign(.profile(profile.id), to: second)
         #expect(restored.configuration(for: second) == current)
@@ -5438,12 +5471,12 @@ struct ManagerModelTests {
             return scroll.contentInsets.top > 0
         }
         // Saving and reverting show only while the services differ from the profile.
-        let accessory = controller.profileAccessory
-        func shownActions() -> (shown: Bool, height: CGFloat, inset: CGFloat) {
+        let accessory = controller.actionsAccessory
+        func shownActions() -> (shown: Bool, height: CGFloat, top: CGFloat, bottom: CGFloat) {
             view.layoutSubtreeIfNeeded()
             let hidden = accessory.saveButton.isHiddenOrHasHiddenAncestor
             #expect(accessory.revertButton.isHiddenOrHasHiddenAncestor == hidden)
-            return (!hidden, accessory.view.frame.height, scroll.contentInsets.top)
+            return (!hidden, accessory.view.frame.height, scroll.contentInsets.top, scroll.contentInsets.bottom)
         }
         let unchanged = shownActions()
         #expect(!unchanged.shown && !model.hasProfileChanges)
@@ -5460,8 +5493,8 @@ struct ManagerModelTests {
         scroll.contentView.scroll(to: origin)
         scroll.reflectScrolledClipView(scroll.contentView)
         #expect(outline.view.bounds.height > 100)
-        #expect(pane.bottomAlignedAccessoryViewControllers.first === controller.searchAccessory)
-        let searchFrame = controller.searchAccessory.view.convert(controller.searchAccessory.view.bounds, to: nil)
+        #expect(pane.bottomAlignedAccessoryViewControllers.first === accessory)
+        let searchFrame = accessory.view.convert(accessory.view.bounds, to: nil)
         #expect(searchFrame.minY == window.contentLayoutRect.minY)
         let columnWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.expandItem(category)
@@ -5470,7 +5503,7 @@ struct ManagerModelTests {
         #expect(outline.outline.tableColumns.first?.width == columnWidth)
         let widgets = try #require(model.categories.first { $0.id == "widgets" })
         widgets.isExpanded = false
-        let search = controller.searchAccessory.searchField
+        let search = accessory.searchField
         search.stringValue = "COM.APPLE.CHRONOD"
         #expect(NSApp.sendAction(try #require(search.action), to: search.target, from: search))
         try await wait(timeout: .seconds(5)) {
@@ -5497,14 +5530,39 @@ struct ManagerModelTests {
         #expect(text.string == item.label && text.selectedRange == NSRange(location: 0, length: item.label.utf16.count))
         #expect((text as? NSTextView)?.enabledTextCheckingTypes == 0)
         let toggle = try #require(cell.subviews.compactMap { $0 as? NSSwitch }.first)
+        outlineView.scrollRowToVisible(row)
+        view.layoutSubtreeIfNeeded()
+        let scrollPosition = scroll.contentView.bounds.origin
+        let serviceFrame = outlineView.convert(outlineView.rect(ofRow: row), to: controller.view)
         toggle.state = .off
         let action = try #require(toggle.action)
         #expect(NSApp.sendAction(action, to: toggle.target, from: toggle))
         #expect(await events.next() == .changeServices(device.id))
         try await wait(timeout: .seconds(5)) {
             let changed = shownActions()
-            return changed.shown && changed.height > unchanged.height && changed.inset > unchanged.inset
+            return changed.shown
         }
+        #expect(shownActions() == (true, unchanged.height, unchanged.top, unchanged.bottom))
+        #expect(scroll.contentView.bounds.origin == scrollPosition)
+        #expect(outlineView.convert(outlineView.rect(ofRow: row), to: controller.view) == serviceFrame)
+
+        await source.completeServiceChange(disabled: [item.label])
+        try await awaitServiceOperations(manager)
+        toggle.state = .on
+        #expect(NSApp.sendAction(action, to: toggle.target, from: toggle))
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: [])
+        try await awaitServiceOperations(manager)
+        try await wait(timeout: .seconds(5)) { shownActions() == unchanged }
+        #expect(!model.hasProfileChanges && !model.canSaveProfile && !model.canRevertProfile)
+        #expect(store.binding(for: device.id)?.overrides.isEmpty == true)
+        #expect(scroll.contentView.bounds.origin == scrollPosition)
+        #expect(outlineView.convert(outlineView.rect(ofRow: row), to: controller.view) == serviceFrame)
+
+        toggle.state = .off
+        #expect(NSApp.sendAction(action, to: toggle.target, from: toggle))
+        #expect(await events.next() == .changeServices(device.id))
+        try await wait(timeout: .seconds(5)) { shownActions().shown }
 
         view.frame.size.width = 440
         view.layoutSubtreeIfNeeded()
@@ -5573,6 +5631,67 @@ struct ManagerModelTests {
         #expect(settings.settings.serviceProfiles.model.selectedProfile === saved)
         #expect(store.binding(for: device.id) == binding)
         #expect(model.selectedProfileSelection == .profile(saved.id))
+        try await manager.prepareForQuit()
+    }
+
+    @Test func saveServiceProfileFollowsTheManagerResponderChain() async throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.SaveProfileShortcut.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let device = simulator()
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let profile = try store.create(name: "Development", configuration: ServiceConfiguration())
+        try store.assign(.profile(profile.id), to: device.id)
+        let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        await manager.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = manager
+        let main = app.prepareMainWindow(defaults: defaults)
+        let window = try #require(main.window)
+        window.setFrameAutosaveName("")
+        defer { window.close() }
+        let previousMenus = (NSApp.mainMenu, NSApp.windowsMenu, NSApp.servicesMenu)
+        defer {
+            NSApp.mainMenu = previousMenus.0
+            NSApp.windowsMenu = previousMenus.1
+            NSApp.servicesMenu = previousMenus.2
+        }
+        app.installMenu()
+        let menu = try #require(NSApp.mainMenu)
+        let file = try #require(menu.items.first { $0.title == "File" }?.submenu)
+        let save = try #require(
+            file.items.first { $0.action == #selector(ManagerWindowController.saveServiceProfile(_:)) })
+        #expect(save.keyEquivalent == "s" && save.keyEquivalentModifierMask == .command && save.target == nil)
+        let screenshot = try #require(
+            file.items.first { $0.action == #selector(RemoteDeviceWindowController.saveScreenshot(_:)) })
+        #expect(screenshot.keyEquivalent.isEmpty)
+        main.selectDevice(device.id)
+        let inspector = main.inspectorController.model
+        inspector.toggle(.services)
+        await manager.registry.finishReading()
+        let services = inspector.services
+        #expect(!main.validateMenuItem(save))
+        services.setServices([.service("com.apple.searchd")], enabled: false)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: ["com.apple.searchd"])
+        try await awaitServiceOperations(manager)
+        window.makeKeyAndOrderFront(nil)
+        let sidebar = try #require(inspectorViews(main.sidebar.view).compactMap { $0 as? NSOutlineView }.first)
+        #expect(window.makeFirstResponder(sidebar))
+        #expect(main.validateMenuItem(save))
+        // A locked Mac may have no application key window; follow the focused view's responder chain directly.
+        #expect(sidebar.tryToPerform(try #require(save.action), with: save))
+        #expect(profile.configuration.disabledLabels == ["com.apple.searchd"])
+        #expect(!services.hasProfileChanges && !main.validateMenuItem(save))
+        inspector.toggle(.settings)
+        #expect(!main.validateMenuItem(save))
         try await manager.prepareForQuit()
     }
 
@@ -6164,6 +6283,7 @@ struct ManagerModelTests {
                 var description: String?
             }
             var version: Int
+            var id: UUID?
             var name: String
             var categories: [Category]
         }
@@ -6171,7 +6291,7 @@ struct ManagerModelTests {
         // All Services nests every built-in service in its category, spread over lines for reading.
         let builtIn = try store.exportedFile(for: store.allServices)
         var file = try JSONDecoder().decode(File.self, from: builtIn)
-        #expect(file.version == 1 && file.name == "All Services")
+        #expect(file.version == 1 && file.name == "All Services" && file.id == ServiceProfile.allServicesID)
         #expect(file.categories.map(\.name) == ["Agents"] + SimulatorBackgroundServiceCategory.all.map(\.name))
         #expect(
             file.categories.map { $0.services.map { $0.label ?? "" } }
@@ -6185,7 +6305,7 @@ struct ManagerModelTests {
                 > file.categories.flatMap(\.services).count)
         let custom = try store.exportedFile(for: profile)
         let customFile = try JSONDecoder().decode(File.self, from: custom)
-        #expect(customFile.name == "Agents Off")
+        #expect(customFile.name == "Agents Off" && customFile.id == profile.id)
         #expect(
             customFile.categories.first
                 == File.Category(name: "Agents", services: [File.Service(label: label, enabled: false)]))
@@ -6209,11 +6329,15 @@ struct ManagerModelTests {
                     File.Service(label: "com.example.tool", enabled: false, description: "Builds things."),
                     File.Service(label: "com.example.helper"),
                 ]))
+        var legacy = customFile
+        legacy.id = nil
         let imported = try other.importProfiles(from: [
-            ("Quiet.json", JSONEncoder().encode(file)), ("Agents Off.json", custom), ("Agents Off 2.json", custom),
+            ("Quiet.json", JSONEncoder().encode(file)), ("Agents Off.json", custom),
+            ("Agents Off 2.json", JSONEncoder().encode(legacy)),
         ])
         #expect(imported.map(\.name) == ["Quiet", "Agents Off", "Agents Off"])
-        #expect(Set(imported.map(\.id)).count == 3 && imported.allSatisfy { $0.canEdit && $0.id != profile.id })
+        #expect(Set(imported.map(\.id)).count == 3 && imported.allSatisfy(\.canEdit))
+        #expect(imported[1].id == profile.id && imported[2].id != profile.id)
         #expect(imported[0].configuration.disabledLabels == [searchd, "com.example.tool"])
         #expect(imported[1].configuration == profile.configuration)
         #expect(other.customCategories.map(\.name) == ["Agents", "Mine", "Tools"])
@@ -6250,21 +6374,75 @@ struct ManagerModelTests {
             File.Category(name: "Broken", services: [File.Service(label: "com.apple.nanoregistryd")]))
         var unlabeled = customFile
         unlabeled.categories[0].services[0].label = nil
+        var invalidID = try #require(JSONSerialization.jsonObject(with: custom) as? [String: Any])
+        invalidID["id"] = "not-a-uuid"
+        var replacement = customFile
+        replacement.name = "Replacement"
+        replacement.categories[0].services[0].enabled = true
         let failures: [(Data, String?)] = try [
             (JSONEncoder().encode(later), "version"),
             (JSONEncoder().encode(requiredOff), "categories[\(category)].services[\(service)].enabled"),
             (JSONEncoder().encode(wedging), "categories[\(wedging.categories.count - 1)].services[0].label"),
             (JSONEncoder().encode(unlabeled), "categories[0].services[0].label"),
+            (JSONSerialization.data(withJSONObject: invalidID), "id"),
+            (custom, "id"),
             (Data("Agents Off".utf8), nil),
         ]
         for (contents, field) in failures {
             let failure = try #require(throws: ServiceProfileStore.ImportFailure.self) {
-                try other.importProfiles(from: [("Agents Off.json", custom), ("Profiles.json", contents)])
+                try other.importProfiles(from: [
+                    ("Agents Off.json", JSONEncoder().encode(replacement)), ("Profiles.json", contents),
+                ])
             }
             #expect(failure.field == field)
             #expect(failure.localizedDescription.hasPrefix("“Profiles.json”\(field.map { ", \($0)" } ?? ""): "))
             #expect(try other.profiles.count == 3 && Data(contentsOf: other.fileURL) == saved)
         }
+    }
+
+    @Test func importingAnUpdatedProfileKeepsAssignmentsAndAppliesToRunningFollowers() async throws {
+        let domains = ["Publisher", "Recipient"].map { "NeoSimulator.ProfileDistribution.\($0).\(UUID().uuidString)" }
+        defer {
+            for domain in domains {
+                try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+            }
+        }
+        let publisher = ServiceProfileStore(fileURL: serviceProfileURL(domains[0]), legacyDefaults: nil)
+        let published = try publisher.create(name: "Team", configuration: ServiceConfiguration())
+        let recipient = ServiceProfileStore(fileURL: serviceProfileURL(domains[1]), legacyDefaults: nil)
+        let imported = try #require(
+            recipient.importProfiles(from: [
+                ("Team.json", publisher.exportedFile(for: published))
+            ]).first)
+        #expect(imported.id == published.id)
+        let independent = try recipient.create(name: "Personal", configuration: ServiceConfiguration())
+        try recipient.setDefaultProfile(imported.id)
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.skipSettingsReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: recipient)
+        await manager.refresh()
+        manager.inspect(device, selectionCount: 1)
+        manager.selection.setServicesVisible(true)
+        await manager.registry.finishReading()
+        let configuration = ServiceConfiguration(disabledLabels: ["com.apple.searchd"])
+        try publisher.update(published.id, name: "Team Updated", configuration: configuration)
+        let updates = try recipient.importProfiles(from: [
+            ("Team Updated.json", publisher.exportedFile(for: published))
+        ])
+        #expect(updates.count == 1 && updates.first === imported)
+        #expect(imported.name == "Team Updated" && imported.configuration == configuration)
+        #expect(recipient.profiles.map(\.id) == [published.id, independent.id])
+        #expect(recipient.defaultProfile === imported && recipient.selection(for: device.id) == .inheritDefault)
+        #expect(await events.next() == .changeServices(device.id))
+        await source.completeServiceChange(disabled: configuration.disabledLabels)
+        try await awaitServiceOperations(manager)
+        #expect(manager.selection.device?.backgroundServices.configuration == configuration)
+        let restored = ServiceProfileStore(fileURL: recipient.fileURL, legacyDefaults: nil)
+        #expect(
+            restored.defaultProfileID == published.id && restored.profile(published.id)?.configuration == configuration)
+        try await manager.prepareForQuit()
     }
 
     @Test func profileEditsUseTheSameSharedServiceAndPlatformRulesAsLiveControls() throws {
@@ -6710,11 +6888,12 @@ struct ManagerModelTests {
         try await awaitServiceOperations(manager)
 
         // Reverting clears explicit overrides and reapplies the inherited definition.
-        manager.setBackgroundServices([.service(label)], enabled: false, for: device.id)
+        manager.setBackgroundServices([.service(label)], enabled: true, for: device.id)
         #expect(await events.next() == .changeServices(device.id))
-        await source.completeServiceChange(disabled: [label, other])
+        await source.completeServiceChange(disabled: [other])
         try await awaitServiceOperations(manager)
-        #expect(store.binding(for: device.id) == DeviceServiceProfile(selection: .inheritDefault, overrides: [label: false]))
+        #expect(
+            store.binding(for: device.id) == DeviceServiceProfile(selection: .inheritDefault, overrides: [label: true]))
         manager.revertServiceProfile(for: device.id)
         #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: [label, other])

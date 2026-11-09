@@ -136,6 +136,7 @@ private struct ProfileFile: Codable {
     static let currentVersion = 1
 
     var version: Int
+    var id: UUID?
     var name: String
     var categories: [Category]
 }
@@ -322,6 +323,7 @@ package final class ServiceProfileStore {
         case wedgingService(String)
         case unreadableFile, unsupportedProfileVersion, missingValue, wrongValue
         case conflictingService(String)
+        case conflictingProfile
 
         package var errorDescription: String? {
             switch self {
@@ -340,6 +342,8 @@ package final class ServiceProfileStore {
             case .missingValue: "The value is missing."
             case .wrongValue: "The value is of the wrong type."
             case .conflictingService(let label): "The profile turns “\(label)” both on and off."
+            case .conflictingProfile:
+                "The selected files contain different versions of the same profile. Import one version at a time."
             }
         }
     }
@@ -533,8 +537,11 @@ package final class ServiceProfileStore {
         let affected = configuration.set(targets, enabled: enabled, productFamily: productFamily, catalog: catalog)
         guard !affected.isEmpty else { return }
         var updated = state
-        // A change stays explicit even if it matches the profile now, because the profile can change later.
-        for label in affected { updated.devices[device, default: DeviceServiceProfile()].overrides[label] = enabled }
+        let profile = resolvedProfile(for: device)?.configuration
+        for label in affected {
+            let matchesProfile = profile.map { !$0.disabledLabels.contains(label) == enabled } ?? false
+            updated.devices[device, default: DeviceServiceProfile()].overrides[label] = matchesProfile ? nil : enabled
+        }
         try save(updated)
     }
 
@@ -681,32 +688,54 @@ package final class ServiceProfileStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(
-            ProfileFile(version: ProfileFile.currentVersion, name: profile.name, categories: categories))
+            ProfileFile(version: ProfileFile.currentVersion, id: profile.id, name: profile.name, categories: categories)
+        )
     }
 
-    /// Adds the profile that each JSON file describes as a new profile, with the categories that it lists.
+    /// Imports each JSON file, updating a custom profile with the same ID or adding a new profile.
     ///
     /// A category with the name and services of one that's here, built in or custom, is that category. Any other
     /// becomes a new custom category, so a file can add categories and services, and never changes one that's here.
     /// Nothing changes unless every file imports.
+    ///
+    /// A file without an ID is a new profile. Built-in profiles import as editable copies.
     /// - Parameter files: Each file's name, which a failure names, and its contents.
-    /// - Returns: The new profiles, in the order of the files.
+    /// - Returns: The imported profiles, in the order of the files.
     /// - Throws: ``ImportFailure`` for a file that can't import.
     @discardableResult
     package func importProfiles(from files: [(name: String, contents: Data)]) throws -> [ServiceProfile] {
+        let imported = try importing(files)
+        try save(imported.state, applyingProfileChanges: true)
+        return imported.ids.compactMap { profile($0) }
+    }
+
+    /// Validates all files and identifies the existing profiles that importing them would replace.
+    package func profilesReplacedByImport(from files: [(name: String, contents: Data)]) throws -> [ServiceProfile] {
+        let ids = Set(try importing(files).ids)
+        return profiles.filter { ids.contains($0.id) }
+    }
+
+    private func importing(_ files: [(name: String, contents: Data)]) throws -> (state: State, ids: [UUID]) {
         if let loadFailure { throw loadFailure }
         var updated = state
-        var imported: [ServiceProfile.Record] = []
+        var ids: [UUID] = []
         for file in files {
             do {
-                imported.append(try add(try ProfileFile(reading: file.contents), to: &updated))
+                let record = try add(try ProfileFile(reading: file.contents), to: &updated)
+                if let index = updated.profiles.firstIndex(where: { $0.id == record.id }) {
+                    if ids.contains(record.id), updated.profiles[index] != record {
+                        throw FieldFailure(field: "id", reason: Failure.conflictingProfile)
+                    }
+                    updated.profiles[index] = record
+                } else {
+                    updated.profiles.append(record)
+                }
+                ids.append(record.id)
             } catch let failure as FieldFailure {
                 throw ImportFailure(file: file.name, field: failure.field, reason: failure.reason)
             }
         }
-        updated.profiles += imported
-        try save(updated)
-        return imported.compactMap { profile($0.id) }
+        return (updated, ids)
     }
 
     /// Adds the categories of `file` that `state` lacks, and returns the record of its profile.
@@ -755,8 +784,10 @@ package final class ServiceProfileStore {
                 CustomServiceCategory(id: UUID(), name: name, labels: requiredLast(valid), summaries: summaries))
         }
         let disabled = enabled.filter { !$0.value }.keys
+        // Presets stay read-only; importing their files makes custom profiles.
+        let id = file.id.flatMap { id in builtInProfiles.contains { $0.id == id } ? nil : id } ?? UUID()
         return ServiceProfile.Record(
-            id: UUID(), name: name, configuration: ServiceConfiguration(disabledLabels: Set(disabled)))
+            id: id, name: name, configuration: ServiceConfiguration(disabledLabels: Set(disabled)))
     }
 
     private func validName(_ name: String, empty: Failure = .emptyName) throws -> String {
