@@ -353,15 +353,26 @@ shared profile editor without changing the selection.
 
 Individual service switches are saved as overrides. They stay in effect when
 the shared default changes or a profile's definition is edited; **Revert** clears
-them and reapplies the selected profile. **Save** updates the selected named
-profile, or asks for a name when using either built-in preset.
+them and reapplies the selected profile. **Save** merges that simulator's
+individual changes into the latest selected named profile, or asks for a name
+when using either built-in preset. A simulator's observed state alone cannot
+overwrite a shared profile.
 Startup-profile selections and overrides survive simulator erases.
 
-Changing the default profile or editing a profile takes effect at the next
-simulator start. Selecting a simulator's Profile also applies it
-immediately when that simulator is running. Automatic application works while
-NeoSimulator is open, including starts from Xcode. Opening NeoSimulator leaves
-already-running simulators unchanged.
+Editing a profile in Settings or saving changes from the inspector applies it
+to running simulators that use it, including those inheriting it as the default.
+Their individual overrides remain in effect. A simulator being managed takes
+the update when that operation finishes; a stopped simulator takes it at its
+next start. If application fails, NeoSimulator reports the error and preserves
+the shared definition. Use **Revert** to reapply the selected profile when the
+device's services differ.
+
+Changing which profile is the default, by itself, leaves running simulators
+unchanged until their next start. Explicitly editing the new default's
+definition applies it to its current followers immediately. Selecting a
+simulator's Profile also applies it immediately when that simulator is running.
+Automatic application works while NeoSimulator is open, including starts from
+Xcode. Opening NeoSimulator leaves already-running simulators unchanged.
 
 To switch services that the built-in categories don't list, select one of your
 profiles in **Settings → Service Profiles** and add categories of your own. The

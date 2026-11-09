@@ -156,6 +156,8 @@ package final class SimulatorManagerModel {
     package let selection = ManagerSelection()
     package let serviceProfiles: ServiceProfileStore
     @ObservationIgnored private var bootTracker = SimulatorBootTracker()
+    /// Definition edits waiting for management, by the profile whose selection must remain unchanged.
+    @ObservationIgnored private var pendingServiceProfiles: [DeviceInventoryID: UUID] = [:]
     package private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
     @ObservationIgnored private var postureStops: [DeviceInventoryID: Task<Void, Never>] = [:]
@@ -269,7 +271,7 @@ package final class SimulatorManagerModel {
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
         registry = DeviceRegistry(source: controller)
         self.serviceProfiles = serviceProfiles
-        followServiceCatalog()
+        followServiceProfiles()
     }
 
     package init(source: any SimulatorManagerSource,
@@ -280,13 +282,24 @@ package final class SimulatorManagerModel {
         frameworks = UIFrameworkSettings { try await source.installedXcodes() }
         registry = DeviceRegistry(source: source)
         self.serviceProfiles = serviceProfiles
-        followServiceCatalog()
+        followServiceProfiles()
     }
 
     /// The profiles own the categories, which the devices read and change.
-    private func followServiceCatalog() {
+    private func followServiceProfiles() {
         registry.backgroundServiceCatalog = serviceProfiles.catalog
-        serviceProfiles.catalogDidChange = { [weak registry] in registry?.backgroundServiceCatalog = $0 }
+        serviceProfiles.didChange = { [weak self] requiresApplication in
+            guard let self else { return }
+            self.registry.backgroundServiceCatalog = self.serviceProfiles.catalog
+            // Returning to a profile later must not revive an edit from before the choice changed.
+            self.pendingServiceProfiles = self.pendingServiceProfiles.filter {
+                self.serviceProfiles.resolvedProfile(for: $0.key)?.id == $0.value
+            }
+            for device in self.inventory where device.canInspectBackgroundServices && requiresApplication(device.id) {
+                self.pendingServiceProfiles[device.id] = self.serviceProfiles.resolvedProfile(for: device.id)?.id
+            }
+            self.applyPendingServiceProfiles()
+        }
     }
 
     package func start() {
@@ -549,7 +562,7 @@ package final class SimulatorManagerModel {
             defer {
                 self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
-                self.applyStartupServiceProfiles()
+                self.applyPendingServiceProfiles()
             }
             do {
                 let preparesOwnedShutdown = action == .shutdown && targets.allSatisfy {
@@ -621,7 +634,7 @@ package final class SimulatorManagerModel {
             defer {
                 self.managementRequests.removeValue(forKey: request)
                 self.reconcileDevicePostures()
-                self.applyStartupServiceProfiles()
+                self.applyPendingServiceProfiles()
             }
             do {
                 try await device.inspection.change(affecting: groups, prepare: {
@@ -680,7 +693,7 @@ package final class SimulatorManagerModel {
         defer {
             if refreshWaiters.isEmpty {
                 isRefreshingInventory = false
-                applyStartupServiceProfiles()
+                applyPendingServiceProfiles()
                 resumeConnectionSynchronization()
             }
             else { refreshWaiters.removeFirst().resume() }
@@ -896,12 +909,16 @@ package final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
-    /// Queues a profile for each observed boot, once. A management action must end first, because the device's queue does
-    /// not wait for it. Whatever becomes of the write is reported from there, and only a later boot or choice writes again.
-    private func applyStartupServiceProfiles() {
+    /// Boots and shared definition edits apply once management finishes. Failed writes report their readback and
+    /// wait for another edit, boot, or explicit choice rather than retrying automatically.
+    private func applyPendingServiceProfiles() {
         guard !stopping else { return }
+        let listed = Set(inventory.map(\.id))
+        pendingServiceProfiles = pendingServiceProfiles.filter { listed.contains($0.key) }
         for device in inventory where device.canInspectBackgroundServices && !managingDeviceIDs.contains(device.id) {
-            if bootTracker.unappliedBoots.remove(device.id) != nil { enqueueServiceConfiguration(for: device) }
+            let booted = bootTracker.unappliedBoots.remove(device.id) != nil
+            let edited = pendingServiceProfiles.removeValue(forKey: device.id) != nil
+            if booted || edited { enqueueServiceConfiguration(for: device) }
         }
     }
 
@@ -1048,7 +1065,7 @@ package final class SimulatorManagerModel {
         quitPreparation = nil
         uninterruptedCommands.resumeAfterCancelledQuit()
         registry.resumeReading()
-        applyStartupServiceProfiles()
+        applyPendingServiceProfiles()
         resumeConnectionSynchronization()
         if inventoryRefreshRequested { Task { await refresh() } }
     }
