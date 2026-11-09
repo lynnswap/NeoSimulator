@@ -101,7 +101,7 @@ package final class DeviceHubCompanions {
                 let hub = url.appendingPathComponent(ToolConstants.deviceHubPath)
                 if FileManager.default.fileExists(atPath: hub.path) {
                     let task = prepare(xcodeURL: url)
-                    Task { do { try await task.value } catch { onError?(error) } }
+                    do { try await task.value } catch { onError?(error) }
                 }
             }
         }
