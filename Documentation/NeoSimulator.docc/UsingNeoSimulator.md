@@ -37,8 +37,10 @@ screen's content, and pinch on the screen to pinch in the device's app.
 On iOS and iPadOS 27 or later, Neo uses the device's CoreDevice screen stream
 over USB or a paired Wi-Fi connection. If the device is unpaired, choose **Pair**
 in its preview or device menu. Unlock it and approve trust on the device if asked;
-enter a pairing code in Neo only when the device requests one. A cancelled or failed
-attempt keeps **Pair** available. After pairing, choose **View Screen**. Neo selects this
+enter a pairing code in Neo only when the device requests one. Cancel closes the
+instructions and requests cancellation; **Pair** becomes available again when the
+previous attempt finishes. Trust already approved on the device may still take effect.
+After pairing, choose **View Screen**. Neo selects this
 stream when the device reports support; no screen-source choice or Camera
 permission is needed.
 

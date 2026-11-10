@@ -12,7 +12,6 @@ final class DevicePairingSheet: NSObject {
     private let submit = NSButton(title: "Pair", target: nil, action: nil)
     private let progress = NSProgressIndicator()
     private var response: CheckedContinuation<String, any Error>?
-    private var completion: CheckedContinuation<Void, any Error>?
     private var cancelled = false
     private var cancelOperation: (() -> Void)?
     private var parentCloseObserver: (any NSObjectProtocol)?
@@ -24,29 +23,24 @@ final class DevicePairingSheet: NSObject {
         }
     ) async throws {
         let sheet = DevicePairingSheet(name: device.name, parent: window)
+        let task = Task {
+            try await pair(device.identifier) { [sheet] failed, delay in
+                try await sheet.readPIN(lastAttemptFailed: failed, retryDelay: delay)
+            }
+        }
+        sheet.cancelOperation = { task.cancel() }
+        window.beginSheet(sheet.panel) { [weak sheet] _ in
+            if sheet?.cancelOperation != nil { sheet?.cancel(nil) }
+        }
         defer {
             sheet.cancelOperation = nil
             sheet.finishPIN(.failure(CancellationError()))
             sheet.close()
         }
         try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            try await withCheckedThrowingContinuation { continuation in
-                sheet.completion = continuation
-                let task = Task {
-                    do {
-                        try await pair(device.identifier) { [sheet] failed, delay in
-                            try await sheet.readPIN(lastAttemptFailed: failed, retryDelay: delay)
-                        }
-                        sheet.finishPairing(.success(()))
-                    } catch { sheet.finishPairing(.failure(error)) }
-                }
-                sheet.cancelOperation = { task.cancel() }
-                window.beginSheet(sheet.panel) { [weak sheet] _ in
-                    if sheet?.cancelOperation != nil { sheet?.cancel(nil) }
-                }
-            }
+            try await task.value
         } onCancel: {
+            task.cancel()
             Task { @MainActor in sheet.cancel(nil) }
         }
     }
@@ -131,15 +125,7 @@ final class DevicePairingSheet: NSObject {
         cancelled = true
         cancelOperation?()
         finishPIN(.failure(CancellationError()))
-        // CoreDevice may still be awaiting trust. Closing the interaction must not wait for that reply.
-        finishPairing(.failure(CancellationError()))
         close()
-    }
-
-    private func finishPairing(_ result: Result<Void, any Error>) {
-        guard let completion else { return }
-        self.completion = nil
-        completion.resume(with: result)
     }
 
     private func finishPIN(_ result: Result<String, any Error>) {

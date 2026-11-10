@@ -138,6 +138,7 @@ package final class SimulatorManagerModel {
         package let action: DeviceManagementAction?
         package let identifiers: Set<DeviceInventoryID>
         package var task: Task<Void, Never>?
+        var isHostPairing: Bool { action == .pair && identifiers.allSatisfy { !$0.isSimulator } }
     }
     private var managementRequests: [UUID: ManagementRequest] = [:]
     package private(set) var isBusy = false
@@ -595,7 +596,7 @@ package final class SimulatorManagerModel {
 
     package func canPairWithHost(_ device: InventoryDevice) -> Bool {
         guard case .remote(let remote) = device, remote.needsHostPairing,
-            remote.isAvailable, remote.pairingState != "pairing"
+            remote.isAvailable, remote.pairingState != "pairingInProgress"
         else { return false }
         return canManage(.pair, deviceIDs: [device.id])
     }
@@ -1107,8 +1108,7 @@ package final class SimulatorManagerModel {
     package func prepareForQuit() async throws {
         stopping = true
         // Host pairing can wait for trust or a PIN; withdraw that interaction before draining accepted work.
-        for request in managementRequests.values
-        where request.action == .pair && request.identifiers.allSatisfy({ !$0.isSimulator }) {
+        for request in managementRequests.values where request.isHostPairing {
             request.task?.cancel()
         }
         if connectionRetry != nil { synchronizationRequested = true }
@@ -1137,7 +1137,10 @@ package final class SimulatorManagerModel {
         var finished = await postures.ends(before: deadline)
         if let operationTask, await !operationTask.ends(before: deadline) { finished = false }
         for accepted in acceptedWrites where await !accepted.write.task.ends(before: deadline) { finished = false }
-        for task in managementRequests.values.compactMap(\.task) where await !task.ends(before: deadline) { finished = false }
+        // Cancelled trust/PIN interactions retain device ownership until CoreDevice replies, but cannot delay exit.
+        for request in managementRequests.values where !request.isHostPairing {
+            if let task = request.task, await !task.ends(before: deadline) { finished = false }
+        }
         var heldOpenings: Set<Task<Void, any Error>> = []
         for opening in openings where await !opening.ends(before: deadline) {
             heldOpenings.insert(opening)
@@ -1178,7 +1181,7 @@ package final class SimulatorManagerModel {
         for accepted in acceptedWrites where !abandonedWrites.contains(accepted.write.id) {
             if await !accepted.write.task.ends(before: deadline) { onError?(QuitOutcome.unknown(accepted.activity)) }
         }
-        for request in managementRequests.values {
+        for request in managementRequests.values where !request.isHostPairing {
             if let task = request.task, await !task.ends(before: deadline) {
                 onError?(QuitOutcome.unknown(request.action.map { "\($0)" } ?? "An inspector change"))
             }

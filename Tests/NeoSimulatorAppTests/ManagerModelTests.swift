@@ -20,7 +20,7 @@ import IOSurface
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    private static func pairingDevice(paired: Bool) throws -> InventoryDevice {
+    private static func pairingDevice(paired: Bool, pairingState: String? = nil) throws -> InventoryDevice {
         let data = try JSONSerialization.data(withJSONObject: [
             "result": [
                 "devices": [
@@ -30,7 +30,8 @@ struct ManagerModelTests {
                             "hardware": paired ? ["fidelity": "physical"] : [:],
                             "state": ["name": "Remote"],
                             "connection": [
-                                "state": "disconnected", "pairingState": paired ? "paired" : "unpaired"
+                                "state": "disconnected",
+                                "pairingState": pairingState ?? (paired ? "paired" : "unpaired")
                             ],
                         ],
                         "capabilities": [
@@ -52,9 +53,13 @@ struct ManagerModelTests {
         _ = NSApplication.shared
         let device = try Self.pairingDevice(paired: false)
         let paired = try Self.pairingDevice(paired: true)
-        let source = ManagerModelSource(devices: [device])
+        let inProgress = try Self.pairingDevice(paired: false, pairingState: "pairingInProgress")
+        let source = ManagerModelSource(devices: [inProgress])
         let manager = SimulatorManagerModel(source: source)
         manager.registry.stopReading()
+        await manager.refresh()
+        #expect(!manager.canPairWithHost(inProgress))
+        await source.setDevices([device])
         await manager.refresh()
         let original = manager.registry.device(for: device.id)
         let screens = DeviceScreens(model: manager)
@@ -152,15 +157,17 @@ struct ManagerModelTests {
             window.close()
         }
         if quitting { try await manager.quitRenderer(keepingDevicesRunning: true) } else { window.close() }
-        try await wait { !manager.managingDeviceIDs.contains(device.id) && window.attachedSheet == nil }
+        try await wait { window.attachedSheet == nil }
         #expect(failures.isEmpty)
         if !waitingForPIN {
-            #expect(!nativeFinished)
+            #expect(!nativeFinished && manager.managingDeviceIDs.contains(device.id))
+            #expect(!manager.canPairWithHost(device))
             nativeReply?.resume()
             nativeReply = nil
             try await wait { nativeFinished }
             #expect(window.attachedSheet == nil)
         }
+        try await wait { !manager.managingDeviceIDs.contains(device.id) }
         if !quitting {
             #expect(manager.canPairWithHost(device))
             try await manager.quitRenderer(keepingDevicesRunning: true)
