@@ -289,6 +289,9 @@ public struct ServiceConfiguration: Codable, Equatable, Sendable {
 package struct SimulatorBackgroundServicesUpdateFailure: Error, LocalizedError, Sendable {
     /// Nil when the state could not be read after the failure.
     package let services: SimulatorBackgroundServices?
+    /// Whether a launchctl command may have changed the device before the failure.
+    package let mayHaveChanged: Bool
+    package var outcomeIsUnknown: Bool { mayHaveChanged && services == nil }
     package let underlyingError: SimulatorHostFailure
     package var errorDescription: String? { underlyingError.errorDescription }
     package var failureReason: String? { underlyingError.failureReason }
@@ -373,8 +376,10 @@ package struct SimulatorBackgroundServiceBackend: Sendable {
             let cancelled = error is CancellationError
             if cancelled, !attempt.mayHaveChanged { throw CancellationError() }
             let services = try? await read()
-            throw SimulatorBackgroundServicesUpdateFailure(services: services, underlyingError: SimulatorHostFailure(
-                cancelled ? Self.failure("background-service-stopped", attempt.stoppedDescription) : error))
+            throw SimulatorBackgroundServicesUpdateFailure(
+                services: services, mayHaveChanged: attempt.mayHaveChanged,
+                underlyingError: SimulatorHostFailure(
+                    cancelled ? Self.failure("background-service-stopped", attempt.stoppedDescription) : error))
         }
     }
 

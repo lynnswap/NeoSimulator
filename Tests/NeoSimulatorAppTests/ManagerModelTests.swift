@@ -2969,7 +2969,7 @@ struct ManagerModelTests {
         #expect(await postureEvents.next() == .stopped(device.id))
     }
 
-    @Test func aPostureConnectionFailureStaysInTheSidebarWithoutAlerting() async throws {
+    @Test func aPostureConnectionFailureStaysWithItsDeviceWithoutAlerting() async throws {
         guard case .simulator(let simulator) = simulator() else { return }
         let device = InventoryDevice.simulator(
             simulator.inventoryCopy(ownerXcodeURL: nil, capabilities: DevicePosturePayload.features))
@@ -2985,14 +2985,14 @@ struct ManagerModelTests {
         #expect(failures.isEmpty)
         #expect(manager.devicePostures[device.id]?.lastError != nil)
         #expect(manager.devicePostures[device.id]?.canSelect == false)
-        #expect(manager.backgroundIssue?.contains(device.name) == true)
+        #expect(manager.backgroundIssue(for: device.id)?.contains(device.name) == true)
 
         postures.startFailure = nil
         var events = postures.events.stream.makeAsyncIterator()
-        await manager.retryInventory()
+        await manager.retryBackgroundOperations(for: device.id)
         #expect(await events.next() == .observing(device.id))
         #expect(manager.devicePostures[device.id]?.canSelect == true)
-        #expect(manager.devicePostures[device.id]?.lastError == nil && manager.backgroundIssue == nil)
+        #expect(manager.devicePostures[device.id]?.lastError == nil && manager.backgroundIssue(for: device.id) == nil)
         await manager.stopDevicePostures()
     }
 
@@ -5320,7 +5320,7 @@ struct ManagerModelTests {
             try await awaitServiceOperations(manager)
             #expect(firstServices.configuration?.disabledLabels == [label, other])
             #expect(secondServices.configuration?.disabledLabels == [] && applicationFailure == nil)
-            #expect(manager.backgroundIssue?.contains(second.name) == true)
+            #expect(manager.backgroundIssue(for: second.id)?.contains(second.name) == true)
             let inspector = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: { _ in })
             manager.inspect(second, selectionCount: 1)
             manager.selection.setServicesVisible(true)
@@ -5336,7 +5336,7 @@ struct ManagerModelTests {
             #expect(await events.next() == .changeServices(second.id))
             await source.completeServiceChange(disabled: [label])
             try await awaitServiceOperations(manager)
-            #expect(!inspector.hasProfileChanges && manager.backgroundIssue == nil)
+            #expect(!inspector.hasProfileChanges && manager.backgroundIssue(for: second.id) == nil)
         }
         try await manager.prepareForQuit()
     }
@@ -6808,7 +6808,7 @@ struct ManagerModelTests {
     }
 
     @Test(arguments: [false, true])
-    func aFailedStartupProfileStaysInTheSidebarUntilRetryOrTheNextBoot(managingRetry: Bool) async throws {
+    func aFailedStartupProfileStaysWithItsDeviceUntilRetryOrTheNextBoot(managingRetry: Bool) async throws {
         let domain = "NeoSimulator.FailedStartupProfile.\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
         let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
@@ -6831,13 +6831,13 @@ struct ManagerModelTests {
         #expect(manager.registry.device(for: device.id)?.backgroundServices.services?.disabledLabels == [label])
         #expect(manager.registry.device(for: device.id)?.backgroundServices.services?.loadedLabels == [label])
         #expect(failures == 0)
-        #expect(manager.backgroundIssue?.contains(device.name) == true)
+        #expect(manager.backgroundIssue(for: device.id)?.contains(device.name) == true)
         await manager.refresh()
         #expect(manager.registry.device(for: device.id)?.backgroundServices.isChanging == false)
-        #expect(await source.serviceChanges.count == 1 && manager.backgroundIssue != nil)
+        #expect(await source.serviceChanges.count == 1 && manager.backgroundIssue(for: device.id) != nil)
         manager.inventoryObservationFailed(ManagerModelSource.Failure.unavailable)
         manager.inventoryObservationRecovered()
-        #expect(manager.backgroundIssue?.contains(device.name) == true)
+        #expect(manager.backgroundIssue(for: device.id)?.contains(device.name) == true)
 
         let rename = DeviceManagementAction.rename("Renamed")
         if managingRetry {
@@ -6848,7 +6848,7 @@ struct ManagerModelTests {
             manager.setBackgroundServices([.service(label)], enabled: false, for: device.id)
             #expect(await events.next() == .changeServices(device.id))
         }
-        await manager.retryInventory()
+        await manager.retryBackgroundOperations(for: device.id)
         if managingRetry {
             await source.completeManagement(rename)
         } else {
@@ -6857,7 +6857,7 @@ struct ManagerModelTests {
         #expect(await events.next() == .changeServices(device.id))
         await source.completeServiceChange(disabled: [label])
         try await awaitServiceOperations(manager)
-        #expect(manager.backgroundIssue == nil)
+        #expect(manager.backgroundIssue(for: device.id) == nil)
 
         await source.setDevices([simulator(lastBootDate: Date(timeIntervalSinceNow: -10))])
         await manager.refresh()
@@ -6870,6 +6870,109 @@ struct ManagerModelTests {
         await source.completeServiceChange(disabled: [label])
         try await awaitServiceOperations(manager)
         #expect(failures == 0)
+        try await manager.prepareForQuit()
+    }
+
+    @Test func automaticDeviceFailuresUseTheSelectedInspectorsBottomAccessory() async throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.DeviceFeedback.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let first = simulator(deviceSet: "/first", name: "First Phone")
+        let second = simulator(deviceSet: "/second", name: "Second Phone")
+        let source = ManagerModelSource(devices: [
+            simulator(deviceSet: "/first", name: first.name, state: "Shutdown"),
+            simulator(deviceSet: "/second", name: second.name, state: "Shutdown"),
+        ])
+        await source.skipSettingsReads()
+        await source.holdServiceReads()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(
+            source: source,
+            serviceProfiles: ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil))
+        var failures: [any Error] = []
+        manager.onError = { failures.append($0) }
+        let controller = ManagerWindowController(
+            model: manager, screens: DeviceScreens(model: manager),
+            menus: MenuController(application: nil), defaults: defaults)
+        controller.window?.setFrameAutosaveName("")
+        defer { controller.window?.close() }
+        let split = try #require(controller.window?.contentViewController as? NSSplitViewController)
+        let sidebar = try #require(split.splitViewItems.first?.bottomAlignedAccessoryViewControllers.first)
+
+        await manager.refresh()
+        await source.setDevices([first, second])
+        await manager.refresh()
+        let reads = [await events.next(), await events.next()]
+        #expect(reads.contains(.readServices(first.id)) && reads.contains(.readServices(second.id)))
+        await source.failServiceRead()
+        await source.failServiceRead()
+        try await awaitServiceOperations(manager)
+        #expect(failures.isEmpty && manager.backgroundIssue == nil)
+
+        controller.selectDevice(first.id)
+        let inspector = try #require(split.splitViewItems.last?.bottomAlignedAccessoryViewControllers.first)
+        func shows(_ name: String) -> Bool {
+            !inspector.isHidden
+                && inspectorViews(inspector.view).compactMap { $0 as? NSTextField }
+                    .contains { $0.stringValue.contains(name) }
+        }
+        try await wait { shows(first.name) }
+        #expect(sidebar.isHidden)
+        controller.selectDevice(second.id)
+        try await wait { shows(second.name) }
+        #expect(!shows(first.name))
+        controller.sidebar.model.select([])
+        controller.sidebar.update()
+        try await wait { inspector.isHidden }
+        controller.selectDevice(first.id)
+        try await wait { shows(first.name) }
+
+        manager.inventoryObservationFailed(ManagerModelSource.Failure.unavailable)
+        try await wait { !sidebar.isHidden }
+        #expect(shows(first.name))
+        let retry = try #require(
+            inspectorViews(inspector.view).compactMap { $0 as? NSButton }
+                .first { $0.title == "Try Again" })
+        retry.performClick(nil)
+        #expect(await events.next() == .readServices(first.id))
+        await source.completeServiceRead(disabled: [], for: first.id)
+        try await awaitServiceOperations(manager)
+        try await wait { inspector.isHidden }
+        #expect(!sidebar.isHidden && manager.backgroundIssue != nil)
+        controller.selectDevice(second.id)
+        try await wait { shows(second.name) }
+        try await manager.prepareForQuit()
+    }
+
+    @Test(arguments: [false, true])
+    func anUnconfirmedAutomaticProfileAlertsOnlyAfterAChangeMayHaveRun(mayHaveChanged: Bool) async throws {
+        let domain = "NeoSimulator.UnconfirmedProfile.\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent()) }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: nil)
+        let profile = try store.create(
+            name: "Search Off",
+            configuration: ServiceConfiguration(disabledLabels: ["com.apple.searchd"]))
+        try store.setDefaultProfile(profile.id)
+        let stopped = simulator(state: "Shutdown")
+        let source = ManagerModelSource(devices: [stopped])
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source, serviceProfiles: store)
+        var failures: [any Error] = []
+        manager.onError = { failures.append($0) }
+        await manager.refresh()
+        await source.setDevices([simulator()])
+        await manager.refresh()
+        #expect(await events.next() == .changeServices(stopped.id))
+        await source.setDevices([stopped])
+        await manager.refresh()
+        await source.failServiceChange(disabled: nil, mayHaveChanged: mayHaveChanged)
+        try await awaitServiceOperations(manager)
+        #expect(failures.count == (mayHaveChanged ? 1 : 0))
+        #expect(manager.backgroundIssue == nil && manager.backgroundIssue(for: stopped.id) == nil)
         try await manager.prepareForQuit()
     }
 
@@ -6924,11 +7027,11 @@ struct ManagerModelTests {
         try await awaitServiceOperations(manager)
         #expect(failures.isEmpty)
         if !stopsBeforeFailure {
-            #expect(manager.backgroundIssue != nil)
+            #expect(manager.backgroundIssue(for: stopped.id) != nil)
             await source.setDevices([stopped])
             await manager.refresh()
         }
-        #expect(manager.backgroundIssue == nil)
+        #expect(manager.backgroundIssue(for: stopped.id) == nil)
         #expect(await source.serviceChanges.isEmpty)
 
         await source.setDevices([simulator()])
@@ -6936,7 +7039,7 @@ struct ManagerModelTests {
         #expect(await events.next() == .readServices(stopped.id))
         await source.completeServiceRead(disabled: [])
         try await awaitServiceOperations(manager)
-        #expect(manager.backgroundIssue == nil && failures.isEmpty)
+        #expect(manager.backgroundIssue(for: stopped.id) == nil && failures.isEmpty)
         try await manager.prepareForQuit()
     }
 
@@ -8129,11 +8232,11 @@ actor ManagerModelSource: SimulatorManagerSource {
         waiting?.resume(returning: SimulatorBackgroundServicesUpdate(
                 services: services(disabled: disabled), stillEnabledLabels: [], notStartedLabels: notStarted))
     }
-    func failServiceChange(disabled: Set<String>, loaded: Set<String> = []) {
+    func failServiceChange(disabled: Set<String>?, loaded: Set<String> = [], mayHaveChanged: Bool = true) {
         let waiting = serviceChange
         serviceChange = nil
         waiting?.resume(throwing: SimulatorBackgroundServicesUpdateFailure(
-                services: services(disabled: disabled, loaded: loaded),
+                services: disabled.map { services(disabled: $0, loaded: loaded) }, mayHaveChanged: mayHaveChanged,
             underlyingError: SimulatorHostFailure(Failure.unavailable)))
     }
     private func services(disabled: Set<String>, loaded: Set<String> = []) -> SimulatorBackgroundServices {

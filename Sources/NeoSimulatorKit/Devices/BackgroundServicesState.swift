@@ -91,7 +91,7 @@ public final class BackgroundServicesState {
     ///   ``services`` shows the state read back, if that read succeeded.
     public func set(_ targets: [SimulatorBackgroundServiceTarget], enabled: Bool) async throws {
         let write = try accept(.services(targets, enabled: enabled))
-        try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }
+        try await finish(write)
     }
 
     /// Makes the services that a configuration covers match it.
@@ -106,7 +106,19 @@ public final class BackgroundServicesState {
     ///   `localizedDescription`, because these errors are not all ``SimulatorError`` values.
     public func apply(_ configuration: ServiceConfiguration) async throws {
         let write = try accept(.configuration(configuration))
-        try await withTaskCancellationHandler { try await write.task.value } onCancel: { write.task.cancel() }
+        try await finish(write)
+    }
+
+    private func finish(_ write: DeviceWrite) async throws {
+        do {
+            try await withTaskCancellationHandler {
+                try await write.task.value
+            } onCancel: {
+                write.task.cancel()
+            }
+        } catch let failure as SimulatorBackgroundServicesUpdateFailure {
+            throw failure.underlyingError
+        }
     }
 
     package func accept(_ change: Change, after hold: Task<Void, Never>? = nil) throws -> DeviceWrite {
@@ -146,7 +158,7 @@ public final class BackgroundServicesState {
             self.outcome = outcome.stillEnabledLabels.isEmpty && outcome.notStartedLabels.isEmpty ? nil : outcome
         } catch let failure as SimulatorBackgroundServicesUpdateFailure {
             if let readBack = failure.services { confirm(readBack) }
-            throw failure.underlyingError
+            throw failure
         }
     }
 

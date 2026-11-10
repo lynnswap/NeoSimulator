@@ -14,6 +14,7 @@ package final class InspectorViewController: NSViewController {
     let deviceInspector: ManagerDeviceInspectorController
     private let settings: NSHostingController<ManagerDeviceSettingsView>
     private let services: BackgroundServicesViewController
+    private let issueAccessory: StatusAccessoryViewController
     private weak var shownPage: NSViewController?
     private weak var splitViewItem: NSSplitViewItem?
     private weak var toolbarItem: NSToolbarItem?
@@ -26,6 +27,7 @@ package final class InspectorViewController: NSViewController {
         pairingMenu: @escaping (SimulatorHostDevice) -> NSMenu, deviceMenu: @escaping (SimulatorHostDevice) -> NSMenu
     ) {
         self.model = model
+        issueAccessory = StatusAccessoryViewController(retry: model.retryBackgroundOperations)
         deviceInspector = ManagerDeviceInspectorController(model: manager, inspection: model.deviceInspection)
         deviceInspector.onPairingMenu = pairingMenu
         deviceInspector.onDeviceMenu = deviceMenu
@@ -48,6 +50,7 @@ package final class InspectorViewController: NSViewController {
         item.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
         item.addTopAlignedAccessoryViewController(deviceInspector.categoryAccessory)
         services.addAccessories(to: item)
+        item.addBottomAlignedAccessoryViewController(issueAccessory)
         splitViewItem = item
         collapseObservation = item.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
             MainActor.assumeIsolated {
@@ -59,6 +62,7 @@ package final class InspectorViewController: NSViewController {
         stateObservation = withPortableContinuousObservation { [weak self, model] event in
             _ = model.device
             _ = model.isManaging
+            _ = model.backgroundIssue
             guard event.kind != .initial else { return }
             // Updating the page writes to models that this pass would otherwise track.
             Task { @MainActor [weak self] in self?.update() }
@@ -120,6 +124,7 @@ package final class InspectorViewController: NSViewController {
         guard let splitViewItem else { return }
         if splitViewItem.isCollapsed == model.isShown { splitViewItem.animator().isCollapsed = !model.isShown }
         show(model.page)
+        issueAccessory.update(issue: model.backgroundIssue)
         deviceInspector.update(
             device: model.device, isManaging: model.isManaging, isVisible: model.showsDeviceInspector)
         let selected = model.isShown ? model.page.rawValue : -1
