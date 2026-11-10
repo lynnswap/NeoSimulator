@@ -34,7 +34,7 @@ final class BackgroundServicesViewController: NSViewController {
     /// Adds this page's accessories to the split view item that shows the page.
     func addAccessories(to item: NSSplitViewItem) {
         item.addTopAlignedAccessoryViewController(profileAccessory)
-        item.addBottomAlignedAccessoryViewController(actionsAccessory)
+        item.addTopAlignedAccessoryViewController(actionsAccessory)
     }
 
     override func loadView() {

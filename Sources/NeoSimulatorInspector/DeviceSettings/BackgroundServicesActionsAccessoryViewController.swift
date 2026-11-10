@@ -36,7 +36,7 @@ final class BackgroundServicesActionsAccessoryViewController: NSSplitViewItemAcc
         controls.alignment = .centerY
         controls.distribution = .fill
         controls.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        // Hiding the actions can widen the filter, but must not change the list's bottom inset.
+        // Hiding the actions can widen the filter, but must not change the list's top inset.
         controls.heightAnchor.constraint(equalToConstant: controls.fittingSize.height).isActive = true
         controls.frame.size = controls.fittingSize
         view = controls
