@@ -44,8 +44,10 @@ Quitting restores the original values saved when host management began.
 **Restore Original Settings…** in Settings also releases routing while the app is
 open, including whether a key
 was absent or false. If another tool changed a managed preference, review the
-reported conflict. Choose **Restore Saved Values…** and confirm only when you
-intend to replace the current routing preferences with the saved originals.
+reported conflict. Quitting leaves those external changes intact and reports that
+restoration was not completed; the saved values remain available for recovery.
+Choose **Restore Saved Values…** and confirm only when you intend to replace the
+current routing preferences with the saved originals.
 
 Original settings are stored in
 `~/Library/Application Support/xcode-simulator-host/state.plist`, shared with the

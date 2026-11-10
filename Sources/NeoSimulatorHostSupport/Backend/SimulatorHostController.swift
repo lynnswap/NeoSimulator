@@ -265,8 +265,9 @@ package actor SimulatorHostController {
                 try await self.deviceHubCompanions?.stop()
                 return
             }
-            try await self.restoreHost(force: false)
+            try await self.deviceHubCompanions?.stop()
             self.allowsSessionHosting = false
+            try await self.restoreHost(force: false)
             self.hasBegunSession = false
         }
     }
@@ -343,9 +344,24 @@ package actor SimulatorHostController {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) {
             let xcode = try await self.resolveXcode(xcodeURL)
+            let wasHosting = self.allowsSessionHosting
+            do { try await self.handoffToDeviceHub(xcodeURL: xcode.applicationURL) } catch let handoffError {
+                self.invalidateHostAfterFailedChange(handoffError)
+                if wasHosting, SimulatorHostFailure(handoffError).kind == .partialSuccess {
+                    do {
+                        try await self.beginHostSession(xcodeURL: xcode.applicationURL)
+                        self.allowsSessionHosting = true
+                    } catch let recoveryError {
+                        throw HostOperationError.temporary(
+                            "device-hub-handoff-recovery",
+                            "Could not open Device Hub (\(handoffError.localizedDescription)) or resume NeoSimulator (\(recoveryError.localizedDescription))."
+                        )
+                    }
+                }
+                throw handoffError
+            }
             self.allowsSessionHosting = false
             self.deviceHubXcodes.insert(xcode.applicationURL.standardizedFileURL.resolvingSymlinksInPath())
-            try await self.handoffToDeviceHub(xcodeURL: xcode.applicationURL)
             if let requestURL {
                 try await WorkspaceClient.openDeviceHubRequest(requestURL, at: xcode.deviceHubApplicationURL)
             }

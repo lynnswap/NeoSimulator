@@ -650,6 +650,10 @@ struct HostModeControllerTests {
         }
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(try fixture.receiptStore.load()?.original == .coreSimulator)
+        _ = try await fixture.controller.beginSession()
+        #expect(try await fixture.controller.routeStatus().preferences == .neo)
+        _ = try await fixture.controller.restore()
+        #expect(try await fixture.controller.routeStatus().preferences == .coreSimulator)
     }
 
     @Test func deviceHubModeDoesNotChangePreferencesWhenHostCannotClose() async throws {

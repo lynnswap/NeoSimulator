@@ -486,6 +486,21 @@ struct ManagerModelTests {
         #expect(await source.sessionEvents.last == "end")
     }
 
+    @Test func quittingPreservesExternalRoutingChangesAndReportsTheUnrestoredSettings() async throws {
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        manager.start()
+        try await manager.prepareForQuit()
+        let conflict = HostOperationError.configuration("preference-conflict", "Settings changed outside NeoSimulator")
+        await source.failNextSessionEnd(SimulatorHostFailure(conflict))
+        var reported: [SimulatorHostFailure.Kind] = []
+        manager.onError = { reported.append((($0 as? SimulatorHostFailure) ?? SimulatorHostFailure($0)).kind) }
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+        #expect(reported == [.preferencesChanged])
+        #expect(await source.sessionEvents.last == "end")
+        #expect(await source.sessionEvents.filter { $0 == "begin" }.count == 1)
+    }
+
     @Test func settingsProvideSimulatorCreationAndKeepExistingPreferences() async throws {
         _ = NSApplication.shared
         let domain = "NeoSimulator.SettingsFixture.\(UUID().uuidString)"
@@ -7750,17 +7765,17 @@ private struct ServiceChangeSource: DeviceStateSource {
 
 actor ManagerModelSource: SimulatorManagerSource {
     private var failsSessionStart = false
-    private var failsSessionEnd = false
+    private var sessionEndError: (any Error)?
     private(set) var sessionEvents: [String] = []
     func failSessionStart() { failsSessionStart = true }
     func beginSession() throws {
         sessionEvents.append("begin")
         if failsSessionStart { throw Failure.unavailable }
     }
-    func failNextSessionEnd() { failsSessionEnd = true }
+    func failNextSessionEnd(_ error: any Error = Failure.unavailable) { sessionEndError = error }
     func endSession() throws {
         sessionEvents.append("end")
-        if failsSessionEnd { failsSessionEnd = false; throw Failure.unavailable }
+        if let error = sessionEndError { sessionEndError = nil; throw error }
     }
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }

@@ -1061,6 +1061,11 @@ package final class SimulatorManagerModel {
             try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
             try await beforeEndingSession()
             do { try await controller.endSession() } catch let endingError {
+                let failure = (endingError as? SimulatorHostFailure) ?? SimulatorHostFailure(endingError)
+                if failure.kind == .preferencesChanged {
+                    onError?(endingError)
+                    return
+                }
                 do { try await controller.beginSession() } catch let recoveryError {
                     throw HostOperationError.temporary(
                         "session-end-recovery",

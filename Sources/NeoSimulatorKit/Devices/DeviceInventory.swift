@@ -506,8 +506,8 @@ package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
         return switch kind {
         case .preferencesChanged: "Review your Xcode settings. To use the saved values, choose Restore Original Settings…, then Restore Saved Values…."
         case .unavailableXcode: "Open Xcode 27 or later and finish installing its developer tools, then try again."
-        case .launchFailed: "Try View Screen again, or select the display app in Settings."
-        case .partialSuccess: "Try View Screen again, or select the display app in Settings."
+        case .launchFailed: "Try View Screen again."
+        case .partialSuccess: "Try View Screen again."
         case .operationFailed: "Try again and review the diagnostic details if the problem continues."
         }
     }
