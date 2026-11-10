@@ -569,7 +569,8 @@ package final class SimulatorManagerModel {
             return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
         case .remote(let remote):
             return !holdsAllEdits && !queuedDeviceIDs.contains(device.id) && remote.isAvailable
-                && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
+                && (remote.kind == .virtualMachine || remote.kind == .physical
+                    || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
         }
     }
 

@@ -34,13 +34,19 @@ draws, and the frame's side buttons press the device's buttons. Click or drag
 on the screen to touch it; scroll with two fingers on a trackpad to drag the
 screen's content, and pinch on the screen to pinch in the device's app.
 
-Connect physical devices by cable. On first use, choose **Choose Screen Source…**
-and select the device's source; macOS does not identify which device each source
-shows. Neo remembers the choice. Duplicate names are numbered. To correct a
-choice, use **Device → Choose Screen Source…**.
+On iOS and iPadOS 27 or later, Neo uses the device's CoreDevice screen stream
+over USB or a paired Wi-Fi connection. Pair the device with this Mac in Xcode
+or Device Hub, keep it unlocked, and choose **View Screen**. Neo selects this
+stream when the device reports support; no screen-source choice or Camera
+permission is needed.
 
-Allow Camera access when prompted. If denied, enable NeoSimulator in
-**System Settings → Privacy & Security → Camera**, then choose **Try Again**.
+On older device OS versions, connect by USB and choose **Choose Screen Source…**
+on first use. Select the device's source; macOS does not identify which device
+each source shows. Neo remembers the choice. Duplicate names are numbered.
+To correct a choice, use **Device → Choose Screen Source…**.
+
+The USB capture source requires Camera access. If denied, enable NeoSimulator
+in **System Settings → Privacy & Security → Camera**, then choose **Try Again**.
 For an unavailable source, check the cable and try again.
 
 **File → New Simulator…** creates a device from the installed runtimes. For an

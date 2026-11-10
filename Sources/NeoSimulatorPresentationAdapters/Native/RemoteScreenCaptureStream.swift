@@ -266,6 +266,12 @@ actor RemoteScreenCaptureStream {
         queue.async { [weak self] in self?.assumeIsolated(operation) }
     }
 
+    /// Decoder outputs stay retained until this queue and the GPU have finished reading them.
+    package nonisolated func receiveDecoded(_ buffer: CVPixelBuffer) {
+        nonisolated(unsafe) let frame = buffer
+        enqueue { $0.receive(frame) }
+    }
+
     nonisolated fileprivate func receiveOnQueue(_ sample: CMSampleBuffer) {
         // The capture output calls its delegate on this actor's queue and hands the buffer over.
         guard let buffer = CMSampleBufferGetImageBuffer(sample) else { return }

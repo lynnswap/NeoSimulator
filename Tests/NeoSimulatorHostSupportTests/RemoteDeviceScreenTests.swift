@@ -17,6 +17,77 @@ import XPC
 @MainActor
 @Suite
 struct RemoteDeviceScreenTests {
+    @Test func networkVideoDeliversDecodedFramesOnItsCallingExecutor() throws {
+        // A black 64 × 32 HEVC frame, including VPS/SPS/PPS and an IDR picture.
+        let nals = try [
+            "QAEMAf//AWAAAAMAkAAAAwAAAwAelZgJ",
+            "QgEBAWAAAAMAkAAAAwAAAwAeoCCCFllZrkyvAWgIAAADAAgAAAMAyEA=",
+            "RAHBc9CJ", "KAGvHYDuI4//2IabwA==",
+        ].map { try #require(Data(base64Encoded: $0)) }
+        let decoder = RemoteScreenHEVCDecoder()
+        var size: CGSize?
+        decoder.onFrame = { frame in
+            #expect(Thread.isMainThread)
+            #expect(CVPixelBufferGetIOSurface(frame) != nil)
+            size = CGSize(width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame))
+        }
+        decoder.onFailure = { Issue.record("\($0)") }
+        decoder.decode(nals, timestamp: 90_000)
+        #expect(size == CGSize(width: 64, height: 32) && !decoder.needsKeyframe)
+        decoder.invalidate()
+        #expect(decoder.needsKeyframe)
+    }
+
+    @Test func networkVideoReassemblesReorderedFragmentsAcrossSequenceWrap() {
+        let receiver = RemoteScreenRTPReceiver(source: 7)
+        var pictures: [[Data]] = []
+        receiver.onAccessUnit = { pictures.append($0.nals) }
+        receiver.receive(Self.rtp(sequence: .max, payload: [98, 1, 147, 128, 11]))
+        receiver.receive(Self.rtp(sequence: 1, marker: true, payload: [98, 1, 83, 33]))
+        #expect(pictures.isEmpty)
+        receiver.receive(Self.rtp(sequence: 0, payload: [98, 1, 19, 22]))
+        #expect(pictures == [[Data([38, 1, 128, 11, 22, 33])]])
+    }
+
+    @Test func networkVideoDropsLostPicturesAndRequestsAKeyframeFromItsSender() {
+        var now: TimeInterval = 0
+        let receiver = RemoteScreenRTPReceiver(source: 7, clock: { now })
+        var pictures: [[Data]] = []
+        var losses = 0
+        receiver.onAccessUnit = { pictures.append($0.nals) }
+        receiver.onLoss = { losses += 1 }
+        receiver.receive(Self.rtp(sequence: 1, payload: [98, 1, 147, 128, 11]))
+        receiver.receive(Self.rtp(sequence: 3, marker: true, payload: [98, 1, 83, 33]))
+        now = 0.03
+        receiver.flushPending()
+        #expect(pictures.isEmpty && losses == 1)
+        let report = receiver.report(receiver: 9, requestKeyframe: true)
+        #expect(Array(report.suffix(12)) == [129, 206, 0, 2, 0, 0, 0, 9, 0, 0, 0, 7])
+        receiver.receive(Self.rtp(sequence: 4, timestamp: 2, marker: true, payload: [38, 1, 128, 44]))
+        #expect(pictures == [[Data([38, 1, 128, 44])]])
+    }
+
+    @Test func networkVideoRejectsTruncatedAggregationAndOtherSources() {
+        let receiver = RemoteScreenRTPReceiver(source: 7)
+        var pictures: [[Data]] = []
+        receiver.onAccessUnit = { pictures.append($0.nals) }
+        receiver.receive(Data([128, 228, 0]))
+        receiver.receive(Self.rtp(sequence: 1, marker: true, payload: [38, 1, 128], source: 8))
+        receiver.receive(Self.rtp(sequence: 1, marker: true, payload: [96, 1, 0, 10, 38, 1]))
+        #expect(pictures.isEmpty)
+        receiver.receive(Self.rtp(sequence: 2, timestamp: 2, marker: true, payload: [96, 1, 0, 3, 38, 1, 128]))
+        #expect(pictures == [[Data([38, 1, 128])]])
+    }
+
+    private static func rtp(
+        sequence: UInt16, timestamp: UInt32 = 1, marker: Bool = false,
+        payload: [UInt8], source: UInt32 = 7
+    ) -> Data {
+        Data(
+            [128, marker ? 228 : 100, UInt8(truncatingIfNeeded: sequence >> 8), UInt8(truncatingIfNeeded: sequence)]
+                + RemoteScreenRTPReceiver.word(timestamp) + RemoteScreenRTPReceiver.word(source) + payload)
+    }
+
     @Test func postureCommandsUseIOKitSerializationAndConfirmedAngleThresholds() throws {
         for posture in DevicePosture.allCases {
             let data = try DevicePosturePayload.serialize(posture)
@@ -519,7 +590,7 @@ struct RemoteDeviceScreenTests {
         let stream = try RemoteScreenCaptureStream(target: .init(layer: layer), device: gpu)
         var events = stream.events.makeAsyncIterator()
         await #expect(throws: RemoteScreenError.self) { try await stream.snapshot() }
-        await stream.receive(try capturedFrame(width: 4, height: 2, bgra: [0x10, 0x20, 0x30, 0xFF]))
+        stream.receiveDecoded(try capturedFrame(width: 4, height: 2, bgra: [0x10, 0x20, 0x30, 0xFF]))
         guard case .frameSize(let size)? = await events.next() else { Issue.record("The first frame was not reported"); return }
         #expect(size == CGSize(width: 4, height: 2))
         layer.drawableSize = size

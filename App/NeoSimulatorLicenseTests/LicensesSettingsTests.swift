@@ -8,10 +8,16 @@ struct LicensesSettingsTests {
         let model = LicensesSettingsModel()
         #expect(model.issue == nil)
         let names = Set(model.libraries.map(\.name))
-        #expect(names.isSuperset(of: ["LicenseList", "ABIBridge", "ObservationBridge", "simslim"]))
+        #expect(
+            names.isSuperset(of: ["LicenseList", "ABIBridge", "ObservationBridge", "simslim", "simlock", "idevice"]))
         let simslim = try #require(model.libraries.first { $0.name == "simslim" })
         #expect(simslim.licenseBody.contains("Copyright (c) 2026 Interlap"))
         #expect(simslim.licenseBody.contains("Permission is hereby granted"))
+        for (name, author) in [("simlock", "Szymon Chmal"), ("idevice", "Jackson Coxson")] {
+            let library = try #require(model.libraries.first { $0.name == name })
+            #expect(library.licenseBody.contains(author))
+            #expect(library.licenseBody.contains("Permission is hereby granted"))
+        }
         #expect(model.libraries.allSatisfy { !$0.licenseBody.isEmpty })
 
         let controller = LicensesSettingsViewController(model: model)

@@ -3,8 +3,8 @@ import Metal
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 
-/// Shows a USB-connected device's primary display from its chosen screen-capture source,
-/// and sends input to the same CoreDevice device through its HID services.
+/// Shows a physical device's primary display from CoreDevice video or a chosen Mac capture source,
+/// and sends input to the same device through its HID services.
 @MainActor
 package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     private let remote: CoreDeviceRemoteScreenDevice
@@ -15,7 +15,18 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     private let framebuffer: RemoteScreenFramebuffer
     private let stream: RemoteScreenCaptureStream
     private let contentView: NSView
-    private let source: RemoteScreenCaptureSource
+    private enum Source {
+        case capture(RemoteScreenCaptureSource, CoreDeviceScreenConnection?)
+        case media(CoreDeviceNetworkVideo)
+
+        var connection: CoreDeviceScreenConnection? {
+            switch self {
+            case .capture(_, let connection): connection
+            case .media(let network): network.connection
+            }
+        }
+    }
+    private let source: Source
     private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
     private var observation: Task<Void, Never>?
     private var disconnecting: Task<Void, any Error>?
@@ -30,7 +41,21 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     package var canCaptureScreenshot: Bool { !stopped && !finished && frameSize != nil }
     package private(set) var canRecordScreen = false
 
-    package init(remote: CoreDeviceRemoteScreenDevice, source: RemoteScreenCaptureSource, contentView: NSView) async throws {
+    package convenience init(
+        remote: CoreDeviceRemoteScreenDevice, capture: RemoteScreenCaptureSource,
+        connection: CoreDeviceScreenConnection? = nil, contentView: NSView
+    ) async throws {
+        try await self.init(remote: remote, source: .capture(capture, connection), contentView: contentView)
+    }
+
+    package convenience init(
+        remote: CoreDeviceRemoteScreenDevice, connection: CoreDeviceScreenConnection, contentView: NSView
+    ) async throws {
+        try await self.init(
+            remote: remote, source: .media(CoreDeviceNetworkVideo(connection: connection)), contentView: contentView)
+    }
+
+    private init(remote: CoreDeviceRemoteScreenDevice, source: Source, contentView: NSView) async throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RemoteScreenError.unavailable("remote-screen-metal", "This Mac has no Metal device to show the device screen.")
         }
@@ -59,7 +84,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     package func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         try checkConnection()
         self.events = events
-        try await RemoteScreenCaptureStream.authorize()
+        if case .capture = source { try await RemoteScreenCaptureStream.authorize() }
         try Task.checkCancellation()
         try checkConnection()
         try capabilityObservation.start(update: { [weak self] removed in
@@ -90,10 +115,16 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
                 await self.receive(event)
             }
         }
-        try await stream.start(sourceID: source.uniqueID)
+        switch source {
+        case .capture(let source, _): try await stream.start(sourceID: source.uniqueID)
+        case .media(let network):
+            try await network.start(renderer: stream) { [weak self] error in
+                Task { @MainActor [weak self] in await self?.finish(error) }
+            }
+        }
         try Task.checkCancellation()
         try checkConnection()
-        // A running capture session establishes the screen; a delivered frame separately proves pixels arrived.
+        // An active source establishes the screen; a delivered frame separately proves pixels arrived.
         events(.connected)
     }
 
@@ -195,9 +226,14 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         if let disconnecting { try await disconnecting.value; return }
         let task = Task { [self] in
             var failure: (any Error)?
+            if case .media(let network) = source { await network.stop() }
             do { try await stream.stop() } catch { failure = error }
-            do { try await input.stop() }
-            catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
+            do { try await input.stop() } catch {
+                failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error
+            }
+            do { try await source.connection?.stop() } catch {
+                failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error
+            }
             if let failure { throw failure }
         }
         disconnecting = task

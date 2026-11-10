@@ -5,31 +5,60 @@ import Security
 
 @MainActor
 package enum CoreDeviceScreenTransport {
-    /// Opens the primary display through Screen Sharing or the device's chosen Mac capture source,
-    /// and an app-resize display through CoreDevice's media stream.
-    package static func make(_ device: CoreDeviceDevice, contentView: NSView, displayUniqueID: String?,
-                     captureSources: any RemoteScreenCaptureSourceCatalog) async throws -> any RemoteScreenTransport {
+    /// Opens the primary display through Screen Sharing, CoreDevice video, or a chosen Mac capture source,
+    /// and an app-resize display through CoreDevice's dedicated media stream.
+    package static func make(
+        _ device: CoreDeviceDevice, contentView: NSView, displayUniqueID: String?,
+        captureSources: any RemoteScreenCaptureSourceCatalog
+    ) async throws -> any RemoteScreenTransport {
         let remote = try await CoreDeviceRemoteScreenDevice(identifier: device.identifier)
         if displayUniqueID == nil, let url = try await remote.vncURL() {
             return try await ScreenSharingDeviceTransport(remote: remote, url: url, contentView: contentView)
+        }
+        if displayUniqueID == nil, device.kind == .physical {
+            let connection = try await CoreDeviceScreenConnection.prepare(remote: remote)
+            do {
+                if connection.supportsPrimaryStream {
+                    try await CoreDeviceRuntime.loadDeviceKit()
+                    return try await CoreDeviceCaptureTransport(
+                        remote: remote, connection: connection, contentView: contentView)
+                }
+                let source = try await captureSource(for: device, catalog: captureSources)
+                try await CoreDeviceRuntime.loadDeviceKit()
+                return try await CoreDeviceCaptureTransport(
+                    remote: remote, capture: source, connection: connection, contentView: contentView)
+            } catch {
+                do { try await connection.stop() } catch let cleanup {
+                    throw RemoteDeviceScreenSession.combining(error, cleanup: cleanup)
+                }
+                throw error
+            }
         }
         guard try remote.supports("com.apple.coredevice.feature.viewdevicescreen") else {
             throw RemoteScreenError.unavailable("remote-screen-capability", "The device does not currently expose a screen connection.")
         }
         guard let displayUniqueID else {
             // Capture sources do not reveal their device, so only an explicit choice selects one.
-            guard let source = captureSources.chosenSource(for: device.identifier) else {
-                throw RemoteScreenCaptureSourceError(reason: .unchosen)
-            }
-            try await captureSources.waitUntilConnected(source)
+            let source = try await captureSource(for: device, catalog: captureSources)
             try await CoreDeviceRuntime.loadDeviceKit()
-            return try await CoreDeviceCaptureTransport(remote: remote, source: source, contentView: contentView)
+            return try await CoreDeviceCaptureTransport(remote: remote, capture: source, contentView: contentView)
         }
         guard try hasMediaStreamEntitlement() else {
             throw RemoteScreenError.unavailable("remote-screen-entitlement", "This build of NeoSimulator cannot open the app's display because it lacks the video conferencing entitlement CoreDevice's display stream requires.")
         }
         try await CoreDeviceRuntime.loadDeviceKit()
-        return try await CoreDeviceMediaStreamTransport(remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
+        return try await CoreDeviceMediaStreamTransport(
+            remote: remote, contentView: contentView, displayUniqueID: displayUniqueID)
+    }
+
+    private static func captureSource(for device: CoreDeviceDevice, catalog: any RemoteScreenCaptureSourceCatalog)
+        async throws -> RemoteScreenCaptureSource
+    {
+        guard let source = catalog.chosenSource(for: device.identifier) else {
+            throw RemoteScreenCaptureSourceError(reason: .unchosen)
+        }
+        try await catalog.waitUntilConnected(source)
+        return source
     }
 
     /// Reads the device's primary display for its frame, without opening a screen connection.

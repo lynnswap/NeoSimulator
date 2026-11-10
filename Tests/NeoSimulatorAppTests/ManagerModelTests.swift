@@ -20,6 +20,33 @@ import IOSurface
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func aPairedPhysicalScreenCanPrepareDeveloperServicesBeforeAdvertisingScreenSupport() async throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "result": [
+                "devices": [
+                    [
+                        "identifier": "remote",
+                        "properties": [
+                            "hardware": ["fidelity": "physical"], "state": ["name": "Remote"],
+                            "connection": ["state": "disconnected"],
+                        ],
+                    ]
+                ]
+            ]
+        ])
+        let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: [device]))
+        manager.registry.stopReading()
+        await manager.refresh()
+        #expect(manager.canViewScreen(device))
+        let opens = AsyncStream<String>.makeStream()
+        manager.onOpenRemoteDevice = { opens.continuation.yield($0.identifier) }
+        var opened = opens.stream.makeAsyncIterator()
+        manager.openScreen(for: device)
+        #expect(await opened.next() == "remote")
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func connectionObservationRecoveryPreservesOtherObservationFailures() {
         let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
         model.registry.stopReading()
