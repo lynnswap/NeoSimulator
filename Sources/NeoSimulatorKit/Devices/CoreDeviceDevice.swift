@@ -123,6 +123,11 @@ package struct CoreDeviceDevice: Equatable, Sendable {
         }
     }
 
+    /// CoreDevice also exposes this capability before an unpaired device reports its hardware classification.
+    package var needsHostPairing: Bool {
+        pairingState != "paired" && capabilities.contains("com.apple.coredevice.feature.inititatepairing")
+    }
+
     /// A disconnected but discoverable device can expose the explicit connect operation.
     package var isAvailable: Bool { connectionState == "connected" || connectionState == "disconnected" }
 }

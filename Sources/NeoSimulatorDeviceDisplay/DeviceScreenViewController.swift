@@ -187,10 +187,15 @@ package final class DeviceScreenViewController: NSViewController, NSMenuItemVali
         let isOpening = device.map { model.openingDeviceIDs.contains($0.id) } == true
         let isShutdown: Bool
         if case .simulator(let simulator)? = device { isShutdown = simulator.state == "Shutdown" } else { isShutdown = false }
-        viewScreen.title = isOpening ? "Cancel Opening" : (isShutdown ? "Start" : "View Screen")
-        viewScreen.image = isShutdown ? nil : NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
+        let needsPairing = device.map(model.needsHostPairing) == true
+        viewScreen.title =
+            needsPairing ? "Pair" : (isOpening ? "Cancel Opening" : (isShutdown ? "Start" : "View Screen"))
+        viewScreen.image =
+            isShutdown || needsPairing
+            ? nil : NSImage(systemSymbolName: "rectangle.badge.person.crop", accessibilityDescription: nil)
         viewScreen.isHidden = device == nil
-        viewScreen.isEnabled = device.map(model.canViewScreen) ?? false
+        viewScreen.isEnabled =
+            device.map { needsPairing ? model.canPairWithHost($0) : model.canViewScreen($0) } ?? false
         viewScreen.toolTip = nil
     }
 

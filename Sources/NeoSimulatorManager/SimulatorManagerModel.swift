@@ -583,9 +583,41 @@ package final class SimulatorManagerModel {
             return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
         case .remote(let remote):
             return !holdsAllEdits && !queuedDeviceIDs.contains(device.id) && remote.isAvailable
+                && !remote.needsHostPairing
                 && (remote.kind == .virtualMachine || remote.kind == .physical
                     || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
         }
+    }
+
+    package func needsHostPairing(_ device: InventoryDevice) -> Bool {
+        if case .remote(let remote) = device { remote.needsHostPairing } else { false }
+    }
+
+    package func canPairWithHost(_ device: InventoryDevice) -> Bool {
+        guard case .remote(let remote) = device, remote.needsHostPairing,
+            remote.isAvailable, remote.pairingState != "pairing"
+        else { return false }
+        return canManage(.pair, deviceIDs: [device.id])
+    }
+
+    /// Owns the pairing operation through cancellation and refreshes the same record even if pairing fails.
+    package func pairWithHost(
+        _ device: InventoryDevice,
+        operation: @escaping @MainActor () async throws -> Void
+    ) {
+        guard canPairWithHost(device) else { return }
+        let request = UUID()
+        managementRequests[request] = ManagementRequest(action: .pair, identifiers: [device.id])
+        let task = Task {
+            defer {
+                self.managementRequests.removeValue(forKey: request)
+                self.reconcileDevicePostures()
+                self.applyPendingServiceProfiles()
+            }
+            do { try await operation() } catch is CancellationError {} catch { self.onError?(error) }
+            if !self.stopping { await self.refreshCatalog() }
+        }
+        managementRequests[request]?.task = task
     }
 
     /// Whether `action` applies to this selection, whatever is running now.

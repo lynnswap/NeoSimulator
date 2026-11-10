@@ -35,8 +35,10 @@ on the screen to touch it; scroll with two fingers on a trackpad to drag the
 screen's content, and pinch on the screen to pinch in the device's app.
 
 On iOS and iPadOS 27 or later, Neo uses the device's CoreDevice screen stream
-over USB or a paired Wi-Fi connection. Pair the device with this Mac in Xcode
-or Device Hub, keep it unlocked, and choose **View Screen**. Neo selects this
+over USB or a paired Wi-Fi connection. If the device is unpaired, choose **Pair**
+in its preview or device menu. Unlock it and approve trust on the device if asked;
+enter a pairing code in Neo only when the device requests one. A cancelled or failed
+attempt keeps **Pair** available. After pairing, choose **View Screen**. Neo selects this
 stream when the device reports support; no screen-source choice or Camera
 permission is needed.
 
