@@ -192,6 +192,25 @@ struct BackgroundServicesTests {
         #expect(update.services.state(of: try category("search")) == .enabled)
     }
 
+    @Test(arguments: [false, true])
+    func aFailedReadbackPreservesWhetherAChangeMayHaveRun(startsChange: Bool) async throws {
+        let launchd = FakeLaunchd()
+        let answering = launchd.backend()
+        let backend = SimulatorBackgroundServiceBackend(
+            launchctl: { arguments in
+                if ["print-disabled", "list"].contains(arguments[0]),
+                    !startsChange || launchd.commands.contains(where: { $0.first == "unload" })
+                {
+                    throw CocoaError(.fileReadUnknown)
+                }
+                return try await answering.launchctl(arguments)
+            }, jobPlists: answering.jobPlists, pause: { _ in }, productFamily: "iPhone")
+        let failure = try await #require(throws: SimulatorBackgroundServicesUpdateFailure.self) {
+            try await backend.update([.service("com.apple.searchd")], enabled: false)
+        }
+        #expect(failure.services == nil && failure.mayHaveChanged == startsChange)
+    }
+
     @Test func aFailedChangeReportsTheStateAfterTheAttempt() async throws {
         let search = Set(try category("search").services.map(\.label))
         let launchd = FakeLaunchd(refusing: ["com.apple.searchd"])

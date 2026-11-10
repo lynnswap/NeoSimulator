@@ -24,13 +24,8 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
     private let table = NSOutlineView()
     private let scroll = NSScrollView()
     private let status = NSHostingView(rootView: SidebarStatusView(content: .empty))
-    private let issue = NSTextField(wrappingLabelWithString: "")
-    private let issueStack = NSStackView()
-    private let activityStack = NSStackView()
-    private let activity = NSTextField(labelWithString: "")
-    private let progress = NSProgressIndicator()
     private let searchAccessory = NSSplitViewItemAccessoryViewController()
-    private let issueAccessory = NSSplitViewItemAccessoryViewController()
+    private lazy var issueAccessory = StatusAccessoryViewController { [weak self] in self?.model.retryInventory() }
     private let search = NSSearchField()
     private let thumbnails = DeviceThumbnailStore()
     private let deviceMenu = NSMenu(title: "Device Actions")
@@ -148,36 +143,6 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
         search.widthAnchor.constraint(equalTo: searchContainer.widthAnchor, constant: -24).isActive = true
         searchContainer.frame.size = NSSize(width: 260, height: search.fittingSize.height + 20)
         searchAccessory.view = searchContainer
-        issue.font = .systemFont(ofSize: 11)
-        issue.textColor = .secondaryLabelColor
-        issue.maximumNumberOfLines = 3
-        issue.lineBreakMode = .byTruncatingTail
-        let retry = NSButton(title: String(localized: "Try Again"), target: self, action: #selector(retryInventory(_:)))
-        retry.controlSize = .small
-        issueStack.orientation = .vertical
-        issueStack.alignment = .leading
-        issueStack.spacing = 6
-        issueStack.addArrangedSubview(issue)
-        issueStack.addArrangedSubview(retry)
-        progress.style = .spinning
-        progress.controlSize = .small
-        activity.font = .systemFont(ofSize: 11)
-        activity.textColor = .secondaryLabelColor
-        activity.lineBreakMode = .byTruncatingTail
-        activityStack.spacing = 6
-        activityStack.addArrangedSubview(progress)
-        activityStack.addArrangedSubview(activity)
-        let feedback = NSStackView(views: [activityStack, issueStack])
-        feedback.orientation = .vertical
-        feedback.alignment = .leading
-        feedback.spacing = 8
-        feedback.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
-        issue.widthAnchor.constraint(equalTo: feedback.widthAnchor, constant: -24).isActive = true
-        activityStack.widthAnchor.constraint(equalTo: feedback.widthAnchor, constant: -24).isActive = true
-        feedback.frame.size = NSSize(width: 260, height: 80)
-        issueAccessory.view = feedback
-        issueAccessory.automaticallyAppliesContentInsets = false
-        issueAccessory.isHidden = true
     }
 
     override package func viewDidLoad() {
@@ -442,15 +407,9 @@ package final class DeviceSidebarViewController: NSViewController, NSOutlineView
         status.isHidden = !rows.isEmpty
         scroll.isHidden = rows.isEmpty
         let hasInventory = !manager.inventory.isEmpty
-        let issue = manager.backgroundIssue
-        self.issue.stringValue = issue ?? ""
-        self.issue.toolTip = issue
-        issueStack.isHidden = issue == nil
-        let activity = manager.globalActivity
-        self.activity.stringValue = activity ?? ""
-        activityStack.isHidden = activity == nil
-        if hasInventory, activity != nil { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
-        issueAccessory.isHidden = !hasInventory || (issue == nil && activity == nil)
+        issueAccessory.update(
+            issue: hasInventory ? manager.backgroundIssue : nil,
+            activity: hasInventory ? manager.globalActivity : nil)
     }
 
     @objc private func retryInventory(_ sender: Any?) { model.retryInventory() }

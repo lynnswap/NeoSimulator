@@ -74,6 +74,12 @@ package final class InspectorModel {
     /// The one selected device, which every page describes.
     var device: DeviceModel? { manager.selection.device }
     var isManaging: Bool { device.map { manager.managingDeviceIDs.contains($0.id) } ?? false }
+    var backgroundIssue: String? { device.flatMap { manager.backgroundIssue(for: $0.id) } }
+
+    func retryBackgroundOperations() {
+        guard let identifier = device?.id else { return }
+        Task { [manager] in await manager.retryBackgroundOperations(for: identifier) }
+    }
     var showsDeviceInspector: Bool { isShown && (page == .reports || page == .info) }
     var showsServices: Bool { isShown && page == .services }
 
