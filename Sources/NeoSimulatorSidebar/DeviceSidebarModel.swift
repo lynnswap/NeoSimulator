@@ -22,10 +22,14 @@ package final class DeviceSidebarModel {
 
         func includes(_ device: InventoryDevice) -> Bool {
             switch self {
-            case .all: true
-            case .simulators: device.kind == .simulator
-            case .physical: device.kind == .physical
-            case .virtualMachines: device.kind == .virtualMachine
+            case .all: return true
+            case .simulators: return device.kind == .simulator
+            case .physical:
+                if device.kind == .physical { return true }
+                // Unpaired devices can omit their classification until this Mac has paired with them.
+                guard case .remote(let remote) = device, remote.kind == .other("unknown") else { return false }
+                return remote.needsHostPairing
+            case .virtualMachines: return device.kind == .virtualMachine
             }
         }
     }

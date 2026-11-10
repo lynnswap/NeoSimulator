@@ -61,19 +61,18 @@ struct ManagerModelTests {
             model: manager, screens: screens, menus: MenuController(application: nil))
         controller.window?.setFrameAutosaveName("")
         defer { controller.window?.close() }
+        controller.sidebar.model.kindFilter = .physical
+        #expect(controller.sidebar.model.filteredDevices.map(\.id) == [device.id])
         controller.selectDevice(device.id)
         let content = try #require(controller.window?.contentView)
         let button = try #require(inspectorViews(content).compactMap { $0 as? NSButton }.first { $0.title == "Pair" })
         #expect(button.isEnabled && !manager.canViewScreen(device))
-        let began = AsyncStream<Void>.makeStream()
         let resume = AsyncStream<Void>.makeStream()
-        var starts = began.stream.makeAsyncIterator()
         var attempts = 0
         var failures = 0
         manager.onError = { _ in failures += 1 }
         controller.deviceActions.pairRemoteDevice = { _, _ in
             attempts += 1
-            began.continuation.yield(())
             var replies = resume.stream.makeAsyncIterator()
             _ = await replies.next()
             if attempts == 1 {
@@ -82,8 +81,12 @@ struct ManagerModelTests {
             }
             await source.setDevices([paired])
         }
-        button.performClick(nil)
-        _ = await starts.next()
+        // The compact preview was created from an older paired snapshot.
+        let compact = try #require(screens.makeCompactPreview?(paired))
+        let compactPair = try #require(
+            inspectorViews(compact.view).compactMap { $0 as? NSButton }.first { $0.title == "Pair" })
+        compactPair.performClick(nil)
+        try await wait { attempts == 1 }
         #expect(!manager.canPairWithHost(device) && manager.managingDeviceIDs.contains(device.id))
         resume.continuation.yield(())
         try await wait { manager.canPairWithHost(device) }
@@ -93,7 +96,7 @@ struct ManagerModelTests {
         controller.deviceActions.populate(menu, devices: [device], includesViewScreen: false)
         let pair = try #require(menu.items.first { $0.title == "Pair" })
         #expect(NSApp.sendAction(try #require(pair.action), to: pair.target, from: pair))
-        _ = await starts.next()
+        try await wait { attempts == 2 }
         resume.continuation.yield(())
         try await wait {
             manager.inventory.first?.id == device.id && manager.canViewScreen(manager.inventory[0])

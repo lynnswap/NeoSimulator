@@ -112,7 +112,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
                 model: self.model, screens: self.screens, artworkCache: self.artworkCache, previewVerticalOffset: 24)
             preview.showPreview(of: device, selectionCount: 1)
             preview.onViewScreen = { [weak self] in
-                guard let self else { return }
+                guard let self, let device = self.model.inventory.first(where: { $0.id == device.id }) else { return }
                 if self.model.needsHostPairing(device) {
                     self.deviceActions.pairDevice(device, in: self.screens.compactWindow(for: device.id))
                 } else {
