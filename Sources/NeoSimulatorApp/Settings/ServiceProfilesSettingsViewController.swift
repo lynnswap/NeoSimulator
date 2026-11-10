@@ -113,7 +113,9 @@ final class ServiceProfilesSettingsViewController: NSSplitViewController, NSTabl
         defaultProfileMenu.target = self
         defaultProfileMenu.action = #selector(selectDefaultProfile(_:))
         defaultProfileMenu.setAccessibilityLabel(String(localized: "Default Profile", bundle: #bundle))
-        defaultProfileMenu.toolTip = String(localized: "Used at the next simulator start.", bundle: #bundle)
+        defaultProfileMenu.toolTip = String(
+            localized: "Updates running simulators using Use Default. Stopped simulators use it at their next start.",
+            bundle: #bundle)
         let defaultLabel = NSTextField(labelWithString: String(localized: "Default Profile", bundle: #bundle))
         defaultLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         defaultLabel.textColor = .secondaryLabelColor

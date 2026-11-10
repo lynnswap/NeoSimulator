@@ -20,7 +20,7 @@ final class BackgroundServicesProfileAccessoryViewController: NSSplitViewItemAcc
     override func loadView() {
         profileButton.target = self
         profileButton.action = #selector(chooseProfile)
-        profileButton.toolTip = "Applies at each simulator start while NeoSimulator is open."
+        profileButton.toolTip = "Applies immediately and at each simulator start while NeoSimulator is open."
         // Long profile names shorten the pop-up button's title, which takes the width the label leaves.
         profileButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let label = NSTextField(labelWithString: "Profile")

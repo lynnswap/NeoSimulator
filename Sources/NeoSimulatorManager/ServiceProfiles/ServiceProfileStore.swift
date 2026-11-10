@@ -216,9 +216,9 @@ private func reading<Value>(_ field: String, _ body: () throws -> Value) throws 
     do { return try body() } catch { throw FieldFailure(field: field, reason: error) }
 }
 
-/// Which profile a device takes at each boot.
+/// Which service profile a device uses.
 package enum ServiceProfileSelection: Codable, Hashable, Sendable {
-    /// The app-wide default profile, whichever it is at the next boot.
+    /// The app-wide default profile, including later changes to that choice.
     case inheritDefault
     case profile(UUID)
 }
@@ -374,7 +374,7 @@ package final class ServiceProfileStore {
             id: ServiceProfile.minimalID, name: String(localized: "Minimal"),
             configuration: ServiceConfiguration(disabledLabels: BackgroundServiceCatalog.builtIn.slimmable)))
     package var builtInProfiles: [ServiceProfile] { [allServices, minimal] }
-    /// What devices that inherit take at each boot.
+    /// The shared profile used by devices that inherit their selection.
     package private(set) var defaultProfileID = ServiceProfile.allServicesID
     private var devices: [DeviceInventoryID: DeviceServiceProfile] = [:]
     /// The categories that the app added, above the built-in ones.
@@ -382,8 +382,8 @@ package final class ServiceProfileStore {
     /// The custom categories above the built-in ones, which every profile and simulator switches.
     package private(set) var catalog = BackgroundServiceCatalog.builtIn
     package var customCategoryIDs: Set<String> { Set(customCategories.map(\.categoryID)) }
-    /// Receives every committed update. The predicate identifies definition edits that request application now;
-    /// choices and catalog edits alone preserve live services.
+    /// Receives every committed update. The predicate identifies shared definition or default changes that
+    /// request application of the device's effective configuration.
     @ObservationIgnored package var didChange:
         (@MainActor (_ requiresApplication: (DeviceInventoryID) -> Bool) -> Void)?
     private var state: State {
@@ -509,7 +509,7 @@ package final class ServiceProfileStore {
         if profile(id) == nil { throw Failure.missingProfile }
         var updated = state
         updated.defaultProfileID = id
-        try save(updated)
+        try save(updated, applyingProfileChanges: true)
     }
 
     @discardableResult
@@ -850,10 +850,14 @@ package final class ServiceProfileStore {
             for profile in builtInProfiles { profile.showCatalog() }
         }
         let defaultID = loaded.defaultProfileID ?? ServiceProfile.allServicesID
+        let defaultChanged = applyingProfileChanges && previous.defaultProfileID != defaultID
         if defaultProfileID != defaultID { defaultProfileID = defaultID }
         if devices != loaded.devices { devices = loaded.devices }
         let builtIn = builtInProfiles.map(\.record)
         didChange? { device in
+            if defaultChanged, (loaded.devices[device]?.selection ?? .inheritDefault) == .inheritDefault {
+                return true
+            }
             guard definitionsChanged else { return false }
             return previous.configuration(for: device, builtIn: builtIn)?.disabledLabels.intersection(catalog.slimmable)
                 != loaded.configuration(for: device, builtIn: builtIn)?.disabledLabels.intersection(catalog.slimmable)

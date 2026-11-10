@@ -909,7 +909,7 @@ package final class SimulatorManagerModel {
         } catch { onError?(error) }
     }
 
-    /// Boots and shared definition edits apply once management finishes. Failed writes report their readback and
+    /// Boots and shared profile changes apply once management finishes. Failed writes report their readback and
     /// wait for another edit, boot, or explicit choice rather than retrying automatically.
     private func applyPendingServiceProfiles() {
         guard !stopping else { return }

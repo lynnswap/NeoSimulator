@@ -364,16 +364,16 @@ Startup-profile selections and overrides survive simulator erases.
 
 Editing a profile in Settings or saving changes from the inspector applies it
 to running simulators that use it, including those inheriting it as the default.
-Their individual overrides remain in effect. A simulator being managed takes
+Changing the default profile also applies it to running simulators using
+**Use Default**. Simulators with an explicit profile selection keep their choice.
+Individual overrides remain in effect. A simulator being managed takes
 the update when that operation finishes; a stopped simulator takes it at its
 next start. If application fails, NeoSimulator reports the error and preserves
 the shared definition. Use **Revert** to reapply the selected profile when the
 device's services differ.
 
-Changing which profile is the default, by itself, leaves running simulators
-unchanged until their next start. Explicitly editing the new default's
-definition applies it to its current followers immediately. Selecting a
-simulator's Profile also applies it immediately when that simulator is running.
+Selecting a simulator's Profile also applies it immediately when that simulator
+is running.
 Automatic application works while NeoSimulator is open, including starts from
 Xcode. Opening NeoSimulator leaves already-running simulators unchanged.
 
