@@ -1106,6 +1106,11 @@ package final class SimulatorManagerModel {
 
     package func prepareForQuit() async throws {
         stopping = true
+        // Host pairing can wait for trust or a PIN; withdraw that interaction before draining accepted work.
+        for request in managementRequests.values
+        where request.action == .pair && request.identifiers.allSatisfy({ !$0.isSimulator }) {
+            request.task?.cancel()
+        }
         if connectionRetry != nil { synchronizationRequested = true }
         connectionRetry?.cancel()
         connectionRetry = nil

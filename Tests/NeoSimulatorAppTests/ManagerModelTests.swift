@@ -20,37 +20,38 @@ import IOSurface
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
-    @Test(arguments: [false, true])
-    func anUnpairedDeviceCanPairFromItsPreviewAndMenuAfterAnInterruptedAttempt(cancelled: Bool) async throws {
-        _ = NSApplication.shared
-        func record(paired: Bool) throws -> InventoryDevice {
-            let data = try JSONSerialization.data(withJSONObject: [
-                "result": [
-                    "devices": [
-                        [
-                            "identifier": "remote",
-                            "properties": [
-                                "hardware": paired ? ["fidelity": "physical"] : [:],
-                                "state": ["name": "Remote"],
-                                "connection": [
-                                    "state": "disconnected", "pairingState": paired ? "paired" : "unpaired",
-                                ],
+    private static func pairingDevice(paired: Bool) throws -> InventoryDevice {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "result": [
+                "devices": [
+                    [
+                        "identifier": "remote",
+                        "properties": [
+                            "hardware": paired ? ["fidelity": "physical"] : [:],
+                            "state": ["name": "Remote"],
+                            "connection": [
+                                "state": "disconnected", "pairingState": paired ? "paired" : "unpaired"
                             ],
-                            "capabilities": [
-                                [
-                                    "featureIdentifier": paired
-                                        ? "com.apple.coredevice.feature.viewdevicescreen"
-                                        : "com.apple.coredevice.feature.inititatepairing"
-                                ]
-                            ],
+                        ],
+                        "capabilities": [
+                            [
+                                "featureIdentifier": paired
+                                    ? "com.apple.coredevice.feature.viewdevicescreen"
+                                    : "com.apple.coredevice.feature.inititatepairing"
+                            ]
                         ]
                     ]
                 ]
-            ])
-            return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
-        }
-        let device = try record(paired: false)
-        let paired = try record(paired: true)
+            ]
+        ])
+        return .remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+    }
+
+    @Test(arguments: [false, true])
+    func anUnpairedDeviceCanPairFromItsPreviewAndMenuAfterAnInterruptedAttempt(cancelled: Bool) async throws {
+        _ = NSApplication.shared
+        let device = try Self.pairingDevice(paired: false)
+        let paired = try Self.pairingDevice(paired: true)
         let source = ManagerModelSource(devices: [device])
         let manager = SimulatorManagerModel(source: source)
         manager.registry.stopReading()
@@ -105,6 +106,52 @@ struct ManagerModelTests {
         #expect(manager.registry.device(for: device.id) === original)
         #expect(attempts == 2)
         try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
+    @Test(arguments: [false, true])
+    func aPairingCodeSheetCancelsWhenItsWindowClosesOrTheAppQuits(quitting: Bool) async throws {
+        _ = NSApplication.shared
+        let device = try Self.pairingDevice(paired: false)
+        guard case .remote(let remote) = device else { Issue.record("Expected the remote pairing fixture"); return }
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: [device]))
+        manager.registry.stopReading()
+        manager.terminationLimit = .seconds(1)
+        await manager.refresh()
+        var failures: [any Error] = []
+        manager.onError = { failures.append($0) }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        manager.pairWithHost(device) {
+            try await DevicePairingSheet.pair(
+                remote, in: window,
+                using: { _, prompt in
+                    _ = try await prompt(false, nil)
+                })
+        }
+        try await wait {
+            guard let content = window.attachedSheet?.contentView else { return false }
+            return inspectorViews(content).compactMap { $0 as? NSTextField }
+                .contains { $0.placeholderString == "Pairing Code" && !$0.isHidden && $0.isEnabled }
+        }
+        let panel = try #require(window.attachedSheet)
+        let content = try #require(panel.contentView)
+        let cancel = try #require(
+            inspectorViews(content).compactMap { $0 as? NSButton }
+                .first { $0.title == "Cancel" })
+        defer {
+            if cancel.target != nil { cancel.performClick(nil) }
+            window.close()
+        }
+        if quitting { try await manager.quitRenderer(keepingDevicesRunning: true) } else { window.close() }
+        try await wait { !manager.managingDeviceIDs.contains(device.id) && window.attachedSheet == nil }
+        #expect(failures.isEmpty)
+        if !quitting {
+            #expect(manager.canPairWithHost(device))
+            try await manager.quitRenderer(keepingDevicesRunning: true)
+        }
     }
 
     @Test func aPhysicalScreenMenuStopsSharingAndThenOffersViewScreen() async throws {

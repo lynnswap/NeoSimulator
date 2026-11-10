@@ -14,16 +14,24 @@ final class DevicePairingSheet: NSObject {
     private var response: CheckedContinuation<String, any Error>?
     private var cancelled = false
     private var cancelOperation: (() -> Void)?
+    private var parentCloseObserver: (any NSObjectProtocol)?
 
-    static func pair(_ device: CoreDeviceDevice, in window: NSWindow) async throws {
+    static func pair(
+        _ device: CoreDeviceDevice, in window: NSWindow,
+        using pair: @escaping @MainActor (String, @escaping CoreDeviceHostPairing.PINPrompt) async throws -> Void = {
+            try await CoreDeviceHostPairing.pair(identifier: $0, enteringPINUsing: $1)
+        }
+    ) async throws {
         let sheet = DevicePairingSheet(name: device.name, parent: window)
         let task = Task {
-            try await CoreDeviceHostPairing.pair(identifier: device.identifier) { [sheet] failed, delay in
+            try await pair(device.identifier) { [sheet] failed, delay in
                 try await sheet.readPIN(lastAttemptFailed: failed, retryDelay: delay)
             }
         }
         sheet.cancelOperation = { task.cancel() }
-        window.beginSheet(sheet.panel, completionHandler: { _ in })
+        window.beginSheet(sheet.panel) { [weak sheet] _ in
+            if sheet?.cancelOperation != nil { sheet?.cancel(nil) }
+        }
         defer {
             sheet.cancelOperation = nil
             sheet.finishPIN(.failure(CancellationError()))
@@ -44,6 +52,11 @@ final class DevicePairingSheet: NSObject {
             styleMask: [.titled], backing: .buffered, defer: true)
         panel.title = "Pair with \(name)"
         super.init()
+        parentCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: parent, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.cancel(nil) }
+        }
         code.placeholderString = "Pairing Code"
         code.setAccessibilityLabel("Pairing Code")
         code.isHidden = true
@@ -108,6 +121,7 @@ final class DevicePairingSheet: NSObject {
     }
 
     @objc private func cancel(_ sender: Any?) {
+        guard !cancelled else { return }
         cancelled = true
         cancelOperation?()
         finishPIN(.failure(CancellationError()))
@@ -118,6 +132,10 @@ final class DevicePairingSheet: NSObject {
         guard let response else { return }
         self.response = nil
         response.resume(with: result)
+    }
+
+    isolated deinit {
+        if let parentCloseObserver { NotificationCenter.default.removeObserver(parentCloseObserver) }
     }
 
     private func close() {
