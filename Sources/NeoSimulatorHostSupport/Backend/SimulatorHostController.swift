@@ -244,7 +244,7 @@ package actor SimulatorHostController {
         try await operation(.independent) {
             let selection = try await self.hostSessionStatus()
             return SimulatorHostStatus(
-                host: self.allowsSessionHosting ? .neo : .deviceHub,
+                host: selection.allowsAutomaticHosting ? .neo : .deviceHub,
                 preferredHost: self.preferredHost,
                 restorationAvailable: selection.restorationAvailable,
                 rendererRunning: try await !self.registeredRenderers().isEmpty
@@ -515,9 +515,10 @@ package actor SimulatorHostController {
                                 purpose: SimulatorPresentationContext.Purpose) async throws {
         let open = try await prepareOpen(of: deviceID) { startingRenderer in
             try Task.checkCancellation()
+            let hosting = try await self.hostSessionStatus().allowsAutomaticHosting
             let renderers = try await self.registeredRenderers()
             let owner = renderers.first { $0.deviceIdentifiers.contains(deviceID) }
-            if self.preferredHost == .neo, self.allowsSessionHosting, let owner,
+            if self.preferredHost == .neo, hosting, let owner,
                xcodeURL.map({ self.sameURL($0, URL(fileURLWithPath: owner.xcodePath)) }) ?? true {
                 return {
                     try await Self.openRendererDevice(deviceID, in: owner, bootIfNeeded: bootIfNeeded, launchesRenderer: false) {
@@ -545,7 +546,7 @@ package actor SimulatorHostController {
                         }, launch: { try await self.launchDeviceHub(xcode: xcode) })
                 }
             }
-            if !self.allowsSessionHosting {
+            if !hosting {
                 guard startingRenderer else { return nil }
                 try await self.ensureNeoSession(xcodeURL: xcode.applicationURL)
             }
@@ -951,7 +952,8 @@ package actor SimulatorHostController {
     }
 
     private func ensureNeoSession(xcodeURL: URL) async throws {
-        guard !allowsSessionHosting else { return }
+        guard try await !hostSessionStatus().allowsAutomaticHosting else { return }
+        allowsSessionHosting = false
         try await beginHostSession(xcodeURL: xcodeURL)
         allowsSessionHosting = true
         awaitingDeviceHubExit = false
