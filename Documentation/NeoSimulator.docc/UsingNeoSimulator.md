@@ -19,8 +19,8 @@ a dash means running without a window. Hold Option to see runtime and device typ
 Select one or more devices and open **Device → Manage Selected Devices** or Control-click the
 selection for its management actions. Actions depend on the device's current
 state and supported capabilities. Rename and Clone apply to one device; select
-an iPhone and an Apple Watch from the same simulator set to pair them. Erase and
-Remove ask for confirmation. If an operation fails for part of a selection,
+an iPhone and an Apple Watch from the same simulator set to pair them. Reset Content
+and Settings, Remove, and physical-device Unpair ask for confirmation. If an operation fails for part of a selection,
 the error identifies those devices and any completed steps.
 
 Connected physical devices appear automatically. VMs offer Start, Shut Down,
@@ -79,6 +79,13 @@ selected device family, and it shows each runtime's build. If it shows
 **No Runtimes Available**, install a runtime for Duo in Xcode.
 
 ## Main and compact windows
+
+Control-click a device and choose **Open in New Window** or **Open in New Tab**
+to open its compact presentation without changing the main window's selection.
+If its screen is already open, the additional presentation connects to it;
+otherwise, choose **View Screen** in the new preview when ready. **Show in Finder**
+reveals a simulator's directory or opens Device Hub's Finder destination for a
+paired physical device.
 
 Double-click a device or choose **Open Compact Window** in the main toolbar to
 open its compact window immediately and start or connect the device automatically.

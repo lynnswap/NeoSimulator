@@ -100,6 +100,30 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         super.init(window: window)
         sidebar.onSelectionChange = { [weak self] in self?.sidebarSelectionChanged(byUser: $0) }
         sidebar.onOpenCompactScreen = { [weak self] in self?.openCompactScreen(for: $0) }
+        deviceActions.openDeviceWindow = { [weak self] device, origin, asTab in
+            guard let self else { return }
+            self.screens.prepareCompactWindow(for: device)
+            if self.screens.screen(for: device.id) != nil {
+                Task {
+                    do {
+                        try await self.screens.showCompactWindow(
+                            for: device.id,
+                            while: {
+                                !self.screens.isQuitting && self.screens.compactWindow(for: device.id) != nil
+                            })
+                    } catch is CancellationError {} catch { self.onError?(error) }
+                }
+            }
+            if let destination = self.screens.compactWindow(for: device.id) {
+                if asTab {
+                    let anchor = origin === destination ? self.window : origin
+                    if let anchor, anchor !== destination { anchor.addTabbedWindow(destination, ordered: .above) }
+                } else if (destination.tabbedWindows?.count ?? 0) > 1 {
+                    destination.moveTabToNewWindow(nil)
+                }
+                destination.makeKeyAndOrderFront(nil)
+            }
+        }
         screens.onCompactWindowClosed = { [weak self] identifier in
             guard let self, self.selectedIdentifiers == [identifier], self.presentationIntent.placement == .compact
             else { return }
@@ -116,7 +140,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
                 if self.model.needsHostPairing(device) {
                     self.deviceActions.pairDevice(device, in: self.screens.compactWindow(for: device.id))
                 } else {
-                    self.model.toggleScreen(for: device)
+                    self.model.toggleScreen(for: device, revealingInMainWindow: false)
                 }
                 self.screens.compactWindow(for: device.id)?.makeKeyAndOrderFront(nil)
             }
