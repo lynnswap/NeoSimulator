@@ -2016,7 +2016,7 @@ struct ManagerModelTests {
         let tabs = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "DeviceInspector" }?.view as? NSSegmentedControl)
         let categories = try #require(inspectorViews(accessory.view).compactMap { $0 as? NSSegmentedControl }.first)
         let searchAccessory = try #require(
-            inspector.bottomAlignedAccessoryViewControllers.compactMap {
+            inspector.topAlignedAccessoryViewControllers.compactMap {
                 $0 as? BackgroundServicesActionsAccessoryViewController
             }.first)
         let profileAccessory = try #require(
@@ -5483,7 +5483,7 @@ struct ManagerModelTests {
         let scrollFrame = scroll.convert(scroll.bounds, to: controller.view)
         #expect(scrollFrame == controller.view.bounds)
         #expect(scroll.contentInsets.top == scroll.safeAreaInsets.top)
-        #expect(scroll.contentInsets.bottom > 0)
+        #expect(scroll.contentInsets.bottom == scroll.safeAreaInsets.bottom)
         let origin = scroll.contentView.bounds.origin
         scroll.contentView.scroll(to: NSPoint(x: 0, y: outlineView.rect(ofRow: 0).minY - scroll.contentInsets.top / 2))
         scroll.reflectScrolledClipView(scroll.contentView)
@@ -5493,9 +5493,12 @@ struct ManagerModelTests {
         scroll.contentView.scroll(to: origin)
         scroll.reflectScrolledClipView(scroll.contentView)
         #expect(outline.view.bounds.height > 100)
-        #expect(pane.bottomAlignedAccessoryViewControllers.first === accessory)
+        #expect(pane.topAlignedAccessoryViewControllers.count == 2)
+        #expect(pane.topAlignedAccessoryViewControllers.last === accessory)
+        #expect(pane.bottomAlignedAccessoryViewControllers.isEmpty)
         let searchFrame = accessory.view.convert(accessory.view.bounds, to: nil)
-        #expect(searchFrame.minY == window.contentLayoutRect.minY)
+        let profileFrame = controller.profileAccessory.view.convert(controller.profileAccessory.view.bounds, to: nil)
+        #expect(searchFrame.maxY <= profileFrame.minY)
         let columnWidth = try #require(outline.outline.tableColumns.first).width
         outline.outline.expandItem(category)
         view.layoutSubtreeIfNeeded()
