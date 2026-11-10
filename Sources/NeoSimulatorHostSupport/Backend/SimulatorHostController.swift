@@ -202,7 +202,7 @@ package actor SimulatorHostController {
     let reads = CommandReads()
     private var hasBegunSession = false
     private var allowsSessionHosting = false
-    private var deviceHubXcodes: Set<URL> = []
+    private var awaitingDeviceHubExit = false
     private var screenOpenTasks: [DeviceInventoryID: (id: UUID, task: Task<Void, any Error>)] = [:]
     private var connectionSynchronization: Task<Bool, any Error>?
     private struct AcceptedOperation {
@@ -252,7 +252,7 @@ package actor SimulatorHostController {
             self.hasBegunSession = true
             try await self.beginHostSession(xcodeURL: xcode.applicationURL)
             self.allowsSessionHosting = true
-            self.deviceHubXcodes = []
+            self.awaitingDeviceHubExit = false
         }
     }
 
@@ -260,7 +260,7 @@ package actor SimulatorHostController {
     package func endSession() async throws {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) {
-            self.deviceHubXcodes = []
+            self.awaitingDeviceHubExit = false
             guard self.hasBegunSession else {
                 try await self.deviceHubCompanions?.stop()
                 return
@@ -361,7 +361,7 @@ package actor SimulatorHostController {
                 throw handoffError
             }
             self.allowsSessionHosting = false
-            self.deviceHubXcodes.insert(xcode.applicationURL.standardizedFileURL.resolvingSymlinksInPath())
+            self.awaitingDeviceHubExit = true
             if let requestURL {
                 try await WorkspaceClient.openDeviceHubRequest(requestURL, at: xcode.deviceHubApplicationURL)
             }
@@ -370,9 +370,8 @@ package actor SimulatorHostController {
 
     package func deviceHubDidExit(xcodeURL: URL) async throws {
         try await operation(.hostTransition) {
-            guard self.deviceHubXcodes.remove(xcodeURL.standardizedFileURL.resolvingSymlinksInPath()) != nil,
-                self.deviceHubXcodes.isEmpty
-            else { return }
+            guard self.awaitingDeviceHubExit else { return }
+            self.awaitingDeviceHubExit = false
             try await self.beginHostSession(xcodeURL: xcodeURL)
             self.allowsSessionHosting = true
         }
@@ -402,7 +401,7 @@ package actor SimulatorHostController {
                 throw error
             }
             self.allowsSessionHosting = false
-            self.deviceHubXcodes = []
+            self.awaitingDeviceHubExit = false
         }
     }
 
@@ -897,7 +896,7 @@ package actor SimulatorHostController {
         hasBegunSession = true
         try await beginHostSession(xcodeURL: xcodeURL)
         allowsSessionHosting = true
-        deviceHubXcodes = []
+        awaitingDeviceHubExit = false
     }
 
     @concurrent

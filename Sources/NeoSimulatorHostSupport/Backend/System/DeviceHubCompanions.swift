@@ -15,6 +15,7 @@ package final class DeviceHubCompanions {
 
     package typealias ObserveExit = @MainActor (pid_t, @escaping @MainActor () -> Void) -> () -> Void
     private let observeExit: ObserveExit
+    private let runningDeviceHubs: @MainActor () -> [pid_t]
     private var deviceHubObservations: [URL: (pid: pid_t, cancel: () -> Void)] = [:]
     package var onDeviceHubExit: ((URL) -> Void)?
 
@@ -28,9 +29,18 @@ package final class DeviceHubCompanions {
     package var onOpenDeviceHub: ((URL, URL?) -> Void)?
     package var onError: ((any Error) -> Void)?
 
-    package init(rendererApplicationURL: URL, observeExit: ObserveExit? = nil) {
+    package init(
+        rendererApplicationURL: URL, observeExit: ObserveExit? = nil,
+        runningDeviceHubs: (@MainActor () -> [pid_t])? = nil
+    ) {
         rendererURL = rendererApplicationURL
         self.observeExit = observeExit ?? Self.observeProcessExit
+        self.runningDeviceHubs =
+            runningDeviceHubs ?? {
+                NSRunningApplication.runningApplications(withBundleIdentifier: ToolConstants.deviceHubBundleIdentifier)
+                    .filter { !$0.isTerminated && Self.companionOwner(processIdentifier: $0.processIdentifier) == nil }
+                    .map(\.processIdentifier)
+            }
     }
 
     package func observeDeviceHub(processIdentifier: pid_t, xcodeURL: URL) {
@@ -39,7 +49,12 @@ package final class DeviceHubCompanions {
         let cancel = observeExit(processIdentifier) { [weak self] in
             guard let self, self.deviceHubObservations[xcode]?.pid == processIdentifier else { return }
             self.deviceHubObservations.removeValue(forKey: xcode)?.cancel()
-            self.onDeviceHubExit?(xcode)
+            guard self.deviceHubObservations.isEmpty else { return }
+            if let remaining = self.runningDeviceHubs().first(where: { $0 != processIdentifier }) {
+                self.observeDeviceHub(processIdentifier: remaining, xcodeURL: xcode)
+            } else {
+                self.onDeviceHubExit?(xcode)
+            }
         }
         deviceHubObservations[xcode] = (processIdentifier, cancel)
     }

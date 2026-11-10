@@ -155,6 +155,18 @@ struct ManagerModelTests {
         try await manager.prepareForQuit()
     }
 
+    @Test func cancellingQuitResumesADeviceHubExitReceivedWhileStopping() async throws {
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        try await manager.prepareForQuit()
+        manager.deviceHubDidExit(xcodeURL: URL(filePath: "/Applications/Test Xcode.app"))
+        #expect(await !source.sessionEvents.contains("resume"))
+        manager.resumeAfterCancelledQuit()
+        try await wait { !manager.isBusy }
+        #expect(await source.sessionEvents.filter { $0 == "resume" }.count == 1)
+        try await manager.prepareForQuit()
+    }
+
     @Test func aThumbnailWaitsForTheBootedSimulatorsScreenAdapter() async throws {
         let adapter = NSObject()
         var reads = 0

@@ -190,6 +190,7 @@ package final class SimulatorManagerModel {
     @ObservationIgnored private var connectionRetryDelay: Duration = .seconds(1)
     @ObservationIgnored private var inventoryRefreshRequested = false
     @ObservationIgnored private var stopping = false
+    @ObservationIgnored private var pendingDeviceHubExits: Set<URL> = []
     /// The wait for accepted work that the first step of a quit starts and later steps join, until the quit is cancelled.
     @ObservationIgnored private var quitPreparation: Task<(any Error)?, Never>?
     /// How long accepted work has before a quit stops it. Nil uses `TerminationTimeout`.
@@ -330,9 +331,10 @@ package final class SimulatorManagerModel {
     }
 
     package func deviceHubDidExit(xcodeURL: URL) {
+        pendingDeviceHubExits.insert(xcodeURL)
         guard !stopping else { return }
         perform("Resuming simulator display…") {
-            guard !self.stopping else { return }
+            guard !self.stopping, self.pendingDeviceHubExits.remove(xcodeURL) != nil else { return }
             try await self.controller.deviceHubDidExit(xcodeURL: xcodeURL)
         }
     }
@@ -1081,6 +1083,7 @@ package final class SimulatorManagerModel {
         stopping = false
         quitPreparation = nil
         uninterruptedCommands.resumeAfterCancelledQuit()
+        for xcode in pendingDeviceHubExits { deviceHubDidExit(xcodeURL: xcode) }
         registry.resumeReading()
         applyPendingServiceProfiles()
         resumeConnectionSynchronization()

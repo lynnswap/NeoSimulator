@@ -1353,7 +1353,7 @@ struct HostModeControllerTests {
             observeExit: { pid, exited in
                 exits[pid] = exited
                 return { cancelled.insert(pid) }
-            })
+            }, runningDeviceHubs: { [] })
         companions.onDeviceHubExit = { recovered.append($0) }
         companions.observeDeviceHub(processIdentifier: 41, xcodeURL: xcode)
         companions.observeDeviceHub(processIdentifier: 42, xcodeURL: xcode)
@@ -1364,6 +1364,27 @@ struct HostModeControllerTests {
         exits[42]?()
         #expect(recovered == (stopping ? [] : [xcode]))
         #expect(cancelled == [41, 42])
+    }
+
+    @Test func deviceHubRecoveryWaitsForAnUntrackedHubFromAnotherXcode() {
+        let xcode = URL(filePath: "/Applications/Test Xcode.app")
+        var exits: [pid_t: @MainActor () -> Void] = [:]
+        var running: [pid_t] = [41, 42]
+        var recovered: [URL] = []
+        let companions = DeviceHubCompanions(
+            rendererApplicationURL: URL(filePath: "/Renderer.app"),
+            observeExit: { pid, exited in
+                exits[pid] = exited; return {}
+            },
+            runningDeviceHubs: { running })
+        companions.onDeviceHubExit = { recovered.append($0) }
+        companions.observeDeviceHub(processIdentifier: 41, xcodeURL: xcode)
+        exits[41]?()
+        #expect(recovered.isEmpty)
+        #expect(exits[42] != nil)
+        running = []
+        exits[42]?()
+        #expect(recovered == [xcode])
     }
 
     @Test func endingASessionDoesNotRequireAccessToAnXcodeInstallation() async throws {
