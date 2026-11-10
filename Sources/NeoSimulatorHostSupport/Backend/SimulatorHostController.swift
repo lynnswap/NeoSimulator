@@ -359,6 +359,7 @@ package actor SimulatorHostController {
                 do { try await self.beginHostSession(xcodeURL: xcode.applicationURL) }
                 catch {
                     self.invalidateHostAfterFailedChange(error)
+                    if SimulatorHostFailure(error).kind == .partialSuccess { self.preferredHost = .neo }
                     throw error
                 }
                 self.allowsSessionHosting = true
