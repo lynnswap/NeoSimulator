@@ -202,7 +202,8 @@ final class WorkspaceRecorder {
                 }
                 return applicationURL
             },
-            openDeviceHub: { applicationURL in
+            openDeviceHub: { xcode in
+                let applicationURL = xcode.deviceHubApplicationURL
                 self.events.append("open-device-hub")
                 self.openedDeviceHubs.append(applicationURL)
                 if let error = self.openDeviceHubError { throw error }

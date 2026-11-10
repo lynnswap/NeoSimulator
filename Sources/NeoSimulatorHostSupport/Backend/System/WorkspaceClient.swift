@@ -186,7 +186,7 @@ package struct WorkspaceClient: Sendable {
     package var terminateNeoHosts: @MainActor @Sendable (URL) async throws -> Int
     package var openNeoHost: @MainActor @Sendable (URL, URL, String?) async throws -> URL
 
-    package var openDeviceHub: @MainActor @Sendable (URL) async throws -> URL
+    package var openDeviceHub: @MainActor @Sendable (XcodeInstallation) async throws -> URL
     package var quitNeoHost: @MainActor @Sendable (URL, [RendererRegistration], Bool?) async throws -> Int
     package var prepareDeviceHubCompanionForXcode: @MainActor @Sendable (URL) async throws -> Void = { _ in }
     package var stopDeviceHubCompanions: @MainActor @Sendable () async throws -> Void = {}
@@ -320,8 +320,9 @@ package struct WorkspaceClient: Sendable {
                 }
             }
         },
-        openDeviceHub: { applicationURL in
-                try await deviceHubCompanions?.stop()
+        openDeviceHub: { xcode in
+            let applicationURL = xcode.deviceHubApplicationURL
+            try await deviceHubCompanions?.releaseBridges()
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.allowsRunningApplicationSubstitution = false
@@ -331,6 +332,8 @@ package struct WorkspaceClient: Sendable {
                   app.bundleURL.map(normalized) == normalized(applicationURL) else {
                 throw HostOperationError.configuration("device-hub-substitution", "LaunchServices opened an unexpected Device Hub application")
             }
+            deviceHubCompanions?.observeDeviceHub(
+                processIdentifier: app.processIdentifier, xcodeURL: xcode.applicationURL)
             // LaunchServices has already committed this external launch; it may be a shared instance.
             try Task.checkCancellation()
             return applicationURL

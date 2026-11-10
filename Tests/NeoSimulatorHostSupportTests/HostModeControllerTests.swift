@@ -466,7 +466,6 @@ struct HostModeControllerTests {
         #expect(deviceHub.receiptURL == nil)
         #expect(deviceHub.terminatedDeviceHubCount == 0)
         #expect(deviceHub.terminatedNeoHostCount == 1)
-        #expect(fixture.workspace.stoppedDeviceHubCompanions == 1)
         #expect(
             fixture.workspace.events
                 == [
@@ -486,7 +485,7 @@ struct HostModeControllerTests {
     }
 
     @Test(arguments: [StoredBoolean.absent, .falseValue, .trueValue])
-    func restoredCoreSimulatorRouteRequiresExplicitNeoSelection(suppression: StoredBoolean) async throws {
+    func restoringTheOriginalRouteDoesNotPreventTheNextNeoSession(suppression: StoredBoolean) async throws {
         let original = ManagedPreferenceState(xcodeSession: .trueValue, deviceHubAutoStartSuppression: suppression)
         let fixture = try ControllerFixture(initialState: original)
         _ = try await fixture.controller.use(suppression == .trueValue ? .deviceHub : .neo)
@@ -494,11 +493,8 @@ struct HostModeControllerTests {
         let restored = try await fixture.controller.routeStatus()
         #expect(restored.preferences == original)
         #expect(restored.receiptStatus == .unmanaged)
-        #expect(try await fixture.controller.selectionStatus().host == .deviceHub)
-        #expect(try await !fixture.controller.selectionStatus().allowsAutomaticHosting)
-        _ = try await fixture.controller.use(.neo)
-        #expect(try await fixture.controller.selectionStatus().host == .neo)
-        #expect(try await fixture.controller.selectionStatus().allowsAutomaticHosting)
+        _ = try await fixture.controller.beginSession()
+        #expect(try await fixture.controller.routeStatus().preferences == .neo)
     }
 
     @Test func restorePreservesExplicitFalseAndTrueValues() async throws {
@@ -676,6 +672,10 @@ struct HostModeControllerTests {
         }
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
         #expect(try fixture.receiptStore.load()?.original == .coreSimulator)
+        _ = try await fixture.controller.beginSession()
+        #expect(try await fixture.controller.routeStatus().preferences == .neo)
+        _ = try await fixture.controller.restore()
+        #expect(try await fixture.controller.routeStatus().preferences == .coreSimulator)
     }
 
     @Test func deviceHubModeDoesNotChangePreferencesWhenHostCannotClose() async throws {
@@ -969,7 +969,6 @@ struct HostModeControllerTests {
         #expect(fixture.workspace.openedNeoHosts.isEmpty)
         #expect(try await fixture.controller.routeStatus().preferences == .neo)
         _ = try await fixture.controller.restore()
-        #expect(fixture.workspace.stoppedDeviceHubCompanions == 1)
         #expect(try await fixture.controller.routeStatus().preferences == .deviceHub)
     }
 
@@ -1322,9 +1321,8 @@ struct HostModeControllerTests {
             ),
         ]
         fixture.runner.failPreferenceReads = true
-        let status = try await fixture.controller.selectionStatus()
+        let status = try await fixture.controller.sessionStatus()
 
-        #expect(status.host == .neo)
         #expect(status.allowsAutomaticHosting)
         #expect(!status.restorationAvailable)
         #expect(fixture.runner.calls.isEmpty)
@@ -1337,29 +1335,78 @@ struct HostModeControllerTests {
         )
     }
 
-    @Test func savedNeoSelectionAndRendererLaunchDoNotAccessOtherAppsPreferences() async throws {
+    @Test func sessionMetadataAndRendererLaunchDoNotAccessOtherAppsPreferences() async throws {
         let fixture = try ControllerFixture(initialState: .neo)
         _ = try await fixture.controller.use(.neo)
         #expect(try fixture.receiptStore.load() == nil)
         fixture.runner.failPreferenceReads = true
         let preferenceCalls = fixture.runner.calls.filter { $0.executable.path == "/usr/bin/defaults" }
 
-        let selection = try await fixture.controller.selectionStatus()
-        #expect(selection.host == .neo && selection.allowsAutomaticHosting)
-        try await fixture.controller.launch(selection.host, xcodeURL: nil)
+        let selection = try await fixture.controller.sessionStatus()
+        #expect(selection.allowsAutomaticHosting)
+        try await fixture.controller.launchNeoHost(xcodeURL: nil)
         #expect(Array(fixture.workspace.events.suffix(1)) == ["open-neo-host"])
         #expect(fixture.runner.calls.filter { $0.executable.path == "/usr/bin/defaults" } == preferenceCalls)
 
         // An explicit host change still reads the actual values and preserves failures.
         await #expect(throws: HostOperationError.self) { try await fixture.controller.use(.deviceHub) }
-        #expect(try await fixture.controller.selectionStatus().host == .neo)
+        #expect(try await fixture.controller.sessionStatus().allowsAutomaticHosting)
     }
 
-    @Test func beginningASessionAppliesThePreferenceWithoutOpeningAScreen() async throws {
+    @Test func beginningASessionIgnoresTheOldDisplayChoiceWithoutOpeningAScreen() async throws {
         let fixture = try ControllerFixture()
+        try FileManager.default.createDirectory(
+            at: fixture.receiptStore.directoryURL, withIntermediateDirectories: true)
+        try Data(SimulatorHost.deviceHub.rawValue.utf8).write(
+            to: fixture.receiptStore.directoryURL.appendingPathComponent("display-host.txt"))
         #expect(try await fixture.controller.beginSession() == .neo)
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
         #expect(fixture.workspace.events == ["terminate-device-hubs"])
+    }
+
+    @Test(arguments: [false, true])
+    func deviceHubExitObservationIgnoresReplacedAndCancelledProcesses(stopping: Bool) async throws {
+        let xcode = URL(filePath: "/Applications/Test Xcode.app")
+        var exits: [pid_t: @MainActor () -> Void] = [:]
+        var cancelled: Set<pid_t> = []
+        var recovered: [URL] = []
+        let companions = DeviceHubCompanions(
+            rendererApplicationURL: URL(filePath: "/Renderer.app"),
+            observeExit: { pid, exited in
+                exits[pid] = exited
+                return { cancelled.insert(pid) }
+            }, runningDeviceHubs: { [] })
+        companions.onDeviceHubExit = { recovered.append($0) }
+        companions.observeDeviceHub(processIdentifier: 41, xcodeURL: xcode)
+        companions.observeDeviceHub(processIdentifier: 42, xcodeURL: xcode)
+        exits[41]?()
+        #expect(recovered.isEmpty && cancelled == [41])
+        if stopping { try await companions.stop() }
+        exits[42]?()
+        exits[42]?()
+        #expect(recovered == (stopping ? [] : [xcode]))
+        #expect(cancelled == [41, 42])
+    }
+
+    @Test func deviceHubRecoveryWaitsForAnUntrackedHubFromAnotherXcode() {
+        let xcode = URL(filePath: "/Applications/Test Xcode.app")
+        var exits: [pid_t: @MainActor () -> Void] = [:]
+        var running: [pid_t] = [41, 42]
+        var recovered: [URL] = []
+        let companions = DeviceHubCompanions(
+            rendererApplicationURL: URL(filePath: "/Renderer.app"),
+            observeExit: { pid, exited in
+                exits[pid] = exited; return {}
+            },
+            runningDeviceHubs: { running })
+        companions.onDeviceHubExit = { recovered.append($0) }
+        companions.observeDeviceHub(processIdentifier: 41, xcodeURL: xcode)
+        exits[41]?()
+        #expect(recovered.isEmpty)
+        #expect(exits[42] != nil)
+        running = []
+        exits[42]?()
+        #expect(recovered == [xcode])
     }
 
     @Test func endingASessionDoesNotRequireAccessToAnXcodeInstallation() async throws {
@@ -1381,15 +1428,18 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load() == nil)
     }
 
-    @Test func aSavedDeviceHubPreferenceOverridesAStaleNeoReceiptWithoutOpeningDeviceHub() async throws {
+    @Test func openingDeviceHubDoesNotChangeTheNextNeoSession() async throws {
         let fixture = try ControllerFixture()
         _ = try await fixture.controller.beginSession()
-        try fixture.receiptStore.saveHostSelection(.deviceHub)
-        #expect(try await fixture.controller.selectionStatus().host == .deviceHub)
-        #expect(try await fixture.controller.beginSession() == .deviceHub)
-        #expect(fixture.workspace.stoppedDeviceHubCompanions == 1)
+        _ = try await fixture.controller.use(.deviceHub)
+        #expect(try await fixture.controller.beginSession() == .neo)
+        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .trueValue)
+        #expect(fixture.workspace.preparedDeviceHubXcodeURLs.count == 2)
+        #expect(fixture.workspace.openedDeviceHubs.count == 1)
+        _ = try await fixture.controller.restore()
         #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(fixture.workspace.openedDeviceHubs.isEmpty)
+        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
     @Test func legacyReceiptsSelectNeoWithoutReadingLivePreferencesAndPendingWritesDoNotAutoAttach() async throws {
@@ -1401,12 +1451,14 @@ struct HostModeControllerTests {
         receipt.expectedCurrent = .coreSimulator
         try fixture.receiptStore.withExclusiveLock { try fixture.receiptStore.save(receipt) }
         fixture.runner.failPreferenceReads = true
-        #expect(try await fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
-            restorationAvailable: true, allowsAutomaticHosting: true))
+        #expect(
+            try await fixture.controller.sessionStatus()
+                == SimulatorSessionStatus(restorationAvailable: true, allowsAutomaticHosting: true))
         receipt.pending = PendingMutation(before: .coreSimulator, target: .deviceHub)
         try fixture.receiptStore.save(receipt)
-        #expect(try await fixture.controller.selectionStatus() == SimulatorHostSelectionStatus(host: .neo,
-            restorationAvailable: true, allowsAutomaticHosting: false))
+        #expect(
+            try await fixture.controller.sessionStatus()
+                == SimulatorSessionStatus(restorationAvailable: true, allowsAutomaticHosting: false))
         #expect(!fixture.runner.calls.contains { $0.executable.path == "/usr/bin/defaults" })
     }
 

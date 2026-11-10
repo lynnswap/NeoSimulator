@@ -1,6 +1,6 @@
 # Architecture
 
-The manager app owns host selection, preference recovery, and device screens.
+The manager app owns display sessions, preference recovery, and device screens.
 Its embedded renderer processes own simulator boot, restart, and shutdown, and
 monitor manager termination independently of presentation windows.
 
@@ -27,19 +27,28 @@ Device Hub's automatic live views. On Xcode's headless route, stopping the last
 debug session shuts down a simulator that Xcode cold-booted. The normal route
 leaves that guest running.
 
-`display-host.txt` stores the preferred host separately. If absent, the manager
-uses a legacy receipt's intent or defaults to NeoSimulator. Startup applies the
-preference and checks for external changes, as do explicit host changes and
-restoration. Catalog reads and screen opening use local state.
+Each manager launch registers NeoSimulator's bridges and checks for external
+preference changes. There is no saved host choice; older `display-host.txt` files
+are ignored. The controller owns the preferred host for the current session;
+Settings changes it explicitly, and the next launch resets it to NeoSimulator.
+Quitting releases the bridges and keeps routing preferences in place. Catalog
+reads inspect only local recovery metadata.
 
-Automatic presentation requires a successfully applied preference in the current
-manager session. An interrupted transaction suspends attachment until a host
-change or restoration resolves it. Restoration ends automatic Neo hosting even
+Opening Device Hub directly temporarily releases the bridges. A process-exit
+source observes each opened Device Hub; when the last one quits, the manager
+reapplies the Neo route and registers its bridges if NeoSimulator remains preferred.
+A screen request can also resume that session. Explicitly selecting Device Hub
+keeps it preferred until another selection or the next manager launch. Restoration and quit cancel the exit observations so
+late events cannot reclaim routing after ownership has ended.
+
+Automatic presentation requires a successfully applied route in the current
+manager session. An interrupted transaction suspends attachment until a screen
+request or restoration resolves it. Restoration ends automatic Neo hosting even
 if the original preferences selected the CoreSimulator route.
 
-Host changes validate Xcode, managed preferences, Device Hub identity, and the
-renderer contract before recovering receipts or terminating processes. Selecting
-NeoSimulator configures the route, closes competing Device Hub instances, and
+Session transitions validate Xcode, managed preferences, Device Hub identity, and
+the renderer contract before recovering receipts or terminating processes. Starting
+a Neo session configures the route, closes competing Device Hub instances, and
 starts windowless display bridges and renderers as needed. Each bridge runs the
 bundled renderer in a separate mode that registers with LaunchServices for the
 selected Xcode's Device Hub path before AppKit starts. Xcode's device URLs reach
@@ -56,14 +65,14 @@ The manager and its renderers use this identity to distinguish bridges from
 competing hosts. A bridge that exits is replaced while hosting is active and
 exits when its manager dies. Xcode's Run requests retain the existing screen
 opening policy: only explicitly opened Neo screens are presented. Opening Device
-Hub normally, or choosing Devices and Simulators in Xcode, requests a host change
-and forwards any device-management URL after the bridge has exited.
-Selecting Device Hub stops bridges, closes managed
-renderers, changes the route, and opens Device Hub normally. Guests keep running.
+Hub normally, or choosing Devices and Simulators in Xcode, requests a temporary
+handoff and forwards any device-management URL after the bridge has exited.
+The handoff stops bridges, closes managed renderers, changes the route, and opens
+Device Hub normally. Guests keep running.
 
-Startup applies the preference before processing URL requests or restoring
-screens. Quitting closes screens, renderers, and bridges and ends automatic
-hosting, but keeps the route and restoration receipt. No background launch
+Startup applies the Neo route before processing URL requests or restoring
+screens. Quitting closes screens, renderers, and bridges, ends automatic hosting,
+and keeps the current routing settings and recovery receipt. No background launch
 service is installed. Startup closes orphaned bridges left by a previous
 manager before preparing new ones.
 

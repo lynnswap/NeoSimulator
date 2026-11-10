@@ -31,8 +31,10 @@ struct GeneralSettingsView: View {
                     Text("Device Hub").tag(SimulatorHost.deviceHub)
                 }
                 .disabled(!model.canSelectHost)
-                Text("NeoSimulator displays simulators while it is open. Your selected display host is kept after you quit. Choose Device Hub to use it for future Xcode runs.")
-                    .foregroundStyle(.secondary)
+                Text(
+                    "NeoSimulator is preferred each time it starts. Choose Device Hub to use it during this session. Quitting leaves the current Xcode routing settings in place."
+                )
+                .foregroundStyle(.secondary)
                 if model.offersNeoHost {
                     Button("Use NeoSimulator", action: model.useNeoHost)
                         .disabled(!model.canSelectHost)

@@ -16,7 +16,7 @@ NeoSimulator は、iPhone、iPad、Apple Watch、Apple TV、Apple Vision Pro に
 
 [Releases](https://github.com/lynnswap/NeoSimulator/releases) から DMG をダウンロードして開き、**NeoSimulator.app** を **Applications** にドラッグします。
 
-初期設定では、アプリの起動中に NeoSimulator でシミュレータを表示します。選んだ表示先の設定は終了後も維持します。表示先は **Settings → General → Preferred Display Host** で変更できます。
+起動時は毎回 NeoSimulator を優先します。その起動中に Device Hub を使いたい場合は、**Settings → General → Preferred Display Host** で選択できます。Device Hub を直接開いても選択は変わらず、NeoSimulator を選択していれば Device Hub の終了後に表示を引き継ぎます。NeoSimulator を終了しても Xcode の表示先設定は戻しません。
 
 ## ドキュメント
 

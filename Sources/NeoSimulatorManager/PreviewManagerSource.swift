@@ -31,7 +31,7 @@
         package nonisolated func stopReads() {}
         package nonisolated func resumeReads() {}
         package func status() -> SimulatorHostStatus {
-            .init(host: .neo, preferredHost: .neo, restorationAvailable: false, rendererRunning: false)
+            .init(host: .neo, restorationAvailable: false, rendererRunning: false)
         }
         package func backgroundServices(
             for device: InventoryDevice, catalog: BackgroundServiceCatalog
@@ -65,7 +65,9 @@
         package func xcodeURL(forDevice deviceID: DeviceInventoryID) throws -> URL {
             throw CocoaError(.featureUnsupported)
         }
-        package func selectHost(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) throws {
+        package func deviceHubDidExit(xcodeURL: URL) {}
+        package func selectHost(_ host: SimulatorHost, xcodeURL: URL?) {}
+        package func openDeviceHub(xcodeURL: URL, requestURL: URL?) throws {
             throw CocoaError(.featureUnsupported)
         }
         package nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
