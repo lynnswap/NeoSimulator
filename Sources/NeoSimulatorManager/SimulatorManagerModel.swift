@@ -152,13 +152,26 @@ package final class SimulatorManagerModel {
     package var progressingDeviceIDs: Set<DeviceInventoryID> {
         managingDeviceIDs.union(openingDeviceIDs).union(queuedDeviceIDs)
     }
-    package private(set) var backgroundIssue: String?
+    package var backgroundIssue: String? {
+        let postureIssues = inventory.compactMap { device -> String? in
+            guard devicePostures[device.id]?.state == .failed else { return nil }
+            return "Posture controls for \(device.name) are unavailable. Retry to reconnect."
+        }
+        let messages =
+            [backgroundUpdateIssue].compactMap { $0 }
+            + inventory.filter(\.canInspectBackgroundServices).compactMap { serviceProfileIssues[$0.id] }
+            + postureIssues
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+    private var backgroundUpdateIssue: String?
+    /// Failed automatic applications stay visible until that device stops or its profile applies successfully.
+    private var serviceProfileIssues: [DeviceInventoryID: String] = [:]
     /// What is known of each device, which this process's screens also use.
     package let registry: DeviceRegistry
     package let selection = ManagerSelection()
     package let serviceProfiles: ServiceProfileStore
     @ObservationIgnored private var bootTracker = SimulatorBootTracker()
-    /// Definition edits waiting for management, by the profile whose selection must remain unchanged.
+    /// Profile edits and retries waiting for management, by the profile whose selection must remain unchanged.
     @ObservationIgnored private var pendingServiceProfiles: [DeviceInventoryID: UUID] = [:]
     package private(set) var devicePostures: [DeviceInventoryID: DevicePostureModel] = [:]
     @ObservationIgnored private var postureStarts: [DeviceInventoryID: Task<Void, Never>] = [:]
@@ -451,7 +464,9 @@ package final class SimulatorManagerModel {
             do { try await posture.start() }
             catch is CancellationError {}
             catch {
-                if self?.devicePostures[identifier] === posture { self?.onError?(error) }
+                if self?.devicePostures[identifier] === posture {
+                    NSLog("NeoSimulator posture observation: %@", String(describing: error))
+                }
             }
         }
     }
@@ -714,6 +729,14 @@ package final class SimulatorManagerModel {
             await refresh()
             _ = await recovery
         } else { await refresh() }
+        guard !stopping else { return }
+        for device in inventory where serviceProfileIssues[device.id] != nil {
+            pendingServiceProfiles[device.id] = serviceProfiles.resolvedProfile(for: device.id)?.id
+        }
+        applyPendingServiceProfiles()
+        for identifier in Array(devicePostures.keys) where devicePostures[identifier]?.state == .failed {
+            await deviceScreenDidConnect(identifier)
+        }
     }
 
     private func refreshCatalog() async {
@@ -737,6 +760,9 @@ package final class SimulatorManagerModel {
                 return
             }
             bootTracker.observe(inventory)
+            serviceProfileIssues = serviceProfileIssues.filter {
+                registry.device(for: $0.key)?.canInspectBackgroundServices == true
+            }
             reconcileDevicePostures()
             inventoryIssues = registry.inventoryIssues
             updateInventoryIssue()
@@ -763,7 +789,10 @@ package final class SimulatorManagerModel {
 
     private func updateInventoryIssue() {
         if inventoryIssues.isEmpty, statusIssue == nil, observationIssue == nil, activeStateIssue == nil,
-           processObservationIssue == nil { backgroundIssue = nil }
+            processObservationIssue == nil
+        {
+            backgroundUpdateIssue = nil
+        }
         else {
             let observations = [observationIssue, processObservationIssue].compactMap { $0 }
             reportBackgroundError(InventoryReadError(issues: inventoryIssues, statusError: statusIssue,
@@ -928,18 +957,40 @@ package final class SimulatorManagerModel {
     }
 
     /// Queues what the device's choice resolves to now. A stopped device takes it at its next boot instead.
-    private func enqueueServiceConfiguration(for device: InventoryDevice) {
+    private func enqueueServiceConfiguration(for device: InventoryDevice, reportsFailureInSidebar: Bool = false) {
         guard device.canInspectBackgroundServices, let configuration = serviceProfiles.configuration(for: device.id),
               let model = registry.device(for: device.id) else { return }
+        let epoch = model.epoch
+        let completed: (Result<Void, any Error>) -> Void = { [weak self, model] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                if self.registry.device(for: device.id) === model, model.epoch == epoch {
+                    self.serviceProfileIssues[device.id] = nil
+                }
+            case .failure(let error):
+                if !reportsFailureInSidebar || self.stopping { self.onError?(error); return }
+                guard !(error is CancellationError) else { return }
+                NSLog(
+                    "NeoSimulator service profile for %@: %@", device.name,
+                    (error as? SimulatorHostFailure)?.technicalDetails ?? String(describing: error))
+                // An older boot's application must not leave a warning on a stopped or replacement device.
+                guard self.registry.device(for: device.id) === model, model.epoch == epoch,
+                    model.canInspectBackgroundServices
+                else { return }
+                self.serviceProfileIssues[device.id] =
+                    "The service profile could not be fully applied to \(device.name). Retry to apply it again."
+            }
+        }
         do {
             let write = try model.backgroundServices.accept(.configuration(configuration),
                                                             after: hold(of: device.id, waitsForAttach: false))
-            track(write, activity: "Applying service profile…", on: device.id)
-        } catch { onError?(error) }
+            track(write, activity: "Applying service profile…", on: device.id, completed: completed)
+        } catch { completed(.failure(error)) }
     }
 
     /// Boots and shared profile changes apply once management finishes. Failed writes report their readback and
-    /// wait for another edit, boot, or explicit choice rather than retrying automatically.
+    /// wait for another edit, boot, or explicit retry rather than retrying automatically.
     private func applyPendingServiceProfiles() {
         guard !stopping else { return }
         let listed = Set(inventory.map(\.id))
@@ -947,7 +998,7 @@ package final class SimulatorManagerModel {
         for device in inventory where device.canInspectBackgroundServices && !managingDeviceIDs.contains(device.id) {
             let booted = bootTracker.unappliedBoots.remove(device.id) != nil
             let edited = pendingServiceProfiles.removeValue(forKey: device.id) != nil
-            if booted || edited { enqueueServiceConfiguration(for: device) }
+            if booted || edited { enqueueServiceConfiguration(for: device, reportsFailureInSidebar: true) }
         }
     }
 
@@ -975,18 +1026,18 @@ package final class SimulatorManagerModel {
     }
 
     /// Reports the outcome of an accepted change, which later host work waits for in its device's order.
-    private func track(_ write: DeviceWrite, activity: String, on identifier: DeviceInventoryID) {
+    private func track(
+        _ write: DeviceWrite, activity: String, on identifier: DeviceInventoryID,
+        completed: ((Result<Void, any Error>) -> Void)? = nil
+    ) {
         acceptedWrites.append(AcceptedWrite(write: write, activity: activity, deviceID: identifier))
         publishQueueState()
         Task {
-            let result = await write.task.result
+            var result = await write.task.result
             self.acceptedWrites.removeAll { $0.write.id == write.id }
             self.publishQueueState()
-            if self.abandonedWrites.remove(write.id) != nil {
-                self.onError?(QuitOutcome.notRun(activity))
-            } else if case .failure(let error) = result {
-                self.onError?(error)
-            }
+            if self.abandonedWrites.remove(write.id) != nil { result = .failure(QuitOutcome.notRun(activity)) }
+            if let completed { completed(result) } else if case .failure(let error) = result { self.onError?(error) }
         }
     }
 
@@ -1102,10 +1153,10 @@ package final class SimulatorManagerModel {
 
     private func reportBackgroundError(_ error: any Error) {
         let message = error.localizedDescription
-        if backgroundIssue != message {
+        if backgroundUpdateIssue != message {
             NSLog("NeoSimulator: %@", (error as? SimulatorHostFailure)?.technicalDetails ?? String(describing: error))
         }
-        backgroundIssue = message
+        backgroundUpdateIssue = message
     }
 
     /// `device` is the one device the operation concerns; without one, it follows and holds the changes of every device.
