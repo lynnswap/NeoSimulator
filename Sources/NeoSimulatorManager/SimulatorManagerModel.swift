@@ -186,6 +186,7 @@ package final class SimulatorManagerModel {
     @ObservationIgnored package var onDeviceOpenRequested: ((DeviceInventoryID) -> Void)?
     @ObservationIgnored package var onScreenOpenFailure: ((DeviceInventoryID, any Error) -> Void)?
     @ObservationIgnored package var onOpenRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
+    @ObservationIgnored package var onStopRemoteDevice: ((CoreDeviceDevice) async throws -> Void)?
     @ObservationIgnored package var requestHostPreferenceAccess: (() async throws -> Void)?
     @ObservationIgnored package var retryDeviceObservation: (@MainActor () async -> Void)?
     @ObservationIgnored package var beforeStoppingScreens: (() async throws -> Void)?
@@ -438,6 +439,19 @@ package final class SimulatorManagerModel {
         }
     }
 
+    package func canStopScreenSharing(_ device: InventoryDevice) -> Bool {
+        guard case .remote = device else { return false }
+        return openDeviceScreens.contains(device.id) && !holdsAllEdits
+            && !queuedDeviceIDs.contains(device.id) && !managingDeviceIDs.contains(device.id)
+    }
+
+    package func stopScreenSharing(for device: InventoryDevice) {
+        guard canStopScreenSharing(device), case .remote(let remote) = device else { return }
+        perform("Stopping screen sharing…", device: device.id) {
+            try await self.onStopRemoteDevice?(remote)
+        }
+    }
+
     package func setOpenDeviceScreens(_ identifiers: Set<DeviceInventoryID>) {
         openDeviceScreens = identifiers
         reconcileDevicePostures()
@@ -569,7 +583,8 @@ package final class SimulatorManagerModel {
             return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
         case .remote(let remote):
             return !holdsAllEdits && !queuedDeviceIDs.contains(device.id) && remote.isAvailable
-                && (remote.kind == .virtualMachine || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
+                && (remote.kind == .virtualMachine || remote.kind == .physical
+                    || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
         }
     }
 

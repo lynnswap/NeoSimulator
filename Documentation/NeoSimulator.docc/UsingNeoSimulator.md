@@ -34,13 +34,19 @@ draws, and the frame's side buttons press the device's buttons. Click or drag
 on the screen to touch it; scroll with two fingers on a trackpad to drag the
 screen's content, and pinch on the screen to pinch in the device's app.
 
-Connect physical devices by cable. On first use, choose **Choose Screen Source…**
-and select the device's source; macOS does not identify which device each source
-shows. Neo remembers the choice. Duplicate names are numbered. To correct a
-choice, use **Device → Choose Screen Source…**.
+On iOS and iPadOS 27 or later, Neo uses the device's CoreDevice screen stream
+over USB or a paired Wi-Fi connection. Pair the device with this Mac in Xcode
+or Device Hub, keep it unlocked, and choose **View Screen**. Neo selects this
+stream when the device reports support; no screen-source choice or Camera
+permission is needed.
 
-Allow Camera access when prompted. If denied, enable NeoSimulator in
-**System Settings → Privacy & Security → Camera**, then choose **Try Again**.
+On older device OS versions, connect by USB and choose **Choose Screen Source…**
+on first use. Select the device's source; macOS does not identify which device
+each source shows. Neo remembers the choice. Duplicate names are numbered.
+To correct a choice, use **Device → Choose Screen Source…**.
+
+The USB capture source requires Camera access. If denied, enable NeoSimulator
+in **System Settings → Privacy & Security → Camera**, then choose **Try Again**.
 For an unavailable source, check the cable and try again.
 
 **File → New Simulator…** creates a device from the installed runtimes. For an
@@ -149,8 +155,11 @@ Control-click the close button or choose **File → Close Window…**
 (Control-Command-W), then **Keep Running**. The sheet can remember that choice.
 Reopen a detached device through Open Simulator or the device browser.
 
-Closing a physical-device or VM screen disconnects the screen and leaves the
-device running. Use **Device → Shut Down** to shut down a supported VM.
+Choose **Stop Screen Sharing** in a physical device's menu, or close its screen,
+to disconnect without stopping the device. Choose **View Screen** to reconnect.
+If sharing ends on the device, the screen offers **Connect** or **Try Again**.
+Closing a VM screen also leaves it running. Use **Device → Shut Down** to shut
+down a supported VM.
 
 Quitting normally shuts down simulators with open windows. **Quit NeoSimulator…**
 (Option-Command-Q) asks whether to keep them running. Settings can change both

@@ -142,6 +142,13 @@ package final class CoreDeviceScreenInput {
     }
 
     package func stop() async throws {
+        if try await !remote.isConnected() {
+            // CoreDevice invalidates this connection's input services on disconnect or unpairing.
+            discardInputs(for: [.keyboard, .pointer, .digitizer, .button, .gesture])
+            displayInput = nil
+            try await gestures.stop()
+            return
+        }
         var failure: (any Error)?
         do { try await releaseInputs() } catch { failure = error }
         if let displayInput {

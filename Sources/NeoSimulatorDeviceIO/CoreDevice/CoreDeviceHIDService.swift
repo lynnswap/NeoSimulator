@@ -12,13 +12,16 @@ package final class CoreDeviceHIDService {
     private let sendNative: (NativeSwiftValue) throws -> Void
     private let resetNative: () throws -> Void
     private let removeNative: () async throws -> Void
+    private let isConnected: () async throws -> Bool
     package private(set) var isRemoved = false
 
     package init(send: @escaping (NativeSwiftValue) throws -> Void, reset: @escaping () throws -> Void,
-         remove: @escaping () async throws -> Void) {
+        remove: @escaping () async throws -> Void, isConnected: @escaping () async throws -> Bool = { true }
+    ) {
         sendNative = send
         resetNative = reset
         removeNative = remove
+        self.isConnected = isConnected
     }
 
     /// Loads CoreDevice's own UniversalHID module, which `universalHIDType` then finds.
@@ -86,7 +89,8 @@ package final class CoreDeviceHIDService {
         return CoreDeviceHIDService(send: { report in
             try unsafe send.unsafeInvoke(on: implementation, report, serviceID)
         }, reset: { try unsafe reset.unsafeInvoke(on: implementation, serviceID) },
-           remove: { try await unsafe remove.unsafeInvoke(on: implementation, serviceID) })
+            remove: { try await unsafe remove.unsafeInvoke(on: implementation, serviceID) },
+            isConnected: { try await remote.isConnected() })
     }
 
     package static func touchscreenDescriptor(displayID: UInt32, uniqueID: String, runtime: ABIRuntime) async throws -> NativeSwiftValue {
@@ -136,10 +140,12 @@ package final class CoreDeviceHIDService {
 
     package func stop() async throws {
         guard !isRemoved else { return }
+        guard try await isConnected() else { isRemoved = true; return }
         var failure: (any Error)?
         do { try resetNative() } catch { failure = error }
         do { try await removeNative(); isRemoved = true }
         catch {
+            if (try? await isConnected()) == false { isRemoved = true; return }
             failure = failure.map { DeviceIOError.io("remote-screen-cleanup", "\($0.localizedDescription) Disconnecting the screen also failed: \(error.localizedDescription)") } ?? error
         }
         if let failure { throw failure }

@@ -257,12 +257,20 @@ complete destination and report any source left behind. Partial imports and
 device creation likewise report completed work.
 
 VMs use Screen Sharing when VNC is available, with its pasteboard sharing
-disabled. Physical devices use a user-selected AVFoundation capture source and
-Metal rendering, with CoreDevice supplying input, geometry, and supported
-recording operations. The manager requests Camera access. macOS does not identify
-which device a capture source shows, so the manager stores the user's choice in
-the `RemoteScreenCaptureSources` preference, keyed by CoreDevice identifier.
-A source belongs to at most one device; reconnecting fails if it does not return.
+disabled. Physical screens hold a CoreDevice usage assertion to keep developer
+services available. Devices reporting primary-display stream support use
+CoreDevice's media-stream negotiation and shared tunnel socket over USB or Wi-Fi.
+The receiver assembles HEVC RTP access units, requests keyframes after packet
+loss, and decodes with VideoToolbox into the existing Metal renderer. It receives
+video directly, so it does not need avconferenced's conferencing entitlement.
+
+Devices without primary-display stream support use the user-selected
+AVFoundation capture source and require Camera access. macOS does not identify
+which device a source shows, so the manager stores the user's choice in the
+`RemoteScreenCaptureSources` preference, keyed by CoreDevice identifier. A source
+belongs to at most one device; reconnecting fails if it does not return.
+Both video paths use CoreDevice for input, geometry, and supported recording
+operations. Shutdown stops the owned stream and releases its usage assertion.
 
 A remote screen keeps its frame independently of its transport. DeviceKit draws chrome and masks around the framebuffer without starting its own
 display stream. Side buttons send the chrome's declared HID usages. Trackpad
