@@ -1274,6 +1274,11 @@ struct RemoteDeviceScreenTests {
         #expect(decoded == report && decoded.optionalBindings.allSatisfy { $0.unverified == unchecked })
     }
 
+    @Test func finderBindingsPrepareWithoutOpeningADeviceOrFinder() async throws {
+        try await CoreDeviceRuntime.loadDeviceKit()
+        _ = try await DeviceKitFinder.Bindings(runtime: .shared)
+    }
+
     @Test func resizeGeometryBindingsPrepareWithoutADeviceOrAssertion() async throws {
         try await CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let bindings = try await CoreDeviceAppResizeTransport.Bindings(runtime: .shared)

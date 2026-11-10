@@ -5,21 +5,43 @@ import NeoSimulatorDeviceIO
 /// Uses the same Finder action as Device Hub for physical devices.
 @MainActor
 package enum DeviceKitFinder {
+    package typealias Completion = NativeSwiftClosure<@MainActor @Sendable (Result<Void, any Error>) -> Void>
+
+    package struct Bindings {
+        let make: NativeSwiftFunction<(UUID) async throws -> NativeSwiftValue>
+        let show: NativeSwiftMethod<(Completion) -> Void>
+
+        package init(runtime: ABIRuntime) async throws {
+            let type = try await runtime.resolve(.swift(.type("DeviceKit.ObservedDevice")))
+            make = try await type.resolve(
+                .swift(
+                    .initializer(
+                        "init(_:)", as: ((UUID) async throws -> NativeSwiftValue).self)))
+            let result = try await runtime.resolve(
+                .swift(
+                    .type(
+                        "Swift.Result",
+                        genericArguments: [
+                            .type(Void.self), .type((any Error).self),
+                        ])))
+            // Result is @frozen and passes its enum storage as integer chunks.
+            let size = MemoryLayout<Result<Void, any Error>>.size
+            let word = MemoryLayout<UInt>.size
+            let fields =
+                Array(repeating: NativeType.uint, count: size / word)
+                + Array(repeating: NativeType.uint8, count: size % word)
+            show = try await type.resolve(
+                .swift(
+                    .method(
+                        "showInFinder(completionHandler:)", as: ((Completion) -> Void).self,
+                        valueABIs: [result: try .structure(named: result.name, fields: fields)])))
+        }
+    }
+
     package static func showDevice(identifier: UUID) async throws {
         try await CoreDeviceRuntime.loadDeviceKit()
-        let type = try await ABIRuntime.shared.resolve(.swift(.type("DeviceKit.ObservedDevice")))
-        let make = try await type.resolve(
-            .swift(
-                .initializer(
-                    "init(_:)",
-                    as: ((UUID) async throws -> NativeSwiftValue).self)))
-        typealias Completion = NativeSwiftClosure<@MainActor @Sendable (Result<Void, any Error>) -> Void>
-        let show = try await type.resolve(
-            .swift(
-                .method(
-                    "showInFinder(completionHandler:)",
-                    as: ((Completion) -> Void).self)))
-        let device = try await unsafe make.unsafeInvoke(identifier)
+        let bindings = try await Bindings(runtime: .shared)
+        let device = try await unsafe bindings.make.unsafeInvoke(identifier)
         defer { withExtendedLifetime(device) {} }
         let reply = AsyncThrowingStream<Void, any Error>.makeStream()
         let body: @MainActor @Sendable (Result<Void, any Error>) -> Void = {
@@ -28,7 +50,7 @@ package enum DeviceKitFinder {
         }
         let callback = try await bridge(body).copyClosure(
             as: (@MainActor @Sendable (Result<Void, any Error>) -> Void).self)
-        try unsafe show.unsafeInvoke(on: device, callback)
+        try unsafe bindings.show.unsafeInvoke(on: device, callback)
         var responses = reply.stream.makeAsyncIterator()
         _ = try await responses.next()
         try Task.checkCancellation()
