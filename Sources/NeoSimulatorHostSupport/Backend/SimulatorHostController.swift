@@ -354,18 +354,17 @@ package actor SimulatorHostController {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) {
             let xcode = try await self.resolveXcode(xcodeURL)
-            do {
-                switch host {
-                case .neo:
-                    try await self.beginHostSession(xcodeURL: xcode.applicationURL)
-                    self.allowsSessionHosting = true
-                    self.awaitingDeviceHubExit = false
-                case .deviceHub:
-                    try await self.handoffToDeviceHub(xcode: xcode, requestURL: nil, resumesOnExit: false)
+            switch host {
+            case .neo:
+                do { try await self.beginHostSession(xcodeURL: xcode.applicationURL) }
+                catch {
+                    self.invalidateHostAfterFailedChange(error)
+                    throw error
                 }
-            } catch {
-                self.invalidateHostAfterFailedChange(error)
-                throw error
+                self.allowsSessionHosting = true
+                self.awaitingDeviceHubExit = false
+            case .deviceHub:
+                try await self.handoffToDeviceHub(xcode: xcode, requestURL: nil, resumesOnExit: false)
             }
             self.preferredHost = host
         }
