@@ -1,6 +1,7 @@
 import AppKit
 import NeoSimulatorCompactWindow
 import NeoSimulatorDeviceScreens
+import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import NeoSimulatorManager
@@ -20,6 +21,9 @@ final class DeviceActions: NSObject {
     /// The screen that the window shows, which takes a remote device's Lock command.
     private let liveScreen: () -> DeviceScreen?
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
+    var pairRemoteDevice: (CoreDeviceDevice, NSWindow) async throws -> Void = {
+        try await DevicePairingSheet.pair($0, in: $1)
+    }
 
     init(model: SimulatorManagerModel, window: NSWindow?, liveScreen: @escaping () -> DeviceScreen?) {
         self.model = model
@@ -31,7 +35,13 @@ final class DeviceActions: NSObject {
     {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
-        if devices.count == 1, model.canStopScreenSharing(devices[0]) {
+        if devices.count == 1, model.needsHostPairing(devices[0]) {
+            let item = NSMenuItem(title: "Pair", action: #selector(pairDeviceFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers, window: window)
+            item.isEnabled = model.canPairWithHost(devices[0])
+            menu.addItem(item)
+        } else if devices.count == 1, model.canStopScreenSharing(devices[0]) {
             let item = NSMenuItem(
                 title: "Stop Screen Sharing", action: #selector(stopScreenSharing(_:)), keyEquivalent: "")
             item.target = self
@@ -153,6 +163,18 @@ final class DeviceActions: NSObject {
             onNewCompanion?(simulator)
         case nil: break
         }
+    }
+
+    func pairDevice(_ device: InventoryDevice, in presentingWindow: NSWindow? = nil) {
+        guard case .remote(let remote) = device, let window = presentingWindow ?? window else { return }
+        model.pairWithHost(device) { try await self.pairRemoteDevice(remote, window) }
+    }
+
+    @objc private func pairDeviceFromMenu(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? ManagementRequest,
+            let device = model.inventory.first(where: { request.identifiers == [$0.id] })
+        else { return }
+        pairDevice(device, in: request.window)
     }
 
     @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {

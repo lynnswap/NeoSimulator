@@ -138,6 +138,7 @@ package final class SimulatorManagerModel {
         package let action: DeviceManagementAction?
         package let identifiers: Set<DeviceInventoryID>
         package var task: Task<Void, Never>?
+        var isHostPairing: Bool { action == .pair && identifiers.allSatisfy { !$0.isSimulator } }
     }
     private var managementRequests: [UUID: ManagementRequest] = [:]
     package private(set) var isBusy = false
@@ -583,9 +584,41 @@ package final class SimulatorManagerModel {
             return simulator.isAvailable && ["Booted", "Shutdown"].contains(simulator.state)
         case .remote(let remote):
             return !holdsAllEdits && !queuedDeviceIDs.contains(device.id) && remote.isAvailable
+                && !remote.needsHostPairing
                 && (remote.kind == .virtualMachine || remote.kind == .physical
                     || remote.capabilities.contains("com.apple.coredevice.feature.viewdevicescreen"))
         }
+    }
+
+    package func needsHostPairing(_ device: InventoryDevice) -> Bool {
+        if case .remote(let remote) = device { remote.needsHostPairing } else { false }
+    }
+
+    package func canPairWithHost(_ device: InventoryDevice) -> Bool {
+        guard case .remote(let remote) = device, remote.needsHostPairing,
+            remote.isAvailable, remote.pairingState != "pairingInProgress"
+        else { return false }
+        return canManage(.pair, deviceIDs: [device.id])
+    }
+
+    /// Owns the pairing operation through cancellation and refreshes the same record even if pairing fails.
+    package func pairWithHost(
+        _ device: InventoryDevice,
+        operation: @escaping @MainActor () async throws -> Void
+    ) {
+        guard canPairWithHost(device) else { return }
+        let request = UUID()
+        managementRequests[request] = ManagementRequest(action: .pair, identifiers: [device.id])
+        let task = Task {
+            defer {
+                self.managementRequests.removeValue(forKey: request)
+                self.reconcileDevicePostures()
+                self.applyPendingServiceProfiles()
+            }
+            do { try await operation() } catch is CancellationError {} catch { self.onError?(error) }
+            if !self.stopping { await self.refreshCatalog() }
+        }
+        managementRequests[request]?.task = task
     }
 
     /// Whether `action` applies to this selection, whatever is running now.
@@ -1074,6 +1107,10 @@ package final class SimulatorManagerModel {
 
     package func prepareForQuit() async throws {
         stopping = true
+        // Host pairing can wait for trust or a PIN; withdraw that interaction before draining accepted work.
+        for request in managementRequests.values where request.isHostPairing {
+            request.task?.cancel()
+        }
         if connectionRetry != nil { synchronizationRequested = true }
         connectionRetry?.cancel()
         connectionRetry = nil
@@ -1100,7 +1137,10 @@ package final class SimulatorManagerModel {
         var finished = await postures.ends(before: deadline)
         if let operationTask, await !operationTask.ends(before: deadline) { finished = false }
         for accepted in acceptedWrites where await !accepted.write.task.ends(before: deadline) { finished = false }
-        for task in managementRequests.values.compactMap(\.task) where await !task.ends(before: deadline) { finished = false }
+        // Cancelled trust/PIN interactions retain device ownership until CoreDevice replies, but cannot delay exit.
+        for request in managementRequests.values where !request.isHostPairing {
+            if let task = request.task, await !task.ends(before: deadline) { finished = false }
+        }
         var heldOpenings: Set<Task<Void, any Error>> = []
         for opening in openings where await !opening.ends(before: deadline) {
             heldOpenings.insert(opening)
@@ -1141,7 +1181,7 @@ package final class SimulatorManagerModel {
         for accepted in acceptedWrites where !abandonedWrites.contains(accepted.write.id) {
             if await !accepted.write.task.ends(before: deadline) { onError?(QuitOutcome.unknown(accepted.activity)) }
         }
-        for request in managementRequests.values {
+        for request in managementRequests.values where !request.isHostPairing {
             if let task = request.task, await !task.ends(before: deadline) {
                 onError?(QuitOutcome.unknown(request.action.map { "\($0)" } ?? "An inspector change"))
             }
