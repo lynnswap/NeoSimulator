@@ -96,6 +96,25 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         super.init(window: window)
         sidebar.onSelectionChange = { [weak self] in self?.sidebarSelectionChanged(byUser: $0) }
         sidebar.onOpenCompactScreen = { [weak self] in self?.openCompactScreen(for: $0) }
+        deviceActions.openDeviceWindow = { [weak self] device, origin, asTab in
+            guard let self else { return }
+            self.screens.prepareCompactWindow(for: device)
+            if self.screens.screen(for: device.id) != nil {
+                Task {
+                    do {
+                        try await self.screens.showCompactWindow(
+                            for: device.id,
+                            while: {
+                                !self.screens.isQuitting && self.screens.compactWindow(for: device.id) != nil
+                            })
+                    } catch is CancellationError {} catch { self.onError?(error) }
+                }
+            }
+            if asTab, let origin, let destination = self.screens.compactWindow(for: device.id), origin !== destination {
+                origin.addTabbedWindow(destination, ordered: .above)
+                destination.makeKeyAndOrderFront(nil)
+            }
+        }
         screens.onCompactWindowClosed = { [weak self] identifier in
             guard let self, self.selectedIdentifiers == [identifier], self.presentationIntent.placement == .compact
             else { return }

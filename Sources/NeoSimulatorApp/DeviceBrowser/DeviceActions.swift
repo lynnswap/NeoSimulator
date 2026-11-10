@@ -1,6 +1,7 @@
 import AppKit
 import NeoSimulatorCompactWindow
 import NeoSimulatorDeviceScreens
+import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import NeoSimulatorManager
@@ -20,6 +21,38 @@ final class DeviceActions: NSObject {
     /// The screen that the window shows, which takes a remote device's Lock command.
     private let liveScreen: () -> DeviceScreen?
     var onNewCompanion: ((SimulatorHostDevice) -> Void)?
+    var openDeviceWindow: ((InventoryDevice, NSWindow?, Bool) -> Void)?
+    var showDeviceInFinder: (InventoryDevice) async throws -> Void = { device in
+        switch device {
+        case .simulator(let simulator):
+            let root: URL
+            if let path = simulator.deviceSetPath {
+                root = URL(fileURLWithPath: path, isDirectory: true)
+            } else {
+                let xcode: URL
+                if let known = simulator.catalogXcodeURL ?? simulator.ownerXcodeURL {
+                    xcode = known
+                } else {
+                    xcode = try await CoreDeviceRuntime.uiXcodeURL()
+                }
+                let set = try await SimulatorDeviceSet.load(xcodeURL: xcode)
+                root = URL(fileURLWithPath: try await set.resolvedPath(), isDirectory: true)
+            }
+            let directory = root.appending(path: simulator.identifier, directoryHint: .isDirectory)
+            _ = try FileManager.default.attributesOfItem(atPath: directory.path)
+            NSWorkspace.shared.activateFileViewerSelecting([directory])
+        case .remote(let remote):
+            guard let identifier = UUID(uuidString: remote.identifier) else {
+                throw DeviceIOError.unavailable("device-finder", "The device has no CoreDevice UUID.")
+            }
+            try await DeviceKitFinder.showDevice(identifier: identifier)
+        }
+    }
+
+    private struct NavigationRequest {
+        let identifier: DeviceInventoryID
+        weak var window: NSWindow?
+    }
 
     init(model: SimulatorManagerModel, window: NSWindow?, liveScreen: @escaping () -> DeviceScreen?) {
         self.model = model
@@ -54,18 +87,10 @@ final class DeviceActions: NSObject {
             menu.addItem(item)
         }
         let name = devices.first?.name ?? ""
-        let sections: [[(String, DeviceManagementAction)]] = [
-            [("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy"))],
-            [
-                ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown), ("Restart", .restart),
-                ("Pause", .pause), ("Resume", .resume), ("Pair Simulators", .pair),
-            ],
-            [("Unpair", .unpair), ("Erase Content and Settings…", .erase), ("Remove…", .remove)],
-        ]
-        for section in sections {
+        func addManagement(_ section: [(String, DeviceManagementAction)], separated: Bool = true) {
             let operations = section.filter { model.supports($0.1, devices: devices) }
-            guard !operations.isEmpty else { continue }
-            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            guard !operations.isEmpty else { return }
+            if separated && !menu.items.isEmpty { menu.addItem(.separator()) }
             for (title, action) in operations {
                 let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
                 item.target = self
@@ -74,6 +99,41 @@ final class DeviceActions: NSObject {
                 menu.addItem(item)
             }
         }
+        addManagement([
+            ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown),
+            ("Restart", .restart), ("Pause", .pause), ("Resume", .resume),
+        ])
+        var hasFinder = false
+        if devices.count == 1 {
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            for (title, action) in [
+                ("Open in New Tab", #selector(openInNewTab(_:))),
+                ("Open in New Window", #selector(openInNewWindow(_:))),
+            ] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self
+                item.representedObject = NavigationRequest(identifier: devices[0].id, window: window)
+                item.isEnabled = openDeviceWindow != nil
+                menu.addItem(item)
+            }
+            hasFinder =
+                switch devices[0] {
+                case .simulator: true
+                case .remote(let remote): remote.pairingState == "paired"
+                }
+            if hasFinder {
+                menu.addItem(.separator())
+                let item = NSMenuItem(title: "Show in Finder", action: #selector(showInFinder(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = devices[0].id
+                menu.addItem(item)
+            }
+        }
+        addManagement([("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy"))], separated: !hasFinder)
+        let unpairTitle = devices.allSatisfy { if case .remote = $0 { true } else { false } } ? "Unpair…" : "Unpair"
+        addManagement([("Pair Simulators", .pair), (unpairTitle, .unpair)])
+        addManagement([("Reset Content and Settings…", .erase)])
+        addManagement([("Remove…", .remove)])
         if menu.items.isEmpty {
             let item = NSMenuItem(title: devices.isEmpty ? "No Devices Selected" : "No Actions Available", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -155,6 +215,25 @@ final class DeviceActions: NSObject {
         }
     }
 
+    @objc private func openInNewTab(_ sender: NSMenuItem) { openDeviceWindow(from: sender, asTab: true) }
+    @objc private func openInNewWindow(_ sender: NSMenuItem) { openDeviceWindow(from: sender, asTab: false) }
+
+    private func openDeviceWindow(from sender: NSMenuItem, asTab: Bool) {
+        guard let request = sender.representedObject as? NavigationRequest,
+            let device = model.inventory.first(where: { $0.id == request.identifier })
+        else { return }
+        openDeviceWindow?(device, request.window ?? window, asTab)
+    }
+
+    @objc private func showInFinder(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? DeviceInventoryID,
+            let device = model.inventory.first(where: { $0.id == identifier })
+        else { return }
+        Task {
+            do { try await showDeviceInFinder(device) } catch { model.onError?(error) }
+        }
+    }
+
     @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? DeviceInventoryID,
               let device = model.inventory.first(where: { $0.id == id }) else { return }
@@ -183,6 +262,8 @@ final class DeviceActions: NSObject {
         case .rename: presentNameEditor(for: devices[0], cloning: false, in: request.window)
         case .clone: presentNameEditor(for: devices[0], cloning: true, in: request.window)
         case .erase, .remove: confirmManagement(request.action, devices: devices, in: request.window)
+        case .unpair where devices.allSatisfy({ if case .remote = $0 { true } else { false } }):
+            confirmManagement(request.action, devices: devices, in: request.window)
         case .start:
             // A simulator starts as its screen opens, as Start on a stopped simulator's screen does.
             for device in devices where device.id.isSimulator { model.openScreen(for: device) }
@@ -266,15 +347,19 @@ final class DeviceActions: NSObject {
         let subject = devices.count == 1 ? "“\(devices[0].name)”" : "\(devices.count) devices"
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = removing ? "Remove \(subject)?" : "Erase \(subject)?"
-        if removing {
+        alert.messageText =
+            action == .unpair ? "Unpair \(subject)?" : removing ? "Remove \(subject)?" : "Erase \(subject)?"
+        if action == .unpair {
+            alert.informativeText =
+                "You will need to pair the selected devices with this Mac again before sharing their screens."
+        } else if removing {
             alert.informativeText = devices.contains { $0.kind == .virtualMachine }
                 ? "The selected devices and their stored data will be permanently removed. Removing a virtual machine also deletes its associated assets. This cannot be undone."
                 : "The selected devices and their data will be permanently removed. This cannot be undone."
         } else {
             alert.informativeText = "All content and settings on the selected devices will be permanently erased. This cannot be undone."
         }
-        alert.addButton(withTitle: removing ? "Remove" : "Erase")
+        alert.addButton(withTitle: action == .unpair ? "Unpair" : removing ? "Remove" : "Erase")
         alert.addButton(withTitle: "Cancel")
         alert.buttons[0].hasDestructiveAction = true
         alert.beginSheetModal(for: window) { [weak self] response in

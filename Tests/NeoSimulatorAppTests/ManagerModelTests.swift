@@ -1441,6 +1441,46 @@ struct ManagerModelTests {
         try await app.screens.stopAll()
     }
 
+    @Test(arguments: ["Booted", "Shutdown", "paired", "unpaired"])
+    func deviceMenusOfferNavigationForSimulatorAndPairingStates(state: String) async throws {
+        _ = NSApplication.shared
+        let device =
+            ["Booted", "Shutdown"].contains(state)
+            ? simulator(state: state)
+            : inspectedRemote(
+                pairingState: state,
+                features: state == "paired" ? ["renamedevice", "rebootdevice", "unpairdevice"] : [])
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: [device]))
+        manager.registry.stopReading()
+        await manager.refresh()
+        let actions = DeviceActions(model: manager, window: nil, liveScreen: { nil })
+        actions.openDeviceWindow = { _, _, _ in }
+        let menu = NSMenu()
+        actions.populate(menu, devices: [device], includesViewScreen: false)
+        let titles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+        #expect(titles.contains("Open in New Tab") && titles.contains("Open in New Window"))
+        #expect(titles.contains("Show in Finder") == (state != "unpaired"))
+        if state == "Booted" || state == "Shutdown" {
+            #expect(titles.contains("Start") == (state == "Shutdown"))
+            #expect(titles.contains("Shut Down") == (state == "Booted"))
+            #expect(titles.contains("Reset Content and Settings…") && titles.contains("Remove…"))
+        }
+        if state == "paired" {
+            #expect(titles.contains("Unpair…") && titles.contains("Restart"))
+            var shown: DeviceInventoryID?
+            var failure: String?
+            actions.showDeviceInFinder = {
+                shown = $0.id; throw SimulatorError.operation("Finder failed")
+            }
+            manager.onError = { failure = $0.localizedDescription }
+            let finder = try #require(menu.items.first { $0.title == "Show in Finder" })
+            #expect(NSApp.sendAction(try #require(finder.action), to: finder.target, from: finder))
+            try await wait { failure != nil }
+            #expect(shown == device.id && failure?.contains("Finder failed") == true)
+        }
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func aContextMenuLeavesTheSelectionAndPresentationOfAnyRow() async throws {
         _ = NSApplication.shared
         let devices = try CoreDeviceInventoryDecoder.decode(Data(#"{"result":{"devices":[{"identifier":"A","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"A"},"connection":{"state":"connected"}},"capabilities":[{"featureIdentifier":"com.apple.coredevice.feature.viewdevicescreen"}]},{"identifier":"B","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"B"}}}]}}"#.utf8))
@@ -1498,6 +1538,13 @@ struct ManagerModelTests {
         #expect(main.selectedIdentifiers == [aID] && outline.selectedRow == aRow)
         #expect(pane.liveDeviceIdentifier == aID && !bController.isEmbedded)
         #expect(model.selection.device?.id == aID && main.inspectorController.deviceInspector.inspection.device?.id == aID)
+        let menu = try #require(outline.menu)
+        let open = try #require(menu.items.first { $0.title == "Open in New Window" })
+        #expect(NSApp.sendAction(try #require(open.action), to: open.target, from: open))
+        let bWindow = try #require(app.screens.compactWindow(for: .coreDevice(b.identifier)))
+        #expect(bWindow.isVisible && main.selectedIdentifiers == [aID])
+        #expect(main.presentationIntent.revision == compactIntent.revision && aController.isEmbedded)
+        bWindow.close()
         try await aSession.stop()
         try await bSession.stop()
     }
@@ -1787,7 +1834,8 @@ struct ManagerModelTests {
         try await app.screens.stopAll()
     }
 
-    @Test func compactWindowKeepsBothPresentationsInteractive() async throws {
+    @Test(arguments: ["Open in New Window", "Open in New Tab"])
+    func compactWindowCommandsKeepBothPresentationsInteractive(command: String) async throws {
         _ = NSApplication.shared
         let devices = try CoreDeviceInventoryDecoder.decode(
             Data(
@@ -1824,7 +1872,10 @@ struct ManagerModelTests {
         try await main.presentConnectedScreen(identifier, purpose: .requested)
         let content = try #require(window.contentView)
         let outline = try #require(inspectorViews(content).compactMap { $0 as? NSOutlineView }.first)
-        #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
+        let menu = NSMenu()
+        main.deviceActions.populate(menu, devices: [.remote(device)], window: window)
+        let open = try #require(menu.items.first { $0.title == command })
+        #expect(NSApp.sendAction(try #require(open.action), to: open.target, from: open))
         let preparedWindow = try #require(app.screens.compactWindow(for: identifier))
         #expect(preparedWindow.isVisible)
         try await wait {
@@ -1835,7 +1886,12 @@ struct ManagerModelTests {
         let compact = try #require(app.screens.compactScreen(for: identifier))
         let additional = try #require(compact.commandTarget as? RemoteDeviceWindowController)
         #expect(additional.window === preparedWindow)
-        #expect(window.isVisible && additional.window?.isVisible == true)
+        #expect(additional.window?.isVisible == true)
+        if command == "Open in New Tab" {
+            #expect(window.tabbedWindows?.contains(where: { $0 === preparedWindow }) == true)
+        } else {
+            #expect(window.isVisible)
+        }
         #expect(main.deviceScreenViewController.liveScreen === screen && controller.isEmbedded)
         #expect(additional.session !== session && additional.session.contentView !== session.contentView)
         screen.perform("home")
@@ -2522,11 +2578,13 @@ struct ManagerModelTests {
 
     private static let inspectionResponse = #"{"result":{"properties":{"name":"Details"},"apps":[{"bundleIdentifier":"fixture.app","name":"Fixture"}],"configurationProfiles":[{"payloadIdentifier":"fixture.configuration","name":"Configuration"}],"provisioningProfiles":[{"uuid":"fixture.provisioning","name":"Provisioning"}],"files":[{"relativePath":"Fixture.ips","metadata":{},"resources":{"isDirectory":false}}]}}"#
 
-    private func inspectedRemote(_ identifier: String = "inspected-device", connection: String = "connected",
+    private func inspectedRemote(
+        _ identifier: String = "inspected-device", connection: String = "connected", pairingState: String = "paired",
                                  features: Set<String> = ["streamapplist", "configurationprofiles", "provisioningprofiles", "listFiles"]) -> InventoryDevice {
         .remote(CoreDeviceDevice(identifier: identifier, udid: nil, kind: .physical, name: identifier, reportedName: identifier,
             modelIdentifier: nil, modelName: nil, cpuType: nil, platform: "iOS", osVersion: nil, osBuild: nil, osBuildUpdate: nil,
-            connectionState: connection, pairingState: "paired", transportType: nil, bootState: "booted", preparednessState: nil,
+                connectionState: connection, pairingState: pairingState, transportType: nil, bootState: "booted",
+                preparednessState: nil,
             capabilities: Set(features.map { "com.apple.coredevice.feature." + $0 }), lastConnectedAt: nil, visibilityClass: nil))
     }
 
