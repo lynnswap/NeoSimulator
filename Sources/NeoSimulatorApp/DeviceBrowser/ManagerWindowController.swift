@@ -25,7 +25,11 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
         let pane = DeviceScreenViewController(model: model, screens: screens, artworkCache: artworkCache)
         pane.onViewScreen = { [weak self] in
             guard let self else { return }
-            sidebar.model.open(selectedDevices)
+            if selectedDevices.count == 1, model.needsHostPairing(selectedDevices[0]) {
+                deviceActions.pairDevice(selectedDevices[0])
+            } else {
+                sidebar.model.open(selectedDevices)
+            }
         }
         pane.onLiveScreenChange = { [weak self] in
             self?.updateLiveScreenToolbarItems()
@@ -132,8 +136,12 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
                 model: self.model, screens: self.screens, artworkCache: self.artworkCache, previewVerticalOffset: 24)
             preview.showPreview(of: device, selectionCount: 1)
             preview.onViewScreen = { [weak self] in
-                guard let self else { return }
-                self.model.toggleScreen(for: device, revealingInMainWindow: false)
+                guard let self, let device = self.model.inventory.first(where: { $0.id == device.id }) else { return }
+                if self.model.needsHostPairing(device) {
+                    self.deviceActions.pairDevice(device, in: self.screens.compactWindow(for: device.id))
+                } else {
+                    self.model.toggleScreen(for: device, revealingInMainWindow: false)
+                }
                 self.screens.compactWindow(for: device.id)?.makeKeyAndOrderFront(nil)
             }
             return preview
