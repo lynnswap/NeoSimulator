@@ -20,6 +20,45 @@ import IOSurface
 
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct ManagerModelTests {
+    @Test func aPhysicalScreenMenuStopsSharingAndThenOffersViewScreen() async throws {
+        _ = NSApplication.shared
+        let data = try JSONSerialization.data(withJSONObject: [
+            "result": [
+                "devices": [
+                    [
+                        "identifier": "remote",
+                        "properties": [
+                            "hardware": ["fidelity": "physical"], "state": ["name": "Remote"],
+                            "connection": ["state": "connected"],
+                        ],
+                    ]
+                ]
+            ]
+        ])
+        let device = InventoryDevice.remote(try #require(CoreDeviceInventoryDecoder.decode(data).first))
+        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: [device]))
+        manager.registry.stopReading()
+        await manager.refresh()
+        manager.setOpenDeviceScreens([device.id])
+        let stopped = AsyncStream<String>.makeStream()
+        manager.onStopRemoteDevice = {
+            manager.setOpenDeviceScreens([])
+            stopped.continuation.yield($0.identifier)
+        }
+        var stops = stopped.stream.makeAsyncIterator()
+        let actions = DeviceActions(model: manager, window: nil, liveScreen: { nil })
+        let menu = NSMenu()
+        actions.populate(menu, devices: [device], includesViewScreen: false)
+        let stop = try #require(menu.items.first { $0.title == "Stop Screen Sharing" })
+        #expect(NSApp.sendAction(try #require(stop.action), to: stop.target, from: stop))
+        #expect(await stops.next() == "remote")
+        try await wait { manager.canViewScreen(device) }
+        actions.populate(menu, devices: [device])
+        #expect(menu.items.contains { $0.title == "View Screen" })
+        #expect(!menu.items.contains { $0.title == "Stop Screen Sharing" })
+        try await manager.quitRenderer(keepingDevicesRunning: true)
+    }
+
     @Test func aPairedPhysicalScreenCanPrepareDeveloperServicesBeforeAdvertisingScreenSupport() async throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "result": [

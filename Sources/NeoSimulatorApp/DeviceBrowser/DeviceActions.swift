@@ -31,7 +31,13 @@ final class DeviceActions: NSObject {
     {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
-        if includesViewScreen, devices.count == 1, model.canViewScreen(devices[0]) {
+        if devices.count == 1, model.canStopScreenSharing(devices[0]) {
+            let item = NSMenuItem(
+                title: "Stop Screen Sharing", action: #selector(stopScreenSharing(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = devices[0].id
+            menu.addItem(item)
+        } else if includesViewScreen, devices.count == 1, model.canViewScreen(devices[0]) {
             let title = model.openingDeviceIDs.contains(devices[0].id) ? "Cancel Opening" : "View Screen"
             let item = NSMenuItem(title: title, action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
@@ -153,6 +159,13 @@ final class DeviceActions: NSObject {
         guard let id = sender.representedObject as? DeviceInventoryID,
               let device = model.inventory.first(where: { $0.id == id }) else { return }
         model.toggleScreen(for: device)
+    }
+
+    @objc private func stopScreenSharing(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? DeviceInventoryID,
+            let device = model.inventory.first(where: { $0.id == identifier })
+        else { return }
+        model.stopScreenSharing(for: device)
     }
 
     @objc private func lockDeviceFromMenu(_ sender: NSMenuItem) {

@@ -262,6 +262,12 @@ package final class CoreDeviceScreenConnection {
         return descriptor
     }
 
+    /// The sender's matching RTCP BYE confirms that this media stream has already ended remotely.
+    package func streamEnded() {
+        identifier = nil
+        stream = nil
+    }
+
     package func stop() async throws {
         if let stopping {
             guard await stopping.ends(before: .now + DeviceOperationLimit.captureStreamStop) else {
@@ -277,7 +283,7 @@ package final class CoreDeviceScreenConnection {
         let task = Task { [self] in
             _ = await preparing?.result
             _ = await starting?.result
-            if let identifier {
+            if let identifier, try await remote.isConnected() {
                 let type = try await remote.runtime.resolve(.swift(.type("CoreDevice.DeviceMediaStream.StopRequest")))
                 let abis: [NativeSwiftType: NativeType] = [type: try .opaque(named: type.name)]
                 let make = try await type.resolve(
@@ -291,10 +297,12 @@ package final class CoreDeviceScreenConnection {
                             "stopMediaStream(with:)",
                             as: ((NativeSwiftValue) async throws -> NativeSwiftValue).self, valueABIs: abis)))
                 let request = try unsafe make.unsafeInvoke(false, [identifier])
-                _ = try await unsafe stop.unsafeInvoke(on: remote.object, request)
-                self.identifier = nil
-                stream = nil
+                do { _ = try await unsafe stop.unsafeInvoke(on: remote.object, request) } catch {
+                    guard (try? await remote.isConnected()) == false else { throw error }
+                }
             }
+            self.identifier = nil
+            stream = nil
             if let assertion {
                 let release = try await assertion.type.resolve(
                     .swift(.method("releaseAssertion()", as: (() -> Void).self)))

@@ -90,6 +90,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                  splitViewAutosaveName: splitViewAutosaveName)
         controller.onError = { [weak self] error in self?.present(error) }
         model.onOpenRemoteDevice = { [weak self] device in try await self?.openRemoteScreen(device) }
+        model.onStopRemoteDevice = { [weak self] device in
+            try await self?.screens.stopRemoteScreens(for: [.coreDevice(device.identifier)])
+        }
         model.onDeviceOpenRequested = { [weak controller] identifier in controller?.showDevice(identifier) }
         controller.deviceActions.onNewCompanion = { [weak self] device in self?.showNewSimulator(pairingWith: device) }
         controller.onShowServiceProfile = { [weak self] in self?.showSettings(selectingServiceProfile: $0) }

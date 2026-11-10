@@ -155,8 +155,11 @@ Control-click the close button or choose **File → Close Window…**
 (Control-Command-W), then **Keep Running**. The sheet can remember that choice.
 Reopen a detached device through Open Simulator or the device browser.
 
-Closing a physical-device or VM screen disconnects the screen and leaves the
-device running. Use **Device → Shut Down** to shut down a supported VM.
+Choose **Stop Screen Sharing** in a physical device's menu, or close its screen,
+to disconnect without stopping the device. Choose **View Screen** to reconnect.
+If sharing ends on the device, the screen offers **Connect** or **Try Again**.
+Closing a VM screen also leaves it running. Use **Device → Shut Down** to shut
+down a supported VM.
 
 Quitting normally shuts down simulators with open windows. **Quit NeoSimulator…**
 (Option-Command-Q) asks whether to keep them running. Settings can change both

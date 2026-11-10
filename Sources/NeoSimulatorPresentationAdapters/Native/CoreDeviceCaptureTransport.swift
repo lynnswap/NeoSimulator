@@ -202,7 +202,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
             orientation: orientation)
     }
 
-    private func finish(_ error: any Error) async {
+    private func finish(_ error: (any Error)?) async {
         guard !stopped, !finished else { return }
         finished = true
         failure = error
@@ -210,9 +210,9 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         displayGeometry.stop()
         var failure = error
         do { try await disconnect() }
-        catch { failure = RemoteDeviceScreenSession.combining(failure, cleanup: error) }
+        catch { failure = failure.map { RemoteDeviceScreenSession.combining($0, cleanup: error) } ?? error }
         self.failure = failure
-        events?(.failure(failure))
+        if let failure { events?(.failure(failure)) } else { events?(.disconnected) }
     }
 
     private func checkConnection() throws {

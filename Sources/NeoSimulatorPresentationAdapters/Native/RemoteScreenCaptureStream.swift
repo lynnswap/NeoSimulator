@@ -4,6 +4,7 @@ import Metal
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import QuartzCore
+import Synchronization
 
 /// Presents a capture source's latest frame through Metal.
 ///
@@ -65,6 +66,17 @@ actor RemoteScreenCaptureStream {
     private let commands: any MTLCommandQueue
     private let textures: CVMetalTextureCache
     private let delegate = SampleBufferDelegate()
+    /// The lock bounds handoff while this actor is waiting for a drawable.
+    private struct DecodedFrames: Sendable {
+        var latest: DecodedFrame?
+        var enqueued = false
+        var accepting = true
+    }
+    /// Immutable decoder output, retained until the render queue and GPU finish reading it.
+    private struct DecodedFrame: @unchecked Sendable {
+        let buffer: CVPixelBuffer
+    }
+    private nonisolated let decodedFrames = Mutex(DecodedFrames())
     private var starting: CheckedContinuation<Void, any Error>?
     private var current: CVPixelBuffer?
     private var frameSize: CGSize?
@@ -168,6 +180,9 @@ actor RemoteScreenCaptureStream {
     private func beginShutdown() -> Task<Void, Never> {
         if let shutdown { return shutdown }
         stopped = true
+        decodedFrames.withLock {
+            $0.accepting = false; $0.latest = nil
+        }
         current = nil
         needsPresentation = false
         continuation.finish()
@@ -266,10 +281,26 @@ actor RemoteScreenCaptureStream {
         queue.async { [weak self] in self?.assumeIsolated(operation) }
     }
 
-    /// Decoder outputs stay retained until this queue and the GPU have finished reading them.
+    /// Keeps at most one pending decoder output while the render queue is busy.
     package nonisolated func receiveDecoded(_ buffer: CVPixelBuffer) {
-        nonisolated(unsafe) let frame = buffer
-        enqueue { $0.receive(frame) }
+        let enqueueFrame = decodedFrames.withLock { frames in
+            guard frames.accepting else { return false }
+            frames.latest = DecodedFrame(buffer: buffer)
+            guard !frames.enqueued else { return false }
+            frames.enqueued = true
+            return true
+        }
+        if enqueueFrame { enqueue { $0.receivePendingDecodedFrame() } }
+    }
+
+    private func receivePendingDecodedFrame() {
+        let frame = decodedFrames.withLock { frames in
+            let frame = frames.latest
+            frames.latest = nil
+            frames.enqueued = false
+            return frame
+        }
+        if let frame { receive(frame.buffer) }
     }
 
     nonisolated fileprivate func receiveOnQueue(_ sample: CMSampleBuffer) {

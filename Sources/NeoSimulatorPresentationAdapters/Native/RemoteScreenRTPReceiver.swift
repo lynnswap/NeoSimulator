@@ -12,6 +12,8 @@ package final class RemoteScreenRTPReceiver {
     /// Called when the pictures already in flight can no longer be trusted, so the decoder can ask
     /// for a fresh key frame instead of painting a torn one.
     var onLoss: () -> Void = {}
+    var onEnd: () -> Void = {}
+    private var ended = false
 
     private(set) var source: UInt32?
     private(set) var lossEvents = 0
@@ -54,13 +56,15 @@ package final class RemoteScreenRTPReceiver {
     private var now: TimeInterval { clock() }
 
     func receive(_ datagram: Data) {
+        guard !ended else { return }
         let header = Array(datagram.prefix(12))
-        guard header.count >= 12, header[0] >> 6 == 2 else { return }
-        // RTCP keeps its own sequence space and must never enter the RTP reorder buffer.
-        guard header[1] & 127 == Self.hevcPayloadType else {
+        guard header.count >= 4, header[0] >> 6 == 2 else { return }
+        // RTCP keeps its own sequence space; a standalone BYE may have only eight bytes.
+        if (192...223).contains(header[1]) {
             receiveInOrder(datagram)
             return
         }
+        guard header.count >= 12, header[1] & 127 == Self.hevcPayloadType else { return }
         let sender = Self.uint32(header, 8)
         guard source == nil || source == sender else { return }
         if source == nil { source = sender }
@@ -307,6 +311,16 @@ package final class RemoteScreenRTPReceiver {
                     lastSenderReport =
                         (Self.uint32(bytes, offset + 8) << 16) | (Self.uint32(bytes, offset + 12) >> 16)
                     lastSenderReportAt = now
+                }
+            }
+            if bytes[offset + 1] == 203, let source {
+                let count = Int(bytes[offset] & 31)
+                guard length >= 4 + count * 4 else { return }
+                if (0..<count).contains(where: { Self.uint32(bytes, offset + 4 + $0 * 4) == source }) {
+                    ended = true
+                    pending.removeAll()
+                    onEnd()
+                    return
                 }
             }
             offset += length

@@ -330,7 +330,7 @@ package enum CoreDeviceInventoryDecoder {
                 let values = try decoder.container(keyedBy: CodingKeys.self)
                 // The host's CoreDevice installation supplies these names, independently of the selected Xcode.
                 fidelity = try values.decodeIfPresent(String.self, forKey: .fidelity)
-                    ?? values.decode(String.self, forKey: .reality)
+                    ?? values.decodeIfPresent(String.self, forKey: .reality) ?? "unknown"
                 udid = try values.decodeIfPresent(String.self, forKey: .udid)
                 productType = try values.decodeIfPresent(String.self, forKey: .productType)
                 marketingName = try values.decodeIfPresent(String.self, forKey: .marketingName)

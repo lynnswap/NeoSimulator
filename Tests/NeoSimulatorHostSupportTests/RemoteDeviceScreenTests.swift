@@ -17,6 +17,52 @@ import XPC
 @MainActor
 @Suite
 struct RemoteDeviceScreenTests {
+    @Test func aQuietScreenGetsAFullKeyframeRecoveryDeadlineAfterLoss() {
+        let start = ContinuousClock.now
+        var health = RemoteScreenMediaHealth(at: start)
+        health.receivedFrame()
+        health.receivedPacket(at: start + .seconds(30))
+        health.requireKeyframe(at: start + .seconds(30))
+        #expect(!health.isTimedOut(at: start + .seconds(30)))
+        health.receivedPacket(at: start + .seconds(44))
+        health.requireKeyframe(at: start + .seconds(44))
+        #expect(!health.isTimedOut(at: start + .seconds(44)))
+        #expect(health.isTimedOut(at: start + .seconds(46)))
+        health.receivedFrame()
+        #expect(!health.isTimedOut(at: start + .seconds(46)))
+    }
+
+    @Test func decodedFramesReplaceThePendingHandoffWhileRenderingWaits() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let held = HeldCaptureSession()
+        held.release("open", "close")
+        defer { held.release("encode") }
+        var lifecycle = held.lifecycle
+        lifecycle.encoding = { _ in held.block("encode") }
+        let layer = CAMetalLayer()
+        layer.device = gpu
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: layer), device: gpu, lifecycle: lifecycle)
+        var events = stream.events.makeAsyncIterator()
+        stream.receiveDecoded(try capturedFrame(width: 4, height: 2, bgra: [0, 0, 0, 255]))
+        guard case .frameSize(let size)? = await events.next() else { Issue.record("No frame"); return }
+        layer.drawableSize = size
+        let rendering = Task { await stream.acceptDrawableSize(size) }
+        await held.untilEntered("encode")
+        nonisolated(unsafe) let superseded = try capturedFrame(width: 4, height: 2, bgra: [1, 2, 3, 255])
+        let originalCount = CFGetRetainCount(superseded)
+        stream.receiveDecoded(superseded)
+        stream.receiveDecoded(try capturedFrame(width: 4, height: 2, bgra: [4, 5, 6, 255]))
+        #expect(CFGetRetainCount(superseded) == originalCount)
+        held.release("encode")
+        await rendering.value
+        let image = try await stream.snapshot()
+        let pixels = try #require(image.dataProvider?.data as Data?)
+        #expect(Array(pixels.prefix(3)) == [4, 5, 6])
+        try await stream.stop()
+    }
+
     @Test func networkVideoDeliversDecodedFramesOnItsCallingExecutor() throws {
         // A black 64 × 32 HEVC frame, including VPS/SPS/PPS and an IDR picture.
         let nals = try [
@@ -47,6 +93,20 @@ struct RemoteDeviceScreenTests {
         #expect(pictures.isEmpty)
         receiver.receive(Self.rtp(sequence: 0, payload: [98, 1, 19, 22]))
         #expect(pictures == [[Data([38, 1, 128, 11, 22, 33])]])
+    }
+
+    @Test func networkVideoEndsOnlyForItsSendersByeAndIgnoresLatePictures() {
+        let receiver = RemoteScreenRTPReceiver(source: 7)
+        var ended = 0
+        var pictures = 0
+        receiver.onEnd = { ended += 1 }
+        receiver.onAccessUnit = { _ in pictures += 1 }
+        receiver.receive(Data([129, 203, 0, 1] + RemoteScreenRTPReceiver.word(8)))
+        #expect(ended == 0)
+        receiver.receive(Data([129, 203, 0, 1] + RemoteScreenRTPReceiver.word(7)))
+        receiver.receive(Data([129, 203, 0, 1] + RemoteScreenRTPReceiver.word(7)))
+        receiver.receive(Self.rtp(sequence: 1, marker: true, payload: [38, 1, 128]))
+        #expect(ended == 1 && pictures == 0)
     }
 
     @Test func networkVideoDropsLostPicturesAndRequestsAKeyframeFromItsSender() {
@@ -2316,6 +2376,21 @@ struct RemoteDeviceScreenTests {
         #expect(gestures == Array(repeating: nil, count: 4))
     }
 
+    @Test func disconnectedHIDServicesRetireWithoutCallingTheirEndedRemoteProcess() async throws {
+        var nativeCalls = 0
+        let service = CoreDeviceHIDService(
+            send: { _ in },
+            reset: {
+                nativeCalls += 1; throw ScreenFixtureError.stream
+            },
+            remove: {
+                nativeCalls += 1; throw ScreenFixtureError.cleanup
+            }, isConnected: { false })
+        try await service.stop()
+        try await service.stop()
+        #expect(service.isRemoved && nativeCalls == 0)
+    }
+
     @Test func failedHIDServiceRemovalKeepsTheOwnedServiceForCleanupRetry() async throws {
         var removes = 0
         var resets = 0
@@ -2608,7 +2683,7 @@ private final class HeldCaptureSession: Sendable {
         }, close: { [self] in block("close") })
     }
 
-    private func block(_ call: String) {
+    func block(_ call: String) {
         let gate = DispatchSemaphore(value: 0)
         let (held, ready) = state.withLock { state -> (Bool, [CheckedContinuation<Void, Never>]) in
             state.entered.append(call)

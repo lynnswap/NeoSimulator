@@ -89,6 +89,27 @@ struct DeviceInventoryTests {
         #expect(unnamed.osBuildUpdate == nil)
     }
 
+    @Test func anUnpairedRecordWithoutFidelityKeepsTheRestOfTheInventory() throws {
+        var response = try #require(JSONSerialization.jsonObject(with: Self.coreDeviceJSON) as? [String: Any])
+        var result = try #require(response["result"] as? [String: Any])
+        var devices = try #require(result["devices"] as? [[String: Any]])
+        devices.append([
+            "identifier": "unpaired",
+            "properties": [
+                "hardware": ["productType": "iPhone99,1"],
+                "connection": ["pairingState": "unpaired", "state": "disconnected"],
+                "state": ["name": "Unpaired Phone"],
+            ],
+        ])
+        result["devices"] = devices
+        response["result"] = result
+        let records = try CoreDeviceInventoryDecoder.decode(JSONSerialization.data(withJSONObject: response))
+        let unpaired = try #require(records.first { $0.identifier == "unpaired" })
+        #expect(unpaired.kind == .other("unknown") && unpaired.pairingState == "unpaired")
+        #expect(unpaired.name == "Unpaired Phone")
+        #expect(records.contains { $0.identifier == "remote-command-id" && $0.kind == .physical })
+    }
+
     @Test func joinsSimctlAuthorityWithoutConflatingCommandIDsOrDeviceSets() async throws {
         let normal = Self.simulator("simulator-udid")
         let clone = Self.simulator("simulator-udid", path: "/testing")

@@ -11,7 +11,8 @@ final class CoreDeviceNetworkVideo {
 
     init(connection: CoreDeviceScreenConnection) { self.connection = connection }
 
-    func start(renderer: RemoteScreenCaptureStream, failure: @escaping @Sendable (any Error) -> Void) async throws {
+    func start(renderer: RemoteScreenCaptureStream, completion: @escaping @Sendable ((any Error)?) -> Void) async throws
+    {
         let reserved = try RemoteScreenSocketReservation(tunnelAddress: await connection.tunnelAddress())
         let options = try await connection.negotiatorOptions()
         let negotiator = try await CoreDeviceMediaNegotiator(options: options, runtime: connection.remote.runtime)
@@ -23,7 +24,13 @@ final class CoreDeviceNetworkVideo {
         let descriptor = try await connection.socket(for: stream)
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
-            renderer: renderer, failure: failure)
+            renderer: renderer,
+            completion: { [connection] error in
+                Task { @MainActor in
+                    if error == nil { connection.streamEnded() }
+                    completion(error)
+                }
+            })
         self.receiver = receiver
         await receiver.start()
         try Task.checkCancellation()
@@ -95,6 +102,29 @@ private final class RemoteScreenSocketReservation {
     deinit { if let descriptor { Darwin.close(descriptor) } }
 }
 
+/// Silence and keyframe recovery have independent deadlines; a quiet screen does not consume recovery time.
+struct RemoteScreenMediaHealth {
+    private var lastPacket: ContinuousClock.Instant
+    private var recoveryStarted: ContinuousClock.Instant?
+    private(set) var hasReceivedFrame = false
+
+    init(at now: ContinuousClock.Instant = .now) {
+        lastPacket = now
+        recoveryStarted = now
+    }
+
+    mutating func receivedPacket(at now: ContinuousClock.Instant = .now) { lastPacket = now }
+    mutating func receivedFrame() { hasReceivedFrame = true; recoveryStarted = nil }
+    mutating func requireKeyframe(at now: ContinuousClock.Instant = .now) {
+        if recoveryStarted == nil { recoveryStarted = now }
+    }
+
+    func isTimedOut(at now: ContinuousClock.Instant = .now) -> Bool {
+        lastPacket.duration(to: now) > .seconds(15)
+            || recoveryStarted.map { $0.duration(to: now) > .seconds(15) } == true
+    }
+}
+
 /// Socket events, RTP assembly, and synchronous VideoToolbox decoding share this serial executor.
 private actor RemoteScreenMediaReceiver {
     private nonisolated let queue = DispatchSerialQueue(
@@ -103,7 +133,7 @@ private actor RemoteScreenMediaReceiver {
     private let descriptor: Int32
     private let localSSRC: UInt32
     private let renderer: RemoteScreenCaptureStream
-    private let failure: @Sendable (any Error) -> Void
+    private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
     private var reader: (any DispatchSourceRead)?
@@ -111,20 +141,18 @@ private actor RemoteScreenMediaReceiver {
     private var shutdown: Task<Void, Never>?
     private var stopped = false
     private var failed = false
-    private var lastFrame: ContinuousClock.Instant?
-    private let startedAt = ContinuousClock.now
-    private var lastPacket = ContinuousClock.now
+    private var health = RemoteScreenMediaHealth()
     private var lastReport = ContinuousClock.now
     private var decodeFailure: String?
 
     init(
         descriptor: Int32, localSSRC: UInt32, renderer: RemoteScreenCaptureStream,
-        failure: @escaping @Sendable (any Error) -> Void
+        completion: @escaping @Sendable ((any Error)?) -> Void
     ) {
         self.descriptor = descriptor
         self.localSSRC = localSSRC
         self.renderer = renderer
-        self.failure = failure
+        self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
 
@@ -134,18 +162,25 @@ private actor RemoteScreenMediaReceiver {
         packets.onAccessUnit = { [weak self] unit in
             self?.assumeIsolated { $0.decoder.decode(unit.nals, timestamp: unit.timestamp) }
         }
-        packets.onLoss = { [weak self] in self?.assumeIsolated { $0.decoder.invalidate() } }
+        packets.onLoss = { [weak self] in
+            self?.assumeIsolated {
+                $0.decoder.invalidate(); $0.health.requireKeyframe()
+            }
+        }
         decoder.onFrame = { [weak self] buffer in
             nonisolated(unsafe) let frame = buffer
             self?.assumeIsolated {
-                $0.lastFrame = .now
+                $0.health.receivedFrame()
                 $0.decodeFailure = nil
                 $0.renderer.receiveDecoded(frame)
             }
         }
         decoder.onFailure = { [weak self] message in
-            self?.assumeIsolated { $0.decodeFailure = message }
+            self?.assumeIsolated {
+                $0.decodeFailure = message; $0.health.requireKeyframe()
+            }
         }
+        packets.onEnd = { [weak self] in self?.assumeIsolated { $0.finish(nil) } }
         let reader = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         reader.setEventHandler { [weak self] in self?.assumeIsolated { $0.readPackets() } }
         self.reader = reader
@@ -162,15 +197,16 @@ private actor RemoteScreenMediaReceiver {
         var bytes = [UInt8](repeating: 0, count: 65_536)
         // Leave room for the report timer and stop when the socket has a large backlog.
         for _ in 0..<256 {
+            guard !failed, !stopped else { return }
             let count = recv(descriptor, &bytes, bytes.count, MSG_DONTWAIT)
             if count < 0 {
                 if errno == EAGAIN || errno == EWOULDBLOCK { return }
                 if errno == EINTR { continue }
-                fail(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
+                finish(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
                 return
             }
             guard count > 0 else { return }
-            lastPacket = .now
+            health.receivedPacket()
             packets.receive(Data(bytes.prefix(count)))
         }
     }
@@ -178,14 +214,12 @@ private actor RemoteScreenMediaReceiver {
     private func tick() {
         guard !stopped, !failed else { return }
         packets.flushPending()
-        if lastPacket.duration(to: .now) > .seconds(15)
-            || (decoder.needsKeyframe && (lastFrame ?? startedAt).duration(to: .now) > .seconds(15))
-        {
-            fail(
+        if health.isTimedOut() {
+            finish(
                 RemoteScreenError.io(
                     "remote-screen-stream-timeout",
                     decodeFailure
-                        ?? (lastFrame != nil
+                        ?? (health.hasReceivedFrame
                             ? "The device stopped sending its screen." : "The device did not send a screen frame.")))
             return
         }
@@ -197,16 +231,16 @@ private actor RemoteScreenMediaReceiver {
     private func send(_ packet: Data) {
         let result = packet.withUnsafeBytes { Darwin.send(descriptor, $0.baseAddress, $0.count, MSG_DONTWAIT) }
         if result < 0, errno != EAGAIN, errno != EWOULDBLOCK, errno != EINTR {
-            fail(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
+            finish(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
         }
     }
 
-    private func fail(_ error: any Error) {
+    private func finish(_ error: (any Error)?) {
         guard !failed, !stopped else { return }
         failed = true
         Task {
             await stop()
-            failure(error)
+            completion(error)
         }
     }
 
