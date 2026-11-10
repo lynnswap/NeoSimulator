@@ -110,8 +110,13 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
                     } catch is CancellationError {} catch { self.onError?(error) }
                 }
             }
-            if asTab, let origin, let destination = self.screens.compactWindow(for: device.id), origin !== destination {
-                origin.addTabbedWindow(destination, ordered: .above)
+            if let destination = self.screens.compactWindow(for: device.id) {
+                if asTab {
+                    let anchor = origin === destination ? self.window : origin
+                    if let anchor, anchor !== destination { anchor.addTabbedWindow(destination, ordered: .above) }
+                } else if (destination.tabbedWindows?.count ?? 0) > 1 {
+                    destination.moveTabToNewWindow(nil)
+                }
                 destination.makeKeyAndOrderFront(nil)
             }
         }
@@ -128,7 +133,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
             preview.showPreview(of: device, selectionCount: 1)
             preview.onViewScreen = { [weak self] in
                 guard let self else { return }
-                self.model.toggleScreen(for: device)
+                self.model.toggleScreen(for: device, revealingInMainWindow: false)
                 self.screens.compactWindow(for: device.id)?.makeKeyAndOrderFront(nil)
             }
             return preview

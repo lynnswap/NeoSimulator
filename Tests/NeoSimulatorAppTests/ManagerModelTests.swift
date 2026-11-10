@@ -1450,7 +1450,8 @@ struct ManagerModelTests {
             : inspectedRemote(
                 pairingState: state,
                 features: state == "paired" ? ["renamedevice", "rebootdevice", "unpairdevice"] : [])
-        let manager = SimulatorManagerModel(source: ManagerModelSource(devices: [device]))
+        let source = ManagerModelSource(devices: [device])
+        let manager = SimulatorManagerModel(source: source)
         manager.registry.stopReading()
         await manager.refresh()
         let actions = DeviceActions(model: manager, window: nil, liveScreen: { nil })
@@ -1477,6 +1478,29 @@ struct ManagerModelTests {
             #expect(NSApp.sendAction(try #require(finder.action), to: finder.target, from: finder))
             try await wait { failure != nil }
             #expect(shown == device.id && failure?.contains("Finder failed") == true)
+            let watch = InventoryDevice.simulator(
+                SimulatorHostDevice(
+                    identifier: "watch", name: "Watch", descriptiveName: "Watch",
+                    runtimeIdentifier: "watch-runtime", runtimeName: "watchOS", productFamily: "Apple Watch",
+                    state: "Booted", pairIdentifiers: ["pair"]))
+            await source.setDevices([device, watch])
+            await manager.refresh()
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            window.orderFront(nil)
+            actions.populate(menu, devices: [device, watch], window: window)
+            let unpair = try #require(menu.items.first { $0.title == "Unpair…" })
+            #expect(NSApp.sendAction(try #require(unpair.action), to: unpair.target, from: unpair))
+            let sheet = try #require(window.attachedSheet)
+            #expect(manager.managingDeviceIDs.isEmpty)
+            let content = try #require(sheet.contentView)
+            let cancel = try #require(
+                inspectorViews(content).compactMap { $0 as? NSButton }.first { $0.title == "Cancel" })
+            cancel.performClick(nil)
+            try await wait { window.attachedSheet == nil }
         }
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
@@ -1606,6 +1630,21 @@ struct ManagerModelTests {
         main.sidebar.updateDeviceMenu(for: header)
         #expect(menu.items.isEmpty)
         #expect(main.selectedIdentifiers == [first.id, third.id] && main.presentationIntent.revision == group.revision)
+        main.selectDevice(first.id)
+        main.sidebar.updateDeviceMenu(for: try row(of: second))
+        let open = try #require(menu.items.first { $0.title == "Open in New Window" })
+        #expect(NSApp.sendAction(try #require(open.action), to: open.target, from: open))
+        let previewWindow = try #require(app.screens.compactWindow(for: second.id))
+        let previewContent = try #require(previewWindow.contentView)
+        let viewScreen = try #require(
+            inspectorViews(previewContent).compactMap { $0 as? NSButton }
+                .first { $0.title == "View Screen" })
+        viewScreen.performClick(nil)
+        #expect(await events.next() == .open(second.id))
+        #expect(main.selectedIdentifiers == [first.id])
+        await source.completeOpen(for: second.id)
+        try await wait { model.openingDeviceIDs.isEmpty }
+        previewWindow.close()
         try await model.quitRenderer(keepingDevicesRunning: true)
     }
 
@@ -1900,6 +1939,18 @@ struct ManagerModelTests {
         #expect(NSApp.sendAction(try #require(outline.doubleAction), to: outline.target, from: outline))
         try await wait { presentations == 2 }
         #expect(connections == 2 && app.screens.compactScreen(for: identifier) === compact)
+        let reusedMenu = NSMenu()
+        main.deviceActions.populate(reusedMenu, devices: [.remote(device)], window: preparedWindow)
+        let placement = command == "Open in New Tab" ? "Open in New Window" : "Open in New Tab"
+        let reused = try #require(reusedMenu.items.first { $0.title == placement })
+        #expect(NSApp.sendAction(try #require(reused.action), to: reused.target, from: reused))
+        if placement == "Open in New Window" {
+            #expect((preparedWindow.tabbedWindows?.count ?? 0) <= 1)
+        } else {
+            #expect(window.tabbedWindows?.contains(where: { $0 === preparedWindow }) == true)
+        }
+        #expect(
+            app.screens.compactWindow(for: identifier) === preparedWindow && main.selectedIdentifiers == [identifier])
         additional.performScreenAction("compact")
         try await wait { app.screens.compactScreen(for: identifier) == nil }
         #expect(app.screens.compactScreen(for: identifier) == nil && app.screens.screen(for: identifier) === screen)

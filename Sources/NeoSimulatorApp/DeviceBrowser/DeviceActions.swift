@@ -74,7 +74,7 @@ final class DeviceActions: NSObject {
             let title = model.openingDeviceIDs.contains(devices[0].id) ? "Cancel Opening" : "View Screen"
             let item = NSMenuItem(title: title, action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = devices[0].id
+            item.representedObject = NavigationRequest(identifier: devices[0].id, window: window)
             item.isEnabled = true
             menu.addItem(item)
         }
@@ -130,7 +130,7 @@ final class DeviceActions: NSObject {
             }
         }
         addManagement([("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy"))], separated: !hasFinder)
-        let unpairTitle = devices.allSatisfy { if case .remote = $0 { true } else { false } } ? "Unpair…" : "Unpair"
+        let unpairTitle = devices.contains { if case .remote = $0 { true } else { false } } ? "Unpair…" : "Unpair"
         addManagement([("Pair Simulators", .pair), (unpairTitle, .unpair)])
         addManagement([("Reset Content and Settings…", .erase)])
         addManagement([("Remove…", .remove)])
@@ -235,9 +235,10 @@ final class DeviceActions: NSObject {
     }
 
     @objc private func openDeviceFromMenu(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? DeviceInventoryID,
-              let device = model.inventory.first(where: { $0.id == id }) else { return }
-        model.toggleScreen(for: device)
+        guard let request = sender.representedObject as? NavigationRequest,
+            let device = model.inventory.first(where: { $0.id == request.identifier })
+        else { return }
+        model.toggleScreen(for: device, revealingInMainWindow: request.window == nil || request.window === window)
     }
 
     @objc private func stopScreenSharing(_ sender: NSMenuItem) {
@@ -262,7 +263,7 @@ final class DeviceActions: NSObject {
         case .rename: presentNameEditor(for: devices[0], cloning: false, in: request.window)
         case .clone: presentNameEditor(for: devices[0], cloning: true, in: request.window)
         case .erase, .remove: confirmManagement(request.action, devices: devices, in: request.window)
-        case .unpair where devices.allSatisfy({ if case .remote = $0 { true } else { false } }):
+        case .unpair where devices.contains(where: { if case .remote = $0 { true } else { false } }):
             confirmManagement(request.action, devices: devices, in: request.window)
         case .start:
             // A simulator starts as its screen opens, as Start on a stopped simulator's screen does.
@@ -351,7 +352,7 @@ final class DeviceActions: NSObject {
             action == .unpair ? "Unpair \(subject)?" : removing ? "Remove \(subject)?" : "Erase \(subject)?"
         if action == .unpair {
             alert.informativeText =
-                "You will need to pair the selected devices with this Mac again before sharing their screens."
+                "The selected pairing relationships will be removed. Physical devices will need to pair with this Mac again before sharing their screens."
         } else if removing {
             alert.informativeText = devices.contains { $0.kind == .virtualMachine }
                 ? "The selected devices and their stored data will be permanently removed. Removing a virtual machine also deletes its associated assets. This cannot be undone."

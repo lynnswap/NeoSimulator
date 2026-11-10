@@ -380,9 +380,9 @@ package final class SimulatorManagerModel {
         return (try? await controller.installedXcodes())?.map(\.url) ?? []
     }
 
-    package func openDevice(_ identifier: DeviceInventoryID) {
+    package func openDevice(_ identifier: DeviceInventoryID, revealingInMainWindow: Bool = true) {
         guard !stopping, !openingDeviceIDs.contains(identifier) else { return }
-        onDeviceOpenRequested?(identifier)
+        if revealingInMainWindow { onDeviceOpenRequested?(identifier) }
         openingDeviceIDs.insert(identifier)
         let request = controller.makeScreenOpenRequest(for: identifier)
         enqueue(PendingOperation(activity: "Opening simulator…", deviceID: identifier, openDevice: request,
@@ -425,12 +425,12 @@ package final class SimulatorManagerModel {
         }
     }
 
-    package func openScreen(for device: InventoryDevice) {
+    package func openScreen(for device: InventoryDevice, revealingInMainWindow: Bool = true) {
         guard !stopping, !managingDeviceIDs.contains(device.id) else { return }
         switch device {
-        case .simulator(let simulator): openDevice(simulator.inventoryID)
+        case .simulator(let simulator): openDevice(simulator.inventoryID, revealingInMainWindow: revealingInMainWindow)
         case .remote:
-            onDeviceOpenRequested?(device.id)
+            if revealingInMainWindow { onDeviceOpenRequested?(device.id) }
             perform("Opening device screen…", device: device.id) {
                 guard !self.managingDeviceIDs.contains(device.id),
                       case .remote(let current)? = self.inventory.first(where: { $0.id == device.id }) else { return }
@@ -568,10 +568,12 @@ package final class SimulatorManagerModel {
     }
 
     /// Opens the device's screen, or stops opening it.
-    package func toggleScreen(for device: InventoryDevice) {
+    package func toggleScreen(for device: InventoryDevice, revealingInMainWindow: Bool = true) {
         guard canViewScreen(device) else { return }
         if openingDeviceIDs.contains(device.id) { cancelOpening(device.id) }
-        else { openScreen(for: device) }
+        else {
+            openScreen(for: device, revealingInMainWindow: revealingInMainWindow)
+        }
     }
 
     /// Whether the device's screen can open now, or is opening and can be cancelled.
