@@ -29,13 +29,16 @@ leaves that guest running.
 
 Each manager launch registers NeoSimulator's bridges and checks for external
 preference changes. There is no saved host choice; older `display-host.txt` files
-are ignored. Quitting releases the bridges and restores the journaled original
-preferences. Catalog reads inspect only local recovery metadata.
+are ignored. The controller owns the preferred host for the current session;
+Settings changes it explicitly, and the next launch resets it to NeoSimulator.
+Quitting releases the bridges and keeps routing preferences in place. Catalog
+reads inspect only local recovery metadata.
 
 Opening Device Hub directly temporarily releases the bridges. A process-exit
 source observes each opened Device Hub; when the last one quits, the manager
-reapplies the Neo route and registers its bridges. A screen request from NeoSimulator
-can also resume the session. Restoration and quit cancel the exit observations so
+reapplies the Neo route and registers its bridges if NeoSimulator remains preferred.
+A screen request can also resume that session. Explicitly selecting Device Hub
+keeps it preferred until another selection or the next manager launch. Restoration and quit cancel the exit observations so
 late events cannot reclaim routing after ownership has ended.
 
 Automatic presentation requires a successfully applied route in the current
@@ -69,7 +72,7 @@ Device Hub normally. Guests keep running.
 
 Startup applies the Neo route before processing URL requests or restoring
 screens. Quitting closes screens, renderers, and bridges, ends automatic hosting,
-and restores the original routing settings. No background launch
+and keeps the current routing settings and recovery receipt. No background launch
 service is installed. Startup closes orphaned bridges left by a previous
 manager before preparing new ones.
 

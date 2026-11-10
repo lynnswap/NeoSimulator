@@ -26,6 +26,19 @@ struct GeneralSettingsView: View {
         let frameworks = model.frameworks
         Form {
             Section("Display") {
+                Picker("Preferred Display Host", selection: $model.preferredHost) {
+                    Text("NeoSimulator").tag(SimulatorHost.neo)
+                    Text("Device Hub").tag(SimulatorHost.deviceHub)
+                }
+                .disabled(!model.canSelectHost)
+                Text(
+                    "NeoSimulator is preferred each time it starts. Choose Device Hub to use it during this session. Quitting leaves the current Xcode routing settings in place."
+                )
+                .foregroundStyle(.secondary)
+                if model.offersNeoHost {
+                    Button("Use NeoSimulator", action: model.useNeoHost)
+                        .disabled(!model.canSelectHost)
+                }
                 Picker("UI Frameworks", selection: $model.selectedXcodeURL) {
                     Text("Default (xcode-select)").tag(URL?.none)
                     ForEach(frameworks.installations, id: \.url) { xcode in

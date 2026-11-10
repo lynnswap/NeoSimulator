@@ -376,6 +376,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .first(where: { $0.name == "ask" })?.value == "true" {
                     quitAsking(nil)
                 } else { NSApp.terminate(nil) }
+            case "select-host":
+                if let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first(where: { $0.name == "mode" })?.value,
+                   let host = SimulatorHost(rawValue: raw) { model.select(host) }
             default: break
             }
         }

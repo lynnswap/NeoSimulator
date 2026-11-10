@@ -38,11 +38,17 @@ package struct SimulatorPresentationContext: Sendable {
 package struct SimulatorHostStatus: Sendable {
     /// The display host available in this app session.
     package let host: SimulatorHost
+    /// The display app explicitly selected for this manager session.
+    package let preferredHost: SimulatorHost
     package let restorationAvailable: Bool
     package let rendererRunning: Bool
 
-    package init(host: SimulatorHost, restorationAvailable: Bool, rendererRunning: Bool) {
+    package init(
+        host: SimulatorHost, preferredHost: SimulatorHost = .neo,
+        restorationAvailable: Bool, rendererRunning: Bool
+    ) {
         self.host = host
+        self.preferredHost = preferredHost
         self.restorationAvailable = restorationAvailable
         self.rendererRunning = rendererRunning
     }
@@ -200,7 +206,7 @@ package actor SimulatorHostController {
     private nonisolated let screenOpenCancellations = ScreenOpenCancellations()
     /// Every catalog and installation read. Mutations keep their own policies, so stopping these never interrupts one.
     let reads = CommandReads()
-    private var hasBegunSession = false
+    private var preferredHost: SimulatorHost = .neo
     private var allowsSessionHosting = false
     private var awaitingDeviceHubExit = false
     private var screenOpenTasks: [DeviceInventoryID: (id: UUID, task: Task<Void, any Error>)] = [:]
@@ -239,6 +245,7 @@ package actor SimulatorHostController {
             let selection = try await self.hostSessionStatus()
             return SimulatorHostStatus(
                 host: self.allowsSessionHosting ? .neo : .deviceHub,
+                preferredHost: self.preferredHost,
                 restorationAvailable: selection.restorationAvailable,
                 rendererRunning: try await !self.registeredRenderers().isEmpty
             )
@@ -249,26 +256,20 @@ package actor SimulatorHostController {
     package func beginSession() async throws {
         try await operation(.hostTransition) {
             let xcode = try await self.resolveXcode(nil)
-            self.hasBegunSession = true
+            self.preferredHost = .neo
             try await self.beginHostSession(xcodeURL: xcode.applicationURL)
             self.allowsSessionHosting = true
             self.awaitingDeviceHubExit = false
         }
     }
 
-    /// Releases the display bridges and restores the routing settings captured before this session.
+    /// Releases this session's bridges while leaving the selected routing settings in place.
     package func endSession() async throws {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) {
             self.awaitingDeviceHubExit = false
-            guard self.hasBegunSession else {
-                try await self.deviceHubCompanions?.stop()
-                return
-            }
             try await self.deviceHubCompanions?.stop()
             self.allowsSessionHosting = false
-            try await self.restoreHost(force: false)
-            self.hasBegunSession = false
         }
     }
 
@@ -344,33 +345,59 @@ package actor SimulatorHostController {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) {
             let xcode = try await self.resolveXcode(xcodeURL)
-            let wasHosting = self.allowsSessionHosting
-            do { try await self.handoffToDeviceHub(xcodeURL: xcode.applicationURL) } catch let handoffError {
-                self.invalidateHostAfterFailedChange(handoffError)
-                if wasHosting, SimulatorHostFailure(handoffError).kind == .partialSuccess {
-                    do {
-                        try await self.beginHostSession(xcodeURL: xcode.applicationURL)
-                        self.allowsSessionHosting = true
-                    } catch let recoveryError {
-                        throw HostOperationError.temporary(
-                            "device-hub-handoff-recovery",
-                            "Could not open Device Hub (\(handoffError.localizedDescription)) or resume NeoSimulator (\(recoveryError.localizedDescription))."
-                        )
-                    }
+            try await self.handoffToDeviceHub(
+                xcode: xcode, requestURL: requestURL, resumesOnExit: self.preferredHost == .neo)
+        }
+    }
+
+    package func selectHost(_ host: SimulatorHost, xcodeURL: URL? = nil) async throws {
+        await cancelConnectionSynchronization()
+        try await operation(.hostTransition) {
+            let xcode = try await self.resolveXcode(xcodeURL)
+            do {
+                switch host {
+                case .neo:
+                    try await self.beginHostSession(xcodeURL: xcode.applicationURL)
+                    self.allowsSessionHosting = true
+                    self.awaitingDeviceHubExit = false
+                case .deviceHub:
+                    try await self.handoffToDeviceHub(xcode: xcode, requestURL: nil, resumesOnExit: false)
                 }
-                throw handoffError
+            } catch {
+                self.invalidateHostAfterFailedChange(error)
+                throw error
             }
-            self.allowsSessionHosting = false
-            self.awaitingDeviceHubExit = true
-            if let requestURL {
-                try await WorkspaceClient.openDeviceHubRequest(requestURL, at: xcode.deviceHubApplicationURL)
+            self.preferredHost = host
+        }
+    }
+
+    private func handoffToDeviceHub(xcode: XcodeInstallation, requestURL: URL?, resumesOnExit: Bool) async throws {
+        let wasHosting = self.allowsSessionHosting
+        do { try await self.handoffToDeviceHub(xcodeURL: xcode.applicationURL) } catch let handoffError {
+            self.invalidateHostAfterFailedChange(handoffError)
+            if wasHosting, SimulatorHostFailure(handoffError).kind == .partialSuccess {
+                do {
+                    try await self.beginHostSession(xcodeURL: xcode.applicationURL)
+                    self.allowsSessionHosting = true
+                } catch let recoveryError {
+                    throw HostOperationError.temporary(
+                        "device-hub-handoff-recovery",
+                        "Could not open Device Hub (\(handoffError.localizedDescription)) or resume NeoSimulator (\(recoveryError.localizedDescription))."
+                    )
+                }
             }
+            throw handoffError
+        }
+        self.allowsSessionHosting = false
+        self.awaitingDeviceHubExit = resumesOnExit
+        if let requestURL {
+            try await WorkspaceClient.openDeviceHubRequest(requestURL, at: xcode.deviceHubApplicationURL)
         }
     }
 
     package func deviceHubDidExit(xcodeURL: URL) async throws {
         try await operation(.hostTransition) {
-            guard self.awaitingDeviceHubExit else { return }
+            guard self.awaitingDeviceHubExit, self.preferredHost == .neo else { return }
             self.awaitingDeviceHubExit = false
             try await self.beginHostSession(xcodeURL: xcodeURL)
             self.allowsSessionHosting = true
@@ -380,6 +407,10 @@ package actor SimulatorHostController {
     package func activate(xcodeURL: URL? = nil) async throws {
         try await operation(.hostTransition) {
             let xcode = try await self.resolveXcode(xcodeURL)
+            if self.preferredHost == .deviceHub {
+                try await self.launchDeviceHub(xcode: xcode)
+                return
+            }
             try await self.ensureNeoSession(xcodeURL: xcode.applicationURL)
             if let renderer = try await self.registeredRenderers().first(where: { self.sameURL(URL(fileURLWithPath: $0.xcodePath), xcode.applicationURL) }) {
                 self.send("activate", to: renderer)
@@ -487,7 +518,7 @@ package actor SimulatorHostController {
             try Task.checkCancellation()
             let renderers = try await self.registeredRenderers()
             let owner = renderers.first { $0.deviceIdentifiers.contains(deviceID) }
-            if self.allowsSessionHosting, let owner,
+            if self.preferredHost == .neo, self.allowsSessionHosting, let owner,
                xcodeURL.map({ self.sameURL($0, URL(fileURLWithPath: owner.xcodePath)) }) ?? true {
                 return {
                     try await Self.openRendererDevice(deviceID, in: owner, bootIfNeeded: bootIfNeeded, launchesRenderer: false) {
@@ -495,8 +526,26 @@ package actor SimulatorHostController {
                     }
                 }
             }
-            let (xcode, _) = try await self.resolveDevice(
+            let (xcode, device) = try await self.resolveDevice(
                 deviceID: deviceID, preferredURL: xcodeURL, catalogs: catalogs)
+            if self.preferredHost == .deviceHub {
+                let (identifier, _) = try deviceID.simulatorAddress
+                return {
+                    try await Self.openDeviceHub(
+                        boot: {
+                            if bootIfNeeded && device.state == "Shutdown" {
+                                let output = try await SystemCommandRunner().runCancellable(
+                                    .simctl(
+                                        xcodeURL: xcode.applicationURL,
+                                        arguments: ["boot", identifier], deviceSetPath: device.deviceSetPath,
+                                        policy: .cancellable))
+                                guard output.terminationStatus == 0 else {
+                                    throw HostOperationError.io("simctl", output.stderrText)
+                                }
+                            }
+                        }, launch: { try await self.launchDeviceHub(xcode: xcode) })
+                }
+            }
             if !self.allowsSessionHosting {
                 guard startingRenderer else { return nil }
                 try await self.ensureNeoSession(xcodeURL: xcode.applicationURL)
@@ -526,6 +575,17 @@ package actor SimulatorHostController {
             try await self.escalateToHostTransition(id)
             return try await prepare(true)
         }
+    }
+
+    package nonisolated static func openDeviceHub(
+        boot: @Sendable () async throws -> Void,
+        launch: @Sendable () async throws -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        try await boot()
+        try Task.checkCancellation()
+        try await launch()
+        try Task.checkCancellation()
     }
 
     private func openRendererDevice(_ deviceID: DeviceInventoryID, xcode: XcodeInstallation, bootIfNeeded: Bool = true,
@@ -893,7 +953,6 @@ package actor SimulatorHostController {
 
     private func ensureNeoSession(xcodeURL: URL) async throws {
         guard !allowsSessionHosting else { return }
-        hasBegunSession = true
         try await beginHostSession(xcodeURL: xcodeURL)
         allowsSessionHosting = true
         awaitingDeviceHubExit = false
@@ -918,6 +977,13 @@ package actor SimulatorHostController {
         let workspace = await WorkspaceClient.live(
             headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
         _ = try await makeCore(workspace: workspace).use(.deviceHub, xcodeURL: xcodeURL)
+    }
+
+    @concurrent
+    private func launchDeviceHub(xcode: XcodeInstallation) async throws {
+        let workspace = await WorkspaceClient.live(
+            headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
+        _ = try await workspace.openDeviceHub(xcode)
     }
 
     @concurrent

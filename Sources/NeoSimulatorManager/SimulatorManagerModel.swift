@@ -98,6 +98,7 @@ package protocol SimulatorManagerSource: DeviceStateSource {
     func endSession() async throws
     func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func installedXcodes() async throws -> [SimulatorXcode]
+    func selectHost(_ host: SimulatorHost, xcodeURL: URL?) async throws
     func openDeviceHub(xcodeURL: URL, requestURL: URL?) async throws
     func deviceHubDidExit(xcodeURL: URL) async throws
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest
@@ -316,6 +317,20 @@ package final class SimulatorManagerModel {
             }
             let status = try await self.controller.status()
             self.status = status
+        }
+    }
+
+    package func select(_ host: SimulatorHost, xcodeURL: URL? = nil) {
+        perform("Switching simulator app…") {
+            try await self.requestHostPreferenceAccess?()
+            if host == .deviceHub {
+                self.registry.stopReading()
+                defer { if !self.stopping { self.registry.resumeReading() } }
+                try await self.beforeStoppingScreens?()
+                try await self.controller.selectHost(host, xcodeURL: xcodeURL)
+            } else {
+                try await self.controller.selectHost(host, xcodeURL: xcodeURL)
+            }
         }
     }
 
@@ -1063,11 +1078,6 @@ package final class SimulatorManagerModel {
             try await controller.quitRenderer(keepingDevicesRunning: keepingDevicesRunning)
             try await beforeEndingSession()
             do { try await controller.endSession() } catch let endingError {
-                let failure = (endingError as? SimulatorHostFailure) ?? SimulatorHostFailure(endingError)
-                if failure.kind == .preferencesChanged {
-                    onError?(endingError)
-                    return
-                }
                 do { try await controller.beginSession() } catch let recoveryError {
                     throw HostOperationError.temporary(
                         "session-end-recovery",

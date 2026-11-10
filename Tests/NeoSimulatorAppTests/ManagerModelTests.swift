@@ -167,6 +167,25 @@ struct ManagerModelTests {
         try await manager.prepareForQuit()
     }
 
+    @Test func theDisplayHostPickerIsExplicitAndDirectHubLaunchesDoNotSelectIt() async throws {
+        let source = ManagerModelSource(devices: [])
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let settings = GeneralSettingsModel(
+            manager: manager, preferences: SimulatorPreferences(),
+            frameworks: manager.frameworks, restart: {})
+        settings.preferredHost = .deviceHub
+        try await wait { !manager.isBusy }
+        #expect(await source.selectedHosts == [.deviceHub])
+        manager.openDeviceHub(xcodeURL: URL(filePath: "/Applications/Test Xcode.app"))
+        try await wait { !manager.isBusy }
+        #expect(await source.selectedHosts == [.deviceHub])
+        settings.preferredHost = .neo
+        try await wait { !manager.isBusy }
+        #expect(await source.selectedHosts == [.deviceHub, .neo])
+        try await manager.prepareForQuit()
+    }
+
     @Test func aThumbnailWaitsForTheBootedSimulatorsScreenAdapter() async throws {
         let adapter = NSObject()
         var reads = 0
@@ -498,20 +517,6 @@ struct ManagerModelTests {
         #expect(await source.sessionEvents.last == "end")
     }
 
-    @Test func quittingPreservesExternalRoutingChangesAndReportsTheUnrestoredSettings() async throws {
-        let source = ManagerModelSource(devices: [])
-        let manager = SimulatorManagerModel(source: source)
-        manager.start()
-        try await manager.prepareForQuit()
-        let conflict = HostOperationError.configuration("preference-conflict", "Settings changed outside NeoSimulator")
-        await source.failNextSessionEnd(SimulatorHostFailure(conflict))
-        var reported: [SimulatorHostFailure.Kind] = []
-        manager.onError = { reported.append((($0 as? SimulatorHostFailure) ?? SimulatorHostFailure($0)).kind) }
-        try await manager.quitRenderer(keepingDevicesRunning: true)
-        #expect(reported == [.preferencesChanged])
-        #expect(await source.sessionEvents.last == "end")
-        #expect(await source.sessionEvents.filter { $0 == "begin" }.count == 1)
-    }
 
     @Test func settingsProvideSimulatorCreationAndKeepExistingPreferences() async throws {
         _ = NSApplication.shared
@@ -7777,17 +7782,17 @@ private struct ServiceChangeSource: DeviceStateSource {
 
 actor ManagerModelSource: SimulatorManagerSource {
     private var failsSessionStart = false
-    private var sessionEndError: (any Error)?
+    private var failsSessionEnd = false
     private(set) var sessionEvents: [String] = []
     func failSessionStart() { failsSessionStart = true }
     func beginSession() throws {
         sessionEvents.append("begin")
         if failsSessionStart { throw Failure.unavailable }
     }
-    func failNextSessionEnd(_ error: any Error = Failure.unavailable) { sessionEndError = error }
+    func failNextSessionEnd() { failsSessionEnd = true }
     func endSession() throws {
         sessionEvents.append("end")
-        if let error = sessionEndError { sessionEndError = nil; throw error }
+        if failsSessionEnd { failsSessionEnd = false; throw Failure.unavailable }
     }
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
@@ -8013,6 +8018,8 @@ actor ManagerModelSource: SimulatorManagerSource {
             disabled: disabled, loaded: loaded, productFamily: "iPhone", catalog: serviceCatalog)
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }
+    private(set) var selectedHosts: [SimulatorHost] = []
+    func selectHost(_ host: SimulatorHost, xcodeURL: URL?) { selectedHosts.append(host) }
     func openDeviceHub(xcodeURL: URL, requestURL: URL?) { continuation.yield(.deviceHub) }
     func deviceHubDidExit(xcodeURL: URL) { sessionEvents.append("resume") }
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {

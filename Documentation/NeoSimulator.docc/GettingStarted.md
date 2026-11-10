@@ -27,8 +27,10 @@ choose its OS version and name.
 
 Use Xcode for Build & Run. NeoSimulator handles screens while it is open.
 Opening Device Hub directly temporarily hands screens to it; quitting Device Hub
-returns screen handling to NeoSimulator. Quitting NeoSimulator restores the
-original Xcode routing settings.
+returns screen handling to NeoSimulator when it is preferred. Choose Device Hub
+for the current session in **Settings → General → Preferred Display Host**.
+NeoSimulator is preferred again on the next launch. Quitting leaves the current
+Xcode routing settings in place.
 
 See <doc:UsingNeoSimulator> for device controls, screen capture, and app
 management.

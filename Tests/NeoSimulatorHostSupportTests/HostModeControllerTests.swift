@@ -198,6 +198,28 @@ struct HostModeControllerTests {
         #expect(opened.withLock { $0 })
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func aCancelledDeviceHubBootCannotStartALaterLaunch() async throws {
+        let entered = AsyncStream<Void>.makeStream()
+        let finish = Mutex<CheckedContinuation<Void, Never>?>(nil)
+        let launched = Mutex(false)
+        let opening = Task {
+            try await SimulatorHostController.openDeviceHub(boot: {
+                await withCheckedContinuation { continuation in
+                    finish.withLock { $0 = continuation }
+                    entered.continuation.yield(())
+                }
+            }, launch: { launched.withLock { $0 = true } })
+        }
+        var events = entered.stream.makeAsyncIterator()
+        await events.next()
+        opening.cancel()
+        let continuation = finish.withLock { value in let current = value; value = nil; return current }
+        continuation?.resume()
+        await #expect(throws: CancellationError.self) { try await opening.value }
+        #expect(!launched.withLock { $0 })
+    }
+
     @Test func cancellingAnOpenConsumesOnlyOlderXcodeConnections() async throws {
         let controller = SimulatorHostController(rendererApplicationURL: URL(fileURLWithPath: "/Renderer.app"))
         let tracker = XcodeConnectionTracker()

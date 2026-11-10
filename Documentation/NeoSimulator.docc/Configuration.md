@@ -1,18 +1,19 @@
 # Configuration and recovery
 
-NeoSimulator manages simulator display routing while it is open and restores the
-original settings when you quit.
+NeoSimulator is the preferred display host each time it starts. Quitting leaves
+the current Xcode routing settings in place.
 
 ## Display routing
 
-**View Screen** and other screen-opening commands display devices in NeoSimulator.
-No display-host selection is required. Each launch registers NeoSimulator's display
-bridges, including when an older version saved Device Hub as the preferred host.
+Choose **NeoSimulator** or **Device Hub** in **Settings → General → Preferred
+Display Host**. This choice controls screen-opening commands for the current
+session. The next launch always prefers NeoSimulator and registers its display
+bridges, regardless of the last choice.
 
 Opening Device Hub directly from the Dock or Finder temporarily hands screens to
-it. NeoSimulator observes that process and registers its bridges again when Device
-Hub quits. Opening a screen from NeoSimulator also resumes its display session.
-Neither operation saves a display-host preference.
+it without changing the selection. When Device Hub quits, NeoSimulator registers
+its bridges again if it is still preferred. Selecting Device Hub explicitly keeps
+it preferred for the rest of that session, until you choose NeoSimulator again.
 
 NeoSimulator checks Xcode's routing preferences at startup, when handing screens
 to Device Hub, and when restoring the original settings. This includes changes
@@ -40,12 +41,9 @@ lifetime. **Default (xcode-select)** removes the override.
 
 ## Recover original preferences
 
-Quitting restores the original values saved when host management began.
-**Restore Original Settings…** in Settings also releases routing while the app is
-open, including whether a key
-was absent or false. If another tool changed a managed preference, review the
-reported conflict. Quitting leaves those external changes intact and reports that
-restoration was not completed; the saved values remain available for recovery.
+Choose **Restore Original Settings…** in Settings to restore the original values
+saved when host management began, including whether a key was absent or false.
+If another tool changed a managed preference, review the reported conflict.
 Choose **Restore Saved Values…** and confirm only when you intend to replace the
 current routing preferences with the saved originals.
 
@@ -61,7 +59,7 @@ do not select another host.
 
 **NeoSimulator → Settings…** (Command-,) contains General, Devices, Capture,
 Service Profiles, and Licenses settings; Debug builds also show Debug.
-General controls the UI framework installation, keeping devices running when closing or
+General controls the preferred display host, UI framework installation, keeping devices running when closing or
 quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
 

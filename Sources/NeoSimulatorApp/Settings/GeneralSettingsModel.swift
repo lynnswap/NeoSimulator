@@ -20,6 +20,10 @@ final class GeneralSettingsModel {
         restartApplication = restart
     }
 
+    var preferredHost: SimulatorHost {
+        get { manager.status?.preferredHost ?? .neo }
+        set { manager.select(newValue) }
+    }
     var selectedXcodeURL: URL? {
         get { frameworks.selectedXcodeURL }
         set { frameworks.select(newValue) }
@@ -29,9 +33,11 @@ final class GeneralSettingsModel {
               !frameworks.installations.contains(where: { $0.url == selected }) else { return nil }
         return selected
     }
+    var canSelectHost: Bool { !manager.isBusy && manager.status != nil }
     var canSelectFrameworks: Bool { !manager.isBusy && !frameworks.isLoading }
     var canRestore: Bool { !manager.isBusy && manager.status?.restorationAvailable == true }
     var canRestart: Bool { !manager.isBusy }
+    var offersNeoHost: Bool { manager.status?.preferredHost == .neo && manager.status?.host != .neo }
     var frameworkMessage: String {
         if let issue = frameworks.issue { return issue }
         return frameworks.needsRestart
@@ -39,6 +45,7 @@ final class GeneralSettingsModel {
             : String(localized: "Uses the selected Xcode's display frameworks. Simulator runtimes are selected independently.")
     }
 
+    func useNeoHost() { manager.select(.neo) }
     func restoreDefaults() { manager.restoreDefaults() }
     func restart() { restartApplication() }
 }

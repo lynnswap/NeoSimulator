@@ -66,6 +66,7 @@
             throw CocoaError(.featureUnsupported)
         }
         package func deviceHubDidExit(xcodeURL: URL) {}
+        package func selectHost(_ host: SimulatorHost, xcodeURL: URL?) {}
         package func openDeviceHub(xcodeURL: URL, requestURL: URL?) throws {
             throw CocoaError(.featureUnsupported)
         }
