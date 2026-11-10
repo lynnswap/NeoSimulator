@@ -1681,6 +1681,19 @@ struct ManagerModelTests {
         await source.completeOpen(for: first.id)
         await source.completeOpen(for: second.id)
         try await wait { !model.isBusy }
+        main.selectDevice(first.id)
+        let navigation = NSMenu()
+        main.deviceActions.populate(navigation, devices: [second])
+        let open = try #require(navigation.items.first { $0.title == "Open in New Window" })
+        #expect(NSApp.sendAction(try #require(open.action), to: open.target, from: open))
+        let previewWindow = try #require(app.screens.compactWindow(for: second.id))
+        let previewMenu = try #require(app.screens.makeCompactDeviceMenu?(second, previewWindow))
+        previewMenu.performActionForItem(at: try #require(previewMenu.items.firstIndex { $0.title == "Start" }))
+        #expect(await events.next() == .open(second.id))
+        #expect(main.selectedIdentifiers == [first.id])
+        await source.completeOpen(for: second.id)
+        try await wait { !model.isBusy }
+        previewWindow.close()
         try await model.quitRenderer(keepingDevicesRunning: true)
     }
 

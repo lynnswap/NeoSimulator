@@ -267,7 +267,9 @@ final class DeviceActions: NSObject {
             confirmManagement(request.action, devices: devices, in: request.window)
         case .start:
             // A simulator starts as its screen opens, as Start on a stopped simulator's screen does.
-            for device in devices where device.id.isSimulator { model.openScreen(for: device) }
+            for device in devices where device.id.isSimulator {
+                model.openScreen(for: device, revealingInMainWindow: request.window == nil || request.window === window)
+            }
             let others = devices.filter { !$0.id.isSimulator }
             if !others.isEmpty { model.manage(.start, devices: others) }
         default: model.manage(request.action, devices: devices)
