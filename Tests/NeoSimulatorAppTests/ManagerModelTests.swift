@@ -108,8 +108,8 @@ struct ManagerModelTests {
         try await manager.quitRenderer(keepingDevicesRunning: true)
     }
 
-    @Test(arguments: [false, true])
-    func aPairingCodeSheetCancelsWhenItsWindowClosesOrTheAppQuits(quitting: Bool) async throws {
+    @Test(arguments: [false, true], [false, true])
+    func aPairingSheetCancelsWhenItsWindowClosesOrTheAppQuits(quitting: Bool, waitingForPIN: Bool) async throws {
         _ = NSApplication.shared
         let device = try Self.pairingDevice(paired: false)
         guard case .remote(let remote) = device else { Issue.record("Expected the remote pairing fixture"); return }
@@ -124,14 +124,19 @@ struct ManagerModelTests {
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
+        var nativeReply: CheckedContinuation<Void, Never>?
+        var nativeFinished = false
         manager.pairWithHost(device) {
             try await DevicePairingSheet.pair(
                 remote, in: window,
                 using: { _, prompt in
+                    defer { nativeFinished = true }
+                    if !waitingForPIN { await withCheckedContinuation { nativeReply = $0 } }
                     _ = try await prompt(false, nil)
                 })
         }
         try await wait {
+            if !waitingForPIN { return window.attachedSheet != nil && nativeReply != nil }
             guard let content = window.attachedSheet?.contentView else { return false }
             return inspectorViews(content).compactMap { $0 as? NSTextField }
                 .contains { $0.placeholderString == "Pairing Code" && !$0.isHidden && $0.isEnabled }
@@ -143,11 +148,19 @@ struct ManagerModelTests {
                 .first { $0.title == "Cancel" })
         defer {
             if cancel.target != nil { cancel.performClick(nil) }
+            nativeReply?.resume()
             window.close()
         }
         if quitting { try await manager.quitRenderer(keepingDevicesRunning: true) } else { window.close() }
         try await wait { !manager.managingDeviceIDs.contains(device.id) && window.attachedSheet == nil }
         #expect(failures.isEmpty)
+        if !waitingForPIN {
+            #expect(!nativeFinished)
+            nativeReply?.resume()
+            nativeReply = nil
+            try await wait { nativeFinished }
+            #expect(window.attachedSheet == nil)
+        }
         if !quitting {
             #expect(manager.canPairWithHost(device))
             try await manager.quitRenderer(keepingDevicesRunning: true)
