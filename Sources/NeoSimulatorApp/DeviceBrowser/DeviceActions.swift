@@ -68,13 +68,7 @@ final class DeviceActions: NSObject {
     {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
-        if devices.count == 1, model.needsHostPairing(devices[0]) {
-            let item = NSMenuItem(title: "Pair", action: #selector(pairDeviceFromMenu(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers, window: window)
-            item.isEnabled = model.canPairWithHost(devices[0])
-            menu.addItem(item)
-        } else if devices.count == 1, model.canStopScreenSharing(devices[0]) {
+        if devices.count == 1, model.canStopScreenSharing(devices[0]) {
             let item = NSMenuItem(
                 title: "Stop Screen Sharing", action: #selector(stopScreenSharing(_:)), keyEquivalent: "")
             item.target = self
@@ -111,8 +105,9 @@ final class DeviceActions: NSObject {
         }
         addManagement([
             ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown),
-            ("Restart", .restart), ("Pause", .pause), ("Resume", .resume),
+            ("Pause", .pause), ("Resume", .resume),
         ])
+        addManagement([("Restart", .restart)])
         var hasFinder = false
         if devices.count == 1 {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
@@ -140,6 +135,14 @@ final class DeviceActions: NSObject {
             }
         }
         addManagement([("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy"))], separated: !hasFinder)
+        if devices.count == 1, model.needsHostPairing(devices[0]) {
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: "Pair", action: #selector(pairDeviceFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers, window: window)
+            item.isEnabled = model.canPairWithHost(devices[0])
+            menu.addItem(item)
+        }
         let unpairTitle = devices.contains { if case .remote = $0 { true } else { false } } ? "Unpair…" : "Unpair"
         addManagement([("Pair Simulators", .pair), (unpairTitle, .unpair)])
         addManagement([("Reset Content and Settings…", .erase)])

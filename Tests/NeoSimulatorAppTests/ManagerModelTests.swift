@@ -101,6 +101,9 @@ struct ManagerModelTests {
         let menu = NSMenu()
         controller.deviceActions.populate(menu, devices: [device], includesViewScreen: false)
         let pair = try #require(menu.items.first { $0.title == "Pair" })
+        let navigationIndex = try #require(menu.items.firstIndex { $0.title == "Open in New Window" })
+        let pairingIndex = try #require(menu.items.firstIndex { $0 === pair })
+        #expect(pairingIndex > navigationIndex)
         #expect(NSApp.sendAction(try #require(pair.action), to: pair.target, from: pair))
         try await wait { attempts == 2 }
         resume.continuation.yield(())
