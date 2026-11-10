@@ -9,9 +9,9 @@ restoration.
 
 1. Quit the old NeoSimulator app, or the Xcode 26 **Simulator** app if you used
    `xcode-simulator-host use legacy`.
-2. [Install the new app](../README.md#installation) and choose a **Preferred Display Host** in Settings. Its
-   **NeoSimulator** and **Device Hub** choices replace the CLI's host-switching
-   commands; Legacy mode is not provided.
+2. [Install and open the new app](../README.md#installation). NeoSimulator handles
+   screens while it is open and restores the original routing settings when it
+   quits. The CLI's host-switching commands and Legacy mode are not provided.
 
 Removing the old CLI is optional, and the app doesn't do it automatically. For
 the installer's default paths, run:

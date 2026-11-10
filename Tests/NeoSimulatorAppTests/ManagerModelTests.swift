@@ -120,13 +120,39 @@ struct ManagerModelTests {
             var permission = switching.stream.makeAsyncIterator()
             _ = await permission.next()
         }
-        model.select(.deviceHub)
+        model.openDeviceHub(xcodeURL: URL(filePath: "/Applications/Test Xcode.app"))
         try await wait {
             !banner.isHidden && inspectorViews(banner.view).compactMap { $0 as? NSProgressIndicator }
                 .contains { !$0.isHidden }
         }
         switching.continuation.finish()
         try await wait { !model.isBusy && banner.isHidden }
+    }
+
+    @Test func deviceHubHandoffCancelsInspectorReadsBeforeClosingTheRenderer() async throws {
+        let device = simulator()
+        let source = ManagerModelSource(devices: [device])
+        await source.holdServiceReads()
+        await source.observeServiceReadCancellation()
+        var events = source.events.makeAsyncIterator()
+        let manager = SimulatorManagerModel(source: source)
+        await manager.refresh()
+        let model = try #require(manager.registry.device(for: device.id))
+        let interest = model.keepCurrent(.backgroundServices)
+        #expect(await events.next() == .readServices(device.id))
+        await source.holdServiceReads(false)
+        let xcode = URL(filePath: "/Applications/Test Xcode.app")
+        manager.openDeviceHub(xcodeURL: xcode)
+        let next = await events.next()
+        #expect(next == .cancelledServiceRead(device.id))
+        interest.release()
+        await source.completeServiceRead(disabled: [])
+        if next != .deviceHub { #expect(await events.next() == .deviceHub) }
+        try await wait { !manager.isBusy }
+        manager.deviceHubDidExit(xcodeURL: xcode)
+        try await wait { !manager.isBusy }
+        #expect(await source.sessionEvents.contains("resume"))
+        try await manager.prepareForQuit()
     }
 
     @Test func aThumbnailWaitsForTheBootedSimulatorsScreenAdapter() async throws {
@@ -436,7 +462,6 @@ struct ManagerModelTests {
         manager.start()
         try await manager.prepareForQuit()
         #expect(reported)
-        #expect(manager.status?.preferredHost == .neo)
         #expect(manager.status?.host == .deviceHub)
     }
 
@@ -3127,7 +3152,7 @@ struct ManagerModelTests {
         #expect(app.mainWindow?.window?.isVisible == true && selections == 3)
         #expect(app.onboardingWindow == nil && onboarding.window?.isVisible == false)
         #expect(await source.sessionEvents.first == "begin")
-        #expect(app.model.status?.preferredHost == .neo)
+        #expect(app.model.status?.host == .neo)
         await source.completeOpen()
         try await app.model.quitRenderer(keepingDevicesRunning: true)
     }
@@ -7739,7 +7764,12 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     private nonisolated let cancelledOpens = Mutex<Set<DeviceInventoryID>>([])
     nonisolated var cancelledOpenIDs: Set<DeviceInventoryID> { cancelledOpens.withLock { $0 } }
-    enum Event: Equatable, Sendable { case read(DeviceInventoryID), write(DeviceInventoryID), open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, synchronize, quit, manage(DeviceManagementAction, [DeviceInventoryID]), readServices(DeviceInventoryID), changeServices(DeviceInventoryID) }
+    enum Event: Equatable, Sendable {
+        case cancelledServiceRead(DeviceInventoryID), deviceHub, read(DeviceInventoryID), write(DeviceInventoryID),
+            open(DeviceInventoryID), close(DeviceInventoryID), inspect(DeviceInventoryID), inventory, synchronize, quit,
+            manage(DeviceManagementAction, [DeviceInventoryID]), readServices(DeviceInventoryID), changeServices(
+                DeviceInventoryID)
+    }
     struct ServiceChange: Equatable, Sendable {
         let targets: [SimulatorBackgroundServiceTarget]
         let enabled: Bool
@@ -7773,6 +7803,7 @@ actor ManagerModelSource: SimulatorManagerSource {
     private var heldWrites: [(device: DeviceInventoryID, finished: CheckedContinuation<Void, any Error>)] = []
     private(set) var writtenChanges: [DeviceSettingChange] = []
     private var holdsServiceReads = false
+    private var reportsServiceReadCancellation = false
     private var serviceReads: [(device: DeviceInventoryID, finished: CheckedContinuation<SimulatorBackgroundServices, any Error>)] = []
     /// The categories that the last read or change covered, which the states it answers with cover.
     private var serviceCatalog = BackgroundServiceCatalog.builtIn
@@ -7838,7 +7869,8 @@ actor ManagerModelSource: SimulatorManagerSource {
     }
     func status() -> SimulatorHostStatus {
         sessionEvents.append("status")
-        return SimulatorHostStatus(host: failsSessionStart ? .deviceHub : .neo, preferredHost: .neo,
+        return SimulatorHostStatus(
+            host: failsSessionStart ? .deviceHub : .neo,
                                    restorationAvailable: false, rendererRunning: false)
     }
     func readSettings(_ groups: Set<DeviceSettingsGroup>, of device: InventoryDevice,
@@ -7899,15 +7931,21 @@ actor ManagerModelSource: SimulatorManagerSource {
         heldWrites.removeFirst().finished.resume(throwing: Failure.unavailable)
     }
     /// Background service reads return no overrides at once unless a test holds them.
-    func holdServiceReads() { holdsServiceReads = true }
+    func holdServiceReads(_ held: Bool = true) { holdsServiceReads = held }
+    func observeServiceReadCancellation() { reportsServiceReadCancellation = true }
     func backgroundServices(for device: InventoryDevice, catalog: BackgroundServiceCatalog) async throws
         -> SimulatorBackgroundServices
     {
         serviceCatalog = catalog
         guard holdsServiceReads else { return services(disabled: []) }
-        return try await withCheckedThrowingContinuation { waiting in
-            serviceReads.append((device.id, waiting))
-            continuation.yield(.readServices(device.id))
+        let cancellation = reportsServiceReadCancellation ? continuation : nil
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { waiting in
+                serviceReads.append((device.id, waiting))
+                continuation.yield(.readServices(device.id))
+            }
+        } onCancel: {
+            cancellation?.yield(.cancelledServiceRead(device.id))
         }
     }
     func completeServiceRead(disabled: Set<String>, loaded: Set<String> = [], for device: DeviceInventoryID? = nil) {
@@ -7948,7 +7986,8 @@ actor ManagerModelSource: SimulatorManagerSource {
             disabled: disabled, loaded: loaded, productFamily: "iPhone", catalog: serviceCatalog)
     }
     func quitRenderer(keepingDevicesRunning: Bool?) { sessionEvents.append("quit"); quitCount += 1; continuation.yield(.quit) }
-    func selectHost(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) throws { throw Failure.unavailable }
+    func openDeviceHub(xcodeURL: URL, requestURL: URL?) { continuation.yield(.deviceHub) }
+    func deviceHubDidExit(xcodeURL: URL) { sessionEvents.append("resume") }
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest {
         SimulatorScreenOpenRequest(deviceID: deviceID) { _ = self.cancelledOpens.withLock { $0.insert(deviceID) } }
     }

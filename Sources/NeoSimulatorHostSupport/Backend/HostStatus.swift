@@ -25,9 +25,8 @@ package struct SimulatorRouteStatus: Equatable {
 
 }
 
-/// The app's saved display choice, without inspecting another app's preferences.
-package struct SimulatorHostSelectionStatus: Equatable {
-    package let host: SimulatorHost
+/// Recovery metadata for the current session, without inspecting another app's preferences.
+package struct SimulatorSessionStatus: Equatable {
     package let restorationAvailable: Bool
     package let allowsAutomaticHosting: Bool
 }

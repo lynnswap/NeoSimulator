@@ -19,18 +19,16 @@ If you already use the CLI, follow
 
 ## Open a simulator
 
-In NeoSimulator mode, select a device in the main window and choose
+Select a device in the main window and choose
 **View Screen** to display it in the center pane. **Switch to Compact Window**
 moves the screen to a separate window; **Show in Main Window** brings it back.
 You can also open **Device** in the Dock menu or **File → Open Simulator** and
 choose its OS version and name.
 
-Use Xcode for Build & Run. **Settings → General → Preferred Display Host**
-switches between NeoSimulator and Device Hub, leaving devices running and
-NeoSimulator in the Dock. The choice is saved.
-
-Quitting keeps your selected display host. NeoSimulator does not launch
-automatically. Choose Device Hub in Settings to use it for future Xcode runs.
+Use Xcode for Build & Run. NeoSimulator handles screens while it is open.
+Opening Device Hub directly temporarily hands screens to it; quitting Device Hub
+returns screen handling to NeoSimulator. Quitting NeoSimulator restores the
+original Xcode routing settings.
 
 See <doc:UsingNeoSimulator> for device controls, screen capture, and app
 management.

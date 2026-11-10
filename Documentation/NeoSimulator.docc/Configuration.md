@@ -1,29 +1,29 @@
 # Configuration and recovery
 
-Select a display host and restore saved Xcode preferences from the app.
+NeoSimulator manages simulator display routing while it is open and restores the
+original settings when you quit.
 
-## Select a display host
+## Display routing
 
-Choose **NeoSimulator** or **Device Hub** in **Settings → General → Preferred
-Display Host**. New installations default to NeoSimulator; existing choices are
-preserved. Changes apply across Xcode installations and leave devices running.
+**View Screen** and other screen-opening commands display devices in NeoSimulator.
+No display-host selection is required. Each launch registers NeoSimulator's display
+bridges, including when an older version saved Device Hub as the preferred host.
 
-Startup applies the saved choice; quitting keeps it. NeoSimulator does not launch
-automatically. For future Xcode runs, choose Device Hub or **Restore Original
-Settings…** to recover the preferences saved before Neo first changed them.
+Opening Device Hub directly from the Dock or Finder temporarily hands screens to
+it. NeoSimulator observes that process and registers its bridges again when Device
+Hub quits. Opening a screen from NeoSimulator also resumes its display session.
+Neither operation saves a display-host preference.
 
-NeoSimulator checks Xcode's current preferences after showing its main window
-at startup, and before selecting a host or restoring original settings. This
-includes changes made by other tools. macOS may request access to other apps' data. If
-access is denied, the alert offers **Copy Command** without quitting the app.
-Run the copied command in Terminal, then reopen NeoSimulator to request access
-again. The command resets only NeoSimulator's app-data
-permission. Catalog updates and opening device screens use local
-state. If startup cannot apply NeoSimulator, the settings keep your preference
-and show **Use NeoSimulator** to retry after resolving the reported error.
+NeoSimulator checks Xcode's routing preferences at startup, when handing screens
+to Device Hub, and when restoring the original settings. This includes changes
+made by other tools. macOS may request access to other apps' data. If access is
+denied, the alert offers **Copy Command** without quitting the app. Run the copied
+command in Terminal, then reopen NeoSimulator to request access again. The command
+resets only NeoSimulator's app-data permission. Catalog updates read local recovery
+metadata rather than other apps' preferences.
 
 Continue using Xcode for Build & Run. The main window's inspector contains
-settings for the selected simulator, separate from the app-wide display host.
+settings for the selected simulator.
 
 ## Select the UI framework installation
 
@@ -40,8 +40,9 @@ lifetime. **Default (xcode-select)** removes the override.
 
 ## Recover original preferences
 
-Choose **Restore Original Settings…** in Settings before uninstalling. This
-restores the original values saved when host management began, including whether a key
+Quitting restores the original values saved when host management began.
+**Restore Original Settings…** in Settings also releases routing while the app is
+open, including whether a key
 was absent or false. If another tool changed a managed preference, review the
 reported conflict. Choose **Restore Saved Values…** and confirm only when you
 intend to replace the current routing preferences with the saved originals.
@@ -58,7 +59,7 @@ do not select another host.
 
 **NeoSimulator → Settings…** (Command-,) contains General, Devices, Capture,
 Service Profiles, and Licenses settings; Debug builds also show Debug.
-General controls the preferred display host, UI framework installation, keeping devices running when closing or
+General controls the UI framework installation, keeping devices running when closing or
 quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
 

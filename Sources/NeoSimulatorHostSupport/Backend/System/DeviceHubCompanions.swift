@@ -13,6 +13,11 @@ package final class DeviceHubCompanions {
         var application: NSRunningApplication?
     }
 
+    package typealias ObserveExit = @MainActor (pid_t, @escaping @MainActor () -> Void) -> () -> Void
+    private let observeExit: ObserveExit
+    private var deviceHubObservations: [URL: (pid: pid_t, cancel: () -> Void)] = [:]
+    package var onDeviceHubExit: ((URL) -> Void)?
+
     nonisolated private let owner = Mutex<RendererOwnerIdentity?>(nil)
     private var companions: [URL: Companion] = [:]
     private var launches: [URL: Task<Void, any Error>] = [:]
@@ -23,8 +28,29 @@ package final class DeviceHubCompanions {
     package var onOpenDeviceHub: ((URL, URL?) -> Void)?
     package var onError: ((any Error) -> Void)?
 
-    package init(rendererApplicationURL: URL) {
+    package init(rendererApplicationURL: URL, observeExit: ObserveExit? = nil) {
         rendererURL = rendererApplicationURL
+        self.observeExit = observeExit ?? Self.observeProcessExit
+    }
+
+    package func observeDeviceHub(processIdentifier: pid_t, xcodeURL: URL) {
+        let xcode = xcodeURL.standardizedFileURL.resolvingSymlinksInPath()
+        deviceHubObservations.removeValue(forKey: xcode)?.cancel()
+        let cancel = observeExit(processIdentifier) { [weak self] in
+            guard let self, self.deviceHubObservations[xcode]?.pid == processIdentifier else { return }
+            self.deviceHubObservations.removeValue(forKey: xcode)?.cancel()
+            self.onDeviceHubExit?(xcode)
+        }
+        deviceHubObservations[xcode] = (processIdentifier, cancel)
+    }
+
+    private static func observeProcessExit(of processIdentifier: pid_t, exited: @escaping @MainActor () -> Void) -> ()
+        -> Void
+    {
+        let source = DispatchSource.makeProcessSource(identifier: processIdentifier, eventMask: .exit, queue: .main)
+        source.setEventHandler { Task { @MainActor in exited() } }
+        source.activate()
+        return { source.cancel() }
     }
 
     nonisolated package func allows(processIdentifier: pid_t, bundleURL: URL?) -> Bool {
@@ -118,8 +144,14 @@ package final class DeviceHubCompanions {
         }
     }
 
-    /// Ends ownership before opening Device Hub's normal UI.
     package func stop() async throws {
+        for observation in deviceHubObservations.values { observation.cancel() }
+        deviceHubObservations = [:]
+        try await releaseBridges()
+    }
+
+    /// Ends bridge ownership while continuing to observe Device Hub's normal UI.
+    package func releaseBridges() async throws {
         enabled = false
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         workspaceObservers = []
@@ -223,6 +255,7 @@ package final class DeviceHubCompanions {
     }
 
     isolated deinit {
+        for observation in deviceHubObservations.values { observation.cancel() }
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         if let requestObserver { DistributedNotificationCenter.default().removeObserver(requestObserver) }
     }

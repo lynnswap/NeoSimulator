@@ -17,8 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let companions = DeviceHubCompanions(rendererApplicationURL: rendererURL)
         companions.onError = { [weak self] error in self?.present(error) }
         companions.onOpenDeviceHub = { [weak self] xcode, request in
-            self?.model.select(.deviceHub, xcodeURL: xcode, deviceHubURL: request)
+            self?.model.openDeviceHub(xcodeURL: xcode, requestURL: request)
         }
+        companions.onDeviceHubExit = { [weak self] xcode in self?.model.deviceHubDidExit(xcodeURL: xcode) }
         return companions
     }()
     lazy var model = SimulatorManagerModel(rendererApplicationURL: rendererURL, presentSimulator: { [weak self] context in
@@ -375,10 +376,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .first(where: { $0.name == "ask" })?.value == "true" {
                     quitAsking(nil)
                 } else { NSApp.terminate(nil) }
-            case "select-host":
-                if let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
-                    .first(where: { $0.name == "mode" })?.value,
-                   let host = SimulatorHost(rawValue: raw) { model.select(host) }
             default: break
             }
         }

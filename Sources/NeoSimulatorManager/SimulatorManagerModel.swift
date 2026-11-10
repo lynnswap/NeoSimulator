@@ -98,7 +98,8 @@ package protocol SimulatorManagerSource: DeviceStateSource {
     func endSession() async throws
     func xcodeURL(forDevice deviceID: DeviceInventoryID) async throws -> URL
     func installedXcodes() async throws -> [SimulatorXcode]
-    func selectHost(_ host: SimulatorHost, xcodeURL: URL?, deviceHubURL: URL?) async throws
+    func openDeviceHub(xcodeURL: URL, requestURL: URL?) async throws
+    func deviceHubDidExit(xcodeURL: URL) async throws
     nonisolated func makeScreenOpenRequest(for deviceID: DeviceInventoryID) -> SimulatorScreenOpenRequest
     func openDevice(_ request: SimulatorScreenOpenRequest, xcodeURL: URL?, bootIfNeeded: Bool) async throws
     func closeDevice(_ deviceID: DeviceInventoryID, keepingDeviceRunning: Bool) async throws
@@ -317,11 +318,22 @@ package final class SimulatorManagerModel {
         }
     }
 
-    package func select(_ host: SimulatorHost, xcodeURL: URL? = nil, deviceHubURL: URL? = nil) {
-        perform("Switching simulator app…") {
+    package func openDeviceHub(xcodeURL: URL, requestURL: URL? = nil) {
+        guard !stopping else { return }
+        perform("Opening Device Hub…") {
             try await self.requestHostPreferenceAccess?()
-            if host == .deviceHub { try await self.beforeStoppingScreens?() }
-            try await self.controller.selectHost(host, xcodeURL: xcodeURL, deviceHubURL: deviceHubURL)
+            self.registry.stopReading()
+            defer { if !self.stopping { self.registry.resumeReading() } }
+            try await self.beforeStoppingScreens?()
+            try await self.controller.openDeviceHub(xcodeURL: xcodeURL, requestURL: requestURL)
+        }
+    }
+
+    package func deviceHubDidExit(xcodeURL: URL) {
+        guard !stopping else { return }
+        perform("Resuming simulator display…") {
+            guard !self.stopping else { return }
+            try await self.controller.deviceHubDidExit(xcodeURL: xcodeURL)
         }
     }
 
