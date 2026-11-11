@@ -214,6 +214,8 @@ package final class RemoteDeviceFrameView: NSView {
     package private(set) var chrome: NativeDeviceChrome?
     private var display: RemoteDeviceDisplay?
     private let maskLayer = CALayer()
+    private let presentation = DisplayPresentationView(frame: .zero)
+    private let deviceView = NSView()
 
     package init() {
         super.init(frame: .zero)
@@ -222,7 +224,9 @@ package final class RemoteDeviceFrameView: NSView {
         screen.layer?.backgroundColor = NSColor.black.cgColor
         screen.autoresizingMask = [.width, .height]
         maskLayer.contentsGravity = .resize
-        addSubview(screen)
+        presentation.setDisplay(deviceView)
+        addSubview(presentation)
+        deviceView.addSubview(screen)
     }
 
     package required init?(coder: NSCoder) { nil }
@@ -233,8 +237,28 @@ package final class RemoteDeviceFrameView: NSView {
         self.display = display
         maskLayer.contents = chrome.mask
         chrome.view.autoresizingMask = [.width, .height]
-        addSubview(chrome.view, positioned: .below, relativeTo: screen)
+        deviceView.addSubview(chrome.view, positioned: .below, relativeTo: screen)
         needsLayout = true
+    }
+
+    package var windowToModelTransform: CGAffineTransform { presentation.windowToModelTransform }
+
+    package override func hitTest(_ point: NSPoint) -> NSView? {
+        // Chrome's native button handlers read untransformed NSEvents. Screen input uses the mapped overlay above this view.
+        guard !presentation.isAnimatingRotation else { return nil }
+        return super.hitTest(point)
+    }
+
+    package func setAngle(_ angle: CGFloat, animated: Bool) {
+        guard angle != self.angle else { return }
+        CATransaction.begin()
+        defer { CATransaction.commit() }
+        layoutSubtreeIfNeeded()
+        let previous = animated && chrome != nil ? presentation.snapshot : nil
+        let rotation = self.angle - angle
+        self.angle = angle
+        layoutSubtreeIfNeeded()
+        presentation.animateRotation(from: previous, by: rotation)
     }
 
     package override func layout() {
@@ -244,19 +268,23 @@ package final class RemoteDeviceFrameView: NSView {
         defer { CATransaction.commit() }
         guard showsChrome, let chrome, let display, let layout = fittedLayout(chrome, display) else {
             chrome?.view.isHidden = true
-            screen.frame = bounds
+            presentation.setDisplayFrame(bounds)
+            screen.frame = deviceView.bounds
             screen.layer?.mask = nil
             return
         }
         // The device turns about its center, as DeviceKit's rotation effect does. AppKit's origin is at the
         // bottom left, so the chrome's top-left offsets and SwiftUI angle change sign here.
         let radians = -angle * .pi / 180
+        let size = CGRect(origin: .zero, size: layout.size).applying(CGAffineTransform(rotationAngle: radians)).size
+        presentation.setDisplayFrame(CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                                           width: size.width, height: size.height))
         let center = CGPoint(x: layout.screen.midX - layout.size.width / 2, y: layout.size.height / 2 - layout.screen.midY)
             .applying(CGAffineTransform(rotationAngle: radians))
         let turned = CGRect(origin: .zero, size: layout.screen.size).applying(CGAffineTransform(rotationAngle: radians)).size
-        screen.frame = CGRect(x: bounds.midX + center.x - turned.width / 2, y: bounds.midY + center.y - turned.height / 2,
+        screen.frame = CGRect(x: deviceView.bounds.midX + center.x - turned.width / 2, y: deviceView.bounds.midY + center.y - turned.height / 2,
                               width: turned.width, height: turned.height)
-        chrome.view.frame = bounds
+        chrome.view.frame = deviceView.bounds
         chrome.view.isHidden = false
         chrome.angle = angle
         maskLayer.bounds = CGRect(origin: .zero, size: layout.screen.size)

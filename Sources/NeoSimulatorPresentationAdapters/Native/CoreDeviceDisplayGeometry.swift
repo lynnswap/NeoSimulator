@@ -63,6 +63,9 @@ package final class CoreDeviceDisplayGeometry {
     private let displayUniqueID: String?
     private var update: (@MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void)?
     private var generation = 0
+    private var observation: Task<Void, Never>?
+
+    isolated deinit { observation?.cancel() }
 
     package static func loadRuntime() async throws {
         guard !runtimeLoaded else { return }
@@ -87,6 +90,8 @@ package final class CoreDeviceDisplayGeometry {
 
     package func start(update: @escaping @MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void) async throws {
         generation += 1
+        observation?.cancel()
+        observation = nil
         let token = generation
         self.update = update
         let initial = try await unsafe bindings.readInitialDisplayInfo.unsafeInvoke(on: remote.object)
@@ -98,25 +103,36 @@ package final class CoreDeviceDisplayGeometry {
     package func stop() {
         generation += 1
         update = nil
+        observation?.cancel()
+        observation = nil
     }
 
     private func readAndObserve(generation token: Int, initial: RemoteScreenFramebuffer.Display? = nil) throws {
         guard generation == token, update != nil else { return }
-        let result = withObservationTracking {
-            Result { try read() }
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == token else { return }
-                do { try self.readAndObserve(generation: token) }
-                catch { self.update?(.failure(error)) }
-            }
+        var initial = initial
+        update?(.success(try read(initial: &initial)))
+        // RemoteDevice publishes deviceInfoChanges; its snapshot getters do not register Swift Observation reads.
+        observation = Task { [weak self, remote, initial] in
+            var initial = initial
+            let failure: any Error
+            do {
+                try await remote.followInfoChanges { [weak self] in
+                    guard let self, self.generation == token, !Task.isCancelled else { return }
+                    self.update?(Result { try self.read(initial: &initial) })
+                }
+                failure = RemoteScreenError.unavailable(
+                    "remote-display-observation", "The device's display observation ended.")
+            } catch { failure = error }
+            guard let self, self.generation == token, !Task.isCancelled else { return }
+            self.update?(.failure(failure))
         }
-        update?(.success(try result.get() ?? initial))
     }
 
-    private func read() throws -> RemoteScreenFramebuffer.Display? {
+    private func read(initial: inout RemoteScreenFramebuffer.Display?) throws -> RemoteScreenFramebuffer.Display? {
         let info = try unsafe bindings.readDeviceInfo.unsafeInvoke(on: remote.object)
-        guard let displayInfo = try unsafe bindings.readDisplayInfo.unsafeInvoke(on: info) else { return nil }
+        // The async display-info request can finish before the device-info snapshot includes it.
+        guard let displayInfo = try unsafe bindings.readDisplayInfo.unsafeInvoke(on: info) else { return initial }
+        initial = nil
         return try project(displayInfo)
     }
 

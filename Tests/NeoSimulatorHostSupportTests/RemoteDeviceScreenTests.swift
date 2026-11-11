@@ -626,7 +626,7 @@ struct RemoteDeviceScreenTests {
             framebuffer.update(display: display)
             framebuffer.update(attributes: CoreDeviceCaptureTransport.videoAttributes(
                 frame: angle == 0 ? CGSize(width: 1260, height: 2736) : CGSize(width: 2736, height: 1260), display: display))
-            let screen = frame.screen.frame
+            let screen = frame.screen.convert(frame.screen.bounds, to: frame)
             #expect(frame.chrome?.view.isHidden == false && frame.screen.layer?.mask != nil)
             #expect(abs(screen.width / screen.height - (angle == 0 ? 1260.0 / 2736 : 2736.0 / 1260)) < 0.001)
             #expect(frame.bounds.insetBy(dx: 8, dy: 8).contains(screen), "Angle \(angle): \(screen) has no bezel in \(frame.bounds)")
@@ -637,6 +637,62 @@ struct RemoteDeviceScreenTests {
             let origin = try #require(framebuffer.inputLocations(at: corner, from: frame, clampingToDisplay: false))
             #expect(origin.touch.x < 0.01 && origin.touch.y < 0.01, "Angle \(angle): \(origin.touch)")
             #expect(framebuffer.inputLocations(at: CGPoint(x: screen.minX - 2, y: screen.midY), from: frame, clampingToDisplay: false) == nil)
+        }
+        try await session.stop()
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: RemoteDeviceChromeResources.deviceKitDirectory.appendingPathComponent("chrome_map.plist").path),
+                   "Requires DeviceKit's installed device chrome"))
+    func physicalRotationAnimatesTheBezelAndVideoAsOnePresentation() async throws {
+        try await CoreDeviceDisplayGeometry.loadRuntime()
+        let reported = RemoteDeviceDisplay(pixelSize: CGSize(width: 1260, height: 2736), scale: 3,
+            chromeIdentifier: "com.apple.dt.devicekit.chrome.phone12", maskIdentifier: "1506CF9E-8F5F-48D9-91CA-E852368519A5")
+        let transport = ScreenFixtureTransport()
+        let session = RemoteDeviceScreenSession(device: try device(), readDisplay: { _ in reported }) { _, _, _ in transport }
+        let frame = try #require(session.contentView as? RemoteDeviceFrameView)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 800),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = frame
+        window.orderBack(nil)
+        defer { window.close() }
+        try await session.start()
+        await wait(session) { frame.chrome != nil }
+        frame.layoutSubtreeIfNeeded()
+        transport.emit(.displayAngle(90))
+        #expect(session.state == .connected && frame.angle == 90)
+        #expect(frame.chrome?.view.superview === frame.screen.superview)
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let host = try #require(frame.screen.superview?.superview)
+            let animation = try #require(host.layer?.animation(forKey: "displayRotation") as? CAKeyframeAnimation)
+            let values = try #require(animation.values as? [NSValue])
+            #expect(animation.duration > 0 && values.count > 2)
+            let first = CATransform3DGetAffineTransform(try #require(values.first).caTransform3DValue)
+            #expect(atan2(first.b, first.a) > 0, "The clockwise device turn must start at the previous portrait angle.")
+            #expect(CATransform3DIsIdentity(try #require(values.last).caTransform3DValue))
+            // Freeze an intermediate displayed angle; input must follow those pixels rather than the final frame.
+            let held = try #require(animation.copy() as? CAKeyframeAnimation)
+            held.speed = 0
+            held.timeOffset = held.duration / 2
+            host.layer?.add(held, forKey: "displayRotation")
+            window.displayIfNeeded()
+            CATransaction.flush()
+            await wait(session) { abs(host.layer?.presentation()?.affineTransform().b ?? 0) > 0.1 }
+            let shown = try #require(host.layer?.presentation())
+            let parent = try #require(host.superview)
+            let modelPoint = frame.screen.convert(CGPoint(x: frame.screen.bounds.width * 0.25,
+                                                          y: frame.screen.bounds.height * 0.75), to: nil)
+            let local = host.convertToLayer(host.convert(modelPoint, from: nil))
+            let displayed = parent.convert(parent.convertFromLayer(shown.convert(local, to: shown.superlayer)), to: nil)
+            let container = try #require(frame.superview)
+            #expect(frame.hitTest(container.convert(displayed, from: nil)) == nil)
+            let mapping = CGAffineTransform(scaleX: 1 / 600, y: 1 / 800)
+            transport.pointerTransform = mapping
+            let expected = modelPoint.applying(mapping)
+            let locations = try #require(session.inputLocations(atWindowPoint: displayed))
+            let pointer = displayed.applying(locations.pointerTransform)
+            #expect(abs(locations.touch.x - expected.x) < 0.001 && abs(locations.touch.y - expected.y) < 0.001)
+            #expect(abs(pointer.x - expected.x) < 0.001 && abs(pointer.y - expected.y) < 0.001)
         }
         try await session.stop()
     }
