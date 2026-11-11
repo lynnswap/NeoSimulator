@@ -152,7 +152,7 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         super.init(window: window)
         presentationViewController.owner = self
         window.delegate = self
-        let root = NSView()
+        let root = NSView(frame: NSRect(origin: .zero, size: window.contentRect(forFrameRect: window.frame).size))
         viewport.translatesAutoresizingMaskIntoConstraints = false
         viewport.canInstallApplications = { [weak self] in self?.canInstallApplications() == true }
         viewport.installApplications = { [weak self] in self?.installApplications($0) }
@@ -207,11 +207,16 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         retryButton.action = #selector(reconnect(_:))
         captureSourceButton.target = self
         captureSourceButton.action = #selector(chooseCaptureSource(_:))
+        // Prepared compact windows extend under the toolbar; every screen layer shares the usable content area.
+        let area = root.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            viewport.leadingAnchor.constraint(equalTo: root.leadingAnchor), viewport.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            viewport.topAnchor.constraint(equalTo: root.topAnchor), viewport.bottomAnchor.constraint(equalTo: bottom.topAnchor),
-            bottom.leadingAnchor.constraint(equalTo: root.leadingAnchor), bottom.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            bottom.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            viewport.leadingAnchor.constraint(equalTo: area.leadingAnchor),
+            viewport.trailingAnchor.constraint(equalTo: area.trailingAnchor),
+            viewport.topAnchor.constraint(equalTo: area.topAnchor),
+            viewport.bottomAnchor.constraint(equalTo: bottom.topAnchor),
+            bottom.leadingAnchor.constraint(equalTo: area.leadingAnchor),
+            bottom.trailingAnchor.constraint(equalTo: area.trailingAnchor),
+            bottom.bottomAnchor.constraint(equalTo: area.bottomAnchor),
             session.contentView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), session.contentView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),
             session.contentView.topAnchor.constraint(equalTo: viewport.topAnchor), session.contentView.bottomAnchor.constraint(equalTo: viewport.bottomAnchor),
             inputView.leadingAnchor.constraint(equalTo: viewport.leadingAnchor), inputView.trailingAnchor.constraint(equalTo: viewport.trailingAnchor),

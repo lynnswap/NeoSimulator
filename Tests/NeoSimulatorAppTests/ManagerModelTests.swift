@@ -2086,6 +2086,7 @@ struct ManagerModelTests {
         let open = try #require(menu.items.first { $0.title == command })
         #expect(NSApp.sendAction(try #require(open.action), to: open.target, from: open))
         let preparedWindow = try #require(app.screens.compactWindow(for: identifier))
+        let preparedFrame = preparedWindow.frame
         #expect(preparedWindow.isVisible)
         try await wait {
             (app.screens.compactScreen(for: identifier)?.commandTarget as? RemoteDeviceWindowController)?.session.state
@@ -2096,6 +2097,13 @@ struct ManagerModelTests {
         let additional = try #require(compact.commandTarget as? RemoteDeviceWindowController)
         #expect(additional.window === preparedWindow)
         #expect(additional.window?.isVisible == true)
+        #expect(preparedWindow.frame == preparedFrame)
+        preparedWindow.contentView?.layoutSubtreeIfNeeded()
+        let viewport = additional.session.contentView
+        let displayed = viewport.convert(viewport.bounds, to: nil)
+        #expect(
+            displayed.maxY <= preparedWindow.contentLayoutRect.maxY + 0.5,
+            "The physical screen must fit below the compact window's toolbar.")
         if command == "Open in New Tab" {
             #expect(window.tabbedWindows?.contains(where: { $0 === preparedWindow }) == true)
         } else {
