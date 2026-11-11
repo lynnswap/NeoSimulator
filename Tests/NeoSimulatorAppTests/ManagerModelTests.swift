@@ -3262,9 +3262,82 @@ struct ManagerModelTests {
         let pairedMenu = SimulatorPairingMenu.make(for: pairedWatch, model: manager, target: target,
                                                   action: #selector(NSApplication.terminate(_:)))
         #expect(pairedMenu.items.filter { $0.action != nil }.allSatisfy { !$0.isEnabled })
+        let origin = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        origin.isReleasedWhenClosed = false
+        defer { origin.close() }
+        origin.orderFront(nil)
+        let deviceActions = DeviceActions(model: manager, window: nil, liveScreen: { nil })
+        var createdFor: DeviceInventoryID?
+        deviceActions.onNewCompanion = { createdFor = $0.inventoryID }
+        let context = NSMenu()
+        deviceActions.populate(context, devices: [.simulator(phone)], includesViewScreen: false, window: origin)
+        let titles = context.items.filter { !$0.isSeparatorItem && !$0.isAlternate }.map(\.title)
+        #expect(!titles.contains("Clone…") && !titles.contains("Pair Simulators"))
+        let create = try #require(context.items.first { $0.title == "Pair Apple Watch…" })
+        let eraseIndex = try #require(context.items.firstIndex { $0.title == "Reset Content and Settings…" })
+        let createIndex = try #require(context.items.firstIndex { $0 === create })
+        let removeIndex = try #require(context.items.firstIndex { $0.title == "Remove…" })
+        #expect(eraseIndex < createIndex && createIndex < removeIndex)
+        #expect(create.isEnabled && create.submenu == nil)
+        #expect(NSApp.sendAction(try #require(create.action), to: create.target, from: create))
+        #expect(createdFor == phone.inventoryID)
+        let applicationMenu = NSMenu()
+        deviceActions.populate(applicationMenu, devices: [.simulator(phone)], includingAdditionalActions: true)
+        #expect(applicationMenu.items.contains { $0.title == "Clone…" && $0.isEnabled })
+
         var events = source.events.makeAsyncIterator()
         manager.manage(.pair, devices: manager.inventory.filter { identifiers.contains($0.id) })
         #expect(await events.next() == .manage(.pair, [phone.inventoryID, watch.inventoryID]))
+        try await wait { manager.managingDeviceIDs.isEmpty }
+
+        let pairedPhone = device("phone", family: "iPhone", pairs: ["pair"])
+        let linkedWatch = device("unpaired-watch", pairs: ["pair"])
+        await source.setDevices(
+            [
+                pairedPhone, linkedWatch,
+                device("unpaired-watch", set: "/custom", pairs: ["pair"]),
+            ].map(InventoryDevice.simulator))
+        await manager.refresh()
+        deviceActions.populate(context, devices: [.simulator(pairedPhone)], includesViewScreen: false, window: origin)
+        let unpair = try #require(context.items.first { $0.title == "Unpair unpaired-watch…" })
+        #expect(NSApp.sendAction(try #require(unpair.action), to: unpair.target, from: unpair))
+        #expect(manager.managingDeviceIDs.isEmpty)
+        let sheet = try #require(origin.attachedSheet)
+        let content = try #require(sheet.contentView)
+        let confirm = try #require(
+            inspectorViews(content).compactMap { $0 as? NSButton }
+                .first { $0.title == "Unpair" })
+        confirm.performClick(nil)
+        #expect(await events.next() == .manage(.unpairCompanion(["pair"]), [watch.inventoryID]))
+        try await wait { origin.attachedSheet == nil && manager.managingDeviceIDs.isEmpty }
+        deviceActions.populate(context, devices: [.simulator(linkedWatch)], includesViewScreen: false, window: origin)
+        #expect(context.items.contains { $0.title == "Unpair phone…" })
+        #expect(!context.items.contains { $0.title == "Pair iPhone…" })
+
+        #expect(NSApp.sendAction(try #require(unpair.action), to: unpair.target, from: unpair))
+        let pendingSheet = try #require(origin.attachedSheet)
+        let pendingContent = try #require(pendingSheet.contentView)
+        let pendingConfirm = try #require(
+            inspectorViews(pendingContent).compactMap { $0 as? NSButton }
+                .first { $0.title == "Unpair" })
+        await source.setDevices(
+            [
+                phone, device("unpaired-watch", pairs: ["replacement-pair"]),
+                device("replacement-phone", family: "iPhone", pairs: ["replacement-pair"]),
+            ].map(InventoryDevice.simulator))
+        await manager.refresh()
+        let acceptedRequests = await source.managementRequests
+        pendingConfirm.performClick(nil)
+        try await wait { origin.attachedSheet == nil }
+        #expect(manager.managingDeviceIDs.isEmpty)
+        #expect(await source.managementRequests == acceptedRequests)
+
+        await source.setDevices([phone, watch].map(InventoryDevice.simulator))
+        await manager.refresh()
+        #expect(NSApp.sendAction(try #require(unpair.action), to: unpair.target, from: unpair))
+        #expect(origin.attachedSheet == nil && manager.managingDeviceIDs.isEmpty)
     }
 
     @Test func openingASimulatorRetriesItsFailedPostureAfterPresentationSucceeds() async throws {

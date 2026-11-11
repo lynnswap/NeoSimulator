@@ -16,6 +16,13 @@ final class DeviceActions: NSObject {
         weak var window: NSWindow? = nil
     }
 
+    private struct CompanionUnpairRequest {
+        let identifier: DeviceInventoryID
+        let partner: DeviceInventoryID
+        let pairIdentifiers: Set<String>
+        weak var window: NSWindow?
+    }
+
     private let model: SimulatorManagerModel
     private weak var window: NSWindow?
     /// The screen that the window shows, which takes a remote device's Lock command.
@@ -64,7 +71,10 @@ final class DeviceActions: NSObject {
         self.liveScreen = liveScreen
     }
 
-    func populate(_ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true, window: NSWindow? = nil)
+    func populate(
+        _ menu: NSMenu, devices: [InventoryDevice], includesViewScreen: Bool = true,
+        includingAdditionalActions: Bool = false, window: NSWindow? = nil
+    )
     {
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
@@ -100,6 +110,10 @@ final class DeviceActions: NSObject {
                 item.target = self
                 item.representedObject = ManagementRequest(action: action, identifiers: identifiers, window: window)
                 item.isEnabled = model.canManage(action, deviceIDs: identifiers)
+                if action == .forceShutdown, devices.allSatisfy({ $0.id.isSimulator && $0.supports(.shutdown) }) {
+                    item.isAlternate = true
+                    item.keyEquivalentModifierMask = .option
+                }
                 menu.addItem(item)
             }
         }
@@ -134,7 +148,10 @@ final class DeviceActions: NSObject {
                 menu.addItem(item)
             }
         }
-        addManagement([("Rename…", .rename(name)), ("Clone…", .clone("\(name) Copy"))], separated: !hasFinder)
+        addManagement([("Rename…", .rename(name))], separated: !hasFinder)
+        if includingAdditionalActions {
+            addManagement([("Clone…", .clone("\(name) Copy"))], separated: false)
+        }
         if devices.count == 1, model.needsHostPairing(devices[0]) {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
             let item = NSMenuItem(title: "Pair", action: #selector(pairDeviceFromMenu(_:)), keyEquivalent: "")
@@ -143,9 +160,13 @@ final class DeviceActions: NSObject {
             item.isEnabled = model.canPairWithHost(devices[0])
             menu.addItem(item)
         }
-        let unpairTitle = devices.contains { if case .remote = $0 { true } else { false } } ? "Unpair…" : "Unpair"
-        addManagement([("Pair Simulators", .pair), (unpairTitle, .unpair)])
+        if includingAdditionalActions { addManagement([("Pair Simulators", .pair)]) }
         addManagement([("Reset Content and Settings…", .erase)])
+        if devices.count == 1, case .simulator(let simulator) = devices[0] {
+            addCompanionActions(to: menu, for: simulator, window: window)
+        } else {
+            addManagement([("Unpair…", .unpair)])
+        }
         addManagement([("Remove…", .remove)])
         if menu.items.isEmpty {
             let item = NSMenuItem(title: devices.isEmpty ? "No Devices Selected" : "No Actions Available", action: nil, keyEquivalent: "")
@@ -191,19 +212,56 @@ final class DeviceActions: NSObject {
             separate()
             add("Reset Content and Settings…", symbol: "eraser", action: .erase)
         }
-        if case .simulator(let phone) = device, phone.productFamily == "iPhone", device.supports(.pair) {
-            separate()
-            let pairing = NSMenuItem(title: "Pair Apple Watch", action: nil, keyEquivalent: "")
-            pairing.image = NSImage.deviceControlSymbol(named: "iphone.and.applewatch", accessibilityDescription: pairing.title)
-            let submenu = pairingMenu(for: phone)
-            pairing.submenu = submenu
-            pairing.isEnabled = submenu.items.contains { $0.action != nil && $0.isEnabled }
-            menu.addItem(pairing)
+        if case .simulator(let simulator) = device {
+            addCompanionActions(to: menu, for: simulator, window: nil)
         }
         if device.supports(.remove) {
             separate()
             add("Remove…", symbol: "trash", action: .remove)
         }
+    }
+
+    private func addCompanionActions(to menu: NSMenu, for device: SimulatorHostDevice, window: NSWindow?) {
+        let partners = device.pairedSimulators(in: model.inventory)
+        guard model.canAddPairing(for: device) || !partners.isEmpty else { return }
+        if !menu.items.isEmpty { menu.addItem(.separator()) }
+        if model.canAddPairing(for: device) {
+            let title = device.productFamily == "iPhone" ? "Pair Apple Watch…" : "Pair iPhone…"
+            let item = NSMenuItem(title: title, action: #selector(performPairingMenuAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = SimulatorPairingMenu.Action.newCompanion(device.inventoryID)
+            item.isEnabled =
+                onNewCompanion != nil && device.deviceTypeIdentifier != nil
+                && model.canManage(.pair, deviceIDs: [device.inventoryID])
+            menu.addItem(item)
+        }
+        for partner in partners {
+            guard let watch = device.watchToUnpair(with: partner) else { continue }
+            let item = NSMenuItem(
+                title: "Unpair \(partner.name)…", action: #selector(unpairCompanion(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = CompanionUnpairRequest(
+                identifier: device.inventoryID,
+                partner: partner.inventoryID,
+                pairIdentifiers: device.pairIdentifiers.intersection(partner.pairIdentifiers),
+                window: window)
+            item.isEnabled = model.canManage(.unpair, deviceIDs: [watch.inventoryID])
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func unpairCompanion(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? CompanionUnpairRequest,
+            case .simulator(let device)? = model.inventory.first(where: { $0.id == request.identifier }),
+            let partner = device.pairedSimulators(in: model.inventory).first(where: {
+                $0.inventoryID == request.partner
+            }),
+            let watch = device.watchToUnpair(with: partner),
+            model.canManage(.unpair, deviceIDs: [watch.inventoryID])
+        else { return }
+        let action = DeviceManagementAction.unpairCompanion(request.pairIdentifiers)
+        guard InventoryDevice.simulator(watch).supports(action) else { return }
+        confirmManagement(action, devices: [.simulator(watch)], in: request.window)
     }
 
     func pairingMenu(for device: SimulatorHostDevice) -> NSMenu {
@@ -288,7 +346,7 @@ final class DeviceActions: NSObject {
         case .rename: presentNameEditor(for: devices[0], cloning: false, in: request.window)
         case .clone: presentNameEditor(for: devices[0], cloning: true, in: request.window)
         case .erase, .remove: confirmManagement(request.action, devices: devices, in: request.window)
-        case .unpair where devices.contains(where: { if case .remote = $0 { true } else { false } }):
+        case .unpair, .unpairCompanion:
             confirmManagement(request.action, devices: devices, in: request.window)
         case .start:
             // A simulator starts as its screen opens, as Start on a stopped simulator's screen does.
@@ -372,14 +430,21 @@ final class DeviceActions: NSObject {
         guard let window = presentingWindow ?? window else { return }
         let removing: Bool
         if case .remove = action { removing = true } else { removing = false }
+        let unpairing: Bool
+        switch action {
+        case .unpair, .unpairCompanion: unpairing = true;
+        default: unpairing = false
+        }
         let subject = devices.count == 1 ? "“\(devices[0].name)”" : "\(devices.count) devices"
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText =
-            action == .unpair ? "Unpair \(subject)?" : removing ? "Remove \(subject)?" : "Erase \(subject)?"
-        if action == .unpair {
+            unpairing ? "Unpair \(subject)?" : removing ? "Remove \(subject)?" : "Erase \(subject)?"
+        if unpairing {
             alert.informativeText =
-                "The selected pairing relationships will be removed. Physical devices will need to pair with this Mac again before sharing their screens."
+                devices.contains { if case .remote = $0 { true } else { false } }
+                ? "The selected pairing relationships will be removed. Physical devices will need to pair with this Mac again before sharing their screens."
+                : "The selected iPhone and Apple Watch simulators will no longer be paired."
         } else if removing {
             alert.informativeText = devices.contains { $0.kind == .virtualMachine }
                 ? "The selected devices and their stored data will be permanently removed. Removing a virtual machine also deletes its associated assets. This cannot be undone."
@@ -387,7 +452,7 @@ final class DeviceActions: NSObject {
         } else {
             alert.informativeText = "All content and settings on the selected devices will be permanently erased. This cannot be undone."
         }
-        alert.addButton(withTitle: action == .unpair ? "Unpair" : removing ? "Remove" : "Erase")
+        alert.addButton(withTitle: unpairing ? "Unpair" : removing ? "Remove" : "Erase")
         alert.addButton(withTitle: "Cancel")
         alert.buttons[0].hasDestructiveAction = true
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -395,6 +460,7 @@ final class DeviceActions: NSObject {
             let identifiers = Set(devices.map(\.id))
             let current = self.model.inventory.filter { identifiers.contains($0.id) }
             guard current.count == identifiers.count else { return }
+            if case .unpairCompanion = action, !self.model.supports(action, devices: current) { return }
             self.model.manage(action, devices: current)
         }
     }

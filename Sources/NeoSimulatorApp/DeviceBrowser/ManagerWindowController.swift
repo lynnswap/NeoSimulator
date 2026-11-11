@@ -501,7 +501,7 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
     func menuForSelectedDevices() -> NSMenu {
         let menu = NSMenu(title: "Device")
         menu.autoenablesItems = false
-        deviceActions.populate(menu, devices: sidebar.visibleSelectedDevices)
+        deviceActions.populate(menu, devices: sidebar.visibleSelectedDevices, includingAdditionalActions: true)
         return menu
     }
 

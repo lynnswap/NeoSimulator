@@ -18,9 +18,12 @@ a dash means running without a window. Hold Option to see runtime and device typ
 
 Select one or more devices and open **Device → Manage Selected Devices** or Control-click the
 selection for its management actions. Actions depend on the device's current
-state and supported capabilities. Rename and Clone apply to one device; select
-an iPhone and an Apple Watch from the same simulator set to pair them. Reset Content
-and Settings, Remove, and physical-device Unpair ask for confirmation. If an operation fails for part of a selection,
+state and supported capabilities. Clone is available in **Device → Manage Selected Devices**.
+Choose **Pair Apple Watch…** on an iPhone Simulator to create its companion, or
+select an iPhone and an Apple Watch from the same simulator set to pair existing devices
+through **Device → Manage Selected Devices**. Paired Simulators offer **Unpair** with the
+partner's name. Reset Content and Settings, Remove, and Unpair ask for confirmation.
+If an operation fails for part of a selection,
 the error identifies those devices and any completed steps.
 
 Connected physical devices appear automatically. VMs offer Start, Shut Down,

@@ -129,22 +129,11 @@ struct DeviceInformation: Equatable {
 
     static func pairedSimulators(for device: SimulatorHostDevice,
                                  in inventory: [InventoryDevice]) -> [SimulatorHostDevice] {
-        inventory.compactMap { item in
-            guard case .simulator(let candidate) = item,
-                  candidate.identifier != device.identifier,
-                  candidate.deviceSetPath == device.deviceSetPath,
-                  !candidate.pairIdentifiers.isDisjoint(with: device.pairIdentifiers) else { return nil }
-            return candidate
-        }.sorted {
-            let order = $0.name.localizedStandardCompare($1.name)
-            return order == .orderedSame ? $0.identifier < $1.identifier : order == .orderedAscending
-        }
+        device.pairedSimulators(in: inventory)
     }
 
     static func watchToUnpair(device: SimulatorHostDevice, partner: SimulatorHostDevice) -> SimulatorHostDevice? {
-        if device.productFamily == "Apple Watch" { return device }
-        if partner.productFamily == "Apple Watch" { return partner }
-        return nil
+        device.watchToUnpair(with: partner)
     }
 
     private static func group(for path: [String]) -> Group {

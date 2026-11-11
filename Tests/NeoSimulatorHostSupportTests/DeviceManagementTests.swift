@@ -699,6 +699,17 @@ struct DeviceManagementTests {
         #expect(commands.contains(["pair", "watch-device", "phone-device"]))
         #expect(commands.contains(["unpair", "actual-pair-id"]))
         #expect(!commands.contains(["unpair", "watch-device"]))
+
+        let changedPairing = ManagementFixture(failingCommand: "unpair", failingIdentifier: "actual-pair-id")
+        var backend = changedPairing.backend
+        backend.readPairs = { _, _ in
+            Data(
+                #"{"pairs":{"replacement-pair":{"watch":{"udid":"watch-device"},"phone":{"udid":"another-phone"}}}}"#
+                    .utf8)
+        }
+        let scoped = await backend.manage(.unpairCompanion(["actual-pair-id"]), devices: [.simulator(watch)])
+        #expect((scoped.results.first?.error as? HostOperationError)?.identifier == "mutation-fixture")
+        #expect(await changedPairing.commands.map(\.arguments) == [["unpair", "actual-pair-id"]])
     }
 
     @Test func unsupportedVirtualOperationsDoNotInvokePhysicalOrSimulatorTransports() async throws {

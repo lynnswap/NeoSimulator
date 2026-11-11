@@ -61,7 +61,7 @@ final class ManagerDeviceInspectorController: NSViewController, NSTableViewDataS
         manager: model, inspection: inspection, visibility: infoVisibility,
         pairingMenu: { [weak self] in self?.onPairingMenu?($0) ?? NSMenu() },
         deviceMenu: { [weak self] in self?.onDeviceMenu?($0) ?? NSMenu() },
-        unpair: { [weak self] in self?.model.manage(.unpair, devices: [.simulator($0)]) })
+        unpair: { [weak self] in self?.model.manage(.unpairCompanion($0.pairIdentifiers), devices: [.simulator($0)]) })
     private lazy var info: NSHostingController<DeviceInformationView> = {
         let host = NSHostingController(rootView: DeviceInformationView(model: information))
         // With nothing being read it is all that shows, and it fills the inspector whatever its content's size.
