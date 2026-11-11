@@ -5,6 +5,8 @@ import Foundation
 package enum DeviceManagementAction: Equatable, Sendable {
     case rename(String), clone(String)
     case start, shutdown, forceShutdown, restart, erase, remove, pair, unpair, pause, resume
+    /// Unpairs these observed relationships, even if the Watch is subsequently paired with another phone.
+    case unpairCompanion(Set<String>)
 }
 
 extension DeviceManagementAction {
@@ -99,6 +101,8 @@ extension InventoryDevice {
             case .restart: return device.isAvailable && device.state == "Booted"
             case .pair: return device.isAvailable && ["Apple Watch", "iPhone"].contains(device.productFamily)
             case .unpair: return device.productFamily == "Apple Watch" && !device.pairIdentifiers.isEmpty
+            case .unpairCompanion(let identifiers):
+                return device.productFamily == "Apple Watch" && identifiers.isSubset(of: device.pairIdentifiers)
             case .pause, .resume: return false
             }
         case .remote(let device):
@@ -461,6 +465,10 @@ package struct DeviceManagementBackend: Sendable {
                             }
                         }
                         if let eraseFailure { throw eraseFailure }
+                    case .unpairCompanion(let identifiers):
+                        for identifier in identifiers.sorted() {
+                            _ = try await command(["unpair", identifier], step: "Unpaired")
+                        }
                     case .unpair:
                         let data = try await readPairs(resolved.xcodeURL, device.deviceSetPath)
                         let pairs = try JSONDecoder().decode(PairList.self, from: data).pairs

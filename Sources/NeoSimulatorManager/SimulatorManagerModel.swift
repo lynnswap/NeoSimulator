@@ -667,7 +667,7 @@ package final class SimulatorManagerModel {
                 }
                 if action != .forceShutdown && !preparesOwnedShutdown {
                     switch action {
-                    case .restart, .erase, .shutdown, .remove, .unpair, .pause:
+                    case .restart, .erase, .shutdown, .remove, .unpair, .unpairCompanion, .pause:
                         for device in targets where device.supports(action) { await self.stopDevicePosture(for: device.id) }
                     default: break
                     }
@@ -715,7 +715,7 @@ package final class SimulatorManagerModel {
     private func managementDisconnectsScreen(_ action: DeviceManagementAction, for device: InventoryDevice) -> Bool {
         guard case .remote = device, device.supports(action) else { return false }
         switch action {
-        case .shutdown, .forceShutdown, .restart, .erase, .remove, .unpair, .pause: return true
+        case .shutdown, .forceShutdown, .restart, .erase, .remove, .unpair, .unpairCompanion, .pause: return true
         case .rename, .clone, .start, .resume, .pair: return false
         }
     }

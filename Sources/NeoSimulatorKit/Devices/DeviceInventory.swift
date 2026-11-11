@@ -485,6 +485,28 @@ package struct SimulatorHostDevice: Sendable, Equatable {
     }
 }
 
+extension SimulatorHostDevice {
+    package func pairedSimulators(in inventory: [InventoryDevice]) -> [SimulatorHostDevice] {
+        inventory.compactMap { item in
+            guard case .simulator(let candidate) = item,
+                candidate.identifier != identifier,
+                candidate.deviceSetPath == deviceSetPath,
+                !candidate.pairIdentifiers.isDisjoint(with: pairIdentifiers)
+            else { return nil }
+            return candidate
+        }.sorted {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame ? $0.identifier < $1.identifier : order == .orderedAscending
+        }
+    }
+
+    package func watchToUnpair(with partner: SimulatorHostDevice) -> SimulatorHostDevice? {
+        if productFamily == "Apple Watch" { return self }
+        if partner.productFamily == "Apple Watch" { return partner }
+        return nil
+    }
+}
+
 package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
     package enum Kind: Sendable, Equatable { case preferencesChanged, unavailableXcode, launchFailed, partialSuccess, operationFailed }
     package let kind: Kind
