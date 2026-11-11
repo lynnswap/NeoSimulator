@@ -48,6 +48,19 @@ package final class DisplayPresentationView: NSView {
                         scale: hypot(transform.a, transform.b), angle: atan2(transform.b, transform.a))
     }
 
+    package var isAnimatingRotation: Bool { layer?.animation(forKey: "displayRotation") != nil }
+
+    /// Maps window locations on the animated display to its final model geometry.
+    package var windowToModelTransform: CGAffineTransform {
+        guard isAnimatingRotation, let layer,
+              let shown = layer.presentation(), let parent = superview, let shownParent = shown.superlayer else { return .identity }
+        return CGAffineTransform(sampling: { point in
+            let inParent = parent.convertToLayer(parent.convert(point, from: nil))
+            let inDisplay = self.convertFromLayer(shown.convert(inParent, from: shownParent))
+            return self.convert(inDisplay, to: nil)
+        })
+    }
+
     package func animateRotation(from previous: Snapshot?, by degrees: Double) {
         guard let previous, let layer, let window, window.isVisible,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }

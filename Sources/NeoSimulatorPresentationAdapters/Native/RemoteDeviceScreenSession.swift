@@ -334,7 +334,11 @@ package final class RemoteDeviceScreenSession {
     package func inputLocations(atWindowPoint point: CGPoint,
                                clampingToDisplay: Bool = false) -> RemoteDeviceInputLocations? {
         guard state == .connected, !isChangingDisplay else { return nil }
-        return transport?.inputLocations(atWindowPoint: point, clampingToDisplay: clampingToDisplay)
+        let transform = frame.windowToModelTransform
+        guard let locations = transport?.inputLocations(atWindowPoint: point.applying(transform),
+                                                       clampingToDisplay: clampingToDisplay) else { return nil }
+        return RemoteDeviceInputLocations(touch: locations.touch, pointer: locations.pointer,
+                                          pointerTransform: transform.concatenating(locations.pointerTransform))
     }
 
     package func sendKey(_ usage: UInt16, state: RemoteDeviceButtonState) async throws {
@@ -429,7 +433,7 @@ package final class RemoteDeviceScreenSession {
             finishFrameWait(.failure(RemoteScreenError.unavailable("remote-display-ended", "The display connection ended.")))
             if resizeSession != nil, !isChangingDisplay { returnFromInvalidatedDisplay() }
         case .inputGeometryChanged: break
-        case .displayAngle(let angle): frame.angle = angle
+        case .displayAngle(let angle): frame.setAngle(angle, animated: state == .connected)
         case .inputCapabilitiesLost(let kinds): onInputCapabilitiesLost?(kinds)
         }
         onStateChange?()
