@@ -381,8 +381,15 @@ package final class RemoteDeviceScreenSession {
     /// Shows the device's frame from its display description, whether or not its screen connects.
     private func prepareFrame() {
         guard frame.chrome == nil, framePreparation == nil else { return }
+        let startedConnected = state == .connected
         framePreparation = Task { [weak self, device, readDisplay] in
-            defer { self?.framePreparation = nil }
+            defer {
+                if let self {
+                    self.framePreparation = nil
+                    // An early metadata read can finish after the screen has established the device connection.
+                    if !startedConnected, self.state == .connected { self.prepareFrame() }
+                }
+            }
             do {
                 guard let display = try await readDisplay(device),
                       let resources = try RemoteDeviceChromeResources(display: display, productType: device.modelIdentifier) else { return }
@@ -399,7 +406,7 @@ package final class RemoteDeviceScreenSession {
                 self.onStateChange?()
             } catch {
                 guard !Task.isCancelled else { return }
-                // The screen works without its frame; the next connection reads the display again.
+                // The screen remains usable if its frame is unavailable.
                 Self.logger.error("The device frame is unavailable: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -416,7 +423,9 @@ package final class RemoteDeviceScreenSession {
 
     private func receive(_ event: RemoteScreenTransportEvent) {
         switch event {
-        case .connected: state = .connected
+        case .connected:
+            state = .connected
+            prepareFrame()
         case .attributes(let attributes):
             videoAttributes = attributes
             if hasReceivedFrame { finishFrameWait(.success(())) }
