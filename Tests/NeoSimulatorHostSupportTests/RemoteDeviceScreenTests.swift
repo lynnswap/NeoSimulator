@@ -641,6 +641,51 @@ struct RemoteDeviceScreenTests {
         try await session.stop()
     }
 
+    @Test(
+        .enabled(
+            if: FileManager.default.fileExists(
+                atPath: RemoteDeviceChromeResources.deviceKitDirectory.appendingPathComponent("chrome_map.plist").path),
+            "Requires DeviceKit's installed device chrome"), arguments: [false, true])
+    func aScreenConnectionRechecksFrameMetadataWhenItBecomesReady(finishesAfterConnection: Bool) async throws {
+        try await CoreDeviceDisplayGeometry.loadRuntime()
+        let reported = RemoteDeviceDisplay(
+            pixelSize: CGSize(width: 1260, height: 2736), scale: 3,
+            chromeIdentifier: "com.apple.dt.devicekit.chrome.phone12",
+            maskIdentifier: "1506CF9E-8F5F-48D9-91CA-E852368519A5")
+        let initialRead = ScreenFixtureGate()
+        let finishInitialRead = ScreenFixtureGate()
+        let frameReady = ScreenFixtureGate()
+        let transport = ScreenFixtureTransport(suspendStart: true)
+        var reads = 0
+        var displayReady = false
+        let session = RemoteDeviceScreenSession(
+            device: try device(),
+            readDisplay: { _ in
+                reads += 1
+                if reads == 1 {
+                    initialRead.signal()
+                    if finishesAfterConnection { await finishInitialRead.hold() }
+                    return nil
+                }
+                return displayReady ? reported : nil
+            }
+        ) { _, _, _ in transport }
+        let frame = try #require(session.contentView as? RemoteDeviceFrameView)
+        frame.frame = CGRect(x: 0, y: 0, width: 600, height: 800)
+        session.onStateChange = { if frame.chrome != nil { frameReady.signal() } }
+        let start = Task { try await session.start() }
+        try await initialRead.wait(timeout: .seconds(5))
+        await transport.waitUntilStarting()
+        displayReady = true
+        transport.finishStarting()
+        try await start.value
+        if finishesAfterConnection { finishInitialRead.resume() }
+        try await frameReady.wait(timeout: .seconds(5))
+        frame.layoutSubtreeIfNeeded()
+        #expect(frame.chrome?.view.isHidden == false && frame.screen.layer?.mask != nil)
+        try await session.stop()
+    }
+
     @Test(.enabled(if: FileManager.default.fileExists(atPath: RemoteDeviceChromeResources.deviceKitDirectory.appendingPathComponent("chrome_map.plist").path),
                    "Requires DeviceKit's installed device chrome"))
     func physicalRotationAnimatesTheBezelAndVideoAsOnePresentation() async throws {
@@ -3552,9 +3597,10 @@ private final class ScreenFixtureGate {
     private var release: CheckedContinuation<Void, Never>?
     func hold() async {
         await withCheckedContinuation {
-            entered = true; release = $0; entering?.resume(); entering = nil
+            release = $0; signal()
         }
     }
+    func signal() { entered = true; entering?.resume(); entering = nil }
     func wait() async { if !entered { await withCheckedContinuation { entering = $0 } } }
     func wait(timeout: Duration) async throws {
         let deadline = Task {
@@ -3563,7 +3609,7 @@ private final class ScreenFixtureGate {
         }
         defer { deadline.cancel() }
         await wait()
-        try #require(entered, "The input operation did not reach the fixture before the deadline")
+        try #require(entered, "The operation did not reach the fixture before the deadline")
     }
     func resume() { release?.resume(); release = nil }
 }
