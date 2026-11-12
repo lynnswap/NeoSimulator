@@ -396,15 +396,18 @@ struct InputFocusTests {
         for event in [inside, beside] { input.mouseMoved(with: event) }
         try await send()
         #expect(transport.pointerMoves.isEmpty && transport.gesturePointers.count == 2)
-        let buttons = try [NSEvent.EventType.rightMouseDown, .rightMouseDragged, .rightMouseUp].map {
-            let location = $0 == .rightMouseDown ? inside.locationInWindow : CGPoint(x: 400, y: 700)
-            let event = try #require(
-                NSEvent.mouseEvent(
-                    with: $0, location: location, modifierFlags: [], timestamp: 0,
-                    windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)?.cgEvent)
-            event.setIntegerValueField(.mouseEventButtonNumber, value: 1)
-            return try #require(NSEvent(cgEvent: event))
+        func buttonEvents(_ types: [NSEvent.EventType], button: Int64) throws -> [NSEvent] {
+            try types.map {
+                let location = $0 == types[0] ? inside.locationInWindow : CGPoint(x: 400, y: 700)
+                let event = try #require(
+                    NSEvent.mouseEvent(
+                        with: $0, location: location, modifierFlags: [], timestamp: 0,
+                        windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)?.cgEvent)
+                event.setIntegerValueField(.mouseEventButtonNumber, value: button)
+                return try #require(NSEvent(cgEvent: event))
+            }
         }
+        let buttons = try buttonEvents([.rightMouseDown, .rightMouseDragged, .rightMouseUp], button: 1)
         input.rightMouseDown(with: buttons[0])
         input.rightMouseDragged(with: buttons[1])
         input.rightMouseUp(with: buttons[2])
@@ -417,6 +420,15 @@ struct InputFocusTests {
             transport.gesturePointers.suffix(2).allSatisfy {
                 $0.event.locationInWindow.applying($0.transform) == CGPoint(x: 0, y: 1)
             })
+        // Additional mouse buttons keep their original numbers through the pointer capability.
+        let additional = try buttonEvents([.otherMouseDown, .otherMouseDragged, .otherMouseUp], button: 3)
+        let nativePointers = transport.gesturePointers.count
+        input.otherMouseDown(with: additional[0])
+        input.otherMouseDragged(with: additional[1])
+        input.otherMouseUp(with: additional[2])
+        try await send()
+        #expect(
+            transport.pointerButtons == [.down, .dragged, .up] && transport.gesturePointers.count == nativePointers)
         // A display without a pointer capability still leaves secondary mouse buttons unavailable.
         transport.inputCapabilities = [.digitizer, .gesture]
         let sentPointers = transport.gesturePointers.count

@@ -151,7 +151,8 @@ package final class RemoteDeviceInputView: NSView {
         let kind: MouseInputKind
         if event.buttonNumber == 0, session.inputCapabilities.contains(.digitizer) { kind = .touch }
         else if session.inputCapabilities.contains(.pointer) {
-            kind = session.inputCapabilities.contains(.gesture) ? .nativePointer : .pointer
+            // UniversalHIDKit maps AppKit's other mouse types to the middle button.
+            kind = session.inputCapabilities.contains(.gesture) && event.buttonNumber < 3 ? .nativePointer : .pointer
         }
         else { return }
         guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
