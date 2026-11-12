@@ -374,7 +374,9 @@ struct InputFocusTests {
         let transform = CGAffineTransform(a: 0, b: 1.0 / 200, c: -1.0 / 400, d: 0, tx: 1.25, ty: -0.5)
         transport.locate = { point, clamping in
             guard clamping || display.contains(point) else { return nil }
-            return RemoteDeviceInputLocations(touch: point, pointer: point.applying(transform), pointerTransform: transform)
+            let mapped = point.applying(transform)
+            let pointer = CGPoint(x: min(max(mapped.x, 0), 1), y: min(max(mapped.y, 0), 1))
+            return RemoteDeviceInputLocations(touch: point, pointer: pointer, pointerTransform: transform)
         }
         func mouseMoved(to point: CGPoint) throws -> NSEvent {
             try #require(NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0, windowNumber: 0,
@@ -389,11 +391,44 @@ struct InputFocusTests {
         try await send()
         #expect(transport.gesturePointers.map { ObjectIdentifier($0.event) } == [ObjectIdentifier(inside)])
         #expect(transport.gesturePointers.map(\.transform) == [transform])
-        // With a pointer connection, the movement moves that pointer instead.
+        // With UniversalHID available, movements still use reports instead of asynchronous pointer requests.
         transport.inputCapabilities = [.pointer, .digitizer, .gesture]
         for event in [inside, beside] { input.mouseMoved(with: event) }
         try await send()
-        #expect(transport.pointerMoves == [inside.locationInWindow.applying(transform)] && transport.gesturePointers.count == 1)
+        #expect(transport.pointerMoves.isEmpty && transport.gesturePointers.count == 2)
+        let buttons = try [NSEvent.EventType.rightMouseDown, .rightMouseDragged, .rightMouseUp].map {
+            let location = $0 == .rightMouseDown ? inside.locationInWindow : CGPoint(x: 400, y: 700)
+            let event = try #require(
+                NSEvent.mouseEvent(
+                    with: $0, location: location, modifierFlags: [], timestamp: 0,
+                    windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)?.cgEvent)
+            event.setIntegerValueField(.mouseEventButtonNumber, value: 1)
+            return try #require(NSEvent(cgEvent: event))
+        }
+        input.rightMouseDown(with: buttons[0])
+        input.rightMouseDragged(with: buttons[1])
+        input.rightMouseUp(with: buttons[2])
+        try await send()
+        #expect(
+            transport.gesturePointers.suffix(3).map { ObjectIdentifier($0.event) } == buttons.map(ObjectIdentifier.init)
+        )
+        #expect(transport.pointerButtons.isEmpty)
+        #expect(
+            transport.gesturePointers.suffix(2).allSatisfy {
+                $0.event.locationInWindow.applying($0.transform) == CGPoint(x: 0, y: 1)
+            })
+        // A display without a pointer capability still leaves secondary mouse buttons unavailable.
+        transport.inputCapabilities = [.digitizer, .gesture]
+        let sentPointers = transport.gesturePointers.count
+        input.rightMouseDown(with: buttons[0])
+        input.rightMouseUp(with: buttons[2])
+        try await send()
+        #expect(transport.gesturePointers.count == sentPointers)
+        // Devices without UniversalHID retain their pointer capability route.
+        transport.inputCapabilities = [.pointer, .digitizer]
+        for event in [inside, beside] { input.mouseMoved(with: event) }
+        try await send()
+        #expect(transport.pointerMoves == [inside.locationInWindow.applying(transform)])
         // Neither touches the screen.
         #expect(transport.touches.isEmpty)
         try await session.stop()
@@ -13760,6 +13795,7 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
     private(set) var touches: [(point: CGPoint, phase: RemoteDeviceTouchPhase)] = []
     private(set) var trackpadEvents: [NSEvent] = []
     private(set) var pointerMoves: [CGPoint] = []
+    private(set) var pointerButtons: [RemoteDevicePointerPhase] = []
     private(set) var gesturePointers: [(event: NSEvent, transform: CGAffineTransform)] = []
     private(set) var inputReleases = 0
     var onReleaseInputs: (@MainActor () async throws -> Void)?
@@ -13777,7 +13813,8 @@ final class TestRemoteScreenTransport: RemoteScreenTransport {
         if case .touch(let point, _, let phase, _) = input { touches.append((point, phase)) }
         if case .trackpad(let event, _) = input { trackpadEvents.append(event) }
         if case .pointer(let point) = input { pointerMoves.append(point) }
-        if case .gesturePointer(let event, let transform) = input { gesturePointers.append((event, transform)) }
+        if case .pointerButton(_, let phase, _, _) = input { pointerButtons.append(phase) }
+        if case .pointerEvent(let event, let transform) = input { gesturePointers.append((event, transform)) }
     }
     func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations? {
         locate?(point, clampingToDisplay)

@@ -41,7 +41,7 @@ package final class GuestScreenInput: NativeScreenInputTransport {
             try await input.send(contacts)
         case .button(let page, let usage, let state):
             try buttons.postButton(usagePage: page, usage: usage, state: state)
-        case .key, .pointer, .pointerButton, .trackpad, .gesturePointer:
+        case .key, .pointer, .pointerButton, .trackpad, .pointerEvent:
             throw DeviceIOError.unavailable("remote-display-input", "The guest's screen input carries only touches and buttons.")
         }
         pressed.record(input)

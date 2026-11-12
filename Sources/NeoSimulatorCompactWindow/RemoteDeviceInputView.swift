@@ -80,9 +80,13 @@ package final class RemoteDeviceInputView: NSView {
     }
 
     private enum MouseInputKind {
-        case touch, pointer
+        case touch, pointer, nativePointer
         package var capability: RemoteDeviceInputKind {
-            switch self { case .touch: .digitizer; case .pointer: .pointer }
+            switch self {
+            case .touch: .digitizer
+            case .pointer: .pointer
+            case .nativePointer: .gesture
+            }
         }
     }
     private struct MouseGesture {
@@ -146,7 +150,9 @@ package final class RemoteDeviceInputView: NSView {
         window?.makeFirstResponder(self)
         let kind: MouseInputKind
         if event.buttonNumber == 0, session.inputCapabilities.contains(.digitizer) { kind = .touch }
-        else if session.inputCapabilities.contains(.pointer) { kind = .pointer }
+        else if session.inputCapabilities.contains(.pointer) {
+            kind = session.inputCapabilities.contains(.gesture) ? .nativePointer : .pointer
+        }
         else { return }
         guard let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
         let button = event.buttonNumber
@@ -155,6 +161,7 @@ package final class RemoteDeviceInputView: NSView {
         enqueueMouseInput(kind: kind) { [session] in
             switch kind {
             case .touch: try await session.sendTouch(at: locations.touch, phase: .began)
+            case .nativePointer: try await session.sendPointerEvent(with: event, at: locations)
             case .pointer: try await session.sendPointerButton(button, phase: .down, clicks: clicks, at: locations.pointer)
             }
         }
@@ -169,6 +176,7 @@ package final class RemoteDeviceInputView: NSView {
         enqueueMouseInput(kind: gesture.kind) { [session] in
             switch gesture.kind {
             case .touch: try await session.sendTouch(at: locations.touch, phase: .moved)
+            case .nativePointer: try await session.sendPointerEvent(with: event, at: locations)
             case .pointer: try await session.sendPointerButton(button, phase: .dragged, clicks: gesture.clicks, at: locations.pointer)
             }
         }
@@ -186,6 +194,7 @@ package final class RemoteDeviceInputView: NSView {
         enqueueMouseInput(kind: gesture.kind) { [session] in
             switch gesture.kind {
             case .touch: try await session.sendTouch(at: locations.touch, phase: .ended)
+            case .nativePointer: try await session.sendPointerEvent(with: event, at: locations)
             case .pointer: try await session.sendPointerButton(button, phase: .up, clicks: gesture.clicks, at: locations.pointer)
             }
         }
@@ -230,11 +239,13 @@ package final class RemoteDeviceInputView: NSView {
 
     package override func mouseMoved(with event: NSEvent) {
         guard isInputEnabled, let locations = session.inputLocations(atWindowPoint: event.locationInWindow) else { return }
-        if session.inputCapabilities.contains(.pointer) {
+        if session.inputCapabilities.contains(.gesture) {
+            // Report sends preserve input order without waiting for a separate pointer request before each gesture.
+            enqueueGestureInput(for: .gesture) { [session] in
+                try await session.sendPointerEvent(with: event, at: locations)
+            }
+        } else if session.inputCapabilities.contains(.pointer) {
             enqueueMouseInput(kind: .pointer) { [session] in try await session.movePointer(to: locations.pointer) }
-        } else if session.inputCapabilities.contains(.gesture) {
-            // Without a pointer connection, as on a dedicated display, the mouse still places the trackpad's pinches.
-            enqueueGestureInput(for: .gesture) { [session] in try await session.moveGesturePointer(with: event, at: locations) }
         }
     }
 
