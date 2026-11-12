@@ -100,7 +100,7 @@
         package func inspector(for device: InventoryDevice) throws -> DeviceInspector {
             throw CocoaError(.featureUnsupported)
         }
-        package func restore(force: Bool) throws { throw CocoaError(.featureUnsupported) }
+        package func restore() throws { throw CocoaError(.featureUnsupported) }
         package func synchronizeXcodeConnections() -> Bool { false }
         package func quitRenderer(keepingDevicesRunning: Bool?) {}
         package func readSettings(

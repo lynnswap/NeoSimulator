@@ -423,10 +423,10 @@ package actor SimulatorHostController {
         }
     }
 
-    package func restore(force: Bool = false) async throws {
+    package func restore() async throws {
         await cancelConnectionSynchronization()
         try await operation(.hostTransition) {
-            do { try await self.restoreHost(force: force) }
+            do { try await self.restoreHost() }
             catch {
                 self.invalidateHostAfterFailedChange(error)
                 throw error
@@ -989,10 +989,10 @@ package actor SimulatorHostController {
     }
 
     @concurrent
-    private func restoreHost(force: Bool) async throws {
+    private func restoreHost() async throws {
         let workspace = await WorkspaceClient.live(
             headlessRenderers: presentSimulator != nil, deviceHubCompanions: deviceHubCompanions)
-        _ = try await makeCore(workspace: workspace).restore(force: force)
+        _ = try await makeCore(workspace: workspace).restore()
     }
 
     @concurrent

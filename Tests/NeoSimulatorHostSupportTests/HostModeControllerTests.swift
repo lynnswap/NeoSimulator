@@ -791,23 +791,19 @@ struct HostModeControllerTests {
         #expect(status.receiptStatus == .ambiguousIntermediate)
     }
 
-    @Test func externalPreferenceChangeIsReportedAsAConflict() async throws {
+    @Test func aNewSessionReconcilesChangedPreferencesAndKeepsTheOriginal() async throws {
         let fixture = try ControllerFixture()
-        _ = try await fixture.controller.use(.neo)
+        _ = try await fixture.controller.beginSession()
+        fixture.runner.setStoredValue(nil, for: ToolConstants.deviceHubPreference)
+
+        _ = try await fixture.controller.beginSession()
+        #expect(try await fixture.controller.routeStatus().preferences == .neo)
+        #expect(try fixture.receiptStore.load()?.original == .deviceHub)
+
         fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
-
-        let status = try await fixture.controller.routeStatus()
-        #expect(status.receiptStatus.hasConflict)
-        let eventsBeforeRestore = fixture.workspace.events
-
-        do {
-            _ = try await fixture.controller.restore()
-            Issue.record("expected external conflict")
-        } catch let error as HostOperationError {
-            #expect(error.identifier == "preference-conflict")
-            #expect(error.category == .configuration)
-        }
-        #expect(fixture.workspace.events == eventsBeforeRestore)
+        _ = try await fixture.controller.restore()
+        #expect(try await fixture.controller.routeStatus().preferences == .deviceHub)
+        #expect(try fixture.receiptStore.load() == nil)
     }
 
     @Test func detectedChangeBetweenWritesIsNotRolledBack() async throws {
@@ -846,6 +842,36 @@ struct HostModeControllerTests {
         #expect(try fixture.receiptStore.load()?.pending != nil)
     }
 
+    @Test(arguments: [(false, ManagedPreferenceState.neo), (true, .neo), (true, .deviceHub)])
+    func aHostChangeDoesNotOverwritePreferencesChangedWhileStoppingItsHost(
+        restoring: Bool, observed: ManagedPreferenceState
+    ) async throws {
+        let fixture = try ControllerFixture()
+        _ = try await fixture.controller.beginSession()
+        fixture.runner.setStoredValue(observed.xcodeSession.booleanValue, for: ToolConstants.xcodePreference)
+        fixture.runner.setStoredValue(
+            observed.deviceHubAutoStartSuppression.booleanValue, for: ToolConstants.deviceHubPreference)
+        fixture.workspace.onTerminateNeoHosts = {
+            fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
+            fixture.runner.setStoredValue(true, for: ToolConstants.deviceHubPreference)
+        }
+
+        do {
+            if restoring {
+                _ = try await fixture.controller.restore()
+            } else {
+                _ = try await fixture.controller.use(.deviceHub)
+            }
+            Issue.record("Overwrote preferences changed while the host was stopping")
+        } catch let error as HostOperationError {
+            #expect(error.identifier == "preference-conflict")
+        }
+
+        #expect(try await fixture.controller.routeStatus().preferences == .coreSimulator)
+        #expect(fixture.runner.mutationCount == 2)
+        #expect(try fixture.receiptStore.load()?.original == .deviceHub)
+    }
+
     @Test func changeBetweenReceiptCaptureAndApplyIsNotOverwritten() async throws {
         let fixture = try ControllerFixture()
         var stateReadCount = 0
@@ -881,7 +907,7 @@ struct HostModeControllerTests {
         )
     }
 
-    @Test func externalChangeMatchingAnIntermediateIsNeverAssumedToBeOurs() async throws {
+    @Test func aNewRequestReconcilesAnInterruptedWrite() async throws {
         let fixture = try ControllerFixture()
         var stateReadCount = 0
         fixture.runner.beforeRun = { call in
@@ -906,19 +932,13 @@ struct HostModeControllerTests {
             #expect(error.identifier == "preference-conflict")
         }
         fixture.runner.beforeRun = nil
-        let eventsBeforeRetry = fixture.workspace.events
+        _ = try await fixture.controller.use(.neo)
+        #expect(try await fixture.controller.routeStatus().preferences == .neo)
+        #expect(fixture.workspace.openedNeoHosts.count == 1)
+        let loadedReceipt = try fixture.receiptStore.load()
+        let receipt = try #require(loadedReceipt)
+        #expect(receipt.original == .deviceHub && receipt.pending == nil)
 
-        do {
-            _ = try await fixture.controller.use(.neo)
-            Issue.record("expected ambiguous state to remain protected")
-        } catch let error as HostOperationError {
-            #expect(error.identifier == "ambiguous-intermediate")
-        }
-
-        #expect(fixture.runner.mutationCount == 0)
-        #expect(fixture.workspace.events == eventsBeforeRetry)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .falseValue)
-        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
     @Test(arguments: [ManagedPreferenceState.coreSimulator, .neo])
@@ -972,7 +992,8 @@ struct HostModeControllerTests {
         #expect(try await fixture.controller.routeStatus().preferences == .deviceHub)
     }
 
-    @Test func ambiguousIntermediateIsNotOverwrittenByTheNextUse() async throws {
+    @Test(arguments: [false, true])
+    func interruptedPreferencesAreReconciledForSelectionAndRestoration(restoring: Bool) async throws {
         let fixture = try ControllerFixture()
         let xcode = try await InstallationInspector(
             runner: fixture.runner,
@@ -984,69 +1005,24 @@ struct HostModeControllerTests {
             xcode: xcode,
             original: .deviceHub
         )
-        receipt.pending = PendingMutation(
-            before: .deviceHub,
-            target: .coreSimulator
-        )
+        receipt.pending = PendingMutation(before: .deviceHub, target: .coreSimulator)
         try fixture.receiptStore.withExclusiveLock {
             try fixture.receiptStore.save(receipt)
         }
         fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
 
-        do {
+        if restoring {
+            let report = try await fixture.controller.restore()
+            #expect(report.didRestore && report.restoredState == .deviceHub)
+            #expect(try await fixture.controller.routeStatus().preferences == .deviceHub)
+            #expect(try fixture.receiptStore.load() == nil)
+        } else {
             _ = try await fixture.controller.use(.neo)
-            Issue.record("expected ambiguous intermediate state")
-        } catch let error as HostOperationError {
-            #expect(error.identifier == "ambiguous-intermediate")
+            #expect(try await fixture.controller.routeStatus().preferences == .neo)
+            let loadedReceipt = try fixture.receiptStore.load()
+            let recovered = try #require(loadedReceipt)
+            #expect(recovered.original == .deviceHub && recovered.pending == nil)
         }
-
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .trueValue)
-        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
-        let loadedReceipt = try fixture.receiptStore.load()
-        let recovered = try #require(loadedReceipt)
-        #expect(recovered.expectedCurrent == .deviceHub)
-        #expect(
-            recovered.pending
-                == PendingMutation(before: .deviceHub, target: .coreSimulator)
-        )
-    }
-
-    @Test func forceRestoreCanResolveAnAmbiguousIntermediateState() async throws {
-        let fixture = try ControllerFixture()
-        let xcode = try await InstallationInspector(
-            runner: fixture.runner,
-            environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
-            signatureValidator: .acceptingTestFixtures
-        ).validatedTargetXcode()
-        var receipt = RestorationReceipt(
-            capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
-            xcode: xcode,
-            original: .deviceHub
-        )
-        receipt.pending = PendingMutation(
-            before: .deviceHub,
-            target: .coreSimulator
-        )
-        try fixture.receiptStore.withExclusiveLock {
-            try fixture.receiptStore.save(receipt)
-        }
-        fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
-
-        do {
-            _ = try await fixture.controller.restore()
-            Issue.record("expected normal restore to preserve ambiguity")
-        } catch let error as HostOperationError {
-            #expect(error.identifier == "ambiguous-intermediate")
-        }
-        #expect(fixture.runner.mutationCount == 0)
-
-        let report = try await fixture.controller.restore(force: true)
-
-        #expect(report.didRestore)
-        #expect(report.restoredState == .deviceHub)
-        #expect(fixture.runner.storedBoolean(ToolConstants.xcodePreference) == .absent)
-        #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
-        #expect(try fixture.receiptStore.load() == nil)
     }
 
     @Test func neoHostLaunchFailureLeavesTheCommittedModeRestorable() async throws {
@@ -1442,7 +1418,7 @@ struct HostModeControllerTests {
         #expect(fixture.runner.storedBoolean(ToolConstants.deviceHubPreference) == .absent)
     }
 
-    @Test func legacyReceiptsSelectNeoWithoutReadingLivePreferencesAndPendingWritesDoNotAutoAttach() async throws {
+    @Test func pendingWritesDoNotAutoAttachEvenWhenAnExplicitHostChangeFails() async throws {
         let fixture = try ControllerFixture()
         let xcode = try await InstallationInspector(runner: fixture.runner,
             environment: ["DEVELOPER_DIR": fixture.installations.developerDirectoryURL.path],
@@ -1460,6 +1436,17 @@ struct HostModeControllerTests {
             try await fixture.controller.sessionStatus()
                 == SimulatorSessionStatus(restorationAvailable: true, allowsAutomaticHosting: false))
         #expect(!fixture.runner.calls.contains { $0.executable.path == "/usr/bin/defaults" })
+
+        fixture.runner.failPreferenceReads = false
+        fixture.runner.setStoredValue(true, for: ToolConstants.xcodePreference)
+        fixture.workspace.terminateNeoHostsError = HostOperationError.io("stop-host", "could not stop host")
+        do {
+            _ = try await fixture.controller.use(.deviceHub)
+            Issue.record("Opened Device Hub without stopping the previous host")
+        } catch let error as HostOperationError {
+            #expect(error.identifier == "stop-host")
+        }
+        #expect(try await !fixture.controller.sessionStatus().allowsAutomaticHosting)
     }
 
     @Test func routeStatusRetriesWhenStateAppearsDuringTheOptimisticSnapshot() async throws {

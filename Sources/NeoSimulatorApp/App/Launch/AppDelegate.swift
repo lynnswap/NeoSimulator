@@ -578,20 +578,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addDiagnosticDetails((error as? SimulatorHostFailure)?.technicalDetails)
         if let failure = error as? SimulatorHostFailure {
             NSLog("NeoSimulator: %@", failure.technicalDetails)
-            if failure.kind == .preferencesChanged, model.status?.restorationAvailable == true {
-                alert.addButton(withTitle: "Restore Saved Values…")
-                alert.addButton(withTitle: "Cancel")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    let confirmation = NSAlert()
-                    confirmation.alertStyle = .warning
-                    confirmation.messageText = "Restore the saved Xcode settings?"
-                    confirmation.informativeText = "Your current simulator routing settings will be replaced with the original values saved by NeoSimulator. Your devices are kept."
-                    confirmation.addButton(withTitle: "Restore").hasDestructiveAction = true
-                    confirmation.addButton(withTitle: "Cancel")
-                    if confirmation.runModal() == .alertFirstButtonReturn { model.restoreDefaults(force: true) }
-                }
-                return
-            }
         }
         alert.addButton(withTitle: "OK")
         if error is SimulatorHostFailure { alert.addButton(withTitle: "Copy Details") }

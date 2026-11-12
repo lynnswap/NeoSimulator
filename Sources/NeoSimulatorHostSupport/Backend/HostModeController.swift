@@ -5,7 +5,7 @@ import NeoSimulatorKit
 
 package struct HostModeController {
     private struct ManagedContext {
-        var receipt: RestorationReceipt?
+        let receipt: RestorationReceipt?
         let observed: ManagedPreferenceState
     }
 
@@ -93,10 +93,10 @@ package struct HostModeController {
         case .neo: .neo(try await installationInspector.validatedNeoHost(for: xcode))
         case .deviceHub: .deviceHub
         }
-        _ = try await recoverManagedContext()
+        let context = try await readManagedContext()
         let terminatedNeo = request == .deviceHub
             ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
-        let didChange = try await transition(to: host.mode.targetState, capturingWith: xcode)
+        let didChange = try await transition(to: host.mode.targetState, from: context, capturingWith: xcode)
         let receiptURL = try receiptStore.load() == nil ? nil : receiptStore.receiptURL
         var terminatedDeviceHub = 0
         if case .neo = host {
@@ -130,7 +130,7 @@ package struct HostModeController {
         return ModeChangeReport(host: host, didChangePreferences: didChange, xcode: xcode, receiptURL: receiptURL, terminatedDeviceHubCount: terminatedDeviceHub, terminatedNeoHostCount: terminatedNeo)
     }
 
-    package nonisolated(nonsending) func restore(force: Bool = false) async throws -> RestoreReport {
+    package nonisolated(nonsending) func restore() async throws -> RestoreReport {
         try rejectRootMutation()
         guard try receiptStore.stateDirectoryExists() else {
             try await workspace.stopDeviceHubCompanions()
@@ -139,20 +139,19 @@ package struct HostModeController {
         return try await receiptStore.withExistingExclusiveLock {
             guard let originalReceipt = try receiptStore.load() else {
                 try await workspace.stopDeviceHubCompanions()
-                return RestoreReport(didRestore: false, restoredState: nil, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: 0)
+                return RestoreReport(
+                    didRestore: false, restoredState: nil, receiptURL: receiptStore.receiptURL,
+                    terminatedNeoHostCount: 0)
             }
-            if force { _ = try await defaultsStore.readState() } else { _ = try await recoverManagedContext() }
+            let context = try await readManagedContext()
             try await workspace.stopDeviceHubCompanions()
-            let terminatedNeo = originalReceipt.original.effectiveRoute == .deviceHub
+            let terminatedNeo =
+                originalReceipt.original.effectiveRoute == .deviceHub
                 ? try await workspace.terminateNeoHosts(installationInspector.neoHostApplicationURL()) : 0
-            if force {
-                return try await forceRestore(originalReceipt, terminatedNeoHostCount: terminatedNeo)
-            }
-            guard let receipt = try await recoverManagedContext().receipt else {
-                return RestoreReport(didRestore: false, restoredState: nil, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: terminatedNeo)
-            }
-            let didChange = try await transition(to: receipt.original, capturingWith: nil)
-            return RestoreReport(didRestore: didChange, restoredState: receipt.original, receiptURL: receiptStore.receiptURL, terminatedNeoHostCount: terminatedNeo)
+            let didChange = try await transition(to: originalReceipt.original, from: context, capturingWith: nil)
+            return RestoreReport(
+                didRestore: didChange, restoredState: originalReceipt.original, receiptURL: receiptStore.receiptURL,
+                terminatedNeoHostCount: terminatedNeo)
         }
     }
 
@@ -167,54 +166,40 @@ package struct HostModeController {
 
     private nonisolated(nonsending) func transition(
         to target: ManagedPreferenceState,
+        from initialContext: ManagedContext,
         capturingWith xcode: XcodeInstallation?
     ) async throws -> Bool {
-        var context = try await recoverManagedContext()
-        let before = context.observed
-
-        if context.receipt == nil {
-            guard before != target else {
-                return false
+        let before = initialContext.observed
+        var receipt = initialContext.receipt
+        if before != target {
+            var pendingReceipt: RestorationReceipt
+            if let receipt {
+                pendingReceipt = receipt
+            } else {
+                guard let xcode else {
+                    throw HostOperationError.software(
+                        "missing-capture-xcode",
+                        "a new restoration receipt requires a validated Xcode"
+                    )
+                }
+                pendingReceipt = RestorationReceipt(capturedAt: now(), xcode: xcode, original: before)
             }
-            guard let xcode else {
-                throw HostOperationError.software(
-                    "missing-capture-xcode",
-                    "a new restoration receipt requires a validated Xcode"
-                )
-            }
-            let receipt = RestorationReceipt(
-                capturedAt: now(),
-                xcode: xcode,
-                original: before
-            )
-            try receiptStore.save(receipt)
-            context.receipt = receipt
+            pendingReceipt.expectedCurrent = before
+            pendingReceipt.pending = PendingMutation(before: before, target: target)
+            try receiptStore.save(pendingReceipt)
+            receipt = pendingReceipt
         }
 
-        guard var receipt = context.receipt else {
-            throw HostOperationError.software(
-                "missing-receipt",
-                "preference transition lost its restoration receipt"
-            )
-        }
-        guard before == receipt.expectedCurrent else {
-            throw conflictError(expected: receipt.expectedCurrent, observed: before)
-        }
-        guard before != target else {
-            return false
-        }
-
-        receipt.pending = PendingMutation(before: before, target: target)
-        try receiptStore.save(receipt)
-
+        let didChange: Bool
         do {
-            _ = try await defaultsStore.apply(target, from: before)
+            didChange = try await defaultsStore.apply(target, from: before)
         } catch let mismatch as DefaultsStore.StateMismatch {
             throw conflictError(
                 expected: mismatch.expected.first ?? before,
                 observed: mismatch.observed
             )
         } catch {
+            guard before != target, let receipt else { throw error }
             try await rollback(
                 after: error,
                 to: before,
@@ -223,132 +208,22 @@ package struct HostModeController {
             )
         }
 
-        if target == receipt.original {
-            try receiptStore.deleteReceipt()
-        } else {
-            receipt.expectedCurrent = target
-            receipt.pending = nil
-            try receiptStore.save(receipt)
+        if var receipt {
+            if target == receipt.original {
+                try receiptStore.deleteReceipt()
+            } else if receipt.expectedCurrent != target || receipt.pending != nil {
+                receipt.expectedCurrent = target
+                receipt.pending = nil
+                try receiptStore.save(receipt)
+            }
         }
-        return true
+        return didChange
     }
 
-    private nonisolated(nonsending) func recoverManagedContext() async throws -> ManagedContext {
-        guard var receipt = try receiptStore.load() else {
-            return ManagedContext(
-                receipt: nil,
-                observed: try await defaultsStore.readState()
-            )
-        }
-
-        let observed = try await defaultsStore.readState()
-        if let pending = receipt.pending {
-            if observed == pending.before {
-                if observed == receipt.original {
-                    try receiptStore.deleteReceipt()
-                    return ManagedContext(
-                        receipt: nil,
-                        observed: observed
-                    )
-                }
-                receipt.expectedCurrent = observed
-                receipt.pending = nil
-                try receiptStore.save(receipt)
-                return ManagedContext(
-                    receipt: receipt,
-                    observed: observed
-                )
-            }
-            if observed == pending.target {
-                if observed == receipt.original {
-                    try receiptStore.deleteReceipt()
-                    return ManagedContext(
-                        receipt: nil,
-                        observed: observed
-                    )
-                }
-                receipt.expectedCurrent = observed
-                receipt.pending = nil
-                try receiptStore.save(receipt)
-                return ManagedContext(
-                    receipt: receipt,
-                    observed: observed
-                )
-            }
-            if defaultsStore.isAmbiguousIntermediate(
-                observed,
-                from: pending.before,
-                to: pending.target
-            ) {
-                throw HostOperationError.configuration(
-                    "ambiguous-intermediate",
-                    "the live preferences match a possible interrupted write, but the tool cannot distinguish that from an external change. Nothing was overwritten. Inspect \(receiptStore.receiptURL.path), then choose Restore Original Settings…, then Restore Saved Values… only if the saved original should win."
-                )
-            }
-            throw conflictError(
-                expected: receipt.expectedCurrent,
-                observed: observed
-            )
-        }
-
-        guard observed == receipt.expectedCurrent else {
-            throw conflictError(expected: receipt.expectedCurrent, observed: observed)
-        }
-        if observed == receipt.original {
-            try receiptStore.deleteReceipt()
-            return ManagedContext(
-                receipt: nil,
-                observed: observed
-            )
-        }
+    private nonisolated(nonsending) func readManagedContext() async throws -> ManagedContext {
         return ManagedContext(
-            receipt: receipt,
-            observed: observed
-        )
-    }
-
-    private nonisolated(nonsending) func forceRestore(
-        _ receipt: RestorationReceipt,
-        terminatedNeoHostCount: Int
-    ) async throws -> RestoreReport {
-        let observed = try await defaultsStore.readState()
-        guard observed != receipt.original else {
-            try receiptStore.deleteReceipt()
-            return RestoreReport(
-                didRestore: false,
-                restoredState: receipt.original,
-                receiptURL: receiptStore.receiptURL,
-                terminatedNeoHostCount: terminatedNeoHostCount
-            )
-        }
-
-        var forcedReceipt = receipt
-        forcedReceipt.expectedCurrent = observed
-        forcedReceipt.pending = PendingMutation(
-            before: observed,
-            target: receipt.original
-        )
-        try receiptStore.save(forcedReceipt)
-
-        do {
-            _ = try await defaultsStore.apply(receipt.original, from: observed)
-        } catch let mismatch as DefaultsStore.StateMismatch {
-            throw conflictError(expected: observed, observed: mismatch.observed)
-        } catch {
-            try await rollback(
-                after: error,
-                to: observed,
-                attemptedTarget: receipt.original,
-                receipt: forcedReceipt
-            )
-        }
-
-        try receiptStore.deleteReceipt()
-        return RestoreReport(
-            didRestore: true,
-            restoredState: receipt.original,
-            receiptURL: receiptStore.receiptURL,
-            terminatedNeoHostCount: terminatedNeoHostCount
+            receipt: try receiptStore.load(),
+            observed: try await defaultsStore.readState()
         )
     }
 
@@ -462,7 +337,7 @@ package struct HostModeController {
     ) -> HostOperationError {
         HostOperationError.configuration(
             "preference-conflict",
-            "managed preferences changed outside this tool; expected \(expected), observed \(observed). Inspect \(receiptStore.receiptURL.path) before recovering."
+            "managed preferences changed during the operation; expected \(expected), observed \(observed). Retry the requested operation. Recovery data remains at \(receiptStore.receiptURL.path)."
         )
     }
 

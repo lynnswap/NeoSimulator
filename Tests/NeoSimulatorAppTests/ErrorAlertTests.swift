@@ -37,7 +37,7 @@ struct ErrorAlertTests {
         #expect(alert.messageText == native.messageText && alert.informativeText == native.informativeText)
         #expect(alert.buttons.map(\.title) == native.buttons.map(\.title))
 
-        alert.addButton(withTitle: "Restore Saved Values…")
+        alert.addButton(withTitle: "Try Again")
         let titles = alert.buttons.map(\.title)
         alert.addDiagnosticDetails("routing diagnostic")
         #expect(alert.messageText == native.messageText && alert.informativeText == native.informativeText)

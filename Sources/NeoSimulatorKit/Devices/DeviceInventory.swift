@@ -516,7 +516,7 @@ package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
 
     package var errorDescription: String? {
         switch kind {
-        case .preferencesChanged: "Xcode’s simulator settings changed outside NeoSimulator."
+        case .preferencesChanged: "The simulator routing settings could not be applied."
         case .unavailableXcode: "Xcode cannot be used with NeoSimulator."
         case .launchFailed: "The simulator display could not be opened."
         case .partialSuccess: "Simulator settings changed, but the display could not be opened."
@@ -526,7 +526,8 @@ package struct SimulatorHostFailure: Error, LocalizedError, Sendable {
     package var recoverySuggestion: String? {
         if let underlyingRecoverySuggestion { return underlyingRecoverySuggestion }
         return switch kind {
-        case .preferencesChanged: "Review your Xcode settings. To use the saved values, choose Restore Original Settings…, then Restore Saved Values…."
+        case .preferencesChanged:
+            "Try the operation again. If it keeps failing, close other apps that change Xcode’s simulator routing settings, then try again."
         case .unavailableXcode: "Open Xcode 27 or later and finish installing its developer tools, then try again."
         case .launchFailed: "Try View Screen again, or select the display app in Settings."
         case .partialSuccess: "Try View Screen again, or select the display app in Settings."
