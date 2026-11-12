@@ -260,11 +260,11 @@ package final class CoreDeviceScreenInput {
                 throw RemoteScreenError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
             }
             try await gestures.send(event, coordinateTransform: transform)
-        case .gesturePointer(let event, let transform):
+        case .pointerEvent(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw RemoteScreenError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
             }
-            try await gestures.movePointer(event, coordinateTransform: transform)
+            try await gestures.sendPointerEvent(event, coordinateTransform: transform)
         }
     }
 }
@@ -296,7 +296,7 @@ package final class NativeTrackpadGestures {
     /// `send(_:coordinateTransform:to:)` does.
     package func send(_ event: NSEvent, coordinateTransform: CGAffineTransform? = nil) async throws {
         // Device Hub drops a gesture that no Mac HID service sent rather than giving it a trackpad the Mac does not have.
-        guard let service = try await service(sending: event) else { return }
+        guard let service = try await service(sending: event, isPointerEvent: false) else { return }
         try send(event, coordinateTransform: coordinateTransform, to: service)
     }
 
@@ -306,7 +306,7 @@ package final class NativeTrackpadGestures {
         // Panning, zooming, or turning the canvas moves the screen under a still pointer without a mouse movement, so a
         // gesture first moves the shared pointer to what the screen now shows under it.
         if let coordinateTransform, let movement = try Self.pointerMovement(beginning: event) {
-            try movePointer(movement, coordinateTransform: coordinateTransform, on: service)
+            try sendPointerEvent(movement, coordinateTransform: coordinateTransform, on: service)
         }
         let reports = try service.translator.reports(for: event)
         // Without a report, the device would not start the gesture or would keep one the trackpad already ended.
@@ -316,15 +316,32 @@ package final class NativeTrackpadGestures {
         try send(reports)
     }
 
-    /// Moves the hidden pointer to the displayed location, including senderless movements through the shared service.
-    package func movePointer(_ event: NSEvent, coordinateTransform: CGAffineTransform) async throws {
-        guard let service = try await service(sending: event) else { return }
-        try movePointer(event, coordinateTransform: coordinateTransform, on: service)
+    /// Sends mouse movements and buttons, including senderless pointer events through the shared service.
+    package func sendPointerEvent(_ event: NSEvent, coordinateTransform: CGAffineTransform) async throws {
+        guard let service = try await service(sending: event, isPointerEvent: true) else { return }
+        try sendPointerEvent(event, coordinateTransform: coordinateTransform, on: service)
     }
 
-    /// Translates a movement with the originating observer and routes it to the report's service.
-    package func movePointer(_ event: NSEvent, coordinateTransform: CGAffineTransform, on service: Service) throws {
-        try send(service.translator.reports(for: event, coordinateTransform: coordinateTransform))
+    /// Translates a pointer event with the originating observer and routes it to the report's service.
+    package func sendPointerEvent(_ event: NSEvent, coordinateTransform: CGAffineTransform, on service: Service) throws
+    {
+        let pointer: NSEvent
+        if let transport, unknownSenders.contains(try transport.sender(of: event)) {
+            // Drop the unavailable sender's raw HID payload while preserving the mouse action and its window location.
+            guard
+                let replacement = NSEvent.mouseEvent(
+                    with: event.type, location: event.locationInWindow,
+                    modifierFlags: event.modifierFlags, timestamp: event.timestamp, windowNumber: event.windowNumber,
+                    context: nil,
+                    eventNumber: event.eventNumber, clickCount: event.clickCount, pressure: event.pressure)
+            else {
+                throw RemoteScreenError.software("native-pointer-event", "AppKit could not create the pointer event.")
+            }
+            pointer = replacement
+        } else {
+            pointer = event
+        }
+        try send(service.translator.reports(for: pointer, coordinateTransform: coordinateTransform))
     }
 
     private func send(_ reports: [CoreDeviceEventReports.Report]) throws {
@@ -337,8 +354,8 @@ package final class NativeTrackpadGestures {
     }
 
     /// Prepares the event's service and its shared pointer before any report is sent.
-    /// A senderless mouse movement uses only the shared service; a senderless gesture is ignored.
-    package func service(sending event: NSEvent) async throws -> Service? {
+    /// A pointer with no local HID service uses the shared service; gestures require a local sender.
+    package func service(sending event: NSEvent, isPointerEvent: Bool) async throws -> Service? {
         guard !isStopped else { throw RemoteScreenError.unavailable("remote-gesture-input", "The device's gesture input has stopped.") }
         let generation = self.generation
         let transport: any NativeTrackpadTransport
@@ -348,12 +365,18 @@ package final class NativeTrackpadGestures {
             self.transport = transport
         }
         let sender = try transport.sender(of: event)
-        guard sender != 0 || event.type == .mouseMoved, !unknownSenders.contains(sender) else { return nil }
-        guard let service = try await prepareService(sender: sender, transport: transport, generation: generation) else { return nil }
-        if sender != 0 {
-            _ = try await prepareService(sender: 0, transport: transport, generation: generation)
+        guard sender != 0 || isPointerEvent else { return nil }
+        if !unknownSenders.contains(sender),
+            let service = try await prepareService(sender: sender, transport: transport, generation: generation)
+        {
+            if sender != 0 {
+                _ = try await prepareService(sender: 0, transport: transport, generation: generation)
+            }
+            return service
         }
-        return service
+        // Pointer reports target the shared service even when their source is not a Mac HID service.
+        guard isPointerEvent, sender != 0 else { return nil }
+        return try await prepareService(sender: 0, transport: transport, generation: generation)
     }
 
     private func prepareService(sender: UInt64, transport: any NativeTrackpadTransport, generation: Int) async throws -> Service? {
@@ -638,9 +661,12 @@ package final class NativeDeviceTrackpad {
                     send(touchGestures.events(for: event, transform: coordinateTransform, renderScale: renderScale), to: touchscreen)
                 } else {
                     guard let gestures else { return }
-                    guard let service = try await gestures.service(sending: event), generation == token else { return }
+                    guard
+                        let service = try await gestures.service(
+                            sending: event, isPointerEvent: event.type == .mouseMoved), generation == token
+                    else { return }
                     if event.type == .mouseMoved {
-                        try gestures.movePointer(event, coordinateTransform: coordinateTransform, on: service)
+                        try gestures.sendPointerEvent(event, coordinateTransform: coordinateTransform, on: service)
                     } else {
                         try gestures.send(event, coordinateTransform: coordinateTransform, to: service)
                     }
@@ -898,7 +924,7 @@ package struct RemoteScreenPressedInputs {
                 if contact.isTouching { contacts[contact.id] = contact.point }
                 else { contacts.removeValue(forKey: contact.id) }
             }
-        case .pointer, .trackpad, .gesturePointer: break
+        case .pointer, .trackpad, .pointerEvent: break
         }
     }
 
@@ -917,7 +943,7 @@ private extension RemoteScreenInput {
         case .button: .button
         case .pointer, .pointerButton: .pointer
         case .touch, .contacts: .digitizer
-        case .trackpad, .gesturePointer: .gesture
+        case .trackpad, .pointerEvent: .gesture
         }
     }
 }

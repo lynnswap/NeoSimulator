@@ -1664,15 +1664,15 @@ struct RemoteDeviceScreenTests {
         // Each trackpad keeps its gesture state, while senderless pointer movements share the touchscreen service.
         // A synthetic pinch and an unknown Mac sender still cannot create a trackpad.
         let onScreen = CGAffineTransform(scaleX: 1 / 2000, y: 1 / 2000)
-        try await gestures.movePointer(mouseMovement(sender: 0xA), coordinateTransform: onScreen)
+        try await gestures.sendPointerEvent(mouseMovement(sender: 0xA), coordinateTransform: onScreen)
         for pinch in try [trackpadPinch(.began, sender: 0xA), trackpadPinch(.changed, magnification: 0.2, sender: 0xA),
                           trackpadPinch(.began, sender: 0xB), trackpadPinch(.ended, sender: 0xA), trackpadPinch(.began, sender: nil),
                           trackpadPinch(.began, sender: 0x99), trackpadPinch(.changed, magnification: 0.2, sender: 0x99)] {
             try await gestures.send(pinch, coordinateTransform: onScreen)
         }
-        try await gestures.movePointer(mouseMovement(sender: nil), coordinateTransform: onScreen)
-        try await gestures.movePointer(mouseMovement(sender: 0x99), coordinateTransform: onScreen)
-        #expect(transport.services.map(\.sender) == [0xA, 0, 0xB] && transport.services.map(\.reports) == [4, 3, 1])
+        try await gestures.sendPointerEvent(mouseMovement(sender: nil), coordinateTransform: onScreen)
+        try await gestures.sendPointerEvent(mouseMovement(sender: 0x99), coordinateTransform: onScreen)
+        #expect(transport.services.map(\.sender) == [0xA, 0, 0xB] && transport.services.map(\.reports) == [4, 4, 1])
         #expect(transport.lookups == [0xA, 0, 0xB, 0x99])
         let pointers = try GuestPointerReports(runtime: .shared)
         let shared = try #require(transport.services.first { $0.sender == 0 })
@@ -1684,9 +1684,50 @@ struct RemoteDeviceScreenTests {
         // The device invalidates the services with its gesture capability, so the trackpad's next pinch creates another.
         gestures.discardServices()
         try await gestures.send(trackpadPinch(.began, sender: 0xA))
-        #expect(transport.services.map(\.sender) == [0xA, 0, 0xB, 0xA, 0] && transport.services.map(\.reports) == [4, 3, 1, 1, 0])
+        #expect(
+            transport.services.map(\.sender) == [0xA, 0, 0xB, 0xA, 0]
+                && transport.services.map(\.reports) == [4, 4, 1, 1, 0])
         try await gestures.stop()
         #expect(transport.services.last?.removes == 1)
+    }
+
+    @Test func nativePointerButtonsReachTheSharedServiceWithTheirCoordinatesAndReleases() async throws {
+        let transport = TrackpadFixtureTransport(bindings: try await NativeTrackpadBindings(runtime: .shared))
+        let gestures = NativeTrackpadGestures { transport }
+        let transform = CGAffineTransform(scaleX: 1 / 400, y: 1 / 600)
+        for (type, location) in [
+            (NSEvent.EventType.rightMouseDown, CGPoint(x: 100, y: 120)),
+            (.rightMouseDragged, CGPoint(x: 200, y: 300)),
+            (.rightMouseUp, CGPoint(x: 200, y: 300)),
+        ] {
+            let event = try #require(
+                NSEvent.mouseEvent(
+                    with: type, location: location, modifierFlags: [], timestamp: 0,
+                    windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+            try await gestures.sendPointerEvent(event, coordinateTransform: transform)
+        }
+        let shared = try #require(transport.services.first { $0.sender == 0 })
+        let reports = try GuestPointerReports(runtime: .shared)
+        #expect(
+            try shared.sent.map(reports.placement) == [
+                CGPoint(x: 0.25, y: 0.2), CGPoint(x: 0.5, y: 0.5), CGPoint(x: 0.5, y: 0.5),
+            ])
+        #expect(try shared.sent.map(reports.buttonMask) == [2, 2, 0])
+        let down = try #require(
+            NSEvent.mouseEvent(
+                with: .rightMouseDown, location: CGPoint(x: 200, y: 300),
+                modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 0))
+        let unknown = try #require(down.cgEvent?.copy())
+        unknown.setIntegerValueField(try #require(CGEventField(rawValue: 87)), value: 0x99)
+        try await gestures.sendPointerEvent(#require(NSEvent(cgEvent: unknown)), coordinateTransform: transform)
+        #expect(try reports.buttonMask(#require(shared.sent.last)) == 2)
+        #expect(try reports.placement(#require(shared.sent.last)) == CGPoint(x: 0.5, y: 0.5))
+        try gestures.resetGestures()
+        try await gestures.sendPointerEvent(mouseMovement(sender: nil), coordinateTransform: transform)
+        #expect(try reports.buttonMask(#require(shared.sent.last)) == 0)
+        #expect(shared.resets == 1)
+        try await gestures.stop()
     }
 
     @Test func trackpadServicesCreatedWhileGestureInputEndsAreNotKept() async throws {
@@ -2498,8 +2539,8 @@ struct RemoteDeviceScreenTests {
         transport.inputCapabilities = [.digitizer, .gesture]
         let movement = try mouseMovement(sender: 0xA)
         transport.pointerTransform = CGAffineTransform(scaleX: 1 / 2000, y: 1 / 2000)
-        try await session.moveGesturePointer(with: movement,
-                                             at: #require(session.inputLocations(atWindowPoint: movement.locationInWindow)))
+        try await session.sendPointerEvent(
+            with: movement, at: #require(session.inputLocations(atWindowPoint: movement.locationInWindow)))
         let pinch = try trackpadPinch(.began, sender: 0xA)
         transport.pointerTransform = showing(CGPoint(x: 0.6, y: 0.2), at: pinch)
         try await session.sendTrackpadGesture(pinch)
@@ -2507,12 +2548,12 @@ struct RemoteDeviceScreenTests {
         for event in try [trackpadPinch(.changed, magnification: 0.2, sender: 0xA), trackpadPinch(.ended, sender: 0xA)] {
             try await session.sendTrackpadGesture(event)
         }
-        // On a screen with a pointer connection, mouse movements move that pointer instead, and pinches leave the hidden one.
+        // A pointer capability does not change where the report route places a gesture.
         transport.inputCapabilities.insert(.pointer)
         try await session.sendTrackpadGesture(trackpadPinch(.began, sender: 0xA))
         try await session.stop()
         let placements = try #require(trackpads.services.first { $0.sender == 0 }).sent.map(placement)
-        #expect(placements == [CGPoint(x: 0.6, y: 0.2)])
+        #expect(placements == [CGPoint(x: 0.6, y: 0.2), CGPoint(x: 0.3, y: 0.8)])
         let gestures = try #require(trackpads.services.first { $0.sender == 0xA }).sent.dropFirst().map(placement)
         #expect(gestures == Array(repeating: nil, count: 4))
     }
@@ -3113,6 +3154,7 @@ private struct GuestPointerReports {
     private let makePointer: NativeSwiftFunction<(NativeSwiftValue) -> NativeSwiftValue>
     private let pointerX: NativeSwiftMethod<() -> Double>
     private let pointerY: NativeSwiftMethod<() -> Double>
+    private let readButtonMask: NativeSwiftMethod<() -> UInt8>
 
     @MainActor init(runtime: ABIRuntime) throws {
         let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
@@ -3130,12 +3172,18 @@ private struct GuestPointerReports {
         makePointer = try pointer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
         pointerX = try pointer.resolveAndWait(.swift(.getter("x", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
         pointerY = try pointer.resolveAndWait(.swift(.getter("y", as: (() -> Double).self, valueABIs: abis, receiverABI: abis[pointer])))
+        readButtonMask = try pointer.resolveAndWait(
+            .swift(.getter("buttonMask", as: (() -> UInt8).self, valueABIs: abis, receiverABI: abis[pointer])))
+    }
+
+    func buttonMask(_ report: NativeSwiftValue) throws -> UInt8 {
+        try unsafe readButtonMask.unsafeInvoke(on: makePointer.unsafeInvoke(report.copy()))
     }
 
     /// Where `report` moves the service's hidden pointer, to the nearest thousandth, or nil for a gesture's report.
     func placement(_ report: NativeSwiftValue) throws -> CGPoint? {
         guard try unsafe rawID.unsafeInvoke(on: readID.unsafeInvoke(on: report)) == pointerID else { return nil }
-        let position = try unsafe makePointer.unsafeInvoke(report)
+        let position = try unsafe makePointer.unsafeInvoke(report.copy())
         return try unsafe CGPoint(x: (pointerX.unsafeInvoke(on: position) * 1000).rounded() / 1000,
                                   y: (pointerY.unsafeInvoke(on: position) * 1000).rounded() / 1000)
     }
@@ -3479,7 +3527,8 @@ private final class ScreenFixtureTransport: RemoteScreenTransport {
         pressed.record(input)
         switch input {
         case .trackpad(let event, let transform): try await gestures?.send(event, coordinateTransform: transform)
-        case .gesturePointer(let event, let transform): try await gestures?.movePointer(event, coordinateTransform: transform)
+        case .pointerEvent(let event, let transform):
+            try await gestures?.sendPointerEvent(event, coordinateTransform: transform)
         case .touch(_, _, let phase, _): deliveries.append("touch \(phase.rawValue)")
         case .contacts: deliveries.append("contacts")
         case .button(_, _, let state): deliveries.append("button \(state.rawValue)")

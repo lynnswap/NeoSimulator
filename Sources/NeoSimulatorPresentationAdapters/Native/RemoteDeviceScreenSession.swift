@@ -362,20 +362,22 @@ package final class RemoteDeviceScreenSession {
     }
 
     /// Sends a scroll or magnify event, including its phase and momentum, to the originating Mac trackpad's guest service.
-    /// An event that no Mac HID service sent, such as a synthesized one, reaches no service. On a screen without a
-    /// pointer connection, the gesture's first event places that service's hidden pointer using the screen's current
-    /// input geometry. Later events keep the gesture at that position even if the screen moves beneath the Mac pointer.
+    /// An event that no Mac HID service sent, such as a synthesized one, reaches no service. The gesture's first event
+    /// places its hidden pointer using the screen's current input geometry. Later events keep that position.
     package func sendTrackpadGesture(_ event: NSEvent) async throws {
-        let locations = inputCapabilities.contains(.pointer) ? nil : inputLocations(atWindowPoint: event.locationInWindow)
+        let locations = inputLocations(atWindowPoint: event.locationInWindow)
         try await send(.trackpad(event, locations?.pointerTransform))
     }
 
-    /// Moves the hidden pointer of the guest service that carries the Mac HID service that sent `event`, a mouse movement
-    /// over the screen, so that the service's later pinches center there, as Device Hub does while clicks touch the screen.
-    /// `locations` are the screen's input locations at the event's window location. A movement that no Mac HID service
-    /// sent moves no pointer.
-    package func moveGesturePointer(with event: NSEvent, at locations: RemoteDeviceInputLocations) async throws {
-        try await send(.gesturePointer(event, locations.pointerTransform))
+    /// Sends a mouse event through UniversalHID, including the display geometry that maps its window location.
+    /// Mouse movements and pointer buttons share the report route with trackpad gestures, as in Device Hub.
+    package func sendPointerEvent(with event: NSEvent, at locations: RemoteDeviceInputLocations) async throws {
+        var transform = locations.pointerTransform
+        let mapped = event.locationInWindow.applying(transform)
+        // A drag or release can leave the display while its pointer remains clamped to the edge.
+        transform.tx += locations.pointer.x - mapped.x
+        transform.ty += locations.pointer.y - mapped.y
+        try await send(.pointerEvent(event, transform))
     }
 
     /// Shows the device's frame from its display description, whether or not its screen connects.
@@ -745,8 +747,8 @@ package enum RemoteScreenInput {
     /// UniversalHIDKit translates the AppKit event itself, as it does for Device Hub. A gesture that begins first moves the
     /// service's pointer where the transform, when there is one, maps the event's window location.
     case trackpad(NSEvent, CGAffineTransform?)
-    /// A mouse movement, which UniversalHIDKit places where the transform maps the event's window location.
-    case gesturePointer(NSEvent, CGAffineTransform)
+    /// A mouse movement or button event, with the transform from window locations to display pointer coordinates.
+    case pointerEvent(NSEvent, CGAffineTransform)
 }
 
 package enum RemoteScreenTransportEvent {
