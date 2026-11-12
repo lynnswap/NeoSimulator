@@ -16,6 +16,7 @@ final class DeviceHubProxy: NSObject, NSApplicationDelegate {
     init(options: HostLaunchOptions) { self.options = options }
 
     func run() throws {
+        // macOS 27 needs this identity in place before AppKit initializes.
         try register()
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
@@ -39,7 +40,6 @@ final class DeviceHubProxy: NSObject, NSApplicationDelegate {
             throw SimulatorError.unavailable("LaunchServices does not support the simulator display bridge.")
         }
         // Xcode targets its bundled Device Hub by path, even when application substitution is disabled.
-        // Register this windowless process before AppKit checks in the renderer's normal identity.
         let info: [String: Any] = [
             "CFBundleIdentifier": "com.apple.dt.Devices",
             "CFBundleName": "NeoSimulator Display Bridge",
@@ -63,6 +63,8 @@ final class DeviceHubProxy: NSObject, NSApplicationDelegate {
             let managerURL = Bundle.main.bundleURL.deletingLastPathComponent()
                 .deletingLastPathComponent().deletingLastPathComponent()
             guard owner.isRunning(applicationURL: managerURL) else { exit(EX_OK) }
+            // AppKit on macOS 26 can overwrite the initial registration.
+            try register()
             ownerMonitor = RendererOwnerMonitor(processIdentifier: owner.processIdentifier, cleanup: { _exit(EX_OK) })
             guard owner.isRunning(applicationURL: managerURL) else { exit(EX_OK) }
             previousApplication = NSWorkspace.shared.frontmostApplication
