@@ -49,8 +49,8 @@ scripts/build-local.sh
 open .build/local/arm64/NeoSimulator.app
 ```
 
-Builds are ad hoc signed by default. macOS ties the manager's Camera access for
-physical-device screens to the app's signing requirement, so sign each update of
+Builds are ad hoc signed by default. macOS ties Camera access for physical-device
+screens and keyboard capture permission to the app's signing requirement, so sign each update of
 a build you keep using with the same identity. Pass a certificate name or SHA-1
 hash from your keychain, or set `CODE_SIGN_IDENTITY`:
 

@@ -1770,7 +1770,9 @@ struct InputFocusTests {
     @Test(arguments: [kIOHIDAccessTypeUnknown, kIOHIDAccessTypeDenied, kIOHIDAccessTypeGranted])
     func captureReportsActualAuthorizationWhenTapCreationFails(access: IOHIDAccessType) throws {
         var checks = 0
+        var requests = 0
         let tap = SystemKeyboardEventTap(applicationName: "Fixture App", access: { checks += 1; return access },
+            requestAccess: { requests += 1 },
                                         createTap: { _, _, _ in nil })
         let capture = KeyboardCapture(tap: tap, isEligible: { true }, forward: { _ in
             Issue.record("Failed capture forwarded an event")
@@ -1800,6 +1802,7 @@ struct InputFocusTests {
             }
         }
         #expect(checks == 1 && !capture.isCapturing)
+        #expect(requests == (access == kIOHIDAccessTypeGranted ? 0 : 1))
         #expect(!capture.stop())
     }
 

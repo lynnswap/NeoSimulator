@@ -1,4 +1,6 @@
 import AppKit
+// The SDK exposes the immutable Accessibility prompt key as a mutable C global.
+@preconcurrency import ApplicationServices
 import IOKit.hidsystem
 import NeoSimulatorKit
 
@@ -18,20 +20,31 @@ package final class SystemKeyboardEventTap: KeyboardEventTap {
 
     private let applicationName: String
     private let access: () -> IOHIDAccessType
+    private let requestAccess: () -> Void
     private let createTap: (CGEventMask, CGEventTapCallBack, UnsafeMutableRawPointer?) -> CFMachPort?
     private var port: CFMachPort?
     private var source: CFRunLoopSource?
     private var receive: (@MainActor (CGEventType, CGEvent) -> Bool)?
 
-    package init(applicationName: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ProcessInfo.processInfo.processName,
-         access: @escaping () -> IOHIDAccessType = { IOHIDCheckAccess(kIOHIDRequestTypePostEvent) },
-         createTap: @escaping (CGEventMask, CGEventTapCallBack, UnsafeMutableRawPointer?) -> CFMachPort? = { mask, callback, context in
-             CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-                               eventsOfInterest: mask, callback: callback, userInfo: context)
-         }) {
+    package init(
+        applicationName: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? ProcessInfo.processInfo.processName,
+        access: @escaping () -> IOHIDAccessType = { IOHIDCheckAccess(kIOHIDRequestTypePostEvent) },
+        requestAccess: @escaping () -> Void = {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        },
+        createTap: @escaping (CGEventMask, CGEventTapCallBack, UnsafeMutableRawPointer?) -> CFMachPort? = {
+            mask, callback, context in
+            CGEvent.tapCreate(
+                tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+                eventsOfInterest: mask, callback: callback, userInfo: context)
+        }
+    ) {
         self.applicationName = applicationName
         self.access = access
+        self.requestAccess = requestAccess
         self.createTap = createTap
     }
 
@@ -55,6 +68,8 @@ package final class SystemKeyboardEventTap: KeyboardEventTap {
                 throw StartFailure(errorDescription: "Unable to Create Keyboard Event Tap.",
                     recoverySuggestion: "macOS reports keyboard event access is allowed for “\(applicationName)”. Try Capture Keyboard again. If it still fails, quit and reopen the app. You can still type in the focused device screen.")
             }
+            // The system prompt is asynchronous; capture restarts only on the user's next request.
+            requestAccess()
             let title = authorization == kIOHIDAccessTypeDenied
                 ? "Keyboard Capture Access Was Denied."
                 : "Keyboard Capture Access Is Not Authorized."
