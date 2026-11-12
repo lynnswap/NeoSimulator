@@ -2311,7 +2311,8 @@ final class DeviceContentView: NSView, DisplayContentView {
         canvasOverlay.frame = canvasScrollView.contentView.frame
         let frame = canvasOverlay.convert(canvasDisplayFrame, from: canvasDocumentView)
         displayPresentation.setDisplayFrame(frame)
-        onNativeCanvasMagnification(frame.width / canvasDisplayFrame.width)
+        // Coordinate conversion can round differently while panning; SwiftUI must keep the scroll view's scale.
+        onNativeCanvasMagnification(canvasScrollView.magnification)
     }
 
     private func layoutResizeHandles() {

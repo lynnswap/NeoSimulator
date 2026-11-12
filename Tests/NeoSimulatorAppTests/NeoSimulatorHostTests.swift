@@ -2204,6 +2204,44 @@ struct InputFocusTests {
         #expect(controller.session === session && display.disconnectCount == 0)
     }
 
+    @Test func nativeCanvasKeepsMagnificationStableWhileResizingAndPanning() throws {
+        _ = NSApplication.shared
+        let host = NativeCanvasHostingView(rootView: AnyView(Color.clear))
+        host.sizingOptions = []
+        host.contentSize = { NSSize(width: 800, height: 1200) }
+        let content = DeviceContentView(display: host, usesNativeCanvas: true)
+        content.isEmbedded = true
+        let window = KeyPresentationWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 600),
+            styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        window.contentView = container
+        content.frame = container.bounds.insetBy(dx: 0, dy: 64)
+        content.autoresizingMask = [.width, .height]
+        container.addSubview(content)
+        let zoom = CanvasZoom()
+        zoom.scale = 0.73
+        content.canvasZoom = zoom
+        updateCanvas { content.applyCanvasMagnification(range: 0.1...4, layout: true) }
+        let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
+        var magnifications: [CGFloat?] = []
+        content.onNativeCanvasMagnification = { magnifications.append($0) }
+        updateCanvas {
+            window.setContentSize(NSSize(width: 500, height: 450))
+            content.layoutSubtreeIfNeeded()
+        }
+        let finalFrame = host.convert(host.bounds, to: content)
+        try #require(!magnifications.isEmpty)
+        updateCanvas {
+            scroll.contentView.scroll(to: NSPoint(x: 100, y: 500))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        #expect(host.convert(host.bounds, to: content) != finalFrame)
+        #expect(magnifications.allSatisfy { $0 == scroll.magnification })
+    }
+
     @Test func nativeCanvasKeepsTheCompactWindowResizableWithDeviceBezels() throws {
         let display = TestDisplay()
         display.usesNativeCanvas = true
