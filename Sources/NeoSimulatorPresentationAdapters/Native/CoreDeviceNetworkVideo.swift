@@ -20,11 +20,15 @@ final class CoreDeviceNetworkVideo {
         let stream = try await connection.start(
             offer: offer, options: options, receiverIP: reserved.address, receiverPort: reserved.port)
         let localSSRC = try await negotiator.accept(stream.answer)
+        guard let display = try await CoreDeviceDisplayGeometry.primaryDisplay(of: connection.remote) else {
+            throw RemoteScreenError.unavailable(
+                "remote-screen-display", "The device did not report its primary display size.")
+        }
         reserved.release()
         let descriptor = try await connection.socket(for: stream)
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
-            renderer: renderer,
+            renderer: renderer, displaySize: display.pixelSize,
             completion: { [connection] error in
                 Task { @MainActor in
                     if error == nil { connection.streamEnded() }
@@ -133,6 +137,7 @@ private actor RemoteScreenMediaReceiver {
     private let descriptor: Int32
     private let localSSRC: UInt32
     private let renderer: RemoteScreenCaptureStream
+    private let displaySize: CGSize
     private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
@@ -146,12 +151,13 @@ private actor RemoteScreenMediaReceiver {
     private var decodeFailure: String?
 
     init(
-        descriptor: Int32, localSSRC: UInt32, renderer: RemoteScreenCaptureStream,
+        descriptor: Int32, localSSRC: UInt32, renderer: RemoteScreenCaptureStream, displaySize: CGSize,
         completion: @escaping @Sendable ((any Error)?) -> Void
     ) {
         self.descriptor = descriptor
         self.localSSRC = localSSRC
         self.renderer = renderer
+        self.displaySize = displaySize
         self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
@@ -172,7 +178,7 @@ private actor RemoteScreenMediaReceiver {
             self?.assumeIsolated {
                 $0.health.receivedFrame()
                 $0.decodeFailure = nil
-                $0.renderer.receiveDecoded(frame)
+                $0.renderer.receiveDecoded(frame, displaySize: $0.displaySize)
             }
         }
         decoder.onFailure = { [weak self] message in

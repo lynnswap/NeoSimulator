@@ -75,10 +75,24 @@ actor RemoteScreenCaptureStream {
     /// Immutable decoder output, retained until the render queue and GPU finish reading it.
     private struct DecodedFrame: @unchecked Sendable {
         let buffer: CVPixelBuffer
+        let sourceRect: CGRect
+
+        init(buffer: CVPixelBuffer, displaySize: CGSize?) {
+            self.buffer = buffer
+            let encoded = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+            let visible =
+                displaySize.map {
+                    (encoded.width > encoded.height) == ($0.width > $0.height)
+                        ? $0 : CGSize(width: $0.height, height: $0.width)
+                } ?? encoded
+            // CoreDevice's primary stream retains native display pixels at the top left;
+            // its encoded raster includes right/bottom padding, as does Device Hub's video layer.
+            sourceRect = CGRect(origin: .zero, size: visible)
+        }
     }
     private nonisolated let decodedFrames = Mutex(DecodedFrames())
     private var starting: CheckedContinuation<Void, any Error>?
-    private var current: CVPixelBuffer?
+    private var current: DecodedFrame?
     private var frameSize: CGSize?
     private var drawableSize: CGSize?
     private var needsPresentation = false
@@ -164,7 +178,7 @@ actor RemoteScreenCaptureStream {
             throw RemoteScreenError.unavailable("remote-screen-image", "The capture source has not supplied a frame to capture.")
         }
         nonisolated(unsafe) let frame = current
-        return try await performBlockingIO { try Self.image(from: frame) }
+        return try await performBlockingIO { try Self.image(from: frame.buffer, sourceRect: frame.sourceRect) }
     }
 
     /// Drops queued frames, then waits for session shutdown and pending GPU copies.
@@ -203,13 +217,25 @@ actor RemoteScreenCaptureStream {
     }
 
     package func receive(_ buffer: CVPixelBuffer) {
+        receive(DecodedFrame(buffer: buffer, displaySize: nil))
+    }
+
+    private func receive(_ frame: DecodedFrame) {
         guard !stopped, !failed else { return }
+        let buffer = frame.buffer
         guard CVPixelBufferGetIOSurface(buffer) != nil else {
             fail(RemoteScreenError.unavailable("remote-screen-frame-surface", "The capture source supplied frames without IOSurface backing, which the screen does not copy."))
             return
         }
-        current = buffer
-        let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+        let encoded = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+        guard !frame.sourceRect.isEmpty, encoded.contains(frame.sourceRect) else {
+            fail(
+                RemoteScreenError.io(
+                    "remote-screen-frame-region", "The video frame does not contain the device's display region."))
+            return
+        }
+        current = frame
+        let size = frame.sourceRect.size
         if size != frameSize {
             frameSize = size
             continuation.yield(.frameSize(size))
@@ -225,13 +251,16 @@ actor RemoteScreenCaptureStream {
         do { try present(buffer, size: size) } catch { fail(error) }
     }
 
-    private func present(_ buffer: CVPixelBuffer, size: CGSize) throws {
+    private func present(_ frame: DecodedFrame, size: CGSize) throws {
+        let buffer = frame.buffer
         let width = Int(size.width), height = Int(size.height)
         // A drawable from before the main actor's latest resize, or a timed-out wait, skips this frame.
         guard let drawable = target.layer.nextDrawable(),
               drawable.texture.width == width, drawable.texture.height == height else { return }
         var image: CVMetalTexture?
-        let status = CVMetalTextureCacheCreateTextureFromImage(nil, textures, buffer, nil, .bgra8Unorm, width, height, 0, &image)
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            nil, textures, buffer, nil, .bgra8Unorm,
+            CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer), 0, &image)
         guard status == kCVReturnSuccess, let image, let texture = CVMetalTextureGetTexture(image) else {
             throw RemoteScreenError.io("remote-screen-frame-texture", "A captured frame could not be used as a Metal texture (CoreVideo status \(status)).")
         }
@@ -242,7 +271,9 @@ actor RemoteScreenCaptureStream {
         guard let copy = submission.makeBlitCommandEncoder() else {
             throw RemoteScreenError.io("remote-screen-frame-render", "Metal could not encode the captured frame.")
         }
-        copy.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
+        copy.copy(
+            from: texture, sourceSlice: 0, sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: Int(frame.sourceRect.minX), y: Int(frame.sourceRect.minY), z: 0),
                   sourceSize: MTLSize(width: width, height: height, depth: 1), to: drawable.texture,
                   destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
         copy.endEncoding()
@@ -282,10 +313,10 @@ actor RemoteScreenCaptureStream {
     }
 
     /// Keeps at most one pending decoder output while the render queue is busy.
-    package nonisolated func receiveDecoded(_ buffer: CVPixelBuffer) {
+    package nonisolated func receiveDecoded(_ buffer: CVPixelBuffer, displaySize: CGSize? = nil) {
         let enqueueFrame = decodedFrames.withLock { frames in
             guard frames.accepting else { return false }
-            frames.latest = DecodedFrame(buffer: buffer)
+            frames.latest = DecodedFrame(buffer: buffer, displaySize: displaySize)
             guard !frames.enqueued else { return false }
             frames.enqueued = true
             return true
@@ -300,7 +331,7 @@ actor RemoteScreenCaptureStream {
             frames.enqueued = false
             return frame
         }
-        if let frame { receive(frame.buffer) }
+        if let frame { receive(frame) }
     }
 
     nonisolated fileprivate func receiveOnQueue(_ sample: CMSampleBuffer) {
@@ -311,17 +342,30 @@ actor RemoteScreenCaptureStream {
     }
 
     /// Copies the pixels once, because the capture pool reuses the buffer for later frames.
-    package static func image(from buffer: CVPixelBuffer) throws -> CGImage {
+    private static func image(from buffer: CVPixelBuffer, sourceRect: CGRect) throws -> CGImage {
         guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA,
               CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else {
             throw RemoteScreenError.io("remote-screen-image", "The captured frame could not be read.")
         }
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
-        guard let base = CVPixelBufferGetBaseAddress(buffer),
+        let width = Int(sourceRect.width), height = Int(sourceRect.height)
+        let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+        let bytesPerRow = width * 4
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+            throw RemoteScreenError.io("remote-screen-image", "The captured frame could not be read.")
+        }
+        var pixels = Data(count: bytesPerRow * height)
+        pixels.withUnsafeMutableBytes { destination in
+            for row in 0..<height {
+                let source = base.advanced(
+                    by: (Int(sourceRect.minY) + row) * sourceBytesPerRow + Int(sourceRect.minX) * 4)
+                destination.baseAddress!.advanced(by: row * bytesPerRow).copyMemory(
+                    from: source, byteCount: bytesPerRow)
+            }
+        }
+        guard
               let space = CVImageBufferGetColorSpace(buffer)?.takeUnretainedValue() ?? CGColorSpace(name: CGColorSpace.sRGB),
-              let provider = CGDataProvider(data: Data(bytes: base, count: bytesPerRow * height) as CFData),
+            let provider = CGDataProvider(data: pixels as CFData),
               let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
                                   space: space, bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue
                                       | CGImageAlphaInfo.noneSkipFirst.rawValue),

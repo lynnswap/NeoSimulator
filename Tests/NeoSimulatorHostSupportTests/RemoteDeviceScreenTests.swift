@@ -775,6 +775,41 @@ struct RemoteDeviceScreenTests {
         try await copying.stop()
     }
 
+    @Test func primaryDisplayFramesExcludeEncodingPaddingBeforeAndAfterRotation() async throws {
+        let gpu = try #require(MTLCreateSystemDefaultDevice())
+        let layer = CAMetalLayer()
+        layer.device = gpu
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false
+        let stream = try RemoteScreenCaptureStream(target: .init(layer: layer), device: gpu)
+        var events = stream.events.makeAsyncIterator()
+        let display = CGSize(width: 3, height: 5)
+        for encoded in [CGSize(width: 4, height: 8), CGSize(width: 8, height: 4)] {
+            let visible =
+                encoded.width < encoded.height ? display : CGSize(width: display.height, height: display.width)
+            let buffer = try capturedFrame(
+                width: Int(encoded.width), height: Int(encoded.height), bgra: [],
+                bgraAt: { x, y in [UInt8(x), UInt8(y), 80, 255] })
+            stream.receiveDecoded(buffer, displaySize: display)
+            guard case .frameSize(let size)? = await events.next() else {
+                Issue.record("No visible frame size"); return
+            }
+            #expect(size == visible)
+            layer.drawableSize = size
+            await stream.acceptDrawableSize(size)
+            let image = try await stream.snapshot()
+            #expect(CGSize(width: image.width, height: image.height) == visible)
+            let pixels = try #require(image.dataProvider?.data as Data?)
+            for y in 0..<image.height {
+                for x in 0..<image.width {
+                    let offset = y * image.bytesPerRow + x * 4
+                    #expect(Array(pixels[offset..<(offset + 3)]) == [UInt8(x), UInt8(y), 80])
+                }
+            }
+        }
+        try await stream.stop()
+    }
+
     @Test func aCaptureStreamAnswersAndAcceptsStopWhileItsSessionCallsAreHeld() async throws {
         let gpu = try #require(MTLCreateSystemDefaultDevice())
         let session = HeldCaptureSession()
@@ -2835,7 +2870,10 @@ private final class HeldCaptureSession: Sendable {
 }
 
 /// Builds a BGRA frame like the capture output's, optionally without IOSurface backing.
-private func capturedFrame(width: Int, height: Int, bgra: [UInt8], ioSurface: Bool = true) throws -> sending CVPixelBuffer {
+private func capturedFrame(
+    width: Int, height: Int, bgra: [UInt8], ioSurface: Bool = true,
+    bgraAt: ((Int, Int) -> [UInt8])? = nil
+) throws -> sending CVPixelBuffer {
     var buffer: CVPixelBuffer?
     let attributes: [String: Any] = ioSurface ? [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()] : [:]
     let status = CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer)
@@ -2847,7 +2885,9 @@ private func capturedFrame(width: Int, height: Int, bgra: [UInt8], ioSurface: Bo
     let bytesPerRow = CVPixelBufferGetBytesPerRow(frame)
     for row in 0..<height {
         for column in 0..<width {
-            for (channel, value) in bgra.enumerated() { base[row * bytesPerRow + column * 4 + channel] = value }
+            for (channel, value) in (bgraAt?(column, row) ?? bgra).enumerated() {
+                base[row * bytesPerRow + column * 4 + channel] = value
+            }
         }
     }
     return frame
