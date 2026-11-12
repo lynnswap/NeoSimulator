@@ -110,7 +110,7 @@ package protocol SimulatorManagerSource: DeviceStateSource {
     func pairSimulators(watch: String, phone: String, context: SimulatorCreationContext) async throws
     func manage(_ action: DeviceManagementAction, devices: [InventoryDevice],
                 preparingDisplay: (@isolated(any) @Sendable (InventoryDevice) async throws -> Void)?) async -> DeviceManagementReport
-    func restore(force: Bool) async throws
+    func restore() async throws
     func synchronizeXcodeConnections() async throws -> Bool
     func quitRenderer(keepingDevicesRunning: Bool?) async throws
 }
@@ -758,11 +758,11 @@ package final class SimulatorManagerModel {
         }
     }
 
-    package func restoreDefaults(force: Bool = false) {
+    package func restoreDefaults() {
         perform("Restoring original settings…") {
             try await self.requestHostPreferenceAccess?()
             try await self.beforeStoppingScreens?()
-            try await self.controller.restore(force: force)
+            try await self.controller.restore()
         }
     }
 

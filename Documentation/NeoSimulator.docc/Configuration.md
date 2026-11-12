@@ -15,9 +15,10 @@ it without changing the selection. When Device Hub quits, NeoSimulator registers
 its bridges again if it is still preferred. Selecting Device Hub explicitly keeps
 it preferred for the rest of that session, until you choose NeoSimulator again.
 
-NeoSimulator checks Xcode's routing preferences at startup, when handing screens
-to Device Hub, and when restoring the original settings. This includes changes
-made by other tools. macOS may request access to other apps' data. If access is
+NeoSimulator applies the selected host's routing preferences at startup and when
+handing screens to Device Hub. It uses the current values even when another app
+has changed them since the previous session, while retaining the saved originals
+for explicit restoration. macOS may request access to other apps' data. If access is
 denied, the alert offers **Copy Command** without quitting the app. Run the copied
 command in Terminal, then reopen NeoSimulator to request access again. The command
 resets only NeoSimulator's app-data permission. Catalog updates read local recovery
@@ -43,9 +44,8 @@ lifetime. **Default (xcode-select)** removes the override.
 
 Choose **Restore Original Settings…** in Settings to restore the original values
 saved when host management began, including whether a key was absent or false.
-If another tool changed a managed preference, review the reported conflict.
-Choose **Restore Saved Values…** and confirm only when you intend to replace the
-current routing preferences with the saved originals.
+Confirm to replace the current routing preferences with the saved originals,
+including changes made by another app since NeoSimulator last applied them.
 
 Original settings are stored in
 `~/Library/Application Support/xcode-simulator-host/state.plist`, shared with the

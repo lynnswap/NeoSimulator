@@ -18,17 +18,18 @@ NeoSimulator manages these CoreSimulator routing preferences:
 
 Each value is absent, false, or true; other types are errors. NeoSimulator uses
 `defaults` to access the managed domains, including Device Hub's container. A
-restoration receipt journals the original, expected, and pending values. Writes
-are verified, and an interrupted change is recovered without overwriting a
-conflicting external change.
+restoration receipt journals the original, expected, and pending values. A new
+host request reconciles the observed values with this receipt, retaining the
+original values for explicit restoration. Writes are verified; changes detected
+during the transaction stop it and retain its recovery information.
 
 Neo mode sets Xcode's headless-session preference to false and suppresses
 Device Hub's automatic live views. On Xcode's headless route, stopping the last
 debug session shuts down a simulator that Xcode cold-booted. The normal route
 leaves that guest running.
 
-Each manager launch registers NeoSimulator's bridges and checks for external
-preference changes. There is no saved host choice; older `display-host.txt` files
+Each manager launch applies Neo mode and registers NeoSimulator's bridges.
+There is no saved host choice; older `display-host.txt` files
 are ignored. The controller owns the preferred host for the current session;
 Settings changes it explicitly, and the next launch resets it to NeoSimulator.
 Quitting releases the bridges and keeps routing preferences in place. Catalog

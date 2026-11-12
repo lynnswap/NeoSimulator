@@ -8790,7 +8790,7 @@ actor ManagerModelSource: SimulatorManagerSource {
         guard let index = inspectorReads.firstIndex(where: { $0.device == device }) else { return [] }
         return [inspectorReads.remove(at: index).finished]
     }
-    func restore(force: Bool) throws { throw Failure.unavailable }
+    func restore() throws { throw Failure.unavailable }
     private(set) var synchronizationRequests = 0
     private var failsSynchronization = false
     func failNextSynchronization() { failsSynchronization = true }
