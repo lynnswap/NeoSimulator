@@ -1522,8 +1522,8 @@ struct RemoteDeviceScreenTests {
         let image = try #require(runtime.resolveImagesAndWait(matching: .path(coreDeviceURL)).first)
         try #require(image != systemImage)
         let builder = try await CoreDeviceDigitizerReports(runtime: runtime)
-        let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")), in: image, loading: .loadedOnly)
-        let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")), in: image, loading: .loadedOnly)
+        let digitizer = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerReport")), in: .image(image), loading: .loadedOnly)
+        let contact = try runtime.resolveAndWait(.swift(.type("UniversalHID.DigitizerContact")), in: .image(image), loading: .loadedOnly)
         let abis = builder.abis
         let make = try digitizer.resolveAndWait(.swift(.initializer("init(_report:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
         let receiver = try #require(abis[digitizer])
