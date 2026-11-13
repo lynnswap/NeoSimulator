@@ -248,7 +248,8 @@ package struct MacHIDServiceLookup {
         }
         propertyKeys = keys.compactMap(\.self)
         let createHIDClient = try await runtime.resolve(.c(.function("IOHIDEventSystemClientCreateWithType",
-            as: ((OpaquePointer?, Int32, OpaquePointer?) -> OpaquePointer?).self)))
+            as: ((OpaquePointer?, Int32, OpaquePointer?) -> OpaquePointer?).self)),
+            in: .framework(named: "IOKit"), loading: .loadedOnly)
         makeHIDClient = {
             // 2 is kIOHIDEventSystemClientTypePassive. The client is returned retained.
             guard let client = try unsafe createHIDClient.unsafeInvoke(nil, 2, nil) else {
