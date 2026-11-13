@@ -40,7 +40,8 @@ package struct SimulatorAudioInterface {
         }
         self.routable = routable
         // Recent routes are saved with this value, so it must not change.
-        let symbol = try await runtime.resolve(.c(.symbol("SimAudioHostUseSystemDefaultDeviceUID", kind: .data)))
+        let symbol = try await runtime.resolve(.c(.symbol("SimAudioHostUseSystemDefaultDeviceUID", kind: .data)),
+            in: .framework(named: "CoreSimDeviceIO"), loading: .loadedOnly)
         let systemDefault = unsafe symbol.withUnsafeAddress {
             unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
         }

@@ -185,7 +185,8 @@ private enum NativeXcodeSelection {
         try await NativeFrameworks.load("/usr/lib/libxcselect.dylib")
         return try await ABIRuntime.shared.resolve(.c(.function("xcselect_get_developer_dir_path",
             as: ((UnsafeMutablePointer<CChar>, Int, UnsafeMutablePointer<Bool>, UnsafeMutablePointer<Bool>,
-                  UnsafeMutablePointer<Bool>) -> Bool).self)))
+                  UnsafeMutablePointer<Bool>) -> Bool).self)),
+            in: .installName("/usr/lib/libxcselect.dylib"), loading: .loadedOnly)
     }
 
     @concurrent

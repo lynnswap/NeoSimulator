@@ -227,7 +227,8 @@ package struct SimulatorDisplayInterface {
             }
         }
         func carPlayKey(_ name: String) async throws -> String {
-            let symbol = try await runtime.resolve(.c(.symbol(name, kind: .data)))
+            let symbol = try await runtime.resolve(.c(.symbol(name, kind: .data)),
+                in: .framework(named: "CoreSimDeviceIO"), loading: .loadedOnly)
             guard let key = unsafe symbol.withUnsafeAddress({
                 unsafe $0.load(as: Unmanaged<NSString>?.self)?.takeUnretainedValue() as String?
             }) else {
@@ -587,14 +588,22 @@ package struct SimulatorInputInterface {
             .objc(.method("sendWithMessage:freeWhenDone:completionQueue:completion:",
                 as: ((OpaquePointer, Bool, DispatchQueue?, Completion?) -> Void).self)),
             on: clientClass)
-        messageForButton = try await runtime.resolve(.c(.function("IndigoHIDMessageForButton", as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)))
+        // SimulatorKit keeps these as local symbols.
+        let simulatorKit = ImageSelector.framework(named: "SimulatorKit")
+        messageForButton = try await runtime.resolve(.c(.function("IndigoHIDMessageForButton",
+            as: ((UInt32, UInt32, UInt32) -> OpaquePointer?).self)), in: simulatorKit, loading: .loadedOnly)
         messageForUsage = try await runtime.resolve(.c(.function("IndigoHIDMessageForHIDArbitrary",
-            as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)))
-        messageForWatchGesture = try await runtime.resolve(.c(.function("IndigoHIDMessageForWatchGesture", as: ((UInt32) -> OpaquePointer?).self)))
-        keyboardType = try await runtime.resolve(.c(.function("IndigoHIDGetKeyboardType", as: (() -> UInt32).self)))
-        createCarPlayService = try await runtime.resolve(.c(.function("IndigoHIDMessageToCreateCarPlayService", as: ((Bool) -> OpaquePointer?).self)))
-        removeCarPlayService = try await runtime.resolve(.c(.function("IndigoHIDMessageToRemoveCarPlayService", as: (() -> OpaquePointer?).self)))
-        messageForTrackpadMove = try await runtime.resolve(.c(.function("IndigoHIDMessageForTrackpadMoveEvent", as: ((CGPoint, UInt32) -> OpaquePointer?).self)))
+            as: ((UInt32, UInt32, UInt32, UInt32) -> OpaquePointer?).self)), in: simulatorKit, loading: .loadedOnly)
+        messageForWatchGesture = try await runtime.resolve(.c(.function("IndigoHIDMessageForWatchGesture",
+            as: ((UInt32) -> OpaquePointer?).self)), in: simulatorKit, loading: .loadedOnly)
+        keyboardType = try await runtime.resolve(.c(.function("IndigoHIDGetKeyboardType", as: (() -> UInt32).self)),
+            in: simulatorKit, loading: .loadedOnly)
+        createCarPlayService = try await runtime.resolve(.c(.function("IndigoHIDMessageToCreateCarPlayService",
+            as: ((Bool) -> OpaquePointer?).self)), in: simulatorKit, loading: .loadedOnly)
+        removeCarPlayService = try await runtime.resolve(.c(.function("IndigoHIDMessageToRemoveCarPlayService",
+            as: (() -> OpaquePointer?).self)), in: simulatorKit, loading: .loadedOnly)
+        messageForTrackpadMove = try await runtime.resolve(.c(.function("IndigoHIDMessageForTrackpadMoveEvent",
+            as: ((CGPoint, UInt32) -> OpaquePointer?).self)), in: simulatorKit, loading: .loadedOnly)
         try checkTrackpadMessage()
     }
 

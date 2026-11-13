@@ -18,10 +18,11 @@ package struct SimulatorGuestHID {
         let runtime = ABIRuntime.shared
         codec = try await runtime.prepare { try await GuestHIDCodec(runtime: $0) }
         // SimulatorCoreDevicePlugin connects CoreDevice to a simulator's guest services with these.
+        let xpc = ImageSelector.installName("/usr/lib/system/libxpc.dylib")
         let makeEndpoint = try await runtime.resolve(.c(.function("xpc_endpoint_create_mach_port_4sim",
-            as: ((UInt32) -> Unmanaged<AnyObject>?).self)))
+            as: ((UInt32) -> Unmanaged<AnyObject>?).self)), in: xpc, loading: .loadedOnly)
         let enableGuestPeer = try await runtime.resolve(.c(.function("xpc_connection_enable_sim2host_4sim",
-            as: ((Unmanaged<AnyObject>) -> Void).self)))
+            as: ((Unmanaged<AnyObject>) -> Void).self)), in: xpc, loading: .loadedOnly)
         connect = { name in
             let port = try await lookUp(name)
             // A created endpoint owns the send right, and releases it with its last reference; otherwise it remains ours.
