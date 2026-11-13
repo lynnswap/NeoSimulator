@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/ABIBridge.git",
       "state" : {
-        "revision" : "a3f4048f6f6a2cd6f88cea3d06cad199a7e17048",
-        "version" : "0.20.0"
+        "revision" : "5ac8ade644a13502d77120baf5bd8b9916634f53",
+        "version" : "0.20.1"
       }
     },
     {
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/ObservationBridge.git",
       "state" : {
-        "revision" : "b8504279127a5c567bfab4bc66c73000f9463b73",
-        "version" : "0.15.13"
+        "revision" : "28bdbbce709bd825cd792f4047caf4ce6b186f81",
+        "version" : "0.15.14"
       }
     },
     {
