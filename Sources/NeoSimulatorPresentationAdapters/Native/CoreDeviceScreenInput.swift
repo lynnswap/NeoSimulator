@@ -39,6 +39,9 @@ package final class CoreDeviceScreenInput {
     /// The shown display's identifier when it is not the device's primary display, which takes touches by
     /// that identifier instead of as the main screen.
     package var touchDisplay: UInt32?
+    /// The target that the touch in progress began on. Its later events go there even if the device shows
+    /// another display by then, so the display that took the touch also sees it end.
+    private var touchTarget: String?
 
     /// The `CoreDevice.DigitizerTarget` case that sends a touch to a display: the main screen for the primary
     /// display, and one of the ten numbered displays for another, such as a folding device's inner display.
@@ -264,9 +267,12 @@ package final class CoreDeviceScreenInput {
             let send = try await implementation.type.resolve(Self.digitizerRequest)
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try validatePreparedInput()
+            if phase == .began { touchTarget = nil }
+            let targetName = touchTarget ?? Self.digitizerTarget(forDisplay: touchDisplay)
+            touchTarget = phase == .ended ? nil : targetName
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue),
-                                         target.makeEnumCase(named: Self.digitizerTarget(forDisplay: touchDisplay)))
+                                         target.makeEnumCase(named: targetName))
         case .trackpad(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw RemoteScreenError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")
