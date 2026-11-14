@@ -93,7 +93,9 @@ package final class DeviceKitDisplayLayers: NSObject {
         let shown = offers[device]?.displays[display] ?? Display()
         offers[device]?.displays[display] = shown
         shown.frame = frame
-        shown.contentsRect = CGRect(x: 0, y: 0, width: min(1, visible.width / width), height: min(1, visible.height / height))
+        // A layer's unit space starts at its bottom left, and the frame's padding is at its right and bottom.
+        let shownWidth = min(1, visible.width / width), shownHeight = min(1, visible.height / height)
+        shown.contentsRect = CGRect(x: 0, y: 1 - shownHeight, width: shownWidth, height: shownHeight)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for layer in shown.layers.allObjects { shown.apply(to: layer) }
