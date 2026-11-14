@@ -1550,6 +1550,18 @@ struct RemoteDeviceScreenTests {
         #expect(try unsafe frame.scale.unsafeInvoke(on: size) == 2)
     }
 
+    @Test func touchesNameADisplayThatIsNotThePrimaryOne() async throws {
+        try await CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
+        let target = try ABIRuntime.shared.resolveAndWait(.swift(.type("CoreDevice.DigitizerTarget")))
+        #expect(CoreDeviceScreenInput.digitizerTarget(forDisplay: nil) == "mainScreen")
+        // An iPhone Duo's inner display has CoreDevice's display identifier 2.
+        #expect(CoreDeviceScreenInput.digitizerTarget(forDisplay: 2) == "display2")
+        // Every name is a target that CoreDevice declares, including for an identifier beyond its numbered displays.
+        for display in [nil, 1, 10, 11] as [UInt32?] {
+            _ = try target.makeEnumCase(named: CoreDeviceScreenInput.digitizerTarget(forDisplay: display))
+        }
+    }
+
     @Test func nativeTouchscreenDescriptorsPreserveANonLegacyDisplayIdentity() async throws {
         try await CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let runtime = ABIRuntime.shared
