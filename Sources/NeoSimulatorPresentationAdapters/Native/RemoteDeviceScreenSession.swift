@@ -62,6 +62,13 @@ package final class RemoteDeviceScreenSession {
     /// The reported display whose frame could not be made, which is not tried again while no other display's
     /// frame is shown.
     private var unframedDisplay: RemoteDeviceDisplay?
+    /// The shown display's quarter-turn orientation, as the transport last reported it.
+    private var displayAngle: CGFloat?
+    /// Whether the frame's chrome still surrounds another display than the reported one, whose frame is being made.
+    private var frameAwaitsShownDisplay: Bool {
+        guard let shownDisplay, frame.chrome != nil else { return false }
+        return shownDisplay != frame.display && shownDisplay != unframedDisplay
+    }
     private var transport: (any RemoteScreenTransport)?
     private var starting: Task<Void, any Error>?
     private var stopping: Task<Void, any Error>?
@@ -427,6 +434,7 @@ package final class RemoteDeviceScreenSession {
                     }
                 }
                 self.frame.show(chrome, for: display)
+                if let angle = self.displayAngle { self.frame.setAngle(angle, animated: false) }
                 self.unframedDisplay = nil
                 self.onStateChange?()
             } catch {
@@ -444,6 +452,7 @@ package final class RemoteDeviceScreenSession {
         unframedDisplay = display
         guard frame.chrome != nil else { return }
         frame.removeChrome()
+        if let displayAngle { frame.setAngle(displayAngle, animated: false) }
         onStateChange?()
     }
 
@@ -460,6 +469,8 @@ package final class RemoteDeviceScreenSession {
         switch event {
         case .connected:
             state = .connected
+            // A connection tries again to make a frame that an earlier one could not make.
+            unframedDisplay = nil
             prepareFrame()
         case .attributes(let attributes):
             videoAttributes = attributes
@@ -480,7 +491,10 @@ package final class RemoteDeviceScreenSession {
         case .displayShown(let display):
             shownDisplay = display
             prepareFrame()
-        case .displayAngle(let angle): frame.setAngle(angle, animated: state == .connected)
+        case .displayAngle(let angle):
+            displayAngle = angle
+            // Another display's frame does not turn to this display's angle; this display's frame is shown at it.
+            if !frameAwaitsShownDisplay { frame.setAngle(angle, animated: state == .connected) }
         case .inputCapabilitiesLost(let kinds): onInputCapabilitiesLost?(kinds)
         }
         onStateChange?()

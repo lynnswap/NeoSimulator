@@ -106,9 +106,10 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
                 }
                 self.framebuffer.update(display: display)
                 self.updateAttributes()
+                // The angle that follows belongs to this display.
+                if let shown = display?.frame, shown != previous { self.events?(.displayShown(shown)) }
                 if let display { self.events?(.displayAngle(display.angle)) }
                 self.events?(.inputGeometryChanged)
-                if let shown = display?.frame, shown != previous { self.events?(.displayShown(shown)) }
             case .failure(let error):
                 self.framebuffer.update(display: nil)
                 Task { @MainActor [weak self] in await self?.finish(error) }

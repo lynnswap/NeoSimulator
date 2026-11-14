@@ -811,8 +811,11 @@ struct RemoteDeviceScreenTests {
         let settled = reads
         transport.emit(.displayShown(cover))
         transport.emit(.displayShown(inner))
+        // The inner display's orientation does not turn the cover display's frame; its own frame is shown at it.
+        transport.emit(.displayAngle(90))
+        #expect(frame.display == cover && frame.angle == 0)
         await wait(session) { frame.display == inner }
-        #expect(frame.chrome !== closed && closed.view.superview == nil)
+        #expect(frame.chrome !== closed && closed.view.superview == nil && frame.angle == 90)
         // A display without installed chrome does not stay inside another display's chrome, on a return to it either.
         let bare = RemoteDeviceDisplay(
             pixelSize: inner.pixelSize, scale: inner.scale, chromeIdentifier: nil, maskIdentifier: nil)
