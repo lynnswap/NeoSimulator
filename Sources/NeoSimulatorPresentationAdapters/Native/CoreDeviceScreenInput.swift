@@ -36,6 +36,20 @@ package final class CoreDeviceScreenInput {
         "(extension in CoreDevice):CoreDevice.HIDDigitizer.send(pointOne:pointTwo:eventType:edge:target:)",
         as: ((CGPoint, CGPoint?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) throws -> Void).self))
 
+    /// The shown display's identifier when it is not the device's primary display, which takes touches by
+    /// that identifier instead of as the main screen.
+    package var touchDisplay: UInt32?
+    /// The target that the touch in progress began on. Its later events go there even if the device shows
+    /// another display by then, so the display that took the touch also sees it end.
+    private var touchTarget: String?
+
+    /// The `CoreDevice.DigitizerTarget` case that sends a touch to a display: the main screen for the primary
+    /// display, and one of the ten numbered displays for another, such as a folding device's inner display.
+    package nonisolated static func digitizerTarget(forDisplay identifier: UInt32?) -> String {
+        guard let identifier, (1...10).contains(identifier) else { return "mainScreen" }
+        return "display\(identifier)"
+    }
+
     package init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
@@ -253,8 +267,14 @@ package final class CoreDeviceScreenInput {
             let send = try await implementation.type.resolve(Self.digitizerRequest)
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try validatePreparedInput()
+            if phase == .began { touchTarget = nil }
+            let targetName = touchTarget ?? Self.digitizerTarget(forDisplay: touchDisplay)
+            touchTarget = targetName
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
-                                         nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
+                                         nativeEdge.makeEnumCase(named: edge.rawValue),
+                                         target.makeEnumCase(named: targetName))
+            // An end that failed is sent again to the same display.
+            if phase == .ended { touchTarget = nil }
         case .trackpad(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw RemoteScreenError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")

@@ -17,6 +17,10 @@ package final class RemoteScreenFramebuffer: NSView {
         package let size: CGSize
         package let angle: CGFloat
         package var identifier: UInt32? = nil
+        /// Whether CoreDevice calls this the device's primary display, which a folding device's inner display is not.
+        package var isPrimary = true
+        /// What the device's frame needs of this display. Its pixels also place the display in a video frame.
+        package var frame: RemoteDeviceDisplay? = nil
     }
 
     private let plane = CALayer()

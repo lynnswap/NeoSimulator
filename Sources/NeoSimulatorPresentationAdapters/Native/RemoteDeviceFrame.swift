@@ -5,7 +5,7 @@ import Observation
 import OSLog
 import SwiftUI
 
-/// A device's primary display, as DeviceKit sizes and identifies its chrome.
+/// The display that shows a device's screen, as DeviceKit sizes and identifies its chrome.
 package struct RemoteDeviceDisplay: Equatable, Sendable {
     package let pixelSize: CGSize
     package let scale: CGFloat
@@ -212,7 +212,8 @@ package final class RemoteDeviceFrameView: NSView {
     /// A resized app's dedicated display has no device around it.
     package var showsChrome = true { didSet { if showsChrome != oldValue { needsLayout = true } } }
     package private(set) var chrome: NativeDeviceChrome?
-    private var display: RemoteDeviceDisplay?
+    /// The display that `chrome` surrounds.
+    package private(set) var display: RemoteDeviceDisplay?
     private let maskLayer = CALayer()
     private let presentation = DisplayPresentationView(frame: .zero)
     private let deviceView = NSView()
@@ -238,6 +239,15 @@ package final class RemoteDeviceFrameView: NSView {
         maskLayer.contents = chrome.mask
         chrome.view.autoresizingMask = [.width, .height]
         deviceView.addSubview(chrome.view, positioned: .below, relativeTo: screen)
+        needsLayout = true
+    }
+
+    /// Leaves the screen without a device around it.
+    package func removeChrome() {
+        chrome?.view.removeFromSuperview()
+        chrome = nil
+        display = nil
+        maskLayer.contents = nil
         needsLayout = true
     }
 
@@ -303,6 +313,7 @@ package final class RemoteDeviceFrameView: NSView {
             Self.logger.error("The device frame could not be laid out: \(error.localizedDescription, privacy: .public)")
             chrome.view.removeFromSuperview()
             self.chrome = nil
+            self.display = nil
             return nil
         }
     }

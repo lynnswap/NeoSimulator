@@ -2,12 +2,16 @@ import Darwin
 import Foundation
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
+import Synchronization
 
 /// Receives a CoreDevice screen stream without avconferenced or its restricted entitlement.
 @MainActor
 final class CoreDeviceNetworkVideo {
     let connection: CoreDeviceScreenConnection
     private var receiver: RemoteScreenMediaReceiver?
+    /// The size of the display that the device shows, as the display's observer last reported it. `start`
+    /// reads the size itself only while no report has arrived.
+    private var displaySize: CGSize?
 
     init(connection: CoreDeviceScreenConnection) { self.connection = connection }
 
@@ -20,15 +24,22 @@ final class CoreDeviceNetworkVideo {
         let stream = try await connection.start(
             offer: offer, options: options, receiverIP: reserved.address, receiverPort: reserved.port)
         let localSSRC = try await negotiator.accept(stream.answer)
-        guard let display = try await CoreDeviceDisplayGeometry.primaryDisplay(of: connection.remote) else {
-            throw RemoteScreenError.unavailable(
-                "remote-screen-display", "The device did not report its primary display size.")
+        let initial: CGSize
+        if let reported = displaySize {
+            initial = reported
+        } else {
+            guard let display = try await CoreDeviceDisplayGeometry.primaryDisplay(of: connection.remote) else {
+                throw RemoteScreenError.unavailable(
+                    "remote-screen-display", "The device did not report its primary display size.")
+            }
+            initial = display.pixelSize
         }
         reserved.release()
         let descriptor = try await connection.socket(for: stream)
+        // A report that arrived during the read or the socket's preparation is newer than the initial size.
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
-            renderer: renderer, displaySize: display.pixelSize,
+            renderer: renderer, displaySize: displaySize ?? initial,
             completion: { [connection] error in
                 Task { @MainActor in
                     if error == nil { connection.streamEnded() }
@@ -38,6 +49,12 @@ final class CoreDeviceNetworkVideo {
         self.receiver = receiver
         await receiver.start()
         try Task.checkCancellation()
+    }
+
+    /// Follows the display that the device shows, whose size places it in each frame.
+    func update(displaySize: CGSize) {
+        self.displaySize = displaySize
+        receiver?.update(displaySize: displaySize)
     }
 
     func stop() async { await receiver?.stop(); receiver = nil }
@@ -137,7 +154,8 @@ private actor RemoteScreenMediaReceiver {
     private let descriptor: Int32
     private let localSSRC: UInt32
     private let renderer: RemoteScreenCaptureStream
-    private let displaySize: CGSize
+    /// The next frame reads the latest size, in whatever order the display's reports and frames arrive.
+    private nonisolated let displaySize: Mutex<CGSize>
     private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
@@ -157,10 +175,12 @@ private actor RemoteScreenMediaReceiver {
         self.descriptor = descriptor
         self.localSSRC = localSSRC
         self.renderer = renderer
-        self.displaySize = displaySize
+        self.displaySize = Mutex(displaySize)
         self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
+
+    nonisolated func update(displaySize: CGSize) { self.displaySize.withLock { $0 = displaySize } }
 
     func start() {
         var size: Int32 = 4 * 1_024 * 1_024
@@ -178,7 +198,7 @@ private actor RemoteScreenMediaReceiver {
             self?.assumeIsolated {
                 $0.health.receivedFrame()
                 $0.decodeFailure = nil
-                $0.renderer.receiveDecoded(frame, displaySize: $0.displaySize)
+                $0.renderer.receiveDecoded(frame, displaySize: $0.displaySize.withLock { $0 })
             }
         }
         decoder.onFailure = { [weak self] message in
