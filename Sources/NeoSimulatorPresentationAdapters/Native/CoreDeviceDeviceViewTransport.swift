@@ -3,6 +3,7 @@ import AppKit
 import CoreVideo
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
+import OSLog
 import Synchronization
 
 /// Shows a physical device in DeviceKit's device view, which draws a device-specific model such as a folding
@@ -20,7 +21,8 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
     /// The capture transport draws its own screen here, which this transport does not show.
     private let unshownScreen = NSView()
     private let canvasView = DeviceViewFittingView()
-    private var canvas: NativeDeviceCanvas?
+    private let canvas: NativeDeviceCanvas
+    private var showsCanvas = false
     private var stopped = false
     /// Whether this transport's offer of the device's displays stands. Other screens of the device count their own.
     private var offersDisplays = false
@@ -34,29 +36,49 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
     private nonisolated let pendingFrame = Mutex<PendingFrame?>(nil)
 
     package var drawsDevice: Bool { true }
-    package var nativeInputView: NSView? { canvas?.inputView }
+    package var nativeInputView: NSView? { showsCanvas ? canvas.inputView : nil }
     /// DeviceKit's view sends the touches and pointer movements that reach it.
     package var inputCapabilities: Set<RemoteDeviceInputKind> { capture.inputCapabilities.subtracting([.pointer, .digitizer]) }
     package var canCaptureScreenshot: Bool { capture.canCaptureScreenshot }
     package var canRecordScreen: Bool { capture.canRecordScreen }
 
-    /// Whether DeviceKit draws this device with a device-specific view and can show the app's video in it.
-    /// DeviceKit must be loaded.
-    package static func shows(_ remote: CoreDeviceRemoteScreenDevice) async throws -> Bool {
-        guard UUID(uuidString: remote.identifier) != nil, DeviceKitDisplayLayers.canBeShown else { return false }
+    private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "RemoteScreen")
+
+    /// Makes the transport for a device that DeviceKit draws with a device-specific view, when the app's video can
+    /// be shown in it. The result is nil for every other device, and when DeviceKit's view cannot be composed, so
+    /// that the device keeps its framed screen. DeviceKit must be loaded.
+    package static func make(remote: CoreDeviceRemoteScreenDevice, connection: CoreDeviceScreenConnection,
+                             contentView: NSView) async throws -> CoreDeviceDeviceViewTransport? {
+        guard let device = UUID(uuidString: remote.identifier), DeviceKitDisplayLayers.canBeShown else { return nil }
         let info = try await remote.type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
         let value = try unsafe info.unsafeInvoke(on: remote.object)
         let hardware = try await value.type.resolve(.swift(.getter("hardwareModel", as: (() -> String?).self)))
-        return DevicePosturePayload.isFoldingModel(try unsafe hardware.unsafeInvoke(on: value))
+        guard DevicePosturePayload.isFoldingModel(try unsafe hardware.unsafeInvoke(on: value)) else { return nil }
+        let canvas: NativeDeviceCanvas
+        do {
+            canvas = try await NativeDeviceCanvas.connect(remote: remote,
+                buttons: NativeDeviceScreenInput(input: CoreDeviceScreenInput(remote: remote)))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            logger.error("DeviceKit's device view is unavailable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        do {
+            return try await CoreDeviceDeviceViewTransport(
+                remote: remote, device: device, connection: connection, contentView: contentView, canvas: canvas)
+        } catch {
+            canvas.disconnect()
+            throw error
+        }
     }
 
-    package init(remote: CoreDeviceRemoteScreenDevice, connection: CoreDeviceScreenConnection, contentView: NSView) async throws {
-        guard let device = UUID(uuidString: remote.identifier) else {
-            throw RemoteScreenError.unavailable("native-device-canvas", "CoreDevice's record of this device has no device identifier for DeviceKit.")
-        }
+    private init(remote: CoreDeviceRemoteScreenDevice, device: UUID, connection: CoreDeviceScreenConnection,
+                 contentView: NSView, canvas: NativeDeviceCanvas) async throws {
         self.remote = remote
         self.device = device
         self.contentView = contentView
+        self.canvas = canvas
         unshownScreen.isHidden = true
         capture = try await CoreDeviceCaptureTransport(remote: remote, connection: connection, contentView: unshownScreen)
     }
@@ -83,12 +105,9 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
             }
         }
         try Task.checkCancellation()
-        // DeviceKit asks for a display's provider when its view appears, so the layers are offered first.
-        let canvas = try await NativeDeviceCanvas.connect(remote: remote,
-            buttons: NativeDeviceScreenInput(input: CoreDeviceScreenInput(remote: remote)))
-        try Task.checkCancellation()
-        guard !stopped else { canvas.disconnect(); return }
-        self.canvas = canvas
+        guard !stopped else { throw CancellationError() }
+        // DeviceKit asks for a display's provider when its view appears, which the offer above precedes.
+        showsCanvas = true
         canvasView.frame = contentView.bounds
         canvasView.autoresizingMask = [.width, .height]
         canvasView.show(canvas)
@@ -112,10 +131,10 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
 
     package func stop() async throws {
         stopped = true
+        showsCanvas = false
         canvasView.show(nil)
         canvasView.removeFromSuperview()
-        canvas?.disconnect()
-        canvas = nil
+        canvas.disconnect()
         if offersDisplays {
             offersDisplays = false
             DeviceKitDisplayLayers.withdraw(device)
