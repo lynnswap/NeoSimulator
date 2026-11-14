@@ -1,3 +1,4 @@
+import CoreVideo
 import Darwin
 import Foundation
 import NeoSimulatorDeviceIO
@@ -12,11 +13,16 @@ final class CoreDeviceNetworkVideo {
     /// The size of the display that the device shows, as the display's observer last reported it. `start`
     /// reads the size itself only while no report has arrived.
     private var displaySize: CGSize?
+    private var builtIn: [RemoteScreenBuiltInDisplay] = []
 
     init(connection: CoreDeviceScreenConnection) { self.connection = connection }
 
-    func start(renderer: RemoteScreenCaptureStream, completion: @escaping @Sendable ((any Error)?) -> Void) async throws
-    {
+    /// - Parameter carriedDisplay: Receives the built-in display whose pixels the video carries, when its
+    ///   frames show which one and each time that changes.
+    func start(
+        renderer: RemoteScreenCaptureStream, carriedDisplay: @escaping @MainActor (UInt32) -> Void,
+        completion: @escaping @Sendable ((any Error)?) -> Void
+    ) async throws {
         let reserved = try RemoteScreenSocketReservation(tunnelAddress: await connection.tunnelAddress())
         let options = try await connection.negotiatorOptions()
         let negotiator = try await CoreDeviceMediaNegotiator(options: options, runtime: connection.remote.runtime)
@@ -39,7 +45,8 @@ final class CoreDeviceNetworkVideo {
         // A report that arrived during the read or the socket's preparation is newer than the initial size.
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
-            renderer: renderer, displaySize: displaySize ?? initial,
+            renderer: renderer, displaySize: displaySize ?? initial, builtIn: builtIn,
+            carriedDisplay: { identifier in Task { @MainActor in carriedDisplay(identifier) } },
             completion: { [connection] error in
                 Task { @MainActor in
                     if error == nil { connection.streamEnded() }
@@ -51,10 +58,12 @@ final class CoreDeviceNetworkVideo {
         try Task.checkCancellation()
     }
 
-    /// Follows the display that the device shows, whose size places it in each frame.
-    func update(displaySize: CGSize) {
+    /// Follows the display that the device shows, whose size places it in each frame, and the built-in
+    /// displays among which a frame's own size can show the one it carries.
+    func update(displaySize: CGSize, builtIn: [RemoteScreenBuiltInDisplay]) {
         self.displaySize = displaySize
-        receiver?.update(displaySize: displaySize)
+        self.builtIn = builtIn
+        receiver?.update(displaySize: displaySize, builtIn: builtIn)
     }
 
     func stop() async { await receiver?.stop(); receiver = nil }
@@ -154,8 +163,14 @@ private actor RemoteScreenMediaReceiver {
     private let descriptor: Int32
     private let localSSRC: UInt32
     private let renderer: RemoteScreenCaptureStream
-    /// The next frame reads the latest size, in whatever order the display's reports and frames arrive.
-    private nonisolated let displaySize: Mutex<CGSize>
+    private struct Displays {
+        var shown: CGSize
+        var builtIn: [RemoteScreenBuiltInDisplay]
+        var carried: UInt32?
+    }
+    /// The next frame reads the latest displays, in whatever order the display's reports and frames arrive.
+    private nonisolated let displays: Mutex<Displays>
+    private let carriedDisplay: @Sendable (UInt32) -> Void
     private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
@@ -170,17 +185,21 @@ private actor RemoteScreenMediaReceiver {
 
     init(
         descriptor: Int32, localSSRC: UInt32, renderer: RemoteScreenCaptureStream, displaySize: CGSize,
+        builtIn: [RemoteScreenBuiltInDisplay], carriedDisplay: @escaping @Sendable (UInt32) -> Void,
         completion: @escaping @Sendable ((any Error)?) -> Void
     ) {
         self.descriptor = descriptor
         self.localSSRC = localSSRC
         self.renderer = renderer
-        self.displaySize = Mutex(displaySize)
+        displays = Mutex(Displays(shown: displaySize, builtIn: builtIn))
+        self.carriedDisplay = carriedDisplay
         self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
 
-    nonisolated func update(displaySize: CGSize) { self.displaySize.withLock { $0 = displaySize } }
+    nonisolated func update(displaySize: CGSize, builtIn: [RemoteScreenBuiltInDisplay]) {
+        displays.withLock { $0.shown = displaySize; $0.builtIn = builtIn }
+    }
 
     func start() {
         var size: Int32 = 4 * 1_024 * 1_024
@@ -198,7 +217,18 @@ private actor RemoteScreenMediaReceiver {
             self?.assumeIsolated {
                 $0.health.receivedFrame()
                 $0.decodeFailure = nil
-                $0.renderer.receiveDecoded(frame, displaySize: $0.displaySize.withLock { $0 })
+                // A frame that shows which built-in display it carries is placed by that display's size, ahead
+                // of the report that follows from it.
+                let encoded = CGSize(width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame))
+                let (size, changed): (CGSize, UInt32?) = $0.displays.withLock { displays in
+                    guard let carried = RemoteScreenCaptureStream.carriedDisplay(in: encoded, among: displays.builtIn)
+                    else { return (displays.shown, nil) }
+                    let changed = carried.identifier != displays.carried
+                    displays.carried = carried.identifier
+                    return (carried.pixelSize, changed ? carried.identifier : nil)
+                }
+                if let changed { $0.carriedDisplay(changed) }
+                $0.renderer.receiveDecoded(frame, displaySize: size)
             }
         }
         decoder.onFailure = { [weak self] message in

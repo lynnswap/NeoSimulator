@@ -28,6 +28,13 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
     }
     private let source: Source
     private var events: (@MainActor (RemoteScreenTransportEvent) -> Void)?
+    /// A report that only turns the shown display of a device with several built-in displays, held because
+    /// such a device turns its orientation just before its video changes to another display.
+    private var heldTurn: RemoteScreenFramebuffer.Display?
+    private var turnHold: Task<Void, Never>?
+    /// Longer than the video took to change display after the orientation turned on an iPhone Duo (0.08 to
+    /// 0.12 seconds).
+    private static let turnHoldDuration = Duration.milliseconds(250)
     private var observation: Task<Void, Never>?
     private var disconnecting: Task<Void, any Error>?
     private var attributes: RemoteDeviceVideoAttributes?
@@ -98,20 +105,9 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         try await displayGeometry.start { [weak self] result in
             guard let self, !self.stopped else { return }
             switch result {
-            case .success(let display):
-                let previous = self.framebuffer.display?.frame
-                if case .media(let network) = self.source, let pixelSize = display?.frame?.pixelSize,
-                   pixelSize != previous?.pixelSize {
-                    network.update(displaySize: pixelSize)
-                }
-                self.framebuffer.update(display: display)
-                self.input.touchDisplay = display.flatMap { $0.isPrimary ? nil : $0.identifier }
-                self.updateAttributes()
-                // The angle that follows belongs to this display.
-                if let shown = display?.frame, shown != previous { self.events?(.displayShown(shown)) }
-                if let display { self.events?(.displayAngle(display.angle)) }
-                self.events?(.inputGeometryChanged)
+            case .success(let display): self.receive(display)
             case .failure(let error):
+                self.turnHold?.cancel()
                 self.framebuffer.update(display: nil)
                 Task { @MainActor [weak self] in await self?.finish(error) }
             }
@@ -126,7 +122,10 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         switch source {
         case .capture(let source, _): try await stream.start(sourceID: source.uniqueID)
         case .media(let network):
-            try await network.start(renderer: stream) { [weak self] error in
+            try await network.start(renderer: stream, carriedDisplay: { [weak self] identifier in
+                guard let self, !self.stopped, !self.finished else { return }
+                self.displayGeometry.videoDisplay = identifier
+            }) { [weak self] error in
                 Task { @MainActor [weak self] in await self?.finish(error) }
             }
         }
@@ -154,6 +153,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
 
     package func stop() async throws {
         stopped = true
+        turnHold?.cancel()
         displayGeometry.stop()
         events = nil
         await capabilityObservation.stop()
@@ -166,6 +166,47 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         observation = nil
         await task?.value
         if let failure { throw failure }
+    }
+
+    /// Takes a report of the display that the device shows. On a device with several built-in displays, a
+    /// report that only turns the shown display waits for the video: when the video then changes display, that
+    /// display is shown at its own angle and the first display never turns.
+    private func receive(_ display: RemoteScreenFramebuffer.Display?) {
+        if case .media = source, let display, display.builtIn.count > 1, let shown = framebuffer.display,
+           display.identifier == shown.identifier, display.angle != shown.angle {
+            heldTurn = display
+            if turnHold == nil {
+                turnHold = Task { [weak self] in
+                    try? await Task.sleep(for: Self.turnHoldDuration)
+                    guard let self, !Task.isCancelled, !self.stopped, !self.finished else { return }
+                    self.turnHold = nil
+                    if let held = self.heldTurn {
+                        self.heldTurn = nil
+                        self.show(held)
+                    }
+                }
+            }
+            return
+        }
+        turnHold?.cancel()
+        turnHold = nil
+        heldTurn = nil
+        show(display)
+    }
+
+    private func show(_ display: RemoteScreenFramebuffer.Display?) {
+        let previous = framebuffer.display
+        if case .media(let network) = source, let pixelSize = display?.frame?.pixelSize,
+           pixelSize != previous?.frame?.pixelSize || display?.builtIn != previous?.builtIn {
+            network.update(displaySize: pixelSize, builtIn: display?.builtIn ?? [])
+        }
+        framebuffer.update(display: display)
+        input.touchDisplay = display.flatMap { $0.isPrimary ? nil : $0.identifier }
+        updateAttributes()
+        // The angle that follows belongs to this display.
+        if let shown = display?.frame, shown != previous?.frame { events?(.displayShown(shown)) }
+        if let display { events?(.displayAngle(display.angle)) }
+        events?(.inputGeometryChanged)
     }
 
     private func receive(_ event: RemoteScreenCaptureStream.Event) async {
@@ -214,6 +255,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         guard !stopped, !finished else { return }
         finished = true
         failure = error
+        turnHold?.cancel()
         await capabilityObservation.stop()
         displayGeometry.stop()
         var failure = error
