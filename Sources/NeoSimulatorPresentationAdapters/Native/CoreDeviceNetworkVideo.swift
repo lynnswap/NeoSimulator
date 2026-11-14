@@ -9,8 +9,8 @@ import Synchronization
 final class CoreDeviceNetworkVideo {
     let connection: CoreDeviceScreenConnection
     private var receiver: RemoteScreenMediaReceiver?
-    /// The size of the display that the device shows. The display's observer reports it; `start` reads it
-    /// only when no report has arrived.
+    /// The size of the display that the device shows, as the display's observer last reported it. `start`
+    /// reads the size itself only while no report has arrived.
     private var displaySize: CGSize?
 
     init(connection: CoreDeviceScreenConnection) { self.connection = connection }
@@ -24,21 +24,22 @@ final class CoreDeviceNetworkVideo {
         let stream = try await connection.start(
             offer: offer, options: options, receiverIP: reserved.address, receiverPort: reserved.port)
         let localSSRC = try await negotiator.accept(stream.answer)
-        if displaySize == nil {
+        let initial: CGSize
+        if let reported = displaySize {
+            initial = reported
+        } else {
             guard let display = try await CoreDeviceDisplayGeometry.primaryDisplay(of: connection.remote) else {
                 throw RemoteScreenError.unavailable(
                     "remote-screen-display", "The device did not report its primary display size.")
             }
-            // A report that arrived during the read is newer than what the read returned.
-            displaySize = displaySize ?? display.pixelSize
+            initial = display.pixelSize
         }
         reserved.release()
         let descriptor = try await connection.socket(for: stream)
-        // A report during the socket's preparation has replaced the size, and stopping has cleared it.
-        guard let displaySize else { throw CancellationError() }
+        // A report that arrived during the read or the socket's preparation is newer than the initial size.
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
-            renderer: renderer, displaySize: displaySize,
+            renderer: renderer, displaySize: displaySize ?? initial,
             completion: { [connection] error in
                 Task { @MainActor in
                     if error == nil { connection.streamEnded() }
@@ -56,11 +57,7 @@ final class CoreDeviceNetworkVideo {
         receiver?.update(displaySize: displaySize)
     }
 
-    func stop() async {
-        await receiver?.stop()
-        receiver = nil
-        displaySize = nil
-    }
+    func stop() async { await receiver?.stop(); receiver = nil }
 }
 
 /// The reserved port names this host's end of the CoreDevice tunnel until CoreDevice shares its connected socket.

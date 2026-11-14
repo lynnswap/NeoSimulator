@@ -5,14 +5,12 @@ import Observation
 import OSLog
 import SwiftUI
 
-/// A device's primary display, as DeviceKit sizes and identifies its chrome.
+/// The display that shows a device's screen, as DeviceKit sizes and identifies its chrome.
 package struct RemoteDeviceDisplay: Equatable, Sendable {
     package let pixelSize: CGSize
     package let scale: CGFloat
     package let chromeIdentifier: String?
     package let maskIdentifier: String?
-    /// CoreDevice's identifier of the display, which tells a folding device's displays apart.
-    package var identifier: UInt32? = nil
 }
 
 /// A chrome button's HID usage, as its chrome.json declares it.

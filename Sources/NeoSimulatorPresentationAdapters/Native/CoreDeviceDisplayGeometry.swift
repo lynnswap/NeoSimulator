@@ -98,6 +98,7 @@ package final class CoreDeviceDisplayGeometry {
     private static var runtimeLoaded = false
     private let remote: CoreDeviceRemoteScreenDevice
     private let bindings: Bindings
+    private let frame: FrameBindings
     private let displayUniqueID: String?
     private var update: (@MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void)?
     private var generation = 0
@@ -123,7 +124,10 @@ package final class CoreDeviceDisplayGeometry {
     package init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) async throws {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
-        bindings = try await remote.runtime.prepare { try await Bindings(runtime: $0) }
+        (bindings, frame) = try await remote.runtime.prepare { runtime in
+            let bindings = try await Bindings(runtime: runtime)
+            return (bindings, try await FrameBindings(runtime: runtime, abis: bindings.abis))
+        }
     }
 
     package func start(update: @escaping @MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void) async throws {
@@ -206,13 +210,11 @@ package final class CoreDeviceDisplayGeometry {
         // DeviceKit's initializer consumes the CoreDevice display, so its identifiers are read first.
         let chrome = try unsafe frame.chromeIdentifier.unsafeInvoke(on: display)
         let mask = try unsafe frame.maskIdentifier.unsafeInvoke(on: display)
-        let identifier = try unsafe bindings.identifier.unsafeInvoke(on: display)
         let size = try unsafe bindings.displaySize.unsafeInvoke(on: bindings.makeDisplay.unsafeInvoke(display, nil))
         let pixels = try unsafe bindings.pixelSize.unsafeInvoke(on: size)
         let scale = try unsafe frame.scale.unsafeInvoke(on: size)
         guard pixels.width > 0, pixels.height > 0, scale > 0 else { return nil }
-        return RemoteDeviceDisplay(pixelSize: pixels, scale: scale, chromeIdentifier: chrome, maskIdentifier: mask,
-            identifier: identifier)
+        return RemoteDeviceDisplay(pixelSize: pixels, scale: scale, chromeIdentifier: chrome, maskIdentifier: mask)
     }
 
     private func project(_ displayInfo: NativeSwiftValue) throws -> RemoteScreenFramebuffer.Display? {
@@ -224,15 +226,21 @@ package final class CoreDeviceDisplayGeometry {
                 try bindings.shownDisplay(among: candidates)
             }
         guard let display = found else { return nil }
-        // DeviceKit's initializer consumes the CoreDevice display, so its identifier is read first.
+        // DeviceKit's initializer consumes the CoreDevice display, so its identifiers are read first.
         let identifier = try unsafe bindings.identifier.unsafeInvoke(on: display)
+        let chrome = try unsafe frame.chromeIdentifier.unsafeInvoke(on: display)
+        let mask = try unsafe frame.maskIdentifier.unsafeInvoke(on: display)
         let value = try unsafe bindings.makeDisplay.unsafeInvoke(display, bindings.orientation.unsafeInvoke(on: displayInfo))
         let angle = try unsafe bindings.normalizedOrientation.unsafeInvoke(on: value).converted(to: .degrees).value
         let displaySize = try unsafe bindings.displaySize.unsafeInvoke(on: value)
         let size = try unsafe bindings.pointSize.unsafeInvoke(on: displaySize)
         guard size.width > 0, size.height > 0, angle.isFinite else { return nil }
+        let pixels = try unsafe bindings.pixelSize.unsafeInvoke(on: displaySize)
+        let scale = try unsafe frame.scale.unsafeInvoke(on: displaySize)
         return RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: identifier,
-            pixelSize: try unsafe bindings.pixelSize.unsafeInvoke(on: displaySize))
+            frame: pixels.width > 0 && pixels.height > 0 && scale > 0
+                ? RemoteDeviceDisplay(pixelSize: pixels, scale: scale, chromeIdentifier: chrome, maskIdentifier: mask)
+                : nil)
     }
 }
 

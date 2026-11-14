@@ -99,8 +99,8 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
             guard let self, !self.stopped else { return }
             switch result {
             case .success(let display):
-                let previous = self.framebuffer.display
-                if case .media(let network) = self.source, let pixelSize = display?.pixelSize,
+                let previous = self.framebuffer.display?.frame
+                if case .media(let network) = self.source, let pixelSize = display?.frame?.pixelSize,
                    pixelSize != previous?.pixelSize {
                     network.update(displaySize: pixelSize)
                 }
@@ -108,9 +108,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
                 self.updateAttributes()
                 if let display { self.events?(.displayAngle(display.angle)) }
                 self.events?(.inputGeometryChanged)
-                if let shown = display?.identifier, shown != previous?.identifier {
-                    self.events?(.displayShown(shown))
-                }
+                if let shown = display?.frame, shown != previous { self.events?(.displayShown(shown)) }
             case .failure(let error):
                 self.framebuffer.update(display: nil)
                 Task { @MainActor [weak self] in await self?.finish(error) }
