@@ -8,6 +8,8 @@ import NeoSimulatorKit
 final class CoreDeviceNetworkVideo {
     let connection: CoreDeviceScreenConnection
     private var receiver: RemoteScreenMediaReceiver?
+    /// The size of the display that the device shows, as last read or reported.
+    private var displaySize: CGSize?
 
     init(connection: CoreDeviceScreenConnection) { self.connection = connection }
 
@@ -24,11 +26,13 @@ final class CoreDeviceNetworkVideo {
             throw RemoteScreenError.unavailable(
                 "remote-screen-display", "The device did not report its primary display size.")
         }
+        displaySize = display.pixelSize
         reserved.release()
         let descriptor = try await connection.socket(for: stream)
+        // The device can change its display while the socket is prepared.
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
-            renderer: renderer, displaySize: display.pixelSize,
+            renderer: renderer, displaySize: displaySize ?? display.pixelSize,
             completion: { [connection] error in
                 Task { @MainActor in
                     if error == nil { connection.streamEnded() }
@@ -42,6 +46,7 @@ final class CoreDeviceNetworkVideo {
 
     /// Follows the display that the device shows, whose size places it in each frame.
     func update(displaySize: CGSize) {
+        self.displaySize = displaySize
         guard let receiver else { return }
         Task { await receiver.update(displaySize: displaySize) }
     }

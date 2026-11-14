@@ -57,7 +57,7 @@ package final class RemoteDeviceScreenSession {
     private let readDisplay: @MainActor (CoreDeviceDevice) async throws -> RemoteDeviceDisplay?
     private let frame = RemoteDeviceFrameView()
     private var framePreparation: Task<Void, Never>?
-    /// The device shows another display than the one the frame was made for.
+    /// The device may show another display than the one the frame was made for.
     private var frameIsOutdated = false
     private var transport: (any RemoteScreenTransport)?
     private var starting: Task<Void, any Error>?
@@ -396,12 +396,23 @@ package final class RemoteDeviceScreenSession {
                     if !startedConnected && self.state == .connected || self.frameIsOutdated { self.prepareFrame() }
                 }
             }
+            var replaced: RemoteDeviceDisplay?
             do {
-                guard let display = try await readDisplay(device), display != self?.frame.display,
-                      let resources = try RemoteDeviceChromeResources(display: display, productType: device.modelIdentifier) else { return }
+                guard let display = try await readDisplay(device), let self, display != self.frame.display
+                else { return }
+                // Another display's chrome must not stay around this one, with or without chrome of its own.
+                replaced = self.frame.display
+                guard let resources = try RemoteDeviceChromeResources(
+                    display: display, productType: device.modelIdentifier)
+                else {
+                    if replaced != nil {
+                        self.frame.removeChrome()
+                        self.onStateChange?()
+                    }
+                    return
+                }
                 let chrome = try await NativeDeviceChrome(resources: resources)
                 try Task.checkCancellation()
-                guard let self else { return }
                 chrome.onButton = { [weak self] event in
                     switch event {
                     case .pressed(let button, let state): self?.onFrameButton?(button.usagePage, button.usage, state)
@@ -412,6 +423,10 @@ package final class RemoteDeviceScreenSession {
                 self.onStateChange?()
             } catch {
                 guard !Task.isCancelled else { return }
+                if let self, let replaced, self.frame.display == replaced {
+                    self.frame.removeChrome()
+                    self.onStateChange?()
+                }
                 // The screen remains usable if its frame is unavailable.
                 Self.logger.error("The device frame is unavailable: \(error.localizedDescription, privacy: .public)")
             }
@@ -761,7 +776,8 @@ package enum RemoteScreenInput {
 package enum RemoteScreenTransportEvent {
     case connected, disconnected, frameReceived
     case inputGeometryChanged
-    /// The device shows another of its displays, such as a folding device that was opened or closed.
+    /// The transport shows a display of the device for the first time, or another one than before, such as
+    /// when a folding device was opened or closed.
     case displayChanged
     /// The display's quarter-turn orientation, which also turns the device's frame.
     case displayAngle(CGFloat)

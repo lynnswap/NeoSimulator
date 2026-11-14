@@ -108,7 +108,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
                 self.updateAttributes()
                 if let display { self.events?(.displayAngle(display.angle)) }
                 self.events?(.inputGeometryChanged)
-                if let shown = display?.identifier, let before = previous?.identifier, shown != before {
+                if let shown = display?.identifier, shown != previous?.identifier {
                     self.events?(.displayChanged)
                 }
             case .failure(let error):

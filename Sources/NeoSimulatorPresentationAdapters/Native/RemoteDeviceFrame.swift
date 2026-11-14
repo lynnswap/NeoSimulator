@@ -242,6 +242,15 @@ package final class RemoteDeviceFrameView: NSView {
         needsLayout = true
     }
 
+    /// Leaves the screen without a device around it.
+    package func removeChrome() {
+        chrome?.view.removeFromSuperview()
+        chrome = nil
+        display = nil
+        maskLayer.contents = nil
+        needsLayout = true
+    }
+
     package var windowToModelTransform: CGAffineTransform { presentation.windowToModelTransform }
 
     package override func hitTest(_ point: NSPoint) -> NSView? {
