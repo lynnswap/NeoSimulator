@@ -206,11 +206,13 @@ package final class CoreDeviceDisplayGeometry {
         // DeviceKit's initializer consumes the CoreDevice display, so its identifiers are read first.
         let chrome = try unsafe frame.chromeIdentifier.unsafeInvoke(on: display)
         let mask = try unsafe frame.maskIdentifier.unsafeInvoke(on: display)
+        let identifier = try unsafe bindings.identifier.unsafeInvoke(on: display)
         let size = try unsafe bindings.displaySize.unsafeInvoke(on: bindings.makeDisplay.unsafeInvoke(display, nil))
         let pixels = try unsafe bindings.pixelSize.unsafeInvoke(on: size)
         let scale = try unsafe frame.scale.unsafeInvoke(on: size)
         guard pixels.width > 0, pixels.height > 0, scale > 0 else { return nil }
-        return RemoteDeviceDisplay(pixelSize: pixels, scale: scale, chromeIdentifier: chrome, maskIdentifier: mask)
+        return RemoteDeviceDisplay(pixelSize: pixels, scale: scale, chromeIdentifier: chrome, maskIdentifier: mask,
+            identifier: identifier)
     }
 
     private func project(_ displayInfo: NativeSwiftValue) throws -> RemoteScreenFramebuffer.Display? {

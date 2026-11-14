@@ -57,8 +57,15 @@ package final class RemoteDeviceScreenSession {
     private let readDisplay: @MainActor (CoreDeviceDevice) async throws -> RemoteDeviceDisplay?
     private let frame = RemoteDeviceFrameView()
     private var framePreparation: Task<Void, Never>?
-    /// The device may show another display than the one the frame was made for.
+    /// The display that the transport last reported showing.
+    private var shownDisplay: UInt32?
+    /// The transport reported another display than the one the frame was made for.
     private var frameIsOutdated = false
+    /// Whether the frame's chrome belongs to another display than the one the transport shows.
+    private var frameSurroundsAnotherDisplay: Bool {
+        guard let shownDisplay, let display = frame.display else { return false }
+        return display.identifier != shownDisplay
+    }
     private var transport: (any RemoteScreenTransport)?
     private var starting: Task<Void, any Error>?
     private var stopping: Task<Void, any Error>?
@@ -396,21 +403,15 @@ package final class RemoteDeviceScreenSession {
                     if !startedConnected && self.state == .connected || self.frameIsOutdated { self.prepareFrame() }
                 }
             }
-            var replaced: RemoteDeviceDisplay?
             do {
-                guard let display = try await readDisplay(device), let self, display != self.frame.display
-                else { return }
-                // Another display's chrome must not stay around this one, with or without chrome of its own.
-                replaced = self.frame.display
-                guard let resources = try RemoteDeviceChromeResources(
-                    display: display, productType: device.modelIdentifier)
+                guard let display = try await readDisplay(device),
+                      let resources = try RemoteDeviceChromeResources(
+                        display: display, productType: device.modelIdentifier)
                 else {
-                    if replaced != nil {
-                        self.frame.removeChrome()
-                        self.onStateChange?()
-                    }
+                    self?.removeAnotherDisplaysChrome()
                     return
                 }
+                guard let self, display != self.frame.display else { return }
                 let chrome = try await NativeDeviceChrome(resources: resources)
                 try Task.checkCancellation()
                 chrome.onButton = { [weak self] event in
@@ -423,14 +424,18 @@ package final class RemoteDeviceScreenSession {
                 self.onStateChange?()
             } catch {
                 guard !Task.isCancelled else { return }
-                if let self, let replaced, self.frame.display == replaced {
-                    self.frame.removeChrome()
-                    self.onStateChange?()
-                }
+                self?.removeAnotherDisplaysChrome()
                 // The screen remains usable if its frame is unavailable.
                 Self.logger.error("The device frame is unavailable: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// A display whose own frame is unavailable must not stay inside the frame of another display.
+    private func removeAnotherDisplaysChrome() {
+        guard frameSurroundsAnotherDisplay else { return }
+        frame.removeChrome()
+        onStateChange?()
     }
 
     private static let logger = Logger(subsystem: "dev.lynnswap.NeoSimulator", category: "RemoteScreen")
@@ -463,9 +468,12 @@ package final class RemoteDeviceScreenSession {
             finishFrameWait(.failure(RemoteScreenError.unavailable("remote-display-ended", "The display connection ended.")))
             if resizeSession != nil, !isChangingDisplay { returnFromInvalidatedDisplay() }
         case .inputGeometryChanged: break
-        case .displayChanged:
-            frameIsOutdated = true
-            prepareFrame()
+        case .displayShown(let identifier):
+            shownDisplay = identifier
+            if frame.display?.identifier != identifier {
+                frameIsOutdated = true
+                prepareFrame()
+            }
         case .displayAngle(let angle): frame.setAngle(angle, animated: state == .connected)
         case .inputCapabilitiesLost(let kinds): onInputCapabilitiesLost?(kinds)
         }
@@ -776,9 +784,9 @@ package enum RemoteScreenInput {
 package enum RemoteScreenTransportEvent {
     case connected, disconnected, frameReceived
     case inputGeometryChanged
-    /// The transport shows a display of the device for the first time, or another one than before, such as
-    /// when a folding device was opened or closed.
-    case displayChanged
+    /// The transport shows the device's display with this CoreDevice identifier: its first, or another one
+    /// than before, such as when a folding device was opened or closed.
+    case displayShown(UInt32)
     /// The display's quarter-turn orientation, which also turns the device's frame.
     case displayAngle(CGFloat)
     case inputCapabilitiesLost(Set<RemoteDeviceInputKind>)
