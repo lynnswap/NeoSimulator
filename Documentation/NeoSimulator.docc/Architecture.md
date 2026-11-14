@@ -285,6 +285,9 @@ with its own plugins. The plugin's framebuffer provider shows a layer that the
 app registers for a device's display, so DeviceKit's device view can show video
 that the app receives itself. The plugin compiles against declarations rebuilt
 from DeviceKit's exported symbols and links against a text-based stub of them.
+Library validation loads the plugin into a hardened manager only when both have
+the same team, so DeviceKit skips it in an ad hoc build with the hardened
+runtime, such as the output of `scripts/build-local.sh`.
 
 Resize App uses a separate CoreDevice media stream and requires
 `com.apple.videoconference.allow-conferencing`, which the manager's signing

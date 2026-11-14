@@ -105,7 +105,8 @@ for bundle in "$renderer" "$plugin" "$app"; do
   fi
 done
 codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$renderer"
-# DeviceKit loads this plugin into the manager, whose library validation needs the app's own signature on it.
+# DeviceKit loads this plugin into the manager. The hardened runtime's library validation accepts it when it
+# has the manager's team, so an ad hoc signature leaves DeviceKit to skip the plugin.
 codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$plugin"
 # The hardened runtime denies AVFoundation capture of a connected device's
 # screen without camera access, which only the manager uses.
