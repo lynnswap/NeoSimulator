@@ -20,6 +20,10 @@ package enum CoreDeviceScreenTransport {
             do {
                 if connection.supportsPrimaryStream {
                     try await CoreDeviceRuntime.loadDeviceKit()
+                    if let deviceView = try await CoreDeviceDeviceViewTransport.make(
+                        remote: remote, connection: connection, contentView: contentView) {
+                        return deviceView
+                    }
                     return try await CoreDeviceCaptureTransport(
                         remote: remote, connection: connection, contentView: contentView)
                 }

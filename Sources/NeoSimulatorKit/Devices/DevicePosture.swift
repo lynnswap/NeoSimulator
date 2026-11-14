@@ -171,7 +171,12 @@ package enum DevicePosturePayload {
         "com.apple.coredevice.feature.monitormotion", "com.apple.coredevice.feature.remote.universalhidservice"]
 
     package static func supports(hardwareModel: String?, features: Set<String>) -> Bool {
-        ["v68", "v68ap", "v68dev"].contains(hardwareModel?.lowercased() ?? "") && Self.features.isSubset(of: features)
+        isFoldingModel(hardwareModel) && Self.features.isSubset(of: features)
+    }
+
+    /// Whether a hardware model is a folding iPhone, which DeviceKit draws as a model that folds.
+    package static func isFoldingModel(_ hardwareModel: String?) -> Bool {
+        ["v68", "v68ap", "v68dev"].contains(hardwareModel?.lowercased() ?? "")
     }
 
     package static func serialize(_ posture: DevicePosture) throws -> Data {

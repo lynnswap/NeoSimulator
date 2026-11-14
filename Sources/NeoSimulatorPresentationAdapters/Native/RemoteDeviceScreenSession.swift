@@ -69,7 +69,9 @@ package final class RemoteDeviceScreenSession {
         guard let shownDisplay, frame.chrome != nil else { return false }
         return shownDisplay != frame.display && shownDisplay != unframedDisplay
     }
-    private var transport: (any RemoteScreenTransport)?
+    private var transport: (any RemoteScreenTransport)? {
+        didSet { frame.framesScreen = transport?.drawsDevice != true }
+    }
     private var starting: Task<Void, any Error>?
     private var stopping: Task<Void, any Error>?
     private var generation = 0
@@ -395,7 +397,7 @@ package final class RemoteDeviceScreenSession {
     /// Shows the device's frame, whether or not its screen connects: around the display that the transport
     /// reports, or until then around the display that the device describes.
     private func prepareFrame() {
-        guard framePreparation == nil else { return }
+        guard framePreparation == nil, transport?.drawsDevice != true else { return }
         let reported = shownDisplay
         if let reported {
             guard reported != frame.display, reported != unframedDisplay else { return }
@@ -425,8 +427,8 @@ package final class RemoteDeviceScreenSession {
                 }
                 let chrome = try await NativeDeviceChrome(resources: resources)
                 try Task.checkCancellation()
-                // A display reported meanwhile gets its own frame.
-                guard let self, self.shownDisplay == reported else { return }
+                // A display reported meanwhile gets its own frame, and a transport that draws the device needs none.
+                guard let self, self.shownDisplay == reported, self.transport?.drawsDevice != true else { return }
                 chrome.onButton = { [weak self] event in
                     switch event {
                     case .pressed(let button, let state): self?.onFrameButton?(button.usagePage, button.usage, state)
@@ -818,6 +820,9 @@ package enum RemoteScreenTransportEvent {
 package protocol RemoteScreenTransport: AnyObject {
     var inputCapabilities: Set<RemoteDeviceInputKind> { get }
     var nativeInputView: NSView? { get }
+    /// Whether the transport's view shows the whole device, as DeviceKit's device view does. The session then
+    /// puts no frame around it.
+    var drawsDevice: Bool { get }
     var canCaptureScreenshot: Bool { get }
     var canRecordScreen: Bool { get }
     func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations?
@@ -831,6 +836,7 @@ package protocol RemoteScreenTransport: AnyObject {
 
 extension RemoteScreenTransport {
     package var nativeInputView: NSView? { nil }
+    package var drawsDevice: Bool { false }
     package var canCaptureScreenshot: Bool { false }
     package var canRecordScreen: Bool { false }
     package func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {

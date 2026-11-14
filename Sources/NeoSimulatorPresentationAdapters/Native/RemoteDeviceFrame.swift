@@ -211,6 +211,15 @@ package final class RemoteDeviceFrameView: NSView {
     package var angle: CGFloat = 0 { didSet { if angle != oldValue { needsLayout = true } } }
     /// A resized app's dedicated display has no device around it.
     package var showsChrome = true { didSet { if showsChrome != oldValue { needsLayout = true } } }
+    /// Whether the view frames a screen. A screen whose content draws the whole device, as DeviceKit's device view
+    /// does, gets no chrome around it and nothing painted behind it.
+    package var framesScreen = true {
+        didSet {
+            guard framesScreen != oldValue else { return }
+            if !framesScreen { removeChrome() }
+            screen.layer?.backgroundColor = framesScreen ? NSColor.black.cgColor : nil
+        }
+    }
     package private(set) var chrome: NativeDeviceChrome?
     /// The display that `chrome` surrounds.
     package private(set) var display: RemoteDeviceDisplay?

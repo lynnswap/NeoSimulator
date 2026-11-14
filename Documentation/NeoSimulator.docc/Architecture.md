@@ -289,6 +289,12 @@ Library validation loads the plugin into a hardened manager only when both have
 the same team, so DeviceKit skips it in an ad hoc build with the hardened
 runtime, such as the output of `scripts/build-local.sh`.
 
+A physical folding iPhone's screen is DeviceKit's device view when the plugin
+loads: DeviceKit draws the folding model, follows the hinge, and sends touches,
+while the capture transport keeps the video, the device's buttons, screenshots,
+and recording, and puts each decoded frame on the layer of the display that the
+frame carries. Without the plugin the device keeps the framed screen.
+
 Resize App uses a separate CoreDevice media stream and requires
 `com.apple.videoconference.allow-conferencing`, which the manager's signing
 profile does not include. Remote shutdown releases input and connections while

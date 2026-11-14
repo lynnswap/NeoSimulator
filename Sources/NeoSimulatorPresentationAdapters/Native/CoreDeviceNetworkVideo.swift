@@ -14,6 +14,9 @@ final class CoreDeviceNetworkVideo {
     /// reads the size itself only while no report has arrived.
     private var displaySize: CGSize?
     private var builtIn: [RemoteScreenBuiltInDisplay] = []
+    /// Receives each decoded frame on the receiver's queue, with the part of it that shows a display and, when
+    /// the frame shows which, the built-in display that it carries. Set before `start`.
+    var decodedFrames: (@Sendable (CVPixelBuffer, _ visible: CGSize, _ display: UInt32?) -> Void)?
 
     init(connection: CoreDeviceScreenConnection) { self.connection = connection }
 
@@ -45,7 +48,7 @@ final class CoreDeviceNetworkVideo {
         // A report that arrived during the read or the socket's preparation is newer than the initial size.
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
-            renderer: renderer, displaySize: displaySize ?? initial, builtIn: builtIn,
+            renderer: renderer, displaySize: displaySize ?? initial, builtIn: builtIn, decodedFrames: decodedFrames,
             // The latest display is read when the change is taken, so that two changes arrive in order.
             carriedDisplayChanged: { [weak self] in
                 Task { @MainActor in
@@ -177,6 +180,7 @@ private actor RemoteScreenMediaReceiver {
     /// The next frame reads the latest displays, in whatever order the display's reports and frames arrive.
     private nonisolated let displays: Mutex<Displays>
     private let carriedDisplayChanged: @Sendable () -> Void
+    private let decodedFrames: (@Sendable (CVPixelBuffer, CGSize, UInt32?) -> Void)?
     private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
@@ -191,7 +195,9 @@ private actor RemoteScreenMediaReceiver {
 
     init(
         descriptor: Int32, localSSRC: UInt32, renderer: RemoteScreenCaptureStream, displaySize: CGSize,
-        builtIn: [RemoteScreenBuiltInDisplay], carriedDisplayChanged: @escaping @Sendable () -> Void,
+        builtIn: [RemoteScreenBuiltInDisplay],
+        decodedFrames: (@Sendable (CVPixelBuffer, CGSize, UInt32?) -> Void)?,
+        carriedDisplayChanged: @escaping @Sendable () -> Void,
         completion: @escaping @Sendable ((any Error)?) -> Void
     ) {
         self.descriptor = descriptor
@@ -199,6 +205,7 @@ private actor RemoteScreenMediaReceiver {
         self.renderer = renderer
         displays = Mutex(Displays(shown: displaySize, builtIn: builtIn))
         self.carriedDisplayChanged = carriedDisplayChanged
+        self.decodedFrames = decodedFrames
         self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
@@ -229,13 +236,14 @@ private actor RemoteScreenMediaReceiver {
                 // A frame that shows which built-in display it carries is placed by that display's size, ahead
                 // of the report that follows from it.
                 let encoded = CGSize(width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame))
-                let (size, changed) = $0.displays.withLock { displays in
+                let (size, carried, changed) = $0.displays.withLock { displays in
                     let carried = RemoteScreenCaptureStream.carriedDisplay(in: encoded, among: displays.builtIn)
                     let changed = carried?.identifier != displays.carried
                     displays.carried = carried?.identifier
-                    return (carried?.pixelSize ?? displays.shown, changed)
+                    return (carried?.pixelSize ?? displays.shown, carried?.identifier, changed)
                 }
                 if changed { $0.carriedDisplayChanged() }
+                $0.decodedFrames?(frame, RemoteScreenCaptureStream.visibleSize(of: size, in: encoded), carried)
                 $0.renderer.receiveDecoded(frame, displaySize: size)
             }
         }

@@ -777,19 +777,32 @@ struct RemoteDeviceScreenTests {
 
     @Test func deviceKitsPluginFindsADisplaysLayerByTheRegistrysObjectiveCNames() throws {
         let device = UUID()
-        let layer = CALayer()
-        DeviceKitDisplayLayers.register([2: layer], for: device)
-        defer { DeviceKitDisplayLayers.withdraw(device) }
         // The plugin shares no Swift module with the app, and looks the registry up as this does.
-        typealias Lookup = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
-        let selector = NSSelectorFromString("layerForDevice:display:")
+        typealias MakeLayer = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
+        typealias Offers = @convention(c) (AnyClass, Selector, NSUUID) -> ObjCBool
         let registry: AnyClass = try #require(NSClassFromString("NeoSimulatorDeviceKitDisplayLayers"))
-        let method = try #require(class_getClassMethod(registry, selector))
-        let lookup = unsafeBitCast(method_getImplementation(method), to: Lookup.self)
-        #expect(lookup(registry, selector, device as NSUUID, 2)?.takeUnretainedValue() === layer)
-        #expect(lookup(registry, selector, device as NSUUID, 1) == nil)
+        let makeSelector = NSSelectorFromString("makeLayerForDevice:display:")
+        let offersSelector = NSSelectorFromString("offersDevice:")
+        let makeLayer = unsafeBitCast(
+            method_getImplementation(try #require(class_getClassMethod(registry, makeSelector))), to: MakeLayer.self)
+        let offers = unsafeBitCast(
+            method_getImplementation(try #require(class_getClassMethod(registry, offersSelector))), to: Offers.self)
+        #expect(!offers(registry, offersSelector, device as NSUUID).boolValue)
+        #expect(makeLayer(registry, makeSelector, device as NSUUID, 2) == nil)
+
+        // Two screens show the device, and each view of a display holds its own layer of the same frame.
+        DeviceKitDisplayLayers.offer(device)
+        DeviceKitDisplayLayers.offer(device)
+        let first = try #require(makeLayer(registry, makeSelector, device as NSUUID, 2)?.takeUnretainedValue())
+        let frame = try capturedFrame(width: 4, height: 8, bgra: [], bgraAt: { _, _ in [0, 0, 0, 255] })
+        DeviceKitDisplayLayers.show(frame, visible: CGSize(width: 2, height: 8), on: 2, of: device)
+        let second = try #require(makeLayer(registry, makeSelector, device as NSUUID, 2)?.takeUnretainedValue())
+        #expect(first !== second && first.contents != nil && second.contents != nil)
+        #expect(first.contentsRect.width == 0.5 && second.contentsRect == first.contentsRect)
         DeviceKitDisplayLayers.withdraw(device)
-        #expect(lookup(registry, selector, device as NSUUID, 2) == nil)
+        #expect(offers(registry, offersSelector, device as NSUUID).boolValue)
+        DeviceKitDisplayLayers.withdraw(device)
+        #expect(!offers(registry, offersSelector, device as NSUUID).boolValue)
     }
 
     @Test func aFoldingDevicesActiveDisplayIsShownInsteadOfItsPrimaryDisplay() {
@@ -863,6 +876,18 @@ struct RemoteDeviceScreenTests {
         }
         #expect(frame.display == nil && reads == settled)
         try await session.stop()
+
+        // A transport that draws the whole device, as DeviceKit's device view does, gets no frame around it.
+        let drawing = ScreenFixtureTransport()
+        drawing.drawsDevice = true
+        let drawn = RemoteDeviceScreenSession(device: try device(), readDisplay: { _ in cover }) { _, _, _ in drawing }
+        let unframed = try #require(drawn.contentView as? RemoteDeviceFrameView)
+        unframed.frame = CGRect(x: 0, y: 0, width: 600, height: 800)
+        try await drawn.start()
+        #expect(unframed.chrome == nil)
+        drawing.emit(.displayShown(inner))
+        #expect(unframed.chrome == nil && unframed.display == nil)
+        try await drawn.stop()
     }
 
     @Test func primaryDisplayFramesExcludeEncodingPaddingBeforeAndAfterRotation() async throws {
@@ -3532,6 +3557,7 @@ private func mouseMovement(sender: UInt64?) throws -> NSEvent {
 private final class ScreenFixtureTransport: RemoteScreenTransport {
     var inputCapabilities: Set<RemoteDeviceInputKind> = [.keyboard]
     let nativeInputView: NSView? = NSView()
+    var drawsDevice = false
     var canCaptureScreenshot: Bool { !closed }
     var automaticFrames = false
     var failStart = false
