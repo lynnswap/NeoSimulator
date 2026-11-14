@@ -36,6 +36,10 @@ package final class CoreDeviceScreenInput {
         "(extension in CoreDevice):CoreDevice.HIDDigitizer.send(pointOne:pointTwo:eventType:edge:target:)",
         as: ((CGPoint, CGPoint?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) throws -> Void).self))
 
+    /// The shown display's identifier when it is not the device's primary display, which takes touches by
+    /// that identifier instead of as the main screen.
+    package var touchDisplay: UInt32?
+
     package init(remote: CoreDeviceRemoteScreenDevice, displayUniqueID: String? = nil) {
         self.remote = remote
         self.displayUniqueID = displayUniqueID
@@ -254,7 +258,8 @@ package final class CoreDeviceScreenInput {
             let event = switch phase { case .began: "start"; case .moved: "position"; case .ended: "end" }
             try validatePreparedInput()
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
-                                         nativeEdge.makeEnumCase(named: edge.rawValue), target.makeEnumCase(named: "mainScreen"))
+                                         nativeEdge.makeEnumCase(named: edge.rawValue),
+                                         target.makeEnumCase(named: touchDisplay.map { "display\($0)" } ?? "mainScreen"))
         case .trackpad(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw RemoteScreenError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")

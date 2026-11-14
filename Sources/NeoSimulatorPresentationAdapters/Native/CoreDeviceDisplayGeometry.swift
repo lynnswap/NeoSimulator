@@ -228,6 +228,7 @@ package final class CoreDeviceDisplayGeometry {
         guard let display = found else { return nil }
         // DeviceKit's initializer consumes the CoreDevice display, so its identifiers are read first.
         let identifier = try unsafe bindings.identifier.unsafeInvoke(on: display)
+        let isPrimary = try unsafe bindings.primary.unsafeInvoke(on: display)
         let chrome = try unsafe frame.chromeIdentifier.unsafeInvoke(on: display)
         let mask = try unsafe frame.maskIdentifier.unsafeInvoke(on: display)
         let value = try unsafe bindings.makeDisplay.unsafeInvoke(display, bindings.orientation.unsafeInvoke(on: displayInfo))
@@ -237,7 +238,7 @@ package final class CoreDeviceDisplayGeometry {
         guard size.width > 0, size.height > 0, angle.isFinite else { return nil }
         let pixels = try unsafe bindings.pixelSize.unsafeInvoke(on: displaySize)
         let scale = try unsafe frame.scale.unsafeInvoke(on: displaySize)
-        return RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: identifier,
+        return RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: identifier, isPrimary: isPrimary,
             frame: pixels.width > 0 && pixels.height > 0 && scale > 0
                 ? RemoteDeviceDisplay(pixelSize: pixels, scale: scale, chromeIdentifier: chrome, maskIdentifier: mask)
                 : nil)

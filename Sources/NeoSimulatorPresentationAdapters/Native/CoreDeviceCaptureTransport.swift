@@ -105,6 +105,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
                     network.update(displaySize: pixelSize)
                 }
                 self.framebuffer.update(display: display)
+                self.input.touchDisplay = display.flatMap { $0.isPrimary ? nil : $0.identifier }
                 self.updateAttributes()
                 // The angle that follows belongs to this display.
                 if let shown = display?.frame, shown != previous { self.events?(.displayShown(shown)) }
