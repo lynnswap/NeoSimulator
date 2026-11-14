@@ -101,30 +101,40 @@ private struct DisplayLayerView: NSViewRepresentable {
     let device: UUID
     let display: UInt32
 
-    func makeNSView(context: Context) -> DisplayLayerHostView { DisplayLayerHostView() }
+    func makeNSView(context: Context) -> DisplayLayerHostView { DisplayLayerHostView(device: device, display: display) }
 
-    func updateNSView(_ view: DisplayLayerHostView, context: Context) {
-        view.show(AppDisplayLayers.layer(device: device, display: display))
-    }
+    func updateNSView(_ view: DisplayLayerHostView, context: Context) {}
 }
 
-/// Fills itself with the app's layer.
+/// Fills itself with the layer that the app offers for a display, and follows the app when it offers another.
 private final class DisplayLayerHostView: NSView {
+    private let device: UUID
+    private let display: UInt32
     private var shown: CALayer?
+    private var observer: (any NSObjectProtocol)?
 
-    init() {
+    init(device: UUID, display: UInt32) {
+        self.device = device
+        self.display = display
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
+        observer = NotificationCenter.default.addObserver(
+            forName: AppDisplayLayers.didChange, object: nil, queue: .main
+        ) { [weak self] _ in self?.showOfferedLayer() }
+        showOfferedLayer()
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func show(_ layer: CALayer?) {
-        guard layer !== shown else { return }
+    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+
+    private func showOfferedLayer() {
+        let offered = AppDisplayLayers.layer(device: device, display: display)
+        guard offered !== shown else { return }
         shown?.removeFromSuperlayer()
-        shown = layer
-        if let layer { self.layer?.addSublayer(layer) }
+        shown = offered
+        if let offered { layer?.addSublayer(offered) }
         needsLayout = true
     }
 
