@@ -1174,6 +1174,7 @@ final class RendererOwnerMonitorFixture: Sendable {
 @MainActor
 final class TestRemoteScreenTransport: RemoteScreenTransport {
     var nativeInputView: NSView?
+    var nativePoseControls: NativeDevicePoseControls?
     var inputCapabilities: Set<RemoteDeviceInputKind> = [.button]
     /// Maps window points to the screen's input locations; without it the screen takes no pointer input.
     var locate: ((CGPoint, Bool) -> RemoteDeviceInputLocations?)?

@@ -37,6 +37,7 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
 
     package var drawsDevice: Bool { true }
     package var nativeInputView: NSView? { showsCanvas ? canvas.inputView : nil }
+    package var nativePoseControls: NativeDevicePoseControls? { showsCanvas ? canvas.poseControls : nil }
     /// DeviceKit's view sends the touches and pointer movements that reach it.
     package var inputCapabilities: Set<RemoteDeviceInputKind> { capture.inputCapabilities.subtracting([.pointer, .digitizer]) }
     package var canCaptureScreenshot: Bool { capture.canCaptureScreenshot }

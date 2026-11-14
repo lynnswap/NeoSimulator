@@ -404,6 +404,26 @@ extension SimulatorHostTests {
         try await controller.stopAndClose()
     }
 
+    /// DeviceKit's device view of a folding device brings the rotation and posture controls of its action bar.
+    @Test func aRemoteScreenOffersThePoseControlsOfItsConnectedTransport() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        let poses = NativeDevicePoseControls { _ in }
+        transport.nativePoseControls = poses
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: []))
+        model.registry.stopReading()
+        let screens = DeviceScreens(model: model)
+        let screen = screens.attach(RemoteDeviceWindowController(device: device, session: session, presentCompactWindow: { _ in }))
+        #expect(screen.nativePoseControls == nil)
+        try await session.start()
+        #expect(screen.nativePoseControls === poses)
+        try await screens.stopAll()
+        #expect(screen.nativePoseControls == nil)
+    }
+
     @Test func stopAllPreservesRemoteCancellationAndCanRetry() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)

@@ -450,6 +450,8 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         let connected = session.state == .connected && !session.isChangingDisplay && !closing && !changingPresentation
         if !connected || !session.inputCapabilities.contains(.keyboard) { keyboardCapture.stop() }
         let native = session.nativeInputView
+        // Each connection's transport brings its own controls.
+        session.nativePoseControls?.onError = { [weak self] in self?.showIssue($0) }
         inputView.isHidden = native != nil
         native?.isHidden = closing
         if let native, !closing, !changingPresentation, presentationWindow?.isKeyWindow == true,

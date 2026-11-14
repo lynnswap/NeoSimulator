@@ -106,8 +106,10 @@ package final class DeviceScreen {
     }
 
     package var nativePoseControls: NativeDevicePoseControls? {
-        guard case .simulator(let controller) = observedController else { return nil }
-        return controller.display.nativePoseControls
+        switch observedController {
+        case .simulator(let controller): controller.display.nativePoseControls
+        case .remote(let controller): controller.session.nativePoseControls
+        }
     }
 
     /// The simulator's capabilities, which assign the shared shortcuts of device commands.

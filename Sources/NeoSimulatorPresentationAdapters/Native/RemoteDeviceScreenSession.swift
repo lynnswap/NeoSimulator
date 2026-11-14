@@ -22,6 +22,8 @@ package final class RemoteDeviceScreenSession {
     /// Root of the native input hierarchy; its focused responder handles AppKit events.
     /// Media streams use the explicit HID methods below.
     package var nativeInputView: NSView? { transport?.nativeInputView }
+    /// DeviceKit's rotation and posture controls for the device view that the transport shows.
+    package var nativePoseControls: NativeDevicePoseControls? { transport?.nativePoseControls }
     package var canCaptureScreenshot: Bool { state == .connected && !isChangingDisplay && transport?.canCaptureScreenshot == true }
     package var canRecordScreen: Bool { state == .connected && !isChangingDisplay && transport?.canRecordScreen == true }
     package var recordingState: RemoteDeviceRecordingState { recording.state }
@@ -823,6 +825,8 @@ package protocol RemoteScreenTransport: AnyObject {
     /// Whether the transport's view shows the whole device, as DeviceKit's device view does. The session then
     /// puts no frame around it.
     var drawsDevice: Bool { get }
+    /// DeviceKit's rotation and posture controls for the device that the transport's view draws.
+    var nativePoseControls: NativeDevicePoseControls? { get }
     var canCaptureScreenshot: Bool { get }
     var canRecordScreen: Bool { get }
     func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations?
@@ -837,6 +841,7 @@ package protocol RemoteScreenTransport: AnyObject {
 extension RemoteScreenTransport {
     package var nativeInputView: NSView? { nil }
     package var drawsDevice: Bool { false }
+    package var nativePoseControls: NativeDevicePoseControls? { nil }
     package var canCaptureScreenshot: Bool { false }
     package var canRecordScreen: Bool { false }
     package func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {

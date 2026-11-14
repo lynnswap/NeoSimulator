@@ -293,7 +293,9 @@ A physical folding iPhone's screen is DeviceKit's device view when the plugin
 loads: DeviceKit draws the folding model, follows the hinge, and sends touches,
 while the capture transport keeps the video, the device's buttons, screenshots,
 and recording, and puts each decoded frame on the layer of the display that the
-frame carries. Without the plugin the device keeps the framed screen.
+frame carries. The canvas bar shows the rotation and posture controls of
+DeviceKit's action bar in place of the app's own posture buttons. Without the
+plugin the device keeps the framed screen.
 
 Resize App uses a separate CoreDevice media stream and requires
 `com.apple.videoconference.allow-conferencing`, which the manager's signing
