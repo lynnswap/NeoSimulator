@@ -113,11 +113,28 @@ extension CoreDeviceRemoteScreenDevice {
     package func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {
         let implementation = try await implementation(capability: "ScreenRecordingCapability",
             feature: "com.apple.coredevice.feature.screenrecording")
+        let errorType = try await runtime.resolve(.swift(.type("CoreDevice.CoreDeviceError")))
+        let sampleError = try await errorType.resolve(.swift(.staticGetter("ioError", as: (() -> NativeSwiftValue).self,
+            valueABIs: [errorType: try .opaque(named: errorType.name)])))
+        guard let failure = try unsafe sampleError.unsafeInvoke().withCopy({ $0 as? any Error }) else {
+            throw DeviceIOError.unavailable("remote-screen-recording", "The native recording error type could not be resolved.")
+        }
+        return try await startRecording(displayUniqueID: displayUniqueID, implementation: implementation, failure: failure)
+    }
+
+    /// - Parameter failure: A value of the error type that CoreDevice's recording methods throw, which their
+    ///   signatures name.
+    private func startRecording<Failure: Error>(displayUniqueID: String?, implementation: NativeSwiftValue,
+                                                failure: Failure) async throws -> any RemoteScreenRecordingHandle {
         let start = try await implementation.type.resolve(.swift(.method(
             "(extension in CoreDevice):CoreDevice.ScreenRecordingProtocol.recordScreen(displayUniqueID:)",
-            as: ((String?) async throws -> NativeSwiftValue).self)))
-        let handle = try await unsafe start.unsafeInvoke(on: implementation, displayUniqueID).copyUnderlyingValue()
-        return NativeScreenRecordingHandle(remote: self, implementation: implementation, handle: handle)
+            as: ((String?) async throws(Failure) -> NativeSwiftValue).self)))
+        let handle = try await unsafe start.unsafeInvoke(on: implementation, displayUniqueID)
+        return NativeScreenRecordingHandle(remote: self, implementation: implementation, handle: handle) { handle in
+            let stop = try await handle.type.resolve(.swift(.method("CoreDevice.ScreenRecordingHandle.stopRecording()",
+                as: (() async throws(Failure) -> NativeSwiftValue).self)))
+            return try await unsafe stop.unsafeInvoke(on: handle)
+        }
     }
 }
 
@@ -126,25 +143,29 @@ private final class NativeScreenRecordingHandle: RemoteScreenRecordingHandle {
     private let remote: CoreDeviceRemoteScreenDevice
     private let implementation: NativeSwiftValue
     private let handle: NativeSwiftValue
+    private let stopRecording: @MainActor (NativeSwiftValue) async throws -> NativeSwiftValue
     private var output: NativeSwiftValue?
 
-    init(remote: CoreDeviceRemoteScreenDevice, implementation: NativeSwiftValue, handle: NativeSwiftValue) {
+    init(remote: CoreDeviceRemoteScreenDevice, implementation: NativeSwiftValue, handle: NativeSwiftValue,
+         stopRecording: @escaping @MainActor (NativeSwiftValue) async throws -> NativeSwiftValue) {
         self.remote = remote
         self.implementation = implementation
         self.handle = handle
+        self.stopRecording = stopRecording
     }
 
     func stop() async throws -> RemoteDeviceRecording {
         let nativeOutput: NativeSwiftValue
         if let output { nativeOutput = output }
         else {
-            let stop = try await handle.type.resolve(.swift(.method("CoreDevice.ScreenRecordingHandle.stopRecording()",
-                as: (() async throws -> NativeSwiftValue).self)))
-            nativeOutput = try await unsafe stop.unsafeInvoke(on: handle).copyUnderlyingValue()
+            nativeOutput = try await stopRecording(handle)
             output = nativeOutput
         }
         // Retain the native output if projection fails, so retry never stops the handle twice.
-        let data = try await nativeOutput.type.resolve(.swift(.getter("videoData", as: (() -> Data).self)))
+        let dataType = try await remote.runtime.resolve(.swift(.type("Foundation.Data")))
+        // Data is @frozen and returned as its two words.
+        let data = try await nativeOutput.type.resolve(.swift(.getter("videoData", as: (() -> Data).self,
+            valueABIs: [dataType: try .structure(named: dataType.name, fields: [.uint64, .uint64])])))
         let duration = try await nativeOutput.type.resolve(.swift(.getter("duration", as: (() -> Double).self)))
         let codec = try await nativeOutput.type.resolve(.swift(.getter("codec", as: (() -> NativeSwiftValue).self)))
         let nativeCodec = try unsafe codec.unsafeInvoke(on: nativeOutput)
