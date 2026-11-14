@@ -34,6 +34,8 @@ MANAGER_ENTITLEMENTS = ("com.apple.security.device.camera",)
 MANAGER_ENTITLEMENTS_PATH = Path(__file__).resolve().parents[1] / "App" / APP_NAME / f"{APP_NAME}.entitlements"
 RENDERER_NAME = "NeoSimulatorRenderer"
 RENDERER_IDENTIFIER = f"{APP_IDENTIFIER}.Renderer"
+PLUGIN_NAME = "NeoSimulatorDeviceKitPlugin"
+PLUGIN_IDENTIFIER = f"{APP_IDENTIFIER}.DeviceKitPlugin"
 GUEST_SETTINGS_NAME = "NeoSimulatorGuestSettings"
 # Hardened-runtime exceptions for the helper only: DYLD_ROOT_PATH selects the simulator runtime, and iOS 27
 # runtimes supply system frameworks only through their Apple-signed simulator dyld shared cache, which library
@@ -244,11 +246,21 @@ def validate_app(tools: NativeTools, mount: Path, version: str, build_number: st
     }.items():
         if renderer_info.get(name) != expected:
             raise ReleaseError(f"The renderer {name} does not match the release contract.")
+    plugin = app / "Contents" / "PlugIns" / f"{PLUGIN_NAME}.devicekitplugin"
+    plugin_executable = plugin / "Contents" / "MacOS" / PLUGIN_NAME
+    plugin_info = parse_plist((plugin / "Contents" / "Info.plist").read_bytes(), "Read DeviceKit plugin metadata")
+    for name, expected in {
+        "CFBundleIdentifier": PLUGIN_IDENTIFIER, "CFBundleExecutable": PLUGIN_NAME,
+        "CFBundlePackageType": "BNDL", "CFBundleShortVersionString": numeric_version,
+        "CFBundleVersion": build_number,
+    }.items():
+        if plugin_info.get(name) != expected:
+            raise ReleaseError(f"The DeviceKit plugin {name} does not match the release contract.")
     helper = app / "Contents" / "Resources" / "NeoSimulatorGuestSettings"
-    if set(machos) != {executable, renderer_executable, helper}:
-        raise ReleaseError("The app must contain its manager, renderer, and guest settings helper executables.")
+    if set(machos) != {executable, renderer_executable, plugin_executable, helper}:
+        raise ReleaseError("The app must contain its manager, renderer, DeviceKit plugin, and guest settings helper executables.")
     for bundle, binary, entitlements in ((helper, helper, GUEST_SETTINGS_ENTITLEMENTS), (renderer, renderer_executable, ()),
-                                         (app, executable, MANAGER_ENTITLEMENTS)):
+                                         (plugin, plugin_executable, ()), (app, executable, MANAGER_ENTITLEMENTS)):
         architectures = tools.run(["/usr/bin/lipo", "-archs", str(binary)], "Validate app architecture").stdout.strip()
         if architectures != b"arm64":
             raise ReleaseError("The release app must be arm64-only.")
@@ -431,6 +443,7 @@ def verify_guest_settings_signature(tools: NativeTools, helper: Path) -> None:
 
 def sign_application(tools: NativeTools, app: Path, credentials: SigningCredentials, team: str) -> None:
     renderer = app / "Contents" / "Applications" / f"{RENDERER_NAME}.app"
+    plugin = app / "Contents" / "PlugIns" / f"{PLUGIN_NAME}.devicekitplugin"
     helper = app / "Contents" / "Resources" / GUEST_SETTINGS_NAME
     # The notary service omits simulator code. Signing it with Developer ID would
     # require a macOS notarization ticket that it cannot receive.
@@ -441,9 +454,10 @@ def sign_application(tools: NativeTools, app: Path, credentials: SigningCredenti
     verify_guest_settings_signature(tools, helper)
     validate_entitlements(tools, helper, GUEST_SETTINGS_ENTITLEMENTS, guest_helper=True)
     # Seal nested code before its containing bundle; --deep signing can silently
-    # apply the manager's signing profile to the renderer.
+    # apply the manager's signing profile to the renderer and the DeviceKit plugin.
     for bundle, identifier, entitlements_path, entitlements in (
-        (renderer, RENDERER_IDENTIFIER, None, ()), (app, APP_IDENTIFIER, MANAGER_ENTITLEMENTS_PATH, MANAGER_ENTITLEMENTS),
+        (renderer, RENDERER_IDENTIFIER, None, ()), (plugin, PLUGIN_IDENTIFIER, None, ()),
+        (app, APP_IDENTIFIER, MANAGER_ENTITLEMENTS_PATH, MANAGER_ENTITLEMENTS),
     ):
         sign(tools, bundle, credentials, app=True, entitlements=entitlements_path)
         verify_developer_id(tools, bundle, team, app=True, identifier=identifier)
@@ -543,6 +557,8 @@ def prepare_release(arguments: argparse.Namespace) -> Path:
                     verify_developer_id(tools, app, configuration["APPLE_TEAM_ID"], app=True)
                     verify_developer_id(tools, app / "Contents" / "Applications" / f"{RENDERER_NAME}.app",
                                         configuration["APPLE_TEAM_ID"], app=True, identifier=RENDERER_IDENTIFIER)
+                    verify_developer_id(tools, app / "Contents" / "PlugIns" / f"{PLUGIN_NAME}.devicekitplugin",
+                                        configuration["APPLE_TEAM_ID"], app=True, identifier=PLUGIN_IDENTIFIER)
                     if layout_contents(mount) != layout:
                         raise ReleaseError("The final image did not preserve the original DMG layout.")
                     tools.run([

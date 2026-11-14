@@ -21,15 +21,17 @@ class ReleaseSigningTests(unittest.TestCase):
         self.mount = Path(self.directory.name)
         self.app = self.mount / "NeoSimulator.app"
         self.renderer = self.app / "Contents/Applications/NeoSimulatorRenderer.app"
-        for bundle, name, identifier in (
-            (self.app, "NeoSimulator", sign_release.APP_IDENTIFIER),
-            (self.renderer, "NeoSimulatorRenderer", sign_release.RENDERER_IDENTIFIER),
+        self.plugin = self.app / "Contents/PlugIns/NeoSimulatorDeviceKitPlugin.devicekitplugin"
+        for bundle, name, identifier, package in (
+            (self.app, "NeoSimulator", sign_release.APP_IDENTIFIER, "APPL"),
+            (self.renderer, "NeoSimulatorRenderer", sign_release.RENDERER_IDENTIFIER, "APPL"),
+            (self.plugin, "NeoSimulatorDeviceKitPlugin", sign_release.PLUGIN_IDENTIFIER, "BNDL"),
         ):
             (bundle / "Contents/MacOS").mkdir(parents=True)
             (bundle / f"Contents/MacOS/{name}").write_bytes(bytes.fromhex("cffaedfe") + b"fixture")
             (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
                 "CFBundleIdentifier": identifier, "CFBundleExecutable": name,
-                "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.2.3",
+                "CFBundlePackageType": package, "CFBundleShortVersionString": "1.2.3",
                 "CFBundleVersion": "7",
             }))
         helper = self.app / "Contents/Resources/NeoSimulatorGuestSettings"
@@ -71,7 +73,7 @@ class ReleaseSigningTests(unittest.TestCase):
         camera = dict.fromkeys(sign_release.MANAGER_ENTITLEMENTS, True)
         for path, values in ((self.helper, {}), (self.helper, allow_dyld_only), (self.app, {}),
                              (self.app, {**camera, **dict.fromkeys(sign_release.GUEST_SETTINGS_ENTITLEMENTS, True)}),
-                             (self.renderer, camera)):
+                             (self.renderer, camera), (self.plugin, camera)):
             with self.subTest(path=path.name, values=sorted(values)):
                 def result(arguments, operation, **kwargs):
                     if "--entitlements" in arguments and Path(arguments[-1]) == path:
@@ -103,7 +105,7 @@ class ReleaseSigningTests(unittest.TestCase):
     def test_resigning_applies_each_signing_profile(self):
         credentials = sign_release.SigningCredentials(Path("fixture.keychain"), "A" * 40, Path("fixture.p8"))
         identifiers = {self.helper: "NeoSimulatorGuestSettings-generated-uuid", self.renderer: sign_release.RENDERER_IDENTIFIER,
-                       self.app: sign_release.APP_IDENTIFIER}
+                       self.plugin: sign_release.PLUGIN_IDENTIFIER, self.app: sign_release.APP_IDENTIFIER}
         profiles = {}
         flags = {}
         identities = {}
@@ -125,12 +127,12 @@ class ReleaseSigningTests(unittest.TestCase):
         with patch.object(self.tools, "run", side_effect=result) as run:
             sign_release.sign_application(self.tools, self.app, credentials, "ABCDEFGHIJ")
         signing = [call.args[0] for call in run.call_args_list if "--sign" in call.args[0]]
-        self.assertEqual([Path(call[-1]) for call in signing], [self.helper, self.renderer, self.app])
+        self.assertEqual([Path(call[-1]) for call in signing], [self.helper, self.renderer, self.plugin, self.app])
         self.assertEqual(signing[0][signing[0].index("--sign") + 1], "-")
         self.assertTrue(all(call[call.index("--sign") + 1] == credentials.certificate_sha1 for call in signing[1:]))
         self.assertEqual(Path(signing[0][signing[0].index("--entitlements") + 1]), sign_release.GUEST_SETTINGS_ENTITLEMENTS_PATH)
         self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)
-        self.assertEqual(Path(signing[2][signing[2].index("--entitlements") + 1]), sign_release.MANAGER_ENTITLEMENTS_PATH)
+        self.assertEqual(Path(signing[3][signing[3].index("--entitlements") + 1]), sign_release.MANAGER_ENTITLEMENTS_PATH)
         self.assertTrue(all("--identifier" not in call for call in signing[1:]))
 
 
@@ -157,7 +159,8 @@ class BuildScriptSigningTests(unittest.TestCase):
 args = sys.argv[1:]
 products = pathlib.Path(args[args.index("-derivedDataPath") + 1]) / "Build/Products/Release"
 app = products / "NeoSimulator.app"
-for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSimulatorRenderer.app", "NeoSimulatorRenderer")]:
+for bundle, name in [(app, "NeoSimulator"), (app / "Contents/Applications/NeoSimulatorRenderer.app", "NeoSimulatorRenderer"),
+                     (app / "Contents/PlugIns/NeoSimulatorDeviceKitPlugin.devicekitplugin", "NeoSimulatorDeviceKitPlugin")]:
     (bundle / "Contents/MacOS").mkdir(parents=True)
     (bundle / "Contents/MacOS" / name).write_bytes(b"fixture")
     build_number = next(value.split("=", 1)[1] for value in args if value.startswith("CURRENT_PROJECT_VERSION="))
@@ -209,15 +212,17 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
                 for line in result.stdout.splitlines():
                     if line.startswith("  open "):
                         self.assertEqual(line, f"  open '{staged_app}'")
-                for bundle in [staged_app, staged_app / "Contents/Applications/NeoSimulatorRenderer.app"]:
+                for bundle in [staged_app, staged_app / "Contents/Applications/NeoSimulatorRenderer.app",
+                               staged_app / "Contents/PlugIns/NeoSimulatorDeviceKitPlugin.devicekitplugin"]:
                     info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
                     self.assertEqual(info["CFBundleVersion"], "17" if "--build-number" in arguments else "1")
                     self.assertEqual(info["CFBundleShortVersionString"], "1.2.3" if script == "build-release.sh" else "0.0.0")
                 calls = [json.loads(line) for line in log.read_text().splitlines()]
                 signing = [call for call in calls if "--sign" in call]
-                self.assertEqual(len(signing), 3)
+                self.assertEqual(len(signing), 4)
                 self.assertEqual([Path(call[-1]).name for call in signing],
-                                 ["NeoSimulatorGuestSettings", "NeoSimulatorRenderer.app", "NeoSimulator.app"])
+                                 ["NeoSimulatorGuestSettings", "NeoSimulatorRenderer.app",
+                                  "NeoSimulatorDeviceKitPlugin.devicekitplugin", "NeoSimulator.app"])
                 for index, call in enumerate(signing):
                     identity = "-" if index == 0 else expected_identity
                     self.assertEqual(call[call.index("--sign") + 1], identity)
@@ -232,7 +237,8 @@ shutil.copyfile(os.environ["FIXTURE_GUEST_SECTION"], helper)
                 self.assertEqual(signing[0][signing[0].index("--identifier") + 1], sign_release.GUEST_SETTINGS_NAME)
                 self.assertTrue(all("--identifier" not in call for call in signing[1:]))
                 self.assertNotIn("--entitlements", signing[1])
-                self.assertEqual(Path(signing[2][signing[2].index("--entitlements") + 1]),
+                self.assertNotIn("--entitlements", signing[2])
+                self.assertEqual(Path(signing[3][signing[3].index("--entitlements") + 1]),
                                  root / "App/NeoSimulator/NeoSimulator.entitlements")
                 self.assertEqual(calls[-1][:-1], ["--verify", "--deep", "--strict"])
 

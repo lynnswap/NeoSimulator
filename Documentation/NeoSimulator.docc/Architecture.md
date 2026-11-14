@@ -280,6 +280,12 @@ gesture event positions its hidden pointer with the current display transform;
 later events retain that position. Focus loss resets gestures, and disconnect
 removes the services.
 
+The app embeds a DeviceKit plugin in `Contents/PlugIns`, which DeviceKit loads
+with its own plugins. The plugin's framebuffer provider shows a layer that the
+app registers for a device's display, so DeviceKit's device view can show video
+that the app receives itself. The plugin compiles against declarations rebuilt
+from DeviceKit's exported symbols and links against a text-based stub of them.
+
 Resize App uses a separate CoreDevice media stream and requires
 `com.apple.videoconference.allow-conferencing`, which the manager's signing
 profile does not include. Remote shutdown releases input and connections while

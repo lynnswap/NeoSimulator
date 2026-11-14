@@ -69,6 +69,27 @@
         { "path": "NeoSimulatorRendererMain.swift", "target-membership": [ "NeoSimulatorRenderer/compile-sources" ] },
       ],
     }, {
+      "kind": "group",
+      "path": "NeoSimulatorDeviceKitPlugin",
+      "children": [
+        { "path": "Info.plist" },
+        { "path": "NeoSimulatorDeviceKitPlugin.swift", "target-membership": [ "NeoSimulatorDeviceKitPlugin/compile-sources" ] },
+        { "path": "DeviceKit.tbd" },
+        {
+          "kind": "group",
+          "path": "DeviceKitInterface",
+          "children": [
+            {
+              "kind": "group",
+              "path": "DeviceKit.swiftmodule",
+              "children": [
+                { "path": "arm64-apple-macos.swiftinterface" },
+              ],
+            },
+          ],
+        },
+      ],
+    }, {
       "path": "AppIcon.icon",
       "type": "folder.iconcomposer.icon",
       "target-membership": [
@@ -90,6 +111,7 @@
         { "path": "<PRODUCTS>/NeoSimulator.app", "id": "52678CF6A775A386BE4B4373", "type": "wrapper.application", "index": false },
         { "path": "<PRODUCTS>/NeoSimulatorLicenseTests.xctest", "id": "AB6705CF3060FBFC007E9CFA", "type": "wrapper.cfbundle", "index": false },
         { "path": "<PRODUCTS>/NeoSimulatorRenderer.app", "id": "DB53DA24AE8041B1A82D0570", "type": "wrapper.application", "index": false, "target-membership": [ { "build-phase": "NeoSimulator/copy/Embed Renderer", "code-sign-on-copy": true } ] },
+        { "path": "<PRODUCTS>/NeoSimulatorDeviceKitPlugin.devicekitplugin", "id": "7C41E0A95D2B4F3E9A6018D2", "type": "wrapper.cfbundle", "index": false, "target-membership": [ { "build-phase": "NeoSimulator/copy/Embed DeviceKit Plugin", "code-sign-on-copy": true } ] },
       ],
     }, {
       "kind": "group",
@@ -185,6 +207,7 @@
       "dependencies": [
         "NeoSimulatorRenderer",
         "NeoSimulatorGuestSettings",
+        "NeoSimulatorDeviceKitPlugin",
       ],
       "build-phases": [
         "compile-sources",
@@ -199,6 +222,11 @@
           "name": "Embed Renderer",
           "bundle-base-path": "contents-directory",
           "relative-path": "Applications",
+        }, {
+          "kind": "copy",
+          "name": "Embed DeviceKit Plugin",
+          "bundle-base-path": "contents-directory",
+          "relative-path": "PlugIns",
         },
       ],
       "package-product-members": [
@@ -286,6 +314,40 @@
         "SDKROOT": "macosx",
         "SKIP_INSTALL": "YES",
         "SWIFT_VERSION": "6.0",
+      },
+    }, {
+      "name": "NeoSimulatorDeviceKitPlugin",
+      "id": "3F9A6C2E81D74B05A2E7C914",
+      "product": "Products/NeoSimulatorDeviceKitPlugin.devicekitplugin",
+      "product-type": "bundle",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+      ],
+      "build-settings": {
+        "CODE_SIGN_IDENTITY[config=Debug]": "Apple Development",
+        "CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*]": "-",
+        "CODE_SIGN_IDENTITY[config=Release]": "Apple Development",
+        "CODE_SIGN_STYLE": "Automatic",
+        "CURRENT_PROJECT_VERSION": "1",
+        "DEVELOPMENT_TEAM[config=Debug]": "",
+        "DEVELOPMENT_TEAM[config=Release]": "58KPFKMJJW",
+        "GENERATE_INFOPLIST_FILE": "NO",
+        "INFOPLIST_FILE": "NeoSimulatorDeviceKitPlugin/Info.plist",
+        "LM_SKIP_METADATA_EXTRACTION": "YES",
+        "MARKETING_VERSION": "0.0.0",
+        "OTHER_LDFLAGS": [
+          "$(inherited)",
+          "\"$(SRCROOT)/NeoSimulatorDeviceKitPlugin/DeviceKit.tbd\"",
+        ],
+        "PRODUCT_BUNDLE_IDENTIFIER": "dev.lynnswap.NeoSimulator.DeviceKitPlugin",
+        "PRODUCT_NAME": "NeoSimulatorDeviceKitPlugin",
+        "PROVISIONING_PROFILE_SPECIFIER": "",
+        "SDKROOT": "macosx",
+        "SKIP_INSTALL": "YES",
+        "SWIFT_INCLUDE_PATHS": "$(SRCROOT)/NeoSimulatorDeviceKitPlugin/DeviceKitInterface",
+        "SWIFT_VERSION": "5.0",
+        "WRAPPER_EXTENSION": "devicekitplugin",
       },
     }, {
       "name": "NeoSimulatorLicenseTests",

@@ -775,6 +775,23 @@ struct RemoteDeviceScreenTests {
         try await copying.stop()
     }
 
+    @Test func deviceKitsPluginFindsADisplaysLayerByTheRegistrysObjectiveCNames() throws {
+        let device = UUID()
+        let layer = CALayer()
+        DeviceKitDisplayLayers.register([2: layer], for: device)
+        defer { DeviceKitDisplayLayers.withdraw(device) }
+        // The plugin shares no Swift module with the app, and looks the registry up as this does.
+        typealias Lookup = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
+        let selector = NSSelectorFromString("layerForDevice:display:")
+        let registry: AnyClass = try #require(NSClassFromString("NeoSimulatorDeviceKitDisplayLayers"))
+        let method = try #require(class_getClassMethod(registry, selector))
+        let lookup = unsafeBitCast(method_getImplementation(method), to: Lookup.self)
+        #expect(lookup(registry, selector, device as NSUUID, 2)?.takeUnretainedValue() === layer)
+        #expect(lookup(registry, selector, device as NSUUID, 1) == nil)
+        DeviceKitDisplayLayers.withdraw(device)
+        #expect(lookup(registry, selector, device as NSUUID, 2) == nil)
+    }
+
     @Test func aFoldingDevicesActiveDisplayIsShownInsteadOfItsPrimaryDisplay() {
         typealias State = CoreDeviceDisplayGeometry.DisplayState
         let cover = State(identifier: 1, isBuiltIn: true, isActive: false, isExternal: false, isPrimary: true)

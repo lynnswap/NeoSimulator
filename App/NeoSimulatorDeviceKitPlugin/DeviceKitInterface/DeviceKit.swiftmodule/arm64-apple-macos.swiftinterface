@@ -1,0 +1,134 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 6.0
+// swift-module-flags: -target arm64-apple-macos26.0 -enable-library-evolution -swift-version 5 -module-name DeviceKit
+// DeviceKit ships no module interface. These are the declarations that NeoSimulator's DeviceKit plugin uses, rebuilt
+// from the symbols that Xcode 27.2's DeviceKit exports; `DeviceKit.tbd` lists the ones the plugin links against.
+// The protocols are resilient, so a conformance names its requirements by their descriptors and takes DeviceKit's
+// defaults for the rest. `Instance` is class-bound in DeviceKit's protocol descriptor.
+import Foundation
+import Observation
+import Swift
+import SwiftUI
+
+public struct DeviceKitContext {
+}
+public enum DisplayIdentifier {
+  case `default`
+  case displayID(Swift.UInt32)
+  case uniqueID(Swift.String)
+  public var description: Swift.String { get }
+}
+public protocol ProviderProtocol {
+  var identifier: Swift.String { get }
+  var orderingPriority: Swift.Int { get }
+}
+extension DeviceKit.ProviderProtocol {
+  public var orderingPriority: Swift.Int { get }
+}
+public protocol DeviceInfoProvider {}
+public protocol InspectorProvider {}
+public protocol InspectorBannerProvider {}
+public protocol InspectorSectionProvider {}
+public protocol InspectorRowProvider {}
+public protocol MenuBarExtraSectionProvider {}
+public protocol MenuSectionProvider {}
+public protocol MenuItemProvider {}
+public protocol NewDeviceProvider {}
+public protocol NewDeviceMenuProvider {}
+public protocol SimpleActionProvider {}
+public protocol URLActionProvider {}
+public protocol SettingsCategoryProvider {}
+public protocol SettingsSectionProvider {}
+public protocol ActionBarControlProvider {}
+public protocol ActionBarGroupProvider {}
+public protocol BannerProvider {}
+public protocol DeviceViewContentProvider {}
+public protocol CompanionDeviceCreationProvider {}
+public enum DisplayViewFramebufferProvider {
+  public enum State {
+    case inactive
+    case activating
+    case active
+    case error(any Swift.Error)
+    public var description: Swift.String { get }
+  }
+  public struct DisplayPriority {
+    public var rawValue: Swift.Int { get }
+    public static var unavailable: DeviceKit.DisplayViewFramebufferProvider.DisplayPriority { get }
+    public static var informational: DeviceKit.DisplayViewFramebufferProvider.DisplayPriority { get }
+    public static var fallback: DeviceKit.DisplayViewFramebufferProvider.DisplayPriority { get }
+    public static var acceptable: DeviceKit.DisplayViewFramebufferProvider.DisplayPriority { get }
+    public static var standard: DeviceKit.DisplayViewFramebufferProvider.DisplayPriority { get }
+    public static var optimal: DeviceKit.DisplayViewFramebufferProvider.DisplayPriority { get }
+  }
+  public struct HIDPriority {
+    public var rawValue: Swift.Int { get }
+    public static var notProvided: DeviceKit.DisplayViewFramebufferProvider.HIDPriority { get }
+    public static var notAllowed: DeviceKit.DisplayViewFramebufferProvider.HIDPriority { get }
+    public static var acceptable: DeviceKit.DisplayViewFramebufferProvider.HIDPriority { get }
+    public static var optimal: DeviceKit.DisplayViewFramebufferProvider.HIDPriority { get }
+  }
+  public protocol Instance : AnyObject, DeviceKit.ProviderProtocol, Observation.Observable {
+    var state: DeviceKit.DisplayViewFramebufferProvider.State { get }
+    func connect() async throws
+    func disconnect() async
+    func view() -> (any SwiftUI.View)?
+    func displayView() -> (any SwiftUI.View)?
+    func canProvideView() async -> Swift.Bool
+    func displayPriority() async -> DeviceKit.DisplayViewFramebufferProvider.DisplayPriority
+    var hidPriority: DeviceKit.DisplayViewFramebufferProvider.HIDPriority { get }
+  }
+  public protocol Creator : DeviceKit.ProviderProtocol {
+    func createDisplayViewFramebufferProvider(forDeviceIdentifier: Foundation.UUID, display: DeviceKit.DisplayIdentifier) -> (any DeviceKit.DisplayViewFramebufferProvider.Instance)?
+  }
+}
+extension DeviceKit.DisplayViewFramebufferProvider.Instance {
+  public func view() -> (any SwiftUI.View)?
+  public func displayView() -> (any SwiftUI.View)?
+  public var hidPriority: DeviceKit.DisplayViewFramebufferProvider.HIDPriority { get }
+}
+public protocol DeviceKitPlugin {
+  init(context: DeviceKit.DeviceKitContext) async
+  var deviceInfoProviders: [any DeviceKit.DeviceInfoProvider] { get }
+  var inspectorProviders: [any DeviceKit.InspectorProvider] { get }
+  var inspectorBannerProviders: [any DeviceKit.InspectorBannerProvider] { get }
+  var inspectorSectionProviders: [any DeviceKit.InspectorSectionProvider] { get }
+  var inspectorRowProviders: [any DeviceKit.InspectorRowProvider] { get }
+  var menuBarExtraSectionProviders: [any DeviceKit.MenuBarExtraSectionProvider] { get }
+  var menuSectionProviders: [any DeviceKit.MenuSectionProvider] { get }
+  var menuItemProviders: [any DeviceKit.MenuItemProvider] { get }
+  var newDeviceProviders: [any DeviceKit.NewDeviceProvider] { get }
+  var newDeviceMenuProviders: [any DeviceKit.NewDeviceMenuProvider] { get }
+  var simpleActionProviders: [any DeviceKit.SimpleActionProvider] { get }
+  var urlActionProviders: [any DeviceKit.URLActionProvider] { get }
+  var settingsCategoryProviders: [any DeviceKit.SettingsCategoryProvider] { get }
+  var settingsSectionProviders: [any DeviceKit.SettingsSectionProvider] { get }
+  var displayViewFramebufferProviderCreators: [any DeviceKit.DisplayViewFramebufferProvider.Creator] { get }
+  var actionBarControlProviders: [any DeviceKit.ActionBarControlProvider] { get }
+  var actionBarGroupProviders: [any DeviceKit.ActionBarGroupProvider] { get }
+  var bannerProviders: [any DeviceKit.BannerProvider] { get }
+  var deviceViewContentProviders: [any DeviceKit.DeviceViewContentProvider] { get }
+  var companionDeviceCreationProviders: [any DeviceKit.CompanionDeviceCreationProvider] { get }
+}
+extension DeviceKit.DeviceKitPlugin {
+  public var deviceInfoProviders: [any DeviceKit.DeviceInfoProvider] { get }
+  public var inspectorProviders: [any DeviceKit.InspectorProvider] { get }
+  public var inspectorBannerProviders: [any DeviceKit.InspectorBannerProvider] { get }
+  public var inspectorSectionProviders: [any DeviceKit.InspectorSectionProvider] { get }
+  public var inspectorRowProviders: [any DeviceKit.InspectorRowProvider] { get }
+  public var menuBarExtraSectionProviders: [any DeviceKit.MenuBarExtraSectionProvider] { get }
+  public var menuSectionProviders: [any DeviceKit.MenuSectionProvider] { get }
+  public var menuItemProviders: [any DeviceKit.MenuItemProvider] { get }
+  public var newDeviceProviders: [any DeviceKit.NewDeviceProvider] { get }
+  public var newDeviceMenuProviders: [any DeviceKit.NewDeviceMenuProvider] { get }
+  public var simpleActionProviders: [any DeviceKit.SimpleActionProvider] { get }
+  public var urlActionProviders: [any DeviceKit.URLActionProvider] { get }
+  public var settingsCategoryProviders: [any DeviceKit.SettingsCategoryProvider] { get }
+  public var settingsSectionProviders: [any DeviceKit.SettingsSectionProvider] { get }
+  public var displayViewFramebufferProviderCreators: [any DeviceKit.DisplayViewFramebufferProvider.Creator] { get }
+  public var actionBarControlProviders: [any DeviceKit.ActionBarControlProvider] { get }
+  public var actionBarGroupProviders: [any DeviceKit.ActionBarGroupProvider] { get }
+  public var bannerProviders: [any DeviceKit.BannerProvider] { get }
+  public var deviceViewContentProviders: [any DeviceKit.DeviceViewContentProvider] { get }
+  public var companionDeviceCreationProviders: [any DeviceKit.CompanionDeviceCreationProvider] { get }
+}
