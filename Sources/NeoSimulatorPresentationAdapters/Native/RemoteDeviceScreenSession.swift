@@ -57,6 +57,8 @@ package final class RemoteDeviceScreenSession {
     private let readDisplay: @MainActor (CoreDeviceDevice) async throws -> RemoteDeviceDisplay?
     private let frame = RemoteDeviceFrameView()
     private var framePreparation: Task<Void, Never>?
+    /// The device shows another display than the one the frame was made for.
+    private var frameIsOutdated = false
     private var transport: (any RemoteScreenTransport)?
     private var starting: Task<Void, any Error>?
     private var stopping: Task<Void, any Error>?
@@ -382,18 +384,20 @@ package final class RemoteDeviceScreenSession {
 
     /// Shows the device's frame from its display description, whether or not its screen connects.
     private func prepareFrame() {
-        guard frame.chrome == nil, framePreparation == nil else { return }
+        guard frame.chrome == nil || frameIsOutdated, framePreparation == nil else { return }
+        frameIsOutdated = false
         let startedConnected = state == .connected
         framePreparation = Task { [weak self, device, readDisplay] in
             defer {
                 if let self {
                     self.framePreparation = nil
-                    // An early metadata read can finish after the screen has established the device connection.
-                    if !startedConnected, self.state == .connected { self.prepareFrame() }
+                    // An early metadata read can finish after the screen has established the device connection,
+                    // and the device can change its display during a read.
+                    if !startedConnected && self.state == .connected || self.frameIsOutdated { self.prepareFrame() }
                 }
             }
             do {
-                guard let display = try await readDisplay(device),
+                guard let display = try await readDisplay(device), display != self?.frame.display,
                       let resources = try RemoteDeviceChromeResources(display: display, productType: device.modelIdentifier) else { return }
                 let chrome = try await NativeDeviceChrome(resources: resources)
                 try Task.checkCancellation()
@@ -444,6 +448,9 @@ package final class RemoteDeviceScreenSession {
             finishFrameWait(.failure(RemoteScreenError.unavailable("remote-display-ended", "The display connection ended.")))
             if resizeSession != nil, !isChangingDisplay { returnFromInvalidatedDisplay() }
         case .inputGeometryChanged: break
+        case .displayChanged:
+            frameIsOutdated = true
+            prepareFrame()
         case .displayAngle(let angle): frame.setAngle(angle, animated: state == .connected)
         case .inputCapabilitiesLost(let kinds): onInputCapabilitiesLost?(kinds)
         }
@@ -754,6 +761,8 @@ package enum RemoteScreenInput {
 package enum RemoteScreenTransportEvent {
     case connected, disconnected, frameReceived
     case inputGeometryChanged
+    /// The device shows another of its displays, such as a folding device that was opened or closed.
+    case displayChanged
     /// The display's quarter-turn orientation, which also turns the device's frame.
     case displayAngle(CGFloat)
     case inputCapabilitiesLost(Set<RemoteDeviceInputKind>)

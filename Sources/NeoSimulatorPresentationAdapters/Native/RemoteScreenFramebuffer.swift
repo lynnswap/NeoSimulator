@@ -17,6 +17,8 @@ package final class RemoteScreenFramebuffer: NSView {
         package let size: CGSize
         package let angle: CGFloat
         package var identifier: UInt32? = nil
+        /// The display's pixels as DeviceKit sizes them, which place it in a video frame.
+        package var pixelSize: CGSize? = nil
     }
 
     private let plane = CALayer()

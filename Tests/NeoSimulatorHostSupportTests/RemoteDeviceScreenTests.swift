@@ -775,6 +775,45 @@ struct RemoteDeviceScreenTests {
         try await copying.stop()
     }
 
+    @Test func aFoldingDevicesActiveDisplayIsShownInsteadOfItsPrimaryDisplay() {
+        typealias State = CoreDeviceDisplayGeometry.DisplayState
+        let cover = State(isActive: false, isExternal: false, isPrimary: true)
+        let inner = State(isActive: true, isExternal: false, isPrimary: false)
+        // CoreDevice also lists the display that its screen stream draws into.
+        let stream = State(isActive: false, isExternal: false, isPrimary: false)
+        #expect(State.shownIndex(among: [cover, inner, stream]) == 1)
+        #expect(State.shownIndex(among: [cover, stream]) == 0)
+        let monitor = State(isActive: true, isExternal: true, isPrimary: false)
+        #expect(State.shownIndex(among: [State(isActive: nil, isExternal: false, isPrimary: true), monitor]) == 0)
+        #expect(State.shownIndex(among: [stream]) == nil)
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: RemoteDeviceChromeResources.deviceKitDirectory.appendingPathComponent("chrome_map.plist").path),
+                   "Requires DeviceKit's installed device chrome"))
+    func theDeviceFrameFollowsTheDisplayThatAFoldingDeviceShows() async throws {
+        try await CoreDeviceDisplayGeometry.loadRuntime()
+        // An iPhone Duo's cover and inner displays, as DeviceKit sizes and identifies them.
+        let cover = RemoteDeviceDisplay(pixelSize: CGSize(width: 1398, height: 2034), scale: 3,
+            chromeIdentifier: "com.apple.dt.devicekit.chrome.phone15", maskIdentifier: "1C896A2B-F0D7-405C-8D0F-66E4B80AD044")
+        let inner = RemoteDeviceDisplay(pixelSize: CGSize(width: 2007, height: 2853), scale: 3,
+            chromeIdentifier: "com.apple.dt.devicekit.chrome.phone14", maskIdentifier: "BF0DC480-5EE2-4EC1-B02B-C75E94759832")
+        var shown = cover
+        let transport = ScreenFixtureTransport()
+        let session = RemoteDeviceScreenSession(device: try device(), readDisplay: { _ in shown }) { _, _, _ in transport }
+        let frame = try #require(session.contentView as? RemoteDeviceFrameView)
+        frame.frame = CGRect(x: 0, y: 0, width: 600, height: 800)
+        try await session.start()
+        await wait(session) { frame.display == cover }
+        let closed = try #require(frame.chrome)
+        // A report that names the display the frame already shows keeps its chrome.
+        transport.emit(.displayChanged)
+        shown = inner
+        transport.emit(.displayChanged)
+        await wait(session) { frame.display == inner }
+        #expect(frame.chrome !== closed && closed.view.superview == nil)
+        try await session.stop()
+    }
+
     @Test func primaryDisplayFramesExcludeEncodingPaddingBeforeAndAfterRotation() async throws {
         let gpu = try #require(MTLCreateSystemDefaultDevice())
         let layer = CAMetalLayer()
@@ -783,10 +822,13 @@ struct RemoteDeviceScreenTests {
         layer.framebufferOnly = false
         let stream = try RemoteScreenCaptureStream(target: .init(layer: layer), device: gpu)
         var events = stream.events.makeAsyncIterator()
-        let display = CGSize(width: 3, height: 5)
-        for encoded in [CGSize(width: 4, height: 8), CGSize(width: 8, height: 4)] {
-            let visible =
-                encoded.width < encoded.height ? display : CGSize(width: display.height, height: display.width)
+        let cases: [(display: CGSize, encoded: CGSize, visible: CGSize)] = [
+            (CGSize(width: 3, height: 5), CGSize(width: 4, height: 8), CGSize(width: 3, height: 5)),
+            (CGSize(width: 3, height: 5), CGSize(width: 8, height: 4), CGSize(width: 5, height: 3)),
+            // A folding device's inner display arrives scaled down to the raster of its smaller primary display.
+            (CGSize(width: 6, height: 10), CGSize(width: 4, height: 8), CGSize(width: 4, height: 7)),
+        ]
+        for (display, encoded, visible) in cases {
             let buffer = try capturedFrame(
                 width: Int(encoded.width), height: Int(encoded.height), bgra: [],
                 bgraAt: { x, y in [UInt8(x), UInt8(y), 80, 255] })
@@ -1487,9 +1529,9 @@ struct RemoteDeviceScreenTests {
             as: ((CGSize, CGFloat) -> NativeSwiftValue).self, valueABIs: bindings.abis)))
         let size = try unsafe makeSize.unsafeInvoke(CGSize(width: 300, height: 600), 2)
         #expect(try unsafe bindings.pointSize.unsafeInvoke(on: size) == CGSize(width: 150, height: 300))
-        // The device frame reads the same size in DeviceKit's pixel and scale terms.
+        // The device frame and the video's display region read the same size in DeviceKit's pixel and scale terms.
+        #expect(try unsafe bindings.pixelSize.unsafeInvoke(on: size) == CGSize(width: 300, height: 600))
         let frame = try await CoreDeviceDisplayGeometry.FrameBindings(runtime: runtime, abis: bindings.abis)
-        #expect(try unsafe frame.pixelSize.unsafeInvoke(on: size) == CGSize(width: 300, height: 600))
         #expect(try unsafe frame.scale.unsafeInvoke(on: size) == 2)
     }
 

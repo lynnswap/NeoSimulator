@@ -40,6 +40,12 @@ final class CoreDeviceNetworkVideo {
         try Task.checkCancellation()
     }
 
+    /// Follows the display that the device shows, whose size places it in each frame.
+    func update(displaySize: CGSize) {
+        guard let receiver else { return }
+        Task { await receiver.update(displaySize: displaySize) }
+    }
+
     func stop() async { await receiver?.stop(); receiver = nil }
 }
 
@@ -137,7 +143,7 @@ private actor RemoteScreenMediaReceiver {
     private let descriptor: Int32
     private let localSSRC: UInt32
     private let renderer: RemoteScreenCaptureStream
-    private let displaySize: CGSize
+    private var displaySize: CGSize
     private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
@@ -161,6 +167,8 @@ private actor RemoteScreenMediaReceiver {
         self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
+
+    func update(displaySize: CGSize) { self.displaySize = displaySize }
 
     func start() {
         var size: Int32 = 4 * 1_024 * 1_024

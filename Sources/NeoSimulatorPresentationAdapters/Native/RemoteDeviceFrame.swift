@@ -212,7 +212,8 @@ package final class RemoteDeviceFrameView: NSView {
     /// A resized app's dedicated display has no device around it.
     package var showsChrome = true { didSet { if showsChrome != oldValue { needsLayout = true } } }
     package private(set) var chrome: NativeDeviceChrome?
-    private var display: RemoteDeviceDisplay?
+    /// The display that `chrome` surrounds.
+    package private(set) var display: RemoteDeviceDisplay?
     private let maskLayer = CALayer()
     private let presentation = DisplayPresentationView(frame: .zero)
     private let deviceView = NSView()

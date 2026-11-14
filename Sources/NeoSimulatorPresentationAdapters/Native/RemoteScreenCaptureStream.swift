@@ -82,11 +82,16 @@ actor RemoteScreenCaptureStream {
             let encoded = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
             let visible =
                 displaySize.map {
-                    (encoded.width > encoded.height) == ($0.width > $0.height)
+                    let display =
+                        (encoded.width > encoded.height) == ($0.width > $0.height)
                         ? $0 : CGSize(width: $0.height, height: $0.width)
+                    // CoreDevice's primary stream draws the display at the top left of a raster sized for the
+                    // primary display; its encoded raster includes right/bottom padding, as does Device Hub's
+                    // video layer. A display larger than that raster, such as a folding device's inner display,
+                    // arrives scaled down to fit it.
+                    let scale = min(1, encoded.width / display.width, encoded.height / display.height)
+                    return CGSize(width: (display.width * scale).rounded(), height: (display.height * scale).rounded())
                 } ?? encoded
-            // CoreDevice's primary stream retains native display pixels at the top left;
-            // its encoded raster includes right/bottom padding, as does Device Hub's video layer.
             sourceRect = CGRect(origin: .zero, size: visible)
         }
     }
