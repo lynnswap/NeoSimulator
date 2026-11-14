@@ -80,20 +80,37 @@ actor RemoteScreenCaptureStream {
         init(buffer: CVPixelBuffer, displaySize: CGSize?) {
             self.buffer = buffer
             let encoded = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
-            let visible =
-                displaySize.map {
-                    let display =
-                        (encoded.width > encoded.height) == ($0.width > $0.height)
-                        ? $0 : CGSize(width: $0.height, height: $0.width)
-                    // CoreDevice's primary stream draws the display at the top left of a raster sized for the
-                    // primary display; its encoded raster includes right/bottom padding, as does Device Hub's
-                    // video layer. A display larger than that raster, such as a folding device's inner display,
-                    // arrives scaled down to fit it.
-                    let scale = min(1, encoded.width / display.width, encoded.height / display.height)
-                    return CGSize(width: (display.width * scale).rounded(), height: (display.height * scale).rounded())
-                } ?? encoded
+            let visible = displaySize.map { RemoteScreenCaptureStream.visibleSize(of: $0, in: encoded) } ?? encoded
             sourceRect = CGRect(origin: .zero, size: visible)
         }
+    }
+
+    /// The part of an encoded frame, from its top left, that shows a display of the given pixel size.
+    package nonisolated static func visibleSize(of displaySize: CGSize, in encoded: CGSize) -> CGSize {
+        let display =
+            (encoded.width > encoded.height) == (displaySize.width > displaySize.height)
+            ? displaySize : CGSize(width: displaySize.height, height: displaySize.width)
+        // CoreDevice's primary stream draws the display at the top left of a raster sized for the
+        // primary display; its encoded raster includes right/bottom padding, as does Device Hub's
+        // video layer. A display larger than that raster, such as a folding device's inner display,
+        // arrives scaled down to fit it.
+        let scale = min(1, encoded.width / display.width, encoded.height / display.height)
+        return CGSize(width: (display.width * scale).rounded(), height: (display.height * scale).rounded())
+    }
+
+    /// The display whose pixels an encoded frame carries, among a device's built-in displays: the one whose
+    /// visible part, padded to the encoder's 16-pixel blocks, fills the frame. A folding device's video changes
+    /// between its displays before the device reports which one is active, and its frames' sizes show the change.
+    /// The result is nil when no display fills the frame or when more than one does.
+    package nonisolated static func carriedDisplay(
+        in encoded: CGSize, among displays: [RemoteScreenBuiltInDisplay]
+    ) -> RemoteScreenBuiltInDisplay? {
+        let filling = displays.filter {
+            let visible = visibleSize(of: $0.pixelSize, in: encoded)
+            return (visible.width / 16).rounded(.up) * 16 == encoded.width
+                && (visible.height / 16).rounded(.up) * 16 == encoded.height
+        }
+        return filling.count == 1 ? filling[0] : nil
     }
     private nonisolated let decodedFrames = Mutex(DecodedFrames())
     private var starting: CheckedContinuation<Void, any Error>?

@@ -777,15 +777,34 @@ struct RemoteDeviceScreenTests {
 
     @Test func aFoldingDevicesActiveDisplayIsShownInsteadOfItsPrimaryDisplay() {
         typealias State = CoreDeviceDisplayGeometry.DisplayState
-        let cover = State(isActive: false, isExternal: false, isPrimary: true)
-        let inner = State(isActive: true, isExternal: false, isPrimary: false)
+        let cover = State(identifier: 1, isBuiltIn: true, isActive: false, isExternal: false, isPrimary: true)
+        let inner = State(identifier: 2, isBuiltIn: true, isActive: true, isExternal: false, isPrimary: false)
         // CoreDevice also lists the display that its screen stream draws into.
-        let stream = State(isActive: false, isExternal: false, isPrimary: false)
+        let stream = State(identifier: 4, isBuiltIn: false, isActive: false, isExternal: false, isPrimary: false)
         #expect(State.shownIndex(among: [cover, inner, stream]) == 1)
         #expect(State.shownIndex(among: [cover, stream]) == 0)
-        let monitor = State(isActive: true, isExternal: true, isPrimary: false)
-        #expect(State.shownIndex(among: [State(isActive: nil, isExternal: false, isPrimary: true), monitor]) == 0)
+        let monitor = State(identifier: 3, isBuiltIn: false, isActive: true, isExternal: true, isPrimary: false)
+        let only = State(identifier: 1, isBuiltIn: true, isActive: nil, isExternal: false, isPrimary: true)
+        #expect(State.shownIndex(among: [only, monitor]) == 0)
         #expect(State.shownIndex(among: [stream]) == nil)
+
+        // The device's video changes to its cover display while the device still reports the inner one as active.
+        #expect(State.shownIndex(among: [cover, inner, stream], carrying: 1) == 0)
+        #expect(State.shownIndex(among: [cover, inner, stream], carrying: 4) == 1)
+        // An iPhone Duo's video carries its cover display unscaled, and its inner display scaled to the width of
+        // the cover display's raster. Each arrives padded to the encoder's blocks.
+        let panels = [
+            RemoteScreenBuiltInDisplay(identifier: 1, pixelSize: CGSize(width: 1398, height: 2034)),
+            RemoteScreenBuiltInDisplay(identifier: 2, pixelSize: CGSize(width: 2007, height: 2853)),
+        ]
+        let carried = { RemoteScreenCaptureStream.carriedDisplay(in: $0, among: panels)?.identifier }
+        #expect(carried(CGSize(width: 1408, height: 2048)) == 1)
+        #expect(carried(CGSize(width: 1408, height: 2016)) == 2)
+        #expect(carried(CGSize(width: 2016, height: 1408)) == 2)
+        #expect(carried(CGSize(width: 1280, height: 720)) == nil)
+        // Two displays of one size fill the same frame.
+        #expect(RemoteScreenCaptureStream.carriedDisplay(
+            in: CGSize(width: 1408, height: 2048), among: [panels[0], panels[0]]) == nil)
     }
 
     @Test(.enabled(if: FileManager.default.fileExists(atPath: RemoteDeviceChromeResources.deviceKitDirectory.appendingPathComponent("chrome_map.plist").path),

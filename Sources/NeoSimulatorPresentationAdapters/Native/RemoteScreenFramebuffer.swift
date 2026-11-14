@@ -10,6 +10,17 @@ package struct RemoteDeviceInputLocations: Equatable, Sendable {
     package let pointerTransform: CGAffineTransform
 }
 
+/// One of a device's own panels, whose pixels the device's video can carry.
+package struct RemoteScreenBuiltInDisplay: Equatable, Sendable {
+    package let identifier: UInt32
+    package let pixelSize: CGSize
+
+    package init(identifier: UInt32, pixelSize: CGSize) {
+        self.identifier = identifier
+        self.pixelSize = pixelSize
+    }
+}
+
 /// The video and HID surface share this coordinate tree. The video crop does not change the HID ROI.
 @MainActor
 package final class RemoteScreenFramebuffer: NSView {
@@ -21,6 +32,9 @@ package final class RemoteScreenFramebuffer: NSView {
         package var isPrimary = true
         /// What the device's frame needs of this display. Its pixels also place the display in a video frame.
         package var frame: RemoteDeviceDisplay? = nil
+        /// The device's built-in displays when it has several, as a folding device does. Its video carries one
+        /// of them at a time.
+        package var builtIn: [RemoteScreenBuiltInDisplay] = []
     }
 
     private let plane = CALayer()

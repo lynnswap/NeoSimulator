@@ -17,6 +17,7 @@ package final class CoreDeviceDisplayGeometry {
         let primary: NativeSwiftMethod<() -> Bool>
         let active: NativeSwiftMethod<() -> Bool?>
         let external: NativeSwiftMethod<() -> Bool>
+        let type: NativeSwiftMethod<() -> NativeSwiftValue>
         let uniqueID: NativeSwiftMethod<() -> String?>
         let identifier: NativeSwiftMethod<() -> UInt32>
         let makeDisplay: NativeSwiftFunction<(NativeSwiftValue, NativeSwiftValue?) -> NativeSwiftValue>
@@ -31,6 +32,7 @@ package final class CoreDeviceDisplayGeometry {
             let info = try await runtime.resolve(.swift(.type("CoreDeviceProtocols.DeviceInfo")))
             let displayInfo = try await runtime.resolve(.swift(.type("CoreDevice.DisplayInfo")))
             let display = try await runtime.resolve(.swift(.type("CoreDevice.Display")))
+            let displayType = try await runtime.resolve(.swift(.type("CoreDevice.Display.DisplayType")))
             let orientationInfo = try await runtime.resolve(.swift(.type("CoreDevice.OrientationInfo")))
             let normalized = try await runtime.resolve(.swift(.type("DeviceKit.DisplayInfo")))
             let size = try await runtime.resolve(.swift(.type("DeviceKit.DisplaySize")))
@@ -39,7 +41,8 @@ package final class CoreDeviceDisplayGeometry {
             // their exported getters and initializer use indirect storage across the framework boundary.
             // Metadata shows this for each receiver except DisplaySize, whose CGSize field alone can explain
             // its addressable-for-dependencies bit.
-            let abis = try Dictionary(uniqueKeysWithValues: [displayInfo, display, orientationInfo, normalized, size, angle]
+            let abis = try Dictionary(
+                uniqueKeysWithValues: [displayInfo, display, displayType, orientationInfo, normalized, size, angle]
                 .map { ($0, try NativeType.opaque(named: $0.name)) })
             self.abis = abis
             readInitialDisplayInfo = try await device.resolve(.swift(.getter("displayInfo",
@@ -50,6 +53,7 @@ package final class CoreDeviceDisplayGeometry {
             primary = try await display.resolve(.swift(.getter("primary", as: (() -> Bool).self, valueABIs: abis)))
             active = try await display.resolve(.swift(.getter("active", as: (() -> Bool?).self, valueABIs: abis)))
             external = try await display.resolve(.swift(.getter("external", as: (() -> Bool).self, valueABIs: abis)))
+            type = try await display.resolve(.swift(.getter("type", as: (() -> NativeSwiftValue).self, valueABIs: abis)))
             uniqueID = try await display.resolve(.swift(.getter("uniqueId", as: (() -> String?).self, valueABIs: abis)))
             identifier = try await display.resolve(.swift(.getter("displayId", as: (() -> UInt32).self, valueABIs: abis)))
             makeDisplay = try await normalized.resolve(.swift(.initializer("init(display:orientation:)",
@@ -65,33 +69,49 @@ package final class CoreDeviceDisplayGeometry {
 
         /// The display that shows the device's screen, among those CoreDevice reports.
         func shownDisplay(among displays: [NativeSwiftValue]) throws -> NativeSwiftValue? {
-            let states = try displays.map {
+            DisplayState.shownIndex(among: try states(of: displays)).map { displays[$0] }
+        }
+
+        /// What decides whether each of the displays that CoreDevice reports shows the device's screen.
+        func states(of displays: [NativeSwiftValue]) throws -> [DisplayState] {
+            try displays.map {
                 DisplayState(
+                    identifier: try unsafe identifier.unsafeInvoke(on: $0),
+                    // CoreDevice's display type has no raw value; its case is its description.
+                    isBuiltIn: try unsafe type.unsafeInvoke(on: $0).withCopy { "\($0)" == "integrated" },
                     isActive: try unsafe active.unsafeInvoke(on: $0),
                     isExternal: try unsafe external.unsafeInvoke(on: $0),
                     isPrimary: try unsafe primary.unsafeInvoke(on: $0))
             }
-            return DisplayState.shownIndex(among: states).map { displays[$0] }
         }
     }
 
     /// What decides whether a display shows the device's screen.
     package struct DisplayState {
+        package let identifier: UInt32
+        /// Whether the display is one of the device's own panels.
+        package let isBuiltIn: Bool
         package let isActive: Bool?
         package let isExternal: Bool
         package let isPrimary: Bool
 
-        package init(isActive: Bool?, isExternal: Bool, isPrimary: Bool) {
+        package init(identifier: UInt32, isBuiltIn: Bool, isActive: Bool?, isExternal: Bool, isPrimary: Bool) {
+            self.identifier = identifier
+            self.isBuiltIn = isBuiltIn
             self.isActive = isActive
             self.isExternal = isExternal
             self.isPrimary = isPrimary
         }
 
-        /// The display that shows the device's screen: its active built-in display, or its primary display
-        /// when none reports that it is active. A folding device keeps its cover display primary while its
-        /// inner display is the active one.
-        package static func shownIndex(among displays: [DisplayState]) -> Int? {
-            displays.firstIndex { $0.isActive == true && !$0.isExternal } ?? displays.firstIndex(where: \.isPrimary)
+        /// The display that shows the device's screen: the built-in display that its video carries, while the
+        /// video shows which one. Otherwise it is the active built-in display, or the primary display when
+        /// none reports that it is active. A folding device keeps its cover display primary while its inner
+        /// display is the active one, and its video changes display before the active one does.
+        package static func shownIndex(among displays: [DisplayState], carrying video: UInt32? = nil) -> Int? {
+            if let video, let index = displays.firstIndex(where: { $0.isBuiltIn && $0.identifier == video }) {
+                return index
+            }
+            return displays.firstIndex { $0.isActive == true && !$0.isExternal } ?? displays.firstIndex(where: \.isPrimary)
         }
     }
 
@@ -103,6 +123,11 @@ package final class CoreDeviceDisplayGeometry {
     private var update: (@MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void)?
     private var generation = 0
     private var observation: Task<Void, Never>?
+    /// The built-in display whose pixels the device's video carries, while the video shows which one. The
+    /// screen shows this display, ahead of the one that the device reports as active.
+    package var videoDisplay: UInt32? {
+        didSet { if videoDisplay != oldValue { reportDisplay() } }
+    }
 
     isolated deinit { observation?.cancel() }
 
@@ -145,8 +170,22 @@ package final class CoreDeviceDisplayGeometry {
     package func stop() {
         generation += 1
         update = nil
+        videoDisplay = nil
         observation?.cancel()
         observation = nil
+    }
+
+    /// Reports the display again, for a change that no device-info change announces.
+    private func reportDisplay() {
+        guard let update else { return }
+        do {
+            let info = try unsafe bindings.readDeviceInfo.unsafeInvoke(on: remote.object)
+            // Without display info the observer's last report stands, and it reports again when the info arrives.
+            guard let displayInfo = try unsafe bindings.readDisplayInfo.unsafeInvoke(on: info) else { return }
+            update(.success(try project(displayInfo)))
+        } catch {
+            update(.failure(error))
+        }
     }
 
     private func readAndObserve(generation token: Int, initial: RemoteScreenFramebuffer.Display? = nil) throws {
@@ -219,12 +258,24 @@ package final class CoreDeviceDisplayGeometry {
 
     private func project(_ displayInfo: NativeSwiftValue) throws -> RemoteScreenFramebuffer.Display? {
         let candidates = try unsafe bindings.displays.unsafeInvoke(on: displayInfo)
-        let found =
-            if let displayUniqueID {
-                try candidates.first(where: { try unsafe bindings.uniqueID.unsafeInvoke(on: $0) == displayUniqueID })
-            } else {
-                try bindings.shownDisplay(among: candidates)
+        var builtIn: [RemoteScreenBuiltInDisplay] = []
+        let found: NativeSwiftValue?
+        if let displayUniqueID {
+            found = try candidates.first(where: { try unsafe bindings.uniqueID.unsafeInvoke(on: $0) == displayUniqueID })
+        } else {
+            let states = try bindings.states(of: candidates)
+            found = DisplayState.shownIndex(among: states, carrying: videoDisplay).map { candidates[$0] }
+            let panels = states.indices.filter { states[$0].isBuiltIn }
+            if panels.count > 1 {
+                builtIn = try panels.map {
+                    // DeviceKit's initializer consumes a display, and the shown one is read below.
+                    let size = try unsafe bindings.displaySize.unsafeInvoke(
+                        on: bindings.makeDisplay.unsafeInvoke(candidates[$0].copy(), nil))
+                    return RemoteScreenBuiltInDisplay(
+                        identifier: states[$0].identifier, pixelSize: try unsafe bindings.pixelSize.unsafeInvoke(on: size))
+                }
             }
+        }
         guard let display = found else { return nil }
         // DeviceKit's initializer consumes the CoreDevice display, so its identifiers are read first.
         let identifier = try unsafe bindings.identifier.unsafeInvoke(on: display)
@@ -241,7 +292,8 @@ package final class CoreDeviceDisplayGeometry {
         return RemoteScreenFramebuffer.Display(size: size, angle: angle, identifier: identifier, isPrimary: isPrimary,
             frame: pixels.width > 0 && pixels.height > 0 && scale > 0
                 ? RemoteDeviceDisplay(pixelSize: pixels, scale: scale, chromeIdentifier: chrome, maskIdentifier: mask)
-                : nil)
+                : nil,
+            builtIn: builtIn)
     }
 }
 
