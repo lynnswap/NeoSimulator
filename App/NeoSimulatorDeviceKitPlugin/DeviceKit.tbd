@@ -1,0 +1,34 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos, arm64e-macos ]
+install-name: '@rpath/DeviceKit.framework/Versions/A/DeviceKit'
+exports:
+  - targets: [ arm64-macos, arm64e-macos ]
+    symbols:
+      - '_$s9DeviceKit0aB6PluginMp'
+      - '_$s9DeviceKit0aB6PluginP38displayViewFramebufferProviderCreatorsSayAA07DisplayefG0O7Creator_pGvgTq'
+      - '_$s9DeviceKit0aB6PluginP7contextxAA0aB7ContextV_tYacfCTq'
+      - '_$s9DeviceKit0aB7ContextVMa'
+      - '_$s9DeviceKit16ProviderProtocolMp'
+      - '_$s9DeviceKit16ProviderProtocolP10identifierSSvgTq'
+      - '_$s9DeviceKit17DisplayIdentifierO9displayIDyACs6UInt32VcACmFWC'
+      - '_$s9DeviceKit17DisplayIdentifierOMa'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO0C8PriorityV7optimalAEvgZ'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO5StateO6activeyA2EmFWC'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO5StateO8inactiveyA2EmFWC'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO5StateOMa'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO5StateOMn'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO7CreatorMp'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO7CreatorP06createcdeF003forA10Identifier7displayAC8Instance_pSg10Foundation4UUIDV_AA0cJ0OtFTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO7CreatorPAA0F8ProtocolTb'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceMp'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP010canProvideD0SbyYaFTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP07displayD07SwiftUI0D0_pSgyFTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP10disconnectyyYaFTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP11Observation10ObservableTb'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP15displayPriorityAC0cI0VyYaFTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP4view7SwiftUI0D0_pSgyFTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP5stateAC5StateOvgTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstanceP7connectyyYaKFTq'
+      - '_$s9DeviceKit30DisplayViewFramebufferProviderO8InstancePAA0F8ProtocolTb'
+...

@@ -1,0 +1,53 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 6.0
+// swift-module-flags: -target arm64-apple-macos26.0 -enable-library-evolution -swift-version 5 -module-name DeviceKit
+// DeviceKit ships no module interface. These are the declarations that NeoSimulator's DeviceKit plugin uses, rebuilt
+// from the symbols that DeviceKit exports; `DeviceKit.tbd` lists the ones the plugin links against.
+//
+// The protocols are resilient: a conformance names its requirements by their descriptors, and DeviceKit supplies its
+// default witness for a requirement that the conformance does not name. Each protocol here declares only the
+// requirements that the plugin implements. The others have a default witness in DeviceKit's protocol descriptors
+// from Xcode 27.0 to 27.3, and the set of `DeviceKitPlugin`'s provider lists differs between those versions.
+// `Instance` is class-bound in its protocol descriptor.
+import Foundation
+import Observation
+import Swift
+import SwiftUI
+
+public struct DeviceKitContext {
+}
+public enum DisplayIdentifier {
+  case `default`
+  case displayID(Swift.UInt32)
+  case uniqueID(Swift.String)
+}
+public protocol ProviderProtocol {
+  var identifier: Swift.String { get }
+}
+public enum DisplayViewFramebufferProvider {
+  public enum State {
+    case inactive
+    case activating
+    case active
+    case error(any Swift.Error)
+  }
+  public struct DisplayPriority {
+    public static var optimal: DeviceKit.DisplayViewFramebufferProvider.DisplayPriority { get }
+  }
+  public protocol Instance : AnyObject, DeviceKit.ProviderProtocol, Observation.Observable {
+    var state: DeviceKit.DisplayViewFramebufferProvider.State { get }
+    func connect() async throws
+    func disconnect() async
+    func view() -> (any SwiftUI.View)?
+    func displayView() -> (any SwiftUI.View)?
+    func canProvideView() async -> Swift.Bool
+    func displayPriority() async -> DeviceKit.DisplayViewFramebufferProvider.DisplayPriority
+  }
+  public protocol Creator : DeviceKit.ProviderProtocol {
+    func createDisplayViewFramebufferProvider(forDeviceIdentifier: Foundation.UUID, display: DeviceKit.DisplayIdentifier) -> (any DeviceKit.DisplayViewFramebufferProvider.Instance)?
+  }
+}
+public protocol DeviceKitPlugin {
+  init(context: DeviceKit.DeviceKitContext) async
+  var displayViewFramebufferProviderCreators: [any DeviceKit.DisplayViewFramebufferProvider.Creator] { get }
+}

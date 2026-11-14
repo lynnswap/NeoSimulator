@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-release.sh --version <tag> [--build-number <positive-integer>] [--dist-root <dir>] [--signing-identity <identity>]
 
-Builds the arm64 NeoSimulator.app, including its renderer and guest settings helper.
+Builds the arm64 NeoSimulator.app, including its renderer, DeviceKit plugin, and guest settings helper.
 Signing defaults to ad hoc (-). Use --signing-identity or CODE_SIGN_IDENTITY
 to sign the app and its nested code with a certificate name or SHA-1 hash.
 Public Developer ID signing and notarization run separately in release.yml.
@@ -72,6 +72,7 @@ xcodebuild \
 app="$staging/NeoSimulator.app"
 ditto "$derived_data/Build/Products/Release/NeoSimulator.app" "$app"
 renderer="$app/Contents/Applications/NeoSimulatorRenderer.app"
+plugin="$app/Contents/PlugIns/NeoSimulatorDeviceKitPlugin.devicekitplugin"
 helper="$app/Contents/Resources/NeoSimulatorGuestSettings"
 if [[ "$(lipo -archs "$helper")" != arm64 ]]; then
   echo "Expected an arm64 guest settings helper." >&2
@@ -96,7 +97,7 @@ if [[ "$signing_identity" != - ]]; then timestamp_option="--timestamp"; fi
 codesign --force --options runtime --identifier NeoSimulatorGuestSettings \
   --entitlements "$repo_root/App/NeoSimulatorGuestSettings/GuestSettings.entitlements" \
   --sign - --timestamp=none "$helper"
-for bundle in "$renderer" "$app"; do
+for bundle in "$renderer" "$plugin" "$app"; do
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")"
   if [[ "$(lipo -archs "$bundle/Contents/MacOS/$executable")" != arm64 ]]; then
     echo "Expected an arm64 executable in $bundle." >&2
@@ -104,6 +105,9 @@ for bundle in "$renderer" "$app"; do
   fi
 done
 codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$renderer"
+# DeviceKit loads this plugin into the manager. The hardened runtime's library validation accepts it when it
+# has the manager's team, so an ad hoc signature leaves DeviceKit to skip the plugin.
+codesign --force --options runtime --sign "$signing_identity" "$timestamp_option" "$plugin"
 # The hardened runtime denies AVFoundation capture of a connected device's
 # screen without camera access, which only the manager uses.
 codesign --force --options runtime \
