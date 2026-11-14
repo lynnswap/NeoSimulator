@@ -103,8 +103,8 @@ package final class CoreDeviceDisplayGeometry {
             self.isPrimary = isPrimary
         }
 
-        /// The display that shows the device's screen: the built-in display that its video carries, once the
-        /// video has shown which one. Until then it is the active built-in display, or the primary display when
+        /// The display that shows the device's screen: the built-in display that its video carries, while the
+        /// video shows which one. Otherwise it is the active built-in display, or the primary display when
         /// none reports that it is active. A folding device keeps its cover display primary while its inner
         /// display is the active one, and its video changes display before the active one does.
         package static func shownIndex(among displays: [DisplayState], carrying video: UInt32? = nil) -> Int? {
@@ -123,7 +123,7 @@ package final class CoreDeviceDisplayGeometry {
     private var update: (@MainActor (Result<RemoteScreenFramebuffer.Display?, any Error>) -> Void)?
     private var generation = 0
     private var observation: Task<Void, Never>?
-    /// The built-in display whose pixels the device's video carries, once the video has shown which one. The
+    /// The built-in display whose pixels the device's video carries, while the video shows which one. The
     /// screen shows this display, ahead of the one that the device reports as active.
     package var videoDisplay: UInt32? {
         didSet { if videoDisplay != oldValue { reportDisplay() } }

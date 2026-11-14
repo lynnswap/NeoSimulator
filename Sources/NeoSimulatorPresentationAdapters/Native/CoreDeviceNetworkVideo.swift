@@ -17,10 +17,10 @@ final class CoreDeviceNetworkVideo {
 
     init(connection: CoreDeviceScreenConnection) { self.connection = connection }
 
-    /// - Parameter carriedDisplay: Receives the built-in display whose pixels the video carries, when its
-    ///   frames show which one and each time that changes.
+    /// - Parameter carriedDisplay: Receives the built-in display whose pixels the video carries each time that
+    ///   changes, and nil when its frames stop showing which one.
     func start(
-        renderer: RemoteScreenCaptureStream, carriedDisplay: @escaping @MainActor (UInt32) -> Void,
+        renderer: RemoteScreenCaptureStream, carriedDisplay: @escaping @MainActor (UInt32?) -> Void,
         completion: @escaping @Sendable ((any Error)?) -> Void
     ) async throws {
         let reserved = try RemoteScreenSocketReservation(tunnelAddress: await connection.tunnelAddress())
@@ -46,7 +46,13 @@ final class CoreDeviceNetworkVideo {
         let receiver = RemoteScreenMediaReceiver(
             descriptor: descriptor, localSSRC: localSSRC,
             renderer: renderer, displaySize: displaySize ?? initial, builtIn: builtIn,
-            carriedDisplay: { identifier in Task { @MainActor in carriedDisplay(identifier) } },
+            // The latest display is read when the change is taken, so that two changes arrive in order.
+            carriedDisplayChanged: { [weak self] in
+                Task { @MainActor in
+                    guard let receiver = self?.receiver else { return }
+                    carriedDisplay(receiver.carriedDisplay)
+                }
+            },
             completion: { [connection] error in
                 Task { @MainActor in
                     if error == nil { connection.streamEnded() }
@@ -170,7 +176,7 @@ private actor RemoteScreenMediaReceiver {
     }
     /// The next frame reads the latest displays, in whatever order the display's reports and frames arrive.
     private nonisolated let displays: Mutex<Displays>
-    private let carriedDisplay: @Sendable (UInt32) -> Void
+    private let carriedDisplayChanged: @Sendable () -> Void
     private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
@@ -185,17 +191,20 @@ private actor RemoteScreenMediaReceiver {
 
     init(
         descriptor: Int32, localSSRC: UInt32, renderer: RemoteScreenCaptureStream, displaySize: CGSize,
-        builtIn: [RemoteScreenBuiltInDisplay], carriedDisplay: @escaping @Sendable (UInt32) -> Void,
+        builtIn: [RemoteScreenBuiltInDisplay], carriedDisplayChanged: @escaping @Sendable () -> Void,
         completion: @escaping @Sendable ((any Error)?) -> Void
     ) {
         self.descriptor = descriptor
         self.localSSRC = localSSRC
         self.renderer = renderer
         displays = Mutex(Displays(shown: displaySize, builtIn: builtIn))
-        self.carriedDisplay = carriedDisplay
+        self.carriedDisplayChanged = carriedDisplayChanged
         self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
+
+    /// The built-in display whose pixels the latest frame carried, when the frame showed which one.
+    nonisolated var carriedDisplay: UInt32? { displays.withLock { $0.carried } }
 
     nonisolated func update(displaySize: CGSize, builtIn: [RemoteScreenBuiltInDisplay]) {
         displays.withLock { $0.shown = displaySize; $0.builtIn = builtIn }
@@ -220,14 +229,13 @@ private actor RemoteScreenMediaReceiver {
                 // A frame that shows which built-in display it carries is placed by that display's size, ahead
                 // of the report that follows from it.
                 let encoded = CGSize(width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame))
-                let (size, changed): (CGSize, UInt32?) = $0.displays.withLock { displays in
-                    guard let carried = RemoteScreenCaptureStream.carriedDisplay(in: encoded, among: displays.builtIn)
-                    else { return (displays.shown, nil) }
-                    let changed = carried.identifier != displays.carried
-                    displays.carried = carried.identifier
-                    return (carried.pixelSize, changed ? carried.identifier : nil)
+                let (size, changed) = $0.displays.withLock { displays in
+                    let carried = RemoteScreenCaptureStream.carriedDisplay(in: encoded, among: displays.builtIn)
+                    let changed = carried?.identifier != displays.carried
+                    displays.carried = carried?.identifier
+                    return (carried?.pixelSize ?? displays.shown, changed)
                 }
-                if let changed { $0.carriedDisplay(changed) }
+                if changed { $0.carriedDisplayChanged() }
                 $0.renderer.receiveDecoded(frame, displaySize: size)
             }
         }
