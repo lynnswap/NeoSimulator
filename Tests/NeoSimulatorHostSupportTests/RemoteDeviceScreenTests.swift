@@ -813,10 +813,15 @@ struct RemoteDeviceScreenTests {
         transport.emit(.displayShown(inner))
         await wait(session) { frame.display == inner }
         #expect(frame.chrome !== closed && closed.view.superview == nil)
-        // A display without installed chrome does not stay inside another display's chrome.
-        transport.emit(.displayShown(RemoteDeviceDisplay(
-            pixelSize: inner.pixelSize, scale: inner.scale, chromeIdentifier: nil, maskIdentifier: nil)))
-        await wait(session) { frame.chrome == nil }
+        // A display without installed chrome does not stay inside another display's chrome, on a return to it either.
+        let bare = RemoteDeviceDisplay(
+            pixelSize: inner.pixelSize, scale: inner.scale, chromeIdentifier: nil, maskIdentifier: nil)
+        for _ in 0..<2 {
+            transport.emit(.displayShown(inner))
+            await wait(session) { frame.display == inner }
+            transport.emit(.displayShown(bare))
+            await wait(session) { frame.chrome == nil }
+        }
         #expect(frame.display == nil && reads == settled)
         try await session.stop()
     }

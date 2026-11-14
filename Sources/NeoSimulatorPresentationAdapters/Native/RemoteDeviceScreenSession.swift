@@ -59,7 +59,8 @@ package final class RemoteDeviceScreenSession {
     private var framePreparation: Task<Void, Never>?
     /// The display that the transport last reported showing. The frame follows it without another read.
     private var shownDisplay: RemoteDeviceDisplay?
-    /// A reported display whose frame could not be made, which is not made again.
+    /// The reported display whose frame could not be made, which is not tried again while no other display's
+    /// frame is shown.
     private var unframedDisplay: RemoteDeviceDisplay?
     private var transport: (any RemoteScreenTransport)?
     private var starting: Task<Void, any Error>?
@@ -426,6 +427,7 @@ package final class RemoteDeviceScreenSession {
                     }
                 }
                 self.frame.show(chrome, for: display)
+                self.unframedDisplay = nil
                 self.onStateChange?()
             } catch {
                 guard !Task.isCancelled else { return }
