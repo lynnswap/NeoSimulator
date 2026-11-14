@@ -50,12 +50,12 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
     package static func make(remote: CoreDeviceRemoteScreenDevice, connection: CoreDeviceScreenConnection,
                              contentView: NSView) async throws -> CoreDeviceDeviceViewTransport? {
         guard let device = UUID(uuidString: remote.identifier), DeviceKitDisplayLayers.canBeShown else { return nil }
-        let info = try await remote.type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
-        let value = try unsafe info.unsafeInvoke(on: remote.object)
-        let hardware = try await value.type.resolve(.swift(.getter("hardwareModel", as: (() -> String?).self)))
-        guard DevicePosturePayload.isFoldingModel(try unsafe hardware.unsafeInvoke(on: value)) else { return nil }
         let canvas: NativeDeviceCanvas
         do {
+            let info = try await remote.type.resolve(.swift(.getter("deviceInfo", as: (() -> NativeSwiftValue).self)))
+            let value = try unsafe info.unsafeInvoke(on: remote.object)
+            let hardware = try await value.type.resolve(.swift(.getter("hardwareModel", as: (() -> String?).self)))
+            guard DevicePosturePayload.isFoldingModel(try unsafe hardware.unsafeInvoke(on: value)) else { return nil }
             canvas = try await NativeDeviceCanvas.connect(remote: remote,
                 buttons: NativeDeviceScreenInput(input: CoreDeviceScreenInput(remote: remote)))
         } catch is CancellationError {
