@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
+import Synchronization
 
 /// Receives a CoreDevice screen stream without avconferenced or its restricted entitlement.
 @MainActor
@@ -52,8 +53,7 @@ final class CoreDeviceNetworkVideo {
     /// Follows the display that the device shows, whose size places it in each frame.
     func update(displaySize: CGSize) {
         self.displaySize = displaySize
-        guard let receiver else { return }
-        Task { await receiver.update(displaySize: displaySize) }
+        receiver?.update(displaySize: displaySize)
     }
 
     func stop() async {
@@ -157,7 +157,8 @@ private actor RemoteScreenMediaReceiver {
     private let descriptor: Int32
     private let localSSRC: UInt32
     private let renderer: RemoteScreenCaptureStream
-    private var displaySize: CGSize
+    /// The next frame reads the latest size, in whatever order the display's reports and frames arrive.
+    private nonisolated let displaySize: Mutex<CGSize>
     private let completion: @Sendable ((any Error)?) -> Void
     private let packets: RemoteScreenRTPReceiver
     private let decoder = RemoteScreenHEVCDecoder()
@@ -177,12 +178,12 @@ private actor RemoteScreenMediaReceiver {
         self.descriptor = descriptor
         self.localSSRC = localSSRC
         self.renderer = renderer
-        self.displaySize = displaySize
+        self.displaySize = Mutex(displaySize)
         self.completion = completion
         packets = RemoteScreenRTPReceiver()
     }
 
-    func update(displaySize: CGSize) { self.displaySize = displaySize }
+    nonisolated func update(displaySize: CGSize) { self.displaySize.withLock { $0 = displaySize } }
 
     func start() {
         var size: Int32 = 4 * 1_024 * 1_024
@@ -200,7 +201,7 @@ private actor RemoteScreenMediaReceiver {
             self?.assumeIsolated {
                 $0.health.receivedFrame()
                 $0.decodeFailure = nil
-                $0.renderer.receiveDecoded(frame, displaySize: $0.displaySize)
+                $0.renderer.receiveDecoded(frame, displaySize: $0.displaySize.withLock { $0 })
             }
         }
         decoder.onFailure = { [weak self] message in

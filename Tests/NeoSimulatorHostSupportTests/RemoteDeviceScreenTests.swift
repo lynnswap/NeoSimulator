@@ -801,10 +801,20 @@ struct RemoteDeviceScreenTests {
             identifier: 2)
         var shown: RemoteDeviceDisplay? = cover
         var reads = 0
+        var heldRead: ScreenFixtureGate?
         let transport = ScreenFixtureTransport()
-        let session = RemoteDeviceScreenSession(device: try device(), readDisplay: { _ in reads += 1; return shown }) {
-            _, _, _ in transport
-        }
+        let session = RemoteDeviceScreenSession(
+            device: try device(),
+            readDisplay: { _ in
+                reads += 1
+                let read = shown
+                if let gate = heldRead {
+                    heldRead = nil
+                    await gate.hold()
+                }
+                return read
+            }
+        ) { _, _, _ in transport }
         let frame = try #require(session.contentView as? RemoteDeviceFrameView)
         frame.frame = CGRect(x: 0, y: 0, width: 600, height: 800)
         try await session.start()
@@ -818,6 +828,17 @@ struct RemoteDeviceScreenTests {
         transport.emit(.displayShown(2))
         await wait(session) { frame.display == inner }
         #expect(frame.chrome !== closed && closed.view.superview == nil)
+        // The device returns to the inner display while the cover display's frame is still being read.
+        let reading = ScreenFixtureGate()
+        heldRead = reading
+        shown = cover
+        transport.emit(.displayShown(1))
+        try await reading.wait(timeout: .seconds(5))
+        shown = inner
+        transport.emit(.displayShown(2))
+        reading.resume()
+        await wait(session) { frame.display == cover }
+        await wait(session) { frame.display == inner }
         // A display whose own frame cannot be read does not stay inside another display's chrome.
         shown = nil
         transport.emit(.displayShown(1))

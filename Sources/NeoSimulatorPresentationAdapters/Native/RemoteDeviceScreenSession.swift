@@ -59,8 +59,6 @@ package final class RemoteDeviceScreenSession {
     private var framePreparation: Task<Void, Never>?
     /// The display that the transport last reported showing.
     private var shownDisplay: UInt32?
-    /// The transport reported another display than the one the frame was made for.
-    private var frameIsOutdated = false
     /// Whether the frame's chrome belongs to another display than the one the transport shows.
     private var frameSurroundsAnotherDisplay: Bool {
         guard let shownDisplay, let display = frame.display else { return false }
@@ -391,16 +389,18 @@ package final class RemoteDeviceScreenSession {
 
     /// Shows the device's frame from its display description, whether or not its screen connects.
     private func prepareFrame() {
-        guard frame.chrome == nil || frameIsOutdated, framePreparation == nil else { return }
-        frameIsOutdated = false
+        guard frame.chrome == nil || frameSurroundsAnotherDisplay, framePreparation == nil else { return }
         let startedConnected = state == .connected
+        let startedShowing = shownDisplay
         framePreparation = Task { [weak self, device, readDisplay] in
             defer {
                 if let self {
                     self.framePreparation = nil
                     // An early metadata read can finish after the screen has established the device connection,
-                    // and the device can change its display during a read.
-                    if !startedConnected && self.state == .connected || self.frameIsOutdated { self.prepareFrame() }
+                    // and the transport can show another display during a read.
+                    if !startedConnected && self.state == .connected || self.shownDisplay != startedShowing {
+                        self.prepareFrame()
+                    }
                 }
             }
             do {
@@ -470,10 +470,7 @@ package final class RemoteDeviceScreenSession {
         case .inputGeometryChanged: break
         case .displayShown(let identifier):
             shownDisplay = identifier
-            if frame.display?.identifier != identifier {
-                frameIsOutdated = true
-                prepareFrame()
-            }
+            prepareFrame()
         case .displayAngle(let angle): frame.setAngle(angle, animated: state == .connected)
         case .inputCapabilitiesLost(let kinds): onInputCapabilitiesLost?(kinds)
         }
