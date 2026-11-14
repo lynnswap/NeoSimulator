@@ -22,6 +22,8 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
     private let canvasView = DeviceViewFittingView()
     private var canvas: NativeDeviceCanvas?
     private var stopped = false
+    /// Whether this transport's offer of the device's displays stands. Other screens of the device count their own.
+    private var offersDisplays = false
     /// The newest decoded frame that the main actor has not shown yet. A newer frame replaces it, so a busy main
     /// actor shows the latest frame instead of every frame.
     private struct PendingFrame: @unchecked Sendable {
@@ -60,7 +62,9 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
     }
 
     package func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
+        guard !stopped else { throw CancellationError() }
         DeviceKitDisplayLayers.offer(device)
+        offersDisplays = true
         contentView.addSubview(unshownScreen)
         capture.decodedFrames = { [weak self] buffer, visible, display in
             guard let self else { return }
@@ -112,7 +116,10 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
         canvasView.removeFromSuperview()
         canvas?.disconnect()
         canvas = nil
-        DeviceKitDisplayLayers.withdraw(device)
+        if offersDisplays {
+            offersDisplays = false
+            DeviceKitDisplayLayers.withdraw(device)
+        }
         defer { unshownScreen.removeFromSuperview() }
         try await capture.stop()
     }

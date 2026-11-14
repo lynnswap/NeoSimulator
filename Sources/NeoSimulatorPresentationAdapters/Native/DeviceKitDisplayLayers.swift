@@ -16,11 +16,12 @@ package final class DeviceKitDisplayLayers: NSObject {
     /// What a display shows, on each layer that a view of it holds.
     private final class Display {
         let layers = NSHashTable<CALayer>.weakObjects()
-        var contents: IOSurfaceRef?
+        /// Kept while its surface is shown, so the decoder's pool does not draw another frame into the surface.
+        var frame: CVPixelBuffer?
         var contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
 
         func apply(to layer: CALayer) {
-            layer.contents = contents
+            layer.contents = frame.flatMap { CVPixelBufferGetIOSurface($0)?.takeUnretainedValue() }
             layer.contentsRect = contentsRect
         }
     }
@@ -91,7 +92,7 @@ package final class DeviceKitDisplayLayers: NSObject {
         guard width > 0, height > 0 else { return }
         let shown = offers[device]?.displays[display] ?? Display()
         offers[device]?.displays[display] = shown
-        shown.contents = CVPixelBufferGetIOSurface(frame)?.takeUnretainedValue()
+        shown.frame = frame
         shown.contentsRect = CGRect(x: 0, y: 0, width: min(1, visible.width / width), height: min(1, visible.height / height))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
