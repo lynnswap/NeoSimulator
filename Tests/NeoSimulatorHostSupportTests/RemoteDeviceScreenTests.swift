@@ -777,19 +777,32 @@ struct RemoteDeviceScreenTests {
 
     @Test func deviceKitsPluginFindsADisplaysLayerByTheRegistrysObjectiveCNames() throws {
         let device = UUID()
-        DeviceKitDisplayLayers.offer(device)
-        defer { DeviceKitDisplayLayers.withdraw(device) }
-        let layer = try #require(DeviceKitDisplayLayers.layer(forDevice: device, display: 2))
         // The plugin shares no Swift module with the app, and looks the registry up as this does.
-        typealias Lookup = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
-        let selector = NSSelectorFromString("layerForDevice:display:")
+        typealias MakeLayer = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
+        typealias Offers = @convention(c) (AnyClass, Selector, NSUUID) -> ObjCBool
         let registry: AnyClass = try #require(NSClassFromString("NeoSimulatorDeviceKitDisplayLayers"))
-        let method = try #require(class_getClassMethod(registry, selector))
-        let lookup = unsafeBitCast(method_getImplementation(method), to: Lookup.self)
-        #expect(lookup(registry, selector, device as NSUUID, 2)?.takeUnretainedValue() === layer)
-        #expect(lookup(registry, selector, UUID() as NSUUID, 2) == nil)
+        let makeSelector = NSSelectorFromString("makeLayerForDevice:display:")
+        let offersSelector = NSSelectorFromString("offersDevice:")
+        let makeLayer = unsafeBitCast(
+            method_getImplementation(try #require(class_getClassMethod(registry, makeSelector))), to: MakeLayer.self)
+        let offers = unsafeBitCast(
+            method_getImplementation(try #require(class_getClassMethod(registry, offersSelector))), to: Offers.self)
+        #expect(!offers(registry, offersSelector, device as NSUUID).boolValue)
+        #expect(makeLayer(registry, makeSelector, device as NSUUID, 2) == nil)
+
+        // Two screens show the device, and each view of a display holds its own layer of the same frame.
+        DeviceKitDisplayLayers.offer(device)
+        DeviceKitDisplayLayers.offer(device)
+        let first = try #require(makeLayer(registry, makeSelector, device as NSUUID, 2)?.takeUnretainedValue())
+        let frame = try capturedFrame(width: 4, height: 8, bgra: [], bgraAt: { _, _ in [0, 0, 0, 255] })
+        DeviceKitDisplayLayers.show(frame, visible: CGSize(width: 2, height: 8), on: 2, of: device)
+        let second = try #require(makeLayer(registry, makeSelector, device as NSUUID, 2)?.takeUnretainedValue())
+        #expect(first !== second && first.contents != nil && second.contents != nil)
+        #expect(first.contentsRect.width == 0.5 && second.contentsRect == first.contentsRect)
         DeviceKitDisplayLayers.withdraw(device)
-        #expect(lookup(registry, selector, device as NSUUID, 2) == nil)
+        #expect(offers(registry, offersSelector, device as NSUUID).boolValue)
+        DeviceKitDisplayLayers.withdraw(device)
+        #expect(!offers(registry, offersSelector, device as NSUUID).boolValue)
     }
 
     @Test func aFoldingDevicesActiveDisplayIsShownInsteadOfItsPrimaryDisplay() {

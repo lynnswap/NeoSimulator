@@ -16,19 +16,28 @@ public final class NeoSimulatorDeviceKitPlugin: NSObject, DeviceKitPlugin {
     }
 }
 
-/// The app's registry of display layers, as its Objective-C names give it.
+/// The app's registry of display layers, as its Objective-C names give it. The app keeps it on the main thread.
 enum AppDisplayLayers {
     static let didChange = Notification.Name("NeoSimulatorDeviceKitDisplayLayersDidChange")
+    private static let registry: AnyClass? = NSClassFromString("NeoSimulatorDeviceKitDisplayLayers")
 
-    /// The layer that the app offers for a display, read on the main thread, where the app keeps its registry.
-    static func layer(device: UUID, display: UInt32) -> CALayer? {
-        guard Thread.isMainThread else { return DispatchQueue.main.sync { layer(device: device, display: display) } }
-        typealias Lookup = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
-        let selector = NSSelectorFromString("layerForDevice:display:")
-        guard let registry: AnyClass = NSClassFromString("NeoSimulatorDeviceKitDisplayLayers"),
-              let method = class_getClassMethod(registry, selector) else { return nil }
-        let lookup = unsafeBitCast(method_getImplementation(method), to: Lookup.self)
-        return lookup(registry, selector, device as NSUUID, display)?.takeUnretainedValue()
+    /// Whether the app offers the displays of a device.
+    static func offers(_ device: UUID) -> Bool {
+        guard Thread.isMainThread else { return DispatchQueue.main.sync { offers(device) } }
+        typealias Offers = @convention(c) (AnyClass, Selector, NSUUID) -> ObjCBool
+        let selector = NSSelectorFromString("offersDevice:")
+        guard let registry, let method = class_getClassMethod(registry, selector) else { return false }
+        return unsafeBitCast(method_getImplementation(method), to: Offers.self)(registry, selector, device as NSUUID).boolValue
+    }
+
+    /// A layer of its own for one view of a display, or nil when the app does not offer the device.
+    static func makeLayer(device: UUID, display: UInt32) -> CALayer? {
+        guard Thread.isMainThread else { return DispatchQueue.main.sync { makeLayer(device: device, display: display) } }
+        typealias MakeLayer = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
+        let selector = NSSelectorFromString("makeLayerForDevice:display:")
+        guard let registry, let method = class_getClassMethod(registry, selector) else { return nil }
+        let make = unsafeBitCast(method_getImplementation(method), to: MakeLayer.self)
+        return make(registry, selector, device as NSUUID, display)?.takeUnretainedValue()
     }
 }
 
@@ -38,13 +47,12 @@ final class DisplayLayerProviderCreator: DisplayViewFramebufferProvider.Creator 
     func createDisplayViewFramebufferProvider(forDeviceIdentifier device: UUID, display: DisplayIdentifier)
         -> (any DisplayViewFramebufferProvider.Instance)?
     {
-        guard case .displayID(let identifier) = display,
-              AppDisplayLayers.layer(device: device, display: identifier) != nil else { return nil }
+        guard case .displayID(let identifier) = display, AppDisplayLayers.offers(device) else { return nil }
         return DisplayLayerProvider(device: device, display: identifier)
     }
 }
 
-/// Shows the app's layer for one display. It is active while the app offers that layer.
+/// Shows one display of a device that the app offers. It is active while the app offers the device.
 @Observable
 final class DisplayLayerProvider: DisplayViewFramebufferProvider.Instance {
     let identifier: String
@@ -79,7 +87,7 @@ final class DisplayLayerProvider: DisplayViewFramebufferProvider.Instance {
         }
     }
 
-    func canProvideView() async -> Bool { AppDisplayLayers.layer(device: device, display: display) != nil }
+    func canProvideView() async -> Bool { AppDisplayLayers.offers(device) }
 
     /// Above DeviceKit's AVConference provider, which cannot receive this device's video in this app.
     func displayPriority() async -> DisplayViewFramebufferProvider.DisplayPriority { .optimal }
@@ -89,7 +97,7 @@ final class DisplayLayerProvider: DisplayViewFramebufferProvider.Instance {
     func view() -> (any View)? { displayView() }
 
     private func update() {
-        let active = connected && AppDisplayLayers.layer(device: device, display: display) != nil
+        let active = connected && AppDisplayLayers.offers(device)
         switch (state, active) {
         case (.active, true), (.inactive, false): break
         default: state = active ? .active : .inactive
@@ -106,7 +114,7 @@ private struct DisplayLayerView: NSViewRepresentable {
     func updateNSView(_ view: DisplayLayerHostView, context: Context) {}
 }
 
-/// Fills itself with the layer that the app offers for a display, and follows the app when it offers another.
+/// Fills itself with a layer of the display, while the app offers the device.
 private final class DisplayLayerHostView: NSView {
     private let device: UUID
     private let display: UInt32
@@ -130,11 +138,11 @@ private final class DisplayLayerHostView: NSView {
     deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
 
     private func showOfferedLayer() {
-        let offered = AppDisplayLayers.layer(device: device, display: display)
-        guard offered !== shown else { return }
+        let offered = AppDisplayLayers.offers(device)
+        guard offered != (shown != nil) else { return }
         shown?.removeFromSuperlayer()
-        shown = offered
-        if let offered { layer?.addSublayer(offered) }
+        shown = offered ? AppDisplayLayers.makeLayer(device: device, display: display) : nil
+        if let shown { layer?.addSublayer(shown) }
         needsLayout = true
     }
 

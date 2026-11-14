@@ -69,7 +69,9 @@ package final class RemoteDeviceScreenSession {
         guard let shownDisplay, frame.chrome != nil else { return false }
         return shownDisplay != frame.display && shownDisplay != unframedDisplay
     }
-    private var transport: (any RemoteScreenTransport)?
+    private var transport: (any RemoteScreenTransport)? {
+        didSet { frame.framesScreen = transport?.drawsDevice != true }
+    }
     private var starting: Task<Void, any Error>?
     private var stopping: Task<Void, any Error>?
     private var generation = 0
@@ -170,7 +172,6 @@ package final class RemoteDeviceScreenSession {
             do {
                 let transport = try await makeTransport(device, frame.screen, nil)
                 self.transport = transport
-                if transport.drawsDevice { frame.removeChrome() }
                 do {
                     try Task.checkCancellation()
                     guard generation == token else { throw CancellationError() }

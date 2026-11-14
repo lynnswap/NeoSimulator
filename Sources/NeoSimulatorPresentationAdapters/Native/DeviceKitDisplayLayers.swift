@@ -6,14 +6,29 @@ import CoreVideo
 /// needs an entitlement this app cannot have.
 ///
 /// NeoSimulator's DeviceKit plugin shows these layers. The plugin shares no Swift module with the app, so it finds
-/// this class, its lookup, and its notification through the Objective-C runtime by the names declared here.
+/// this class, its two lookups, and its notification through the Objective-C runtime by the names declared here.
 @MainActor @objc(NeoSimulatorDeviceKitDisplayLayers)
 package final class DeviceKitDisplayLayers: NSObject {
-    /// Posted when a device's layers are offered or withdrawn.
+    /// Posted when a device's displays start or stop being offered.
     package static let didChange = Notification.Name("NeoSimulatorDeviceKitDisplayLayersDidChange")
     private static let pluginName = "NeoSimulatorDeviceKitPlugin"
 
-    private static var devices: [UUID: [UInt32: CALayer]] = [:]
+    /// What a display shows, on each layer that a view of it holds.
+    private final class Display {
+        let layers = NSHashTable<CALayer>.weakObjects()
+        var contents: IOSurfaceRef?
+        var contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+
+        func apply(to layer: CALayer) {
+            layer.contents = contents
+            layer.contentsRect = contentsRect
+        }
+    }
+    private struct Offer {
+        var screens = 1
+        var displays: [UInt32: Display] = [:]
+    }
+    private static var offers: [UUID: Offer] = [:]
     private static var pluginLoads: Bool?
 
     /// Whether DeviceKit can load the app's plugin, which shows these layers. Library validation refuses it in a
@@ -27,42 +42,60 @@ package final class DeviceKitDisplayLayers: NSObject {
         return loads
     }
 
-    /// Offers a layer for each display of a device, by CoreDevice's display identifier. The plugin's provider for
-    /// a display exists only while the device is offered, so DeviceKit keeps its own providers for every other
-    /// device. A display's layer is made when it is first asked for.
+    /// Offers the displays of a device, for one screen that shows the device. The plugin's provider for a display
+    /// exists only while the device is offered, so DeviceKit keeps its own providers for every other device.
     package static func offer(_ device: UUID) {
-        guard devices[device] == nil else { return }
-        devices[device] = [:]
-        NotificationCenter.default.post(name: didChange, object: nil)
+        if offers[device] != nil {
+            offers[device]?.screens += 1
+        } else {
+            offers[device] = Offer()
+            NotificationCenter.default.post(name: didChange, object: nil)
+        }
     }
 
+    /// Ends one screen's offer. The device's displays stay offered while another screen shows the device.
     package static func withdraw(_ device: UUID) {
-        guard devices.removeValue(forKey: device) != nil else { return }
-        NotificationCenter.default.post(name: didChange, object: nil)
+        guard let offer = offers[device] else { return }
+        if offer.screens > 1 {
+            offers[device]?.screens -= 1
+        } else {
+            offers[device] = nil
+            NotificationCenter.default.post(name: didChange, object: nil)
+        }
     }
 
-    @objc(layerForDevice:display:)
-    package static func layer(forDevice device: UUID, display: UInt32) -> CALayer? {
-        guard let layers = devices[device] else { return nil }
-        if let layer = layers[display] { return layer }
+    @objc(offersDevice:)
+    package static func offers(_ device: UUID) -> Bool { offers[device] != nil }
+
+    /// A layer that shows a display of an offered device, by CoreDevice's display identifier. Each view of the
+    /// display holds its own layer, because a layer has one superlayer.
+    @objc(makeLayerForDevice:display:)
+    package static func makeLayer(forDevice device: UUID, display: UInt32) -> CALayer? {
+        guard offers[device] != nil else { return nil }
         let layer = CALayer()
         layer.contentsGravity = .resize
         layer.backgroundColor = NSColor.black.cgColor
         layer.isOpaque = true
-        devices[device]?[display] = layer
+        let shown = offers[device]?.displays[display] ?? Display()
+        offers[device]?.displays[display] = shown
+        shown.layers.add(layer)
+        shown.apply(to: layer)
         return layer
     }
 
-    /// Shows a decoded frame on a display's layer. `visible` is the part of the frame, from its top left, that
-    /// shows the display.
+    /// Shows a decoded frame as a display of an offered device. `visible` is the part of the frame, from its top
+    /// left, that shows the display.
     package static func show(_ frame: CVPixelBuffer, visible: CGSize, on display: UInt32, of device: UUID) {
-        guard let layer = layer(forDevice: device, display: display) else { return }
+        guard offers[device] != nil else { return }
         let width = CGFloat(CVPixelBufferGetWidth(frame)), height = CGFloat(CVPixelBufferGetHeight(frame))
         guard width > 0, height > 0 else { return }
+        let shown = offers[device]?.displays[display] ?? Display()
+        offers[device]?.displays[display] = shown
+        shown.contents = CVPixelBufferGetIOSurface(frame)?.takeUnretainedValue()
+        shown.contentsRect = CGRect(x: 0, y: 0, width: min(1, visible.width / width), height: min(1, visible.height / height))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.contents = CVPixelBufferGetIOSurface(frame)?.takeUnretainedValue()
-        layer.contentsRect = CGRect(x: 0, y: 0, width: min(1, visible.width / width), height: min(1, visible.height / height))
+        for layer in shown.layers.allObjects { shown.apply(to: layer) }
         CATransaction.commit()
     }
 }

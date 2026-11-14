@@ -3,6 +3,7 @@ import AppKit
 import CoreVideo
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
+import Synchronization
 
 /// Shows a physical device in DeviceKit's device view, which draws a device-specific model such as a folding
 /// iPhone's, with the device's own video on the model's displays.
@@ -21,6 +22,14 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
     private let canvasView = DeviceViewFittingView()
     private var canvas: NativeDeviceCanvas?
     private var stopped = false
+    /// The newest decoded frame that the main actor has not shown yet. A newer frame replaces it, so a busy main
+    /// actor shows the latest frame instead of every frame.
+    private struct PendingFrame: @unchecked Sendable {
+        let buffer: CVPixelBuffer
+        let visible: CGSize
+        let display: UInt32?
+    }
+    private nonisolated let pendingFrame = Mutex<PendingFrame?>(nil)
 
     package var drawsDevice: Bool { true }
     package var nativeInputView: NSView? { canvas?.inputView }
@@ -53,13 +62,14 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
     package func start(events: @escaping @MainActor (RemoteScreenTransportEvent) -> Void) async throws {
         DeviceKitDisplayLayers.offer(device)
         contentView.addSubview(unshownScreen)
-        capture.decodedFrames = { [weak self, device] frame, visible, display in
-            nonisolated(unsafe) let frame = frame
-            DispatchQueue.main.async {
-                // A frame that does not show which display it carries is the shown display's.
-                guard let self, !self.stopped, let display = display ?? self.capture.shownDisplay else { return }
-                DeviceKitDisplayLayers.show(frame, visible: visible, on: display, of: device)
+        capture.decodedFrames = { [weak self] buffer, visible, display in
+            guard let self else { return }
+            let frame = PendingFrame(buffer: buffer, visible: visible, display: display)
+            let scheduled = self.pendingFrame.withLock { pending in
+                defer { pending = frame }
+                return pending != nil
             }
+            if !scheduled { DispatchQueue.main.async { [weak self] in self?.showPendingFrame() } }
         }
         try await capture.start { event in
             switch event {
@@ -80,6 +90,13 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
         canvasView.show(canvas)
         contentView.addSubview(canvasView)
         events(.inputGeometryChanged)
+    }
+
+    private func showPendingFrame() {
+        guard let frame = pendingFrame.withLock({ pending in defer { pending = nil }; return pending }), !stopped else { return }
+        // A frame that does not show which display it carries is the shown display's.
+        guard let display = frame.display ?? capture.shownDisplay else { return }
+        DeviceKitDisplayLayers.show(frame.buffer, visible: frame.visible, on: display, of: device)
     }
 
     package func captureScreenshot() async throws -> CGImage { try await capture.captureScreenshot() }
