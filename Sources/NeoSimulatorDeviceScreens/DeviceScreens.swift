@@ -28,6 +28,7 @@ package final class DeviceScreens {
     }
     /// The Xcode whose SimulatorKit UI toolkit the manager loaded, which also supplies device artwork.
     package private(set) var displayXcodeURL: URL?
+    @ObservationIgnored private var displayXcodeLocation: Task<Void, Never>?
     @ObservationIgnored private let model: SimulatorManagerModel
     @ObservationIgnored private let allowsDeviceHub: @Sendable (pid_t, URL?) -> Bool
     @ObservationIgnored private var contexts: [ContextKey: SimulatorScreens] = [:]
@@ -580,7 +581,20 @@ package final class DeviceScreens {
         guard !isQuitting, !model.managingDeviceIDs.contains(identifier) else { return nil }
         let screen = entries[identifier] ?? attach(RemoteDeviceWindowController(device: device))
         if case .remote(let controller) = screen.controller { controller.connectIfNeeded() }
+        locateDisplayXcode()
         return screen
+    }
+
+    /// A remote screen's controls draw their artwork from the same Xcode as a simulator screen's, which only
+    /// opening a simulator screen locates. Without it the controls show their titles.
+    private func locateDisplayXcode() {
+        guard displayXcodeURL == nil, displayXcodeLocation == nil else { return }
+        displayXcodeLocation = Task { [weak self] in
+            let url = try? await CoreDeviceRuntime.uiXcodeURL()
+            guard let self else { return }
+            self.displayXcodeLocation = nil
+            if let url, self.displayXcodeURL == nil { self.displayXcodeURL = url }
+        }
     }
 
     /// Follows the inventory and the selected host, which can make remote screens unavailable.
