@@ -269,10 +269,12 @@ package final class CoreDeviceScreenInput {
             try validatePreparedInput()
             if phase == .began { touchTarget = nil }
             let targetName = touchTarget ?? Self.digitizerTarget(forDisplay: touchDisplay)
-            touchTarget = phase == .ended ? nil : targetName
+            touchTarget = targetName
             try unsafe send.unsafeInvoke(on: implementation, point, second, eventType.makeEnumCase(named: event),
                                          nativeEdge.makeEnumCase(named: edge.rawValue),
                                          target.makeEnumCase(named: targetName))
+            // An end that failed is sent again to the same display.
+            if phase == .ended { touchTarget = nil }
         case .trackpad(let event, let transform):
             guard try remote.supports(Self.universalHIDFeature) else {
                 throw RemoteScreenError.unavailable("remote-input-capability", "The device no longer exposes trackpad gestures.")

@@ -313,6 +313,7 @@ package final class RemoteDeviceFrameView: NSView {
             Self.logger.error("The device frame could not be laid out: \(error.localizedDescription, privacy: .public)")
             chrome.view.removeFromSuperview()
             self.chrome = nil
+            self.display = nil
             return nil
         }
     }
