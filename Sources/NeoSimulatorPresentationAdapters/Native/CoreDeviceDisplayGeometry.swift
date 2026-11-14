@@ -371,8 +371,16 @@ package final class NativeDeviceCanvas {
                                 lookUp: @escaping @MainActor (String) async throws -> UInt32) async throws -> NativeDeviceCanvas {
         try await CoreDeviceRuntime.loadDeviceKit()
         let remote = try await record.record(limit: DeviceOperationLimit.coreDeviceRecord)
+        return try await connect(remote: remote, pointsPerInch: pointsPerInch,
+            buttons: NativeDeviceScreenInput(input: GuestButtonInput { try await SimulatorGuestHID(lookUp: lookUp) }))
+    }
+
+    /// Composes DeviceKit's view of a device that CoreDevice knows. DeviceKit must be loaded.
+    /// - Parameter buttons: Sends the device's buttons; DeviceKit's view owns the touches.
+    package static func connect(remote: CoreDeviceRemoteScreenDevice, pointsPerInch: CGFloat? = nil,
+                                buttons: NativeDeviceScreenInput) async throws -> NativeDeviceCanvas {
         guard let uuid = UUID(uuidString: remote.identifier) else {
-            throw RemoteScreenError.unavailable("native-device-canvas", "CoreDevice's record of this simulator has no device identifier for DeviceKit.")
+            throw RemoteScreenError.unavailable("native-device-canvas", "CoreDevice's record of this device has no device identifier for DeviceKit.")
         }
         let bindings = try await ABIRuntime.shared.prepare { try await Bindings(runtime: $0) }
         let base = try unsafe bindings.make.unsafeInvoke(uuid)
@@ -407,7 +415,7 @@ package final class NativeDeviceCanvas {
             pointsPerInch: pointsPerInch,
             frameMargin: { try await frameMargin(remote: remote) },
             poseControls: NativeDevicePoseControls(deviceIdentifier: uuid),
-            buttons: NativeDeviceScreenInput(input: GuestButtonInput { try await SimulatorGuestHID(lookUp: lookUp) }),
+            buttons: buttons,
             captureDisplay: captureDisplay, values: [base, activation, shown, hidden] + bindings.environmentValues)
     }
 

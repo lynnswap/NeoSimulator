@@ -46,6 +46,11 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         framebuffer.isReady ? capabilityObservation.capabilities : capabilityObservation.capabilities.subtracting([.pointer, .digitizer])
     }
     package var canCaptureScreenshot: Bool { !stopped && !finished && frameSize != nil }
+    /// Receives each frame of the device's own video on the receiver's queue, with the part of it that shows a
+    /// display and, when the frame shows which, the built-in display that it carries. Set before `start`.
+    package var decodedFrames: (@Sendable (CVPixelBuffer, _ visible: CGSize, _ display: UInt32?) -> Void)?
+    /// CoreDevice's identifier of the display that the screen shows.
+    package var shownDisplay: UInt32? { framebuffer.display?.identifier }
     package private(set) var canRecordScreen = false
 
     package convenience init(
@@ -122,6 +127,7 @@ package final class CoreDeviceCaptureTransport: RemoteScreenTransport {
         switch source {
         case .capture(let source, _): try await stream.start(sourceID: source.uniqueID)
         case .media(let network):
+            network.decodedFrames = decodedFrames
             try await network.start(renderer: stream, carriedDisplay: { [weak self] identifier in
                 guard let self, !self.stopped, !self.finished else { return }
                 self.displayGeometry.videoDisplay = identifier

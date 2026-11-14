@@ -777,9 +777,9 @@ struct RemoteDeviceScreenTests {
 
     @Test func deviceKitsPluginFindsADisplaysLayerByTheRegistrysObjectiveCNames() throws {
         let device = UUID()
-        let layer = CALayer()
-        DeviceKitDisplayLayers.register([2: layer], for: device)
+        DeviceKitDisplayLayers.offer(device)
         defer { DeviceKitDisplayLayers.withdraw(device) }
+        let layer = try #require(DeviceKitDisplayLayers.layer(forDevice: device, display: 2))
         // The plugin shares no Swift module with the app, and looks the registry up as this does.
         typealias Lookup = @convention(c) (AnyClass, Selector, NSUUID, UInt32) -> Unmanaged<CALayer>?
         let selector = NSSelectorFromString("layerForDevice:display:")
@@ -787,7 +787,7 @@ struct RemoteDeviceScreenTests {
         let method = try #require(class_getClassMethod(registry, selector))
         let lookup = unsafeBitCast(method_getImplementation(method), to: Lookup.self)
         #expect(lookup(registry, selector, device as NSUUID, 2)?.takeUnretainedValue() === layer)
-        #expect(lookup(registry, selector, device as NSUUID, 1) == nil)
+        #expect(lookup(registry, selector, UUID() as NSUUID, 2) == nil)
         DeviceKitDisplayLayers.withdraw(device)
         #expect(lookup(registry, selector, device as NSUUID, 2) == nil)
     }
@@ -863,6 +863,18 @@ struct RemoteDeviceScreenTests {
         }
         #expect(frame.display == nil && reads == settled)
         try await session.stop()
+
+        // A transport that draws the whole device, as DeviceKit's device view does, gets no frame around it.
+        let drawing = ScreenFixtureTransport()
+        drawing.drawsDevice = true
+        let drawn = RemoteDeviceScreenSession(device: try device(), readDisplay: { _ in cover }) { _, _, _ in drawing }
+        let unframed = try #require(drawn.contentView as? RemoteDeviceFrameView)
+        unframed.frame = CGRect(x: 0, y: 0, width: 600, height: 800)
+        try await drawn.start()
+        #expect(unframed.chrome == nil)
+        drawing.emit(.displayShown(inner))
+        #expect(unframed.chrome == nil && unframed.display == nil)
+        try await drawn.stop()
     }
 
     @Test func primaryDisplayFramesExcludeEncodingPaddingBeforeAndAfterRotation() async throws {
@@ -3532,6 +3544,7 @@ private func mouseMovement(sender: UInt64?) throws -> NSEvent {
 private final class ScreenFixtureTransport: RemoteScreenTransport {
     var inputCapabilities: Set<RemoteDeviceInputKind> = [.keyboard]
     let nativeInputView: NSView? = NSView()
+    var drawsDevice = false
     var canCaptureScreenshot: Bool { !closed }
     var automaticFrames = false
     var failStart = false

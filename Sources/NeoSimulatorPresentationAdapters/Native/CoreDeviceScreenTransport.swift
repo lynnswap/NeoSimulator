@@ -20,6 +20,10 @@ package enum CoreDeviceScreenTransport {
             do {
                 if connection.supportsPrimaryStream {
                     try await CoreDeviceRuntime.loadDeviceKit()
+                    if try await CoreDeviceDeviceViewTransport.shows(remote) {
+                        return try await CoreDeviceDeviceViewTransport(
+                            remote: remote, connection: connection, contentView: contentView)
+                    }
                     return try await CoreDeviceCaptureTransport(
                         remote: remote, connection: connection, contentView: contentView)
                 }
