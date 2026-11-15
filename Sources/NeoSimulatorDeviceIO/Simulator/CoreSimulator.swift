@@ -1110,15 +1110,18 @@ package final class SimulatorDevice {
         }
     }
 
-    /// Performs `action` on the element of an app that `element` was read as, whether or not an alert or a sheet
-    /// covers it. Throws a ``SimulatorAccessibilityActionFailure`` for an element that the app no longer has, and for
-    /// a press that the element refuses.
+    /// Performs `action` on one element of a guest process's application, whether or not an alert or a sheet covers
+    /// it: the one whose index `choose` answers with, among the application's elements as they are when the action is
+    /// asked for, in the order that they are read in and each without its children. Throws a
+    /// ``SimulatorAccessibilityActionFailure`` when `choose` answers with none, and for a press that the element
+    /// refuses.
     package func performAccessibilityAction(
-        _ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
     ) async throws {
         try await startedBridge().change("change an element on the device") { [guest] in
             try guest.messages.accessibility.get().reader(for: guest.device, listsCovered: true)
-                .perform(action, on: element)
+                .perform(action, inProcess: processIdentifier, on: choose)
         }
     }
 

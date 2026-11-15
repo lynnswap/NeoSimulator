@@ -337,9 +337,10 @@ package final class SimulatorConnection: SimulatorDisplay {
         try await device.accessibilityElements(ofProcess: processIdentifier)
     }
     package func performAccessibilityAction(
-        _ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
     ) async throws {
-        try await device.performAccessibilityAction(action, on: element)
+        try await device.performAccessibilityAction(action, inProcess: processIdentifier, on: choose)
     }
     package func webInspector() async throws -> SimulatorWebInspector { try await device.webInspector() }
 

@@ -253,17 +253,20 @@ extension ManagerModelTests {
         }
         let home = application([element(.staticText, "welcome", label: "Welcome", row: 0)])
 
+        /// The identifier of the button that a login presses on a screen.
+        func button(_ name: String, on screen: SimulatorAccessibilityElement) throws -> String? {
+            let elements = NativeFormSignIn.elements(of: screen)
+            return try NativeFormSignIn.form(among: elements, button: name).flatMap { elements[$0.button].identifier }
+        }
         // The button is the first after the password field, or the one that the login names by label or identifier.
-        #expect(try NativeFormSignIn.form(in: form(), button: "")?.button.identifier == "forgot")
-        #expect(try NativeFormSignIn.form(in: form(), button: "Sign In")?.button.identifier == "signIn")
-        #expect(try NativeFormSignIn.form(in: form(), button: "#signIn")?.button.identifier == "signIn")
-        #expect(try NativeFormSignIn.form(in: home, button: "") == nil)
+        #expect(try button("", on: form()) == "forgot")
+        #expect(try button("Sign In", on: form()) == "signIn")
+        #expect(try button("#signIn", on: form()) == "signIn")
+        #expect(try button("", on: home) == nil)
         // A screen with two password fields registers an account or changes a password.
         var registration = form()
         registration.children.append(element(.textField, "passwordAgain", row: 4))
-        #expect(throws: NativeFormSignIn.Failure.severalPasswordFields) {
-            try NativeFormSignIn.form(in: registration, button: "")
-        }
+        #expect(throws: NativeFormSignIn.Failure.severalPasswordFields) { try button("", on: registration) }
 
         /// How a sign-in ends on the app's form, which shows `shown` once its button is pressed, and what it did.
         func signedIn(
@@ -278,8 +281,11 @@ extension ManagerModelTests {
                 case .setValue(let value): password = value
                 case .press: return shown(device)
                 }
-                device.covered = form(userName: userName, password: password)
-                if device.front?.children.first?.identifier == "user" { device.front = device.covered }
+                // A field that gets a value brings up the keyboard, which moves the form.
+                var moved = form(userName: userName, password: password)
+                for index in moved.children.indices { moved.children[index].frame.origin.y -= 150 }
+                device.covered = moved
+                if device.front?.children.first?.identifier == "user" { device.front = moved }
             }
             var failure: (any Error)?
             do { try await signIn(on: device, signInButton: button).run() } catch { failure = error }
@@ -536,17 +542,23 @@ private final class SignInFixture: SignInDevice {
 
     /// The login's app as its process answers for its elements, also while an alert covers them. Without it, as `front`.
     var covered: SimulatorAccessibilityElement?
-    /// Runs when an element is asked to take an action.
+    /// Runs when an element takes an action.
     var onAction: ((SimulatorAccessibilityAction, SimulatorAccessibilityElement) -> Void)?
-    /// The actions that elements were asked to take, each with its element's identifier.
+    /// The actions that elements took, each with its element's identifier.
     private(set) var actions: [String] = []
 
     func application(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement? {
         covered ?? front
     }
 
-    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) async throws {
+    func perform(
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
+    ) async throws {
         try Task.checkCancellation()
+        let elements = (covered ?? front).map(NativeFormSignIn.elements) ?? []
+        guard let chosen = choose(elements) else { throw SimulatorAccessibilityActionFailure.elementGone }
+        let element = elements[chosen]
         switch action {
         case .press: actions.append("press \(element.identifier ?? "")")
         case .setValue(let value): actions.append("set \(element.identifier ?? "") to \(value)")

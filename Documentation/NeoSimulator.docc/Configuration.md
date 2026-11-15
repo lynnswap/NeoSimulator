@@ -64,10 +64,12 @@ quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
 Logins saves an app's user name and password in your login keychain, under the app's bundle identifier and a
 label, with the web origins where the login may be used. The pane never shows a saved password.
-**Device → Sign In with Saved Login** signs in to the web sign-in sheet that the frontmost app of the active
-simulator shows. It answers the system's question for the login's site, fills the user name and password
-fields that the page's form declares, submits the form, and waits for the sheet to close. It fills nothing for
-another app, or while the sheet's page is at an origin that the login does not list.
+**Device → Sign In with Saved Login** signs in to what the frontmost app of the active simulator shows: a
+sign-in form on its own screen, or a web sign-in sheet. For a form, it sets the user name and password fields
+and presses the button after them, or the one that the login's **Sign-In Button** names. For a sheet, it answers
+the system's question for the login's site, fills the user name and password fields that the page's form
+declares, submits the form, and waits for the sheet to close. It fills nothing for another app, or while the
+sheet's page is at an origin that the login does not list.
 
 Renderer preferences use `dev.lynnswap.NeoSimulator.Renderer`. Existing values
 are migrated from `dev.lynnswap.NeoSimulator` on first use.

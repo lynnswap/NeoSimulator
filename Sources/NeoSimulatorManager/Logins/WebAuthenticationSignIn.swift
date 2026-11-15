@@ -17,8 +17,12 @@ package protocol SignInDevice: AnyObject {
     /// The application of a process with its accessibility elements, among them those that an alert or a sheet
     /// covers. It has no elements while it is not on the screen.
     func application(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement?
-    /// Performs an action on the element of an app that `element` was read as.
-    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) async throws
+    /// Performs an action on one element of a process's application: the one whose index `choose` answers with, among
+    /// the application's elements as they are then, in the order that they are read in and each without its children.
+    func perform(
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
+    ) async throws
 }
 
 /// What a sign-in page shows, as a script of the sign-in reads it in the page.

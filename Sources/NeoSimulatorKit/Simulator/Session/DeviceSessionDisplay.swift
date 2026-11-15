@@ -57,10 +57,12 @@ package protocol DeviceSessionDisplay: AnyObject {
     /// The application of a guest process with its accessibility elements, among them those that an alert or a sheet
     /// covers, as `SimulatorDevice.accessibilityElements(ofProcess:)` reads them. Throws for a display that reads none.
     func accessibilityElements(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement?
-    /// Performs an action on an accessibility element of an app, as `SimulatorDevice.performAccessibilityAction(_:on:)`
-    /// does. Throws for a display that reads no accessibility elements.
+    /// Performs an action on one accessibility element of a guest process's application, as
+    /// `SimulatorDevice.performAccessibilityAction(_:inProcess:on:)` does. Throws for a display that reads no
+    /// accessibility elements.
     func performAccessibilityAction(
-        _ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
     ) async throws
     /// A connection to the device's Web Inspector service. Throws for a device that has none.
     func webInspector() async throws -> SimulatorWebInspector
@@ -153,7 +155,8 @@ extension DeviceSessionDisplay {
         throw SimulatorError.unavailable("This display reads no accessibility elements.")
     }
     package func performAccessibilityAction(
-        _ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
     ) async throws {
         throw SimulatorError.unavailable("This display reads no accessibility elements.")
     }

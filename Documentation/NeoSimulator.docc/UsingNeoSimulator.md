@@ -297,13 +297,23 @@ active device.
 
 ## Sign in with a saved login
 
-An app under development often puts its content behind a web sign-in sheet. Neo can fill that sheet from a login
-that you saved, so that neither you nor a coding agent has to type it.
+An app under development often puts its content behind a sign-in: a form on its own screen, or a web sign-in sheet.
+Neo can fill either from a login that you saved, so that neither you nor a coding agent has to type it.
 
-Save a login in **Settings → Logins**: the app's bundle identifier, a label, the user name and password, and the web
-origins of the sign-in page. Start the sign-in in the app, then choose the login in **Device → Sign In with Saved
-Login**. Neo answers the system's question for the login's site, fills the user name and password fields that the
-page's form declares, submits the form, and waits for the sheet to close. Where a site asks for the user name first,
+Save a login in **Settings → Logins**: the app's bundle identifier, a label, the user name and password, and for a
+web sign-in the origins of its page. Open the app's sign-in screen, or start its web sign-in, then choose the login
+in **Device → Sign In with Saved Login**.
+
+For a form on the app's own screen, Neo sets the password in the screen's password field and the user name in the
+text field before it, presses the first button after the password field, and waits until the app no longer shows
+the form. It sets the fields and presses the button through the app's accessibility elements, without the keyboard.
+Where another button comes first, such as one that resets the password, name the button in the login's **Sign-In
+Button**: its label, or `#` and its accessibility identifier, as in `#signIn`. Neo fills nothing on a screen with
+more than one password field. If the app still shows the form after 20 seconds, as under an alert that says the
+password is wrong, Neo empties the fields and reports the login as rejected.
+
+For a web sign-in sheet, Neo answers the system's question for the login's site, fills the user name and password
+fields that the page's form declares, submits the form, and waits for the sheet to close. Where a site asks for the user name first,
 Neo goes on to the page that asks for the password, which can be on another of the login's origins. It fills nothing
 for another app, on an origin that the login does not list, or on a page that has no form that asks for the user name
 or the password with a button to submit it.
@@ -332,16 +342,19 @@ is started with a command:
 
 `logins` prints the labels saved for an app. `sign-in` signs in on a simulator whose screen is open in the running
 Neo and waits for the outcome; add `--app` with a bundle identifier where two apps have a login with the label. The
-exit status is 0 when the sheet closed signed in, 1 when the sign-in failed, such as with a login that the page
-rejected, 2 when Neo refused to start it, 3 when the simulator showed a screen that Neo does not recognize, and 69
-when Neo is not running. The reason goes to standard error.
+one command signs in to a form or to a sheet, whichever the app shows. The exit status is 0 when the form went away
+or the sheet closed signed in, 1 when the sign-in failed, such as with a login that was rejected, 2 when Neo refused
+to start it, 3 when the simulator showed a screen that Neo does not recognize, and 69 when Neo is not running. The
+reason goes to standard error. For a form without a button that Neo can press, the reason lists the screen's
+buttons as a login's **Sign-In Button** names them.
 
-The tool takes a label and never a URL, an origin or a field, and nothing that it prints is a user name or a
-password. It reaches only the logins whose **Allow automated sign-in** is on.
+The tool takes a label and never a URL, an origin, a field or a button, and nothing that it prints is a user name
+or a password. It reaches only the logins whose **Allow automated sign-in** is on.
 
 This keeps a password out of what a caller normally sees, and limits where it is filled in. It does not hide the
 password from a process that can already inspect the simulator: any process of your user can connect to the
-simulator's Web Inspector and read a filled field. Save logins of test accounts only.
+simulator's Web Inspector and read a filled field, and the app whose form is filled gets the password as it does
+when you type it. Save logins of test accounts only.
 
 ## Browse device reports
 

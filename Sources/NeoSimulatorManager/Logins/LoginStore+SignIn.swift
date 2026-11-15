@@ -62,7 +62,10 @@ private final class SessionSignInDevice: SignInDevice {
         try await session.display.accessibilityElements(ofProcess: processIdentifier)
     }
 
-    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) async throws {
-        try await session.display.performAccessibilityAction(action, on: element)
+    func perform(
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
+    ) async throws {
+        try await session.display.performAccessibilityAction(action, inProcess: processIdentifier, on: choose)
     }
 }

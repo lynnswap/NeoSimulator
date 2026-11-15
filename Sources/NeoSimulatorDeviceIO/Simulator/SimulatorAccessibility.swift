@@ -63,7 +63,7 @@ package enum SimulatorAccessibilityAction: Equatable, Sendable {
 
 /// Why an element did not get an action.
 package enum SimulatorAccessibilityActionFailure: LocalizedError, Equatable {
-    /// The app no longer has the element where it was read.
+    /// The app has no element for the action.
     case elementGone
     /// The element answered that it did not take the action.
     case refused
@@ -162,23 +162,33 @@ struct SimulatorAccessibilityReader {
         return try read(root as AnyObject, descending: true, ancestors: &ancestors)
     }
 
-    /// Performs `action` on the element of its process's application that is what `element` was read as: of the same
-    /// role, at the same place, with the same identifier. A press that the element refuses, and an element that the
-    /// application no longer has, throw a ``SimulatorAccessibilityActionFailure``.
+    /// Performs `action` on one element of a process's application: the one whose index `choose` answers with, among
+    /// the application's elements in the order that they are read in, each without its children. The elements are
+    /// read for the action, so the choice is made from what the application has now: setting a field's value can
+    /// bring up the keyboard, which moves the elements that were read before. A press that the element refuses, and
+    /// no choice, throw a ``SimulatorAccessibilityActionFailure``.
     ///
     /// An element that takes no value answers a request to set one like one that does, so a caller that needs the
     /// value to be there reads it afterwards.
-    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) throws {
+    func perform(
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: ([SimulatorAccessibilityElement]) -> Int?
+    ) throws {
+        var elements: [SimulatorAccessibilityElement] = []
+        var objects: [AnyObject] = []
         var ancestors: Set<Identity> = []
-        guard let root = try result(of: .application, nil, ["pid": element.processIdentifier]),
-            let object = try find(element, under: root as AnyObject, ancestors: &ancestors)
-        else { throw SimulatorAccessibilityActionFailure.elementGone }
+        if let root = try result(of: .application, nil, ["pid": processIdentifier]) {
+            try list(root as AnyObject, into: &elements, &objects, ancestors: &ancestors)
+        }
+        guard let chosen = choose(elements), objects.indices.contains(chosen) else {
+            throw SimulatorAccessibilityActionFailure.elementGone
+        }
         let message =
             switch action {
-            case .press: Message(request: .action, element: object, action: Self.press)
+            case .press: Message(request: .action, element: objects[chosen], action: Self.press)
             case .setValue(let value):
                 Message(
-                    request: .setAttribute, element: object, parameters: ["value": value],
+                    request: .setAttribute, element: objects[chosen], parameters: ["value": value],
                     attribute: UInt64(Attribute.value.rawValue))
             }
         let answer = try send(message)
@@ -239,25 +249,19 @@ struct SimulatorAccessibilityReader {
         return element
     }
 
-    /// The translation object, at or under `object`, of the element that `wanted` was read as.
-    private func find(
-        _ wanted: SimulatorAccessibilityElement, under object: AnyObject, ancestors: inout Set<Identity>
-    ) throws -> AnyObject? {
+    /// Lists an element and those under it in the order that they are read in, each without its children, with their
+    /// translation objects.
+    private func list(
+        _ object: AnyObject, into elements: inout [SimulatorAccessibilityElement], _ objects: inout [AnyObject],
+        ancestors: inout Set<Identity>
+    ) throws {
         guard let identity = try identity(object), !ancestors.contains(identity),
             let (element, children) = try description(of: object, identity: identity, withChildren: true)
-        else { return nil }
-        // What an element holds and says changes while it is used, and where and what it is does not.
-        if element.role == wanted.role, element.isSecureTextField == wanted.isSecureTextField,
-            element.identifier == wanted.identifier, element.frame == wanted.frame,
-            element.processIdentifier == wanted.processIdentifier
-        {
-            return object
-        }
+        else { return }
+        elements.append(element)
+        objects.append(object)
         ancestors.insert(identity)
         defer { ancestors.remove(identity) }
-        for child in children {
-            if let found = try find(wanted, under: child, ancestors: &ancestors) { return found }
-        }
-        return nil
+        for child in children { try list(child, into: &elements, &objects, ancestors: &ancestors) }
     }
 }

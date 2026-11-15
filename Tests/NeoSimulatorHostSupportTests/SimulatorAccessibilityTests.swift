@@ -116,27 +116,32 @@ struct SimulatorAccessibilityTests {
         #expect(try Translator().reader.element(at: .zero) == nil)
     }
 
-    @Test func anActionGoesToTheElementThatWasReadWhereTheAppStillHasIt() throws {
+    @Test func anActionGoesToTheElementThatIsChosenFromWhatTheAppHasNow() throws {
         let translator = Translator()
         let field = Element(
             7, 2, [role: 15, subrole: 5, identifier: "password", frame: NSValue(rect: CGRect(x: 16, y: 441, width: 370, height: 34))])
         let button = Element(7, 3, [role: 2, label: "Sign In", frame: NSValue(rect: CGRect(x: 149, y: 491, width: 104, height: 20))])
         translator.application = Element(7, 1, [role: 1, children: [field, button]])
-        let read = try #require(try translator.reader.application(processIdentifier: 7))
+        #expect(try translator.reader.application(processIdentifier: 7)?.children.count == 2)
 
-        try translator.reader.perform(.setValue("s3cret"), on: read.children[0])
-        try translator.reader.perform(.press, on: read.children[1])
+        // The elements are listed in the order that they are read in, each without its children.
+        var listed: [SimulatorAccessibilityElement] = []
+        try translator.reader.perform(.setValue("s3cret"), inProcess: 7) { elements in
+            listed = elements
+            return elements.firstIndex { $0.isSecureTextField }
+        }
+        #expect(listed.map(\.role) == [.application, .textField, .button] && listed.allSatisfy(\.children.isEmpty))
+        try translator.reader.perform(.press, inProcess: 7) { $0.firstIndex { $0.label == "Sign In" } }
         // The value attribute, and the action that presses.
         #expect(translator.performed == ["set 53 of 2 to s3cret", "action 5 on 3"])
 
         translator.takesPress = false
         #expect(throws: SimulatorAccessibilityActionFailure.refused) {
-            try translator.reader.perform(.press, on: read.children[1])
+            try translator.reader.perform(.press, inProcess: 7) { $0.firstIndex { $0.label == "Sign In" } }
         }
-        // The field is no longer where it was read: another element may be there now.
-        field.attributes?[frame] = NSValue(rect: CGRect(x: 16, y: 541, width: 370, height: 34))
+        // The app no longer has the element.
         #expect(throws: SimulatorAccessibilityActionFailure.elementGone) {
-            try translator.reader.perform(.setValue("s3cret"), on: read.children[0])
+            try translator.reader.perform(.setValue("s3cret"), inProcess: 7) { $0.firstIndex { $0.role == .slider } }
         }
         #expect(translator.performed.count == 2)
     }
