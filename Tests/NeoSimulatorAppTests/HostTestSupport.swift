@@ -375,6 +375,14 @@ final class TestDisplayView: NSView {
     }
 }
 
+/// A device's own StandBy service.
+@MainActor
+final class TestStandBy: DeviceStandBy {
+    private(set) var isPresented = false
+    func present() async throws { isPresented = true }
+    func dismiss() { isPresented = false }
+}
+
 /// The test displays, which each test window finds its sessions' displays in.
 @MainActor let testDisplays = SimulatorDisplaySet()
 
@@ -490,6 +498,8 @@ final class TestDisplay: SimulatorDisplay {
         try await worker?.call("toggle the device's appearance")
         appearanceToggles += 1
     }
+    /// The device's own StandBy service, for a device whose guest presents StandBy only for one.
+    var standBy: (any DeviceStandBy)?
     var notificationStates: [String: UInt64] = [:]
     var postedNotifications: [String] = []
     var contentSize = 4

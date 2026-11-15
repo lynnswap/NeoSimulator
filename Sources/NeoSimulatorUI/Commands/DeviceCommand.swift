@@ -281,7 +281,7 @@ package struct DeviceCommand {
             controller.runAsync { try await controller.session.toggleInCallStatusBar() }
         },
         DeviceCommand(id: .toggleStandBy, title: "Show StandBy",
-                      isSupported: { $0.supportsFeature(DeviceCapabilities.standBy) },
+                      isSupported: { $0.supportsStandBy },
                       isEnabled: { $0.session.canPerformToolOperation },
                       stateTitle: { $0.session.showsStandBy ? "Hide StandBy" : "Show StandBy" }) { controller in
             controller.runAsync { try await controller.session.toggleStandBy() }

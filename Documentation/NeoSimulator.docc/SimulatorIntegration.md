@@ -13,7 +13,9 @@ load Simulator.app code or resources and does not modify or re-sign Xcode.
 Duo screens in the default device set use DeviceKit's native device composition
 from the selected UI framework installation. That composition owns the cover and
 inner display providers, bezel, and pointer input. Posture controls send the
-device's native hinge commands and follow its reported motion state.
+device's native hinge commands and follow its reported motion state. Show StandBy
+holds CoreDevice's StandBy presentation on these screens, because a Duo presents
+StandBy only for that service and not for the notification that other devices take.
 
 The compatibility gate checks:
 

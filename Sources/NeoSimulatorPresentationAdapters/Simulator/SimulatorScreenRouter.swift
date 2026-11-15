@@ -299,9 +299,19 @@ package final class SimulatorScreenRouter {
             }
         }
         let pasteboardRoute = SimulatorPasteboardRoute(services: services, make: makePasteboard)
+        // A folding iPhone's guest presents StandBy only for CoreDevice's service, which the canvas's record reaches.
+        var standBy: CoreDeviceStandBy?
+        if nativeCanvas != nil {
+            standBy = CoreDeviceStandBy {
+                guard case .supported(let remote) = try await record.answer(for: [CoreDeviceStandBy.feature]) else { return nil }
+                return remote
+            }
+        } else if device.deviceTypeIdentifier == NativeInputPlan.duoDeviceType {
+            capabilities.requestsStandBy = false
+        }
         let connection = try await SimulatorConnection(device: device, screen: screen, runtime: runtime, displays: displays,
                                                        pasteboardRoute: pasteboardRoute, nativeCanvas: nativeCanvas,
-                                                       deviceRecord: record)
+                                                       deviceRecord: record, standBy: standBy)
         if nativeCanvas != nil { capabilities.controlsOrientation = false }
         let start: @MainActor () -> Void = { [weak connection] in
             guard let connection else { return }

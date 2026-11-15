@@ -69,6 +69,14 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         }, prepare: {
             _ = try await CoreDevicePasteboardTransport.Bindings(runtime: .shared)
         })
+        let standBy = await Preparation.check("nativeStandBy", unverified: [
+            "Device capability and StandBy implementation witnesses", "A presentation's start and its refusal in a pose without StandBy",
+            "The guest's StandBy while a presentation is held and after it is invalidated",
+        ], load: {
+            try await CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDevice.framework/CoreDevice")
+        }, prepare: {
+            _ = try await CoreDeviceStandBy.Bindings(runtime: .shared)
+        })
         let hid = await Preparation.check("displayHIDValues", unverified: [
             "UniversalHID capability and implementation witnesses", "Service creation, reset and removal",
             "Report delivery to an actual display",
@@ -101,6 +109,6 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
         ], load: { try await CoreDeviceRuntime.loadDeviceKit() }, prepare: {
             _ = try await DeviceKitActiveStateSource.Bindings(runtime: .shared)
         })
-        return Self(optionalBindings: [canvas, poses, resize, pasteboard, hid, keyboard, geometry, activeState])
+        return Self(optionalBindings: [canvas, poses, resize, pasteboard, standBy, hid, keyboard, geometry, activeState])
     }
 }
