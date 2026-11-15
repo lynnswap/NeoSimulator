@@ -988,15 +988,20 @@ package final class DeviceSession {
         // An earlier press whose release the device did not take keeps the button down, so its release is sent again.
         releaseHeldInput(button, report: report)
         var pressed = false
-        let deadline = ContinuousClock.now + Self.lockLimit
+        var deadline = ContinuousClock.now + Self.lockLimit
         while true {
             if let failure { throw failure }
             // The button stays down until its release is delivered.
             if downInputs[button] == nil {
-                if try await isLocked() { return }
+                let locked = try await isLocked()
+                // The read suspended, and the button can have gone down meanwhile.
+                guard downInputs[button] == nil else { continue }
+                if locked { return }
                 if !pressed {
                     pressed = true
                     press(button, report)
+                    // The guest has this long to report the lock from its press, however long the reads before it took.
+                    deadline = ContinuousClock.now + Self.lockLimit
                     continue
                 }
             }
