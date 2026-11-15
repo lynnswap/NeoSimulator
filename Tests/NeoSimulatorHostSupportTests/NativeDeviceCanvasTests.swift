@@ -144,6 +144,10 @@ struct NativeDeviceCanvasTests {
         presentation.controlMargin = 100
         presentation.magnification = 4
         #expect(presentation.scale == 3 && presentation.preferredZoom == 1.8)
+        // The app scales the picture the rest of the way, and the controls' room with it.
+        #expect(abs(presentation.canvasOutset - 100 * 3 / 1.8) < 0.001)
+        presentation.magnification = 1
+        #expect(presentation.canvasOutset == 100)
     }
 
     @Test func pictureThatDeviceKitMovesToAnotherZoomHasArrivedWhenItRestsThere() {

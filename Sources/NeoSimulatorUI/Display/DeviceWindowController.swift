@@ -2321,11 +2321,12 @@ final class DeviceContentView: NSView, DisplayContentView {
     private func placeNativeCanvas() {
         guard usesViewport, usesNativeCanvas, canvasDisplayFrame.width > 0 else { return }
         canvasOverlay.frame = canvasScrollView.contentView.frame
+        // Coordinate conversion can round differently while panning; SwiftUI must keep the scroll view's scale.
+        // The composition's room beyond the device follows from that scale.
+        onNativeCanvasMagnification(canvasScrollView.magnification)
         let frame = canvasOverlay.convert(canvasDisplayFrame, from: canvasDocumentView)
         let outset = nativeCanvasOutset()
         displayPresentation.setDisplayFrame(frame.insetBy(dx: -outset, dy: -outset))
-        // Coordinate conversion can round differently while panning; SwiftUI must keep the scroll view's scale.
-        onNativeCanvasMagnification(canvasScrollView.magnification)
     }
 
     private func layoutResizeHandles() {

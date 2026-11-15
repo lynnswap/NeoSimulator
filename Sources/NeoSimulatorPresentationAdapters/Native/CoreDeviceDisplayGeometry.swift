@@ -538,10 +538,10 @@ package final class NativeDeviceCanvas {
     }
     /// How far the view of a magnified composition extends beyond the device's frame: the room that DeviceKit's
     /// controls beside the device's buttons take.
-    package var canvasOutset: CGFloat { presentation.controlMargin }
+    package var canvasOutset: CGFloat { presentation.canvasOutset }
     /// The device's rectangle in the view.
     package var deviceFrame: NSRect {
-        let outset = presentation.magnification == nil ? 0 : presentation.controlMargin
+        let outset = presentation.magnification == nil ? 0 : presentation.canvasOutset
         return view.bounds.insetBy(dx: outset, dy: outset)
     }
     package func setZoom(_ zoom: CGFloat) {
@@ -888,6 +888,9 @@ package final class NativeCanvasPresentation {
         return min(zoom, (surfaceSize.width / 2 - controlMargin) / reach.width,
                    (surfaceSize.height / 2 - controlMargin) / reach.height)
     }
+    /// How far the view of a composition in a canvas viewport extends beyond the device's frame: the controls' room,
+    /// which grows with the picture where the app scales it.
+    package var canvasOutset: CGFloat { controlMargin * max(1, scale / preferredZoom) }
     @ObservationIgnored package var onSizeChange: (() -> Void)?
 }
 
@@ -963,7 +966,7 @@ package struct NativeCanvasRoot: View {
         // origin, so the host frame changing on every zoom and pan step does not move it within SwiftUI's
         // pixel grid. The host extends beyond the device there, for DeviceKit's controls beside it.
         let magnification = presentation.magnification
-        let outset = magnification == nil ? 0 : presentation.controlMargin
+        let outset = magnification == nil ? 0 : presentation.canvasOutset
         let viewport = presentation.viewport ?? CGRect(x: -presentation.compositionSize.width / 2,
             y: -presentation.compositionSize.height / 2, width: presentation.compositionSize.width,
             height: presentation.compositionSize.height)
