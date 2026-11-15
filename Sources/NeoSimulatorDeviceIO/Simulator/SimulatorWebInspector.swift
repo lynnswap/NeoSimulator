@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 /// A web page that a simulator's Web Inspector service lists.
 package struct InspectablePage: Equatable, Sendable {
@@ -89,6 +90,8 @@ package final class SimulatorWebInspector: @unchecked Sendable {
             let connection = try inspector.connected()
             let deadline = ContinuousClock.now + inspector.answerLimit
             while true {
+                // Messages that keep arriving do not extend the request's time.
+                guard ContinuousClock.now < deadline else { throw Self.noAnswer(inspector.answerLimit) }
                 let isWaiting = inspector.applications.keys.contains { inspector.listings[$0] == nil }
                 // Processes report themselves to a new connection one after another, so it waits until they are quiet.
                 // After that the service reports each change as it happens, and what has arrived is what there is.
@@ -114,16 +117,23 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     private func onQueue<Value: Sendable>(
         _ work: @escaping @Sendable (SimulatorWebInspector) throws -> Value
     ) async throws -> Value {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do {
-                    continuation.resume(returning: try work(self))
-                } catch {
-                    // The next request starts over with a new connection.
-                    if error as? WebInspectorFailure == .disconnected { self.forgetConnection() }
-                    continuation.resume(throwing: error)
+        // A request whose caller gave up while it waited for the queue does not start: its script would still run.
+        let isCancelled = Mutex(false)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do {
+                        if isCancelled.withLock({ $0 }) { throw CancellationError() }
+                        continuation.resume(returning: try work(self))
+                    } catch {
+                        // The next request starts over with a new connection.
+                        if error as? WebInspectorFailure == .disconnected { self.forgetConnection() }
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            isCancelled.withLock { $0 = true }
         }
     }
 
@@ -221,14 +231,19 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     private func evaluate(_ expression: String, in page: InspectablePage) throws -> Data {
         let connection = try connected()
         let deadline = ContinuousClock.now + answerLimit
+        // Messages that keep arriving do not extend the request's time.
         func awaited() throws -> WebInspectorConnection.Message {
-            guard let message = try next(from: connection, before: deadline) else { throw Self.noAnswer(answerLimit) }
+            guard ContinuousClock.now < deadline, let message = try next(from: connection, before: deadline) else {
+                throw Self.noAnswer(answerLimit)
+            }
             return message
         }
-        while try next(from: connection, before: .now) != nil {}
+        while ContinuousClock.now < deadline, try next(from: connection, before: .now) != nil {}
         // On a connection that has not listed pages yet, the page's process has still to report itself.
         while listings[page.application] == nil {
-            guard try next(from: connection, before: deadline) != nil else { throw WebInspectorFailure.pageGone }
+            guard ContinuousClock.now < deadline, try next(from: connection, before: deadline) != nil else {
+                throw WebInspectorFailure.pageGone
+            }
         }
         guard let listed = listings[page.application]?.first(where: { $0.identifier == page.identifier }) else {
             throw WebInspectorFailure.pageGone
