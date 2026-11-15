@@ -14,6 +14,11 @@ package protocol SignInDevice: AnyObject {
     func run(_ script: SignInScript, in page: InspectablePage) async throws -> SignInPageState
     /// Taps the screen at `point`, in unit coordinates from its top-left corner.
     func tap(at point: CGPoint) async throws
+    /// The application of a process with its accessibility elements, among them those that an alert or a sheet
+    /// covers. It has no elements while it is not on the screen.
+    func application(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement?
+    /// Performs an action on the element of an app that `element` was read as.
+    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) async throws
 }
 
 /// What a sign-in page shows, as a script of the sign-in reads it in the page.
@@ -226,7 +231,8 @@ package enum SignInScript: Equatable, Sendable {
     }
 }
 
-/// Signs in to the web authentication session that an app shows, with a login that a person saved for the app.
+/// Signs in to what an app shows to sign in with, with a login that a person saved for the app: the sheet of a web
+/// authentication session, or a form on the app's own screen, which a ``NativeFormSignIn`` fills.
 ///
 /// It fills the login only into the sheet of the app that the login names, and only while the sheet's page is at one
 /// of the login's origins. A sign-in that does not end with the sheet closed leaves no password in the page.
@@ -235,7 +241,7 @@ package struct WebAuthenticationSignIn {
     package enum Failure: Error, LocalizedError, Equatable {
         /// Another app than the login's is in front. Nil for the Home Screen and other system screens.
         case otherApplication(String?)
-        /// The app showed no web authentication sheet in time.
+        /// The app showed no form of its own and no web authentication sheet in time.
         case noSheet
         /// The sheet's page is not at one of the login's origins, or has no form that asks for a step of the sign-in
         /// with a control that submits it.
@@ -249,7 +255,9 @@ package struct WebAuthenticationSignIn {
             switch self {
             case .otherApplication(let identifier?): "The login’s app is not in front. \(identifier) is."
             case .otherApplication(nil): "The login’s app is not in front."
-            case .noSheet: "The app showed no web sign-in sheet. Start the sign-in in the app, then choose the login."
+            case .noSheet:
+                "The app showed no sign-in form and no web sign-in sheet. Open the app’s sign-in screen, then choose "
+                    + "the login."
             case .unrecognizedPage(let origin?):
                 "The page at \(origin) is not a sign-in page of the login: it is not at one of the login’s origins, "
                     + "or it has no form that asks for the user name or the password with a button that submits it."
@@ -292,8 +300,12 @@ package struct WebAuthenticationSignIn {
     }
 
     package func run() async throws {
-        let (page, first) = try await signInPage()
-        var origin = first
+        let page: InspectablePage
+        var origin: String
+        switch try await signInScreen() {
+        case .form(let form): return try await form.run()
+        case .page(let shown, let first): (page, origin) = (shown, first)
+        }
         do {
             switch login.webSignIn {
             case .automatic: try await fillSteps(of: page, at: &origin)
@@ -370,17 +382,36 @@ package struct WebAuthenticationSignIn {
         throw Failure.timedOut
     }
 
-    /// Waits for the sheet's sign-in page: accepts the system's consent alert on the way, and returns the page once it
-    /// is at one of the login's origins and asks for a step of the sign-in.
-    private func signInPage() async throws -> (InspectablePage, origin: String) {
+    /// What an app shows to sign in with.
+    private enum Screen {
+        /// The page of a web authentication session's sheet, with its origin.
+        case page(InspectablePage, origin: String)
+        /// A form on the app's own screen.
+        case form(NativeFormSignIn)
+    }
+
+    /// Waits for what the login's app shows to sign in with, so that a caller can ask as soon as it has opened the
+    /// app's sign-in screen. For a sheet, it accepts the system's consent alert on the way, and returns the page once
+    /// it is at one of the login's origins and asks for a step of the sign-in.
+    private func signInScreen() async throws -> Screen {
         let deadline = ContinuousClock.now + pace.appearance
         var acceptedConsent: ContinuousClock.Instant?
         var lastOrigin: String?
         var sawSheet = false
         var unreadable: (any Error)?
+        var unrecognizedForm: NativeFormSignIn.Failure?
         while true {
             if let application = try await device.frontmostApplication() {
                 if application.bundleIdentifier == login.applicationIdentifier {
+                    // A screen that is still coming up can have its password field before its button.
+                    do {
+                        let form = try NativeFormSignIn(
+                            device: device, login: login, password: password, in: application, pace: pace)
+                        if let form { return .form(form) }
+                        unrecognizedForm = nil
+                    } catch let failure as NativeFormSignIn.Failure {
+                        unrecognizedForm = failure
+                    }
                     for page in try await device.pages() where page.bundleIdentifier == Self.sheetService {
                         // The pages of sheets that closed stay listed, and one of them that cannot be read does not
                         // keep the sign-in from the sheet that is up.
@@ -396,7 +427,7 @@ package struct WebAuthenticationSignIn {
                         lastOrigin = state.origin
                         // The login's own script decides what a page asks for, once the page has been read in.
                         if isAllowed(state.origin), login.webSignIn == .script ? state.isLoaded : state.step != nil {
-                            return (page, state.origin)
+                            return .page(page, origin: state.origin)
                         }
                     }
                 } else if application.bundleIdentifier != Self.springBoard {
@@ -419,6 +450,7 @@ package struct WebAuthenticationSignIn {
                 // After the alert is answered, the system stays in front until the sheet is up.
             }
             guard ContinuousClock.now < deadline else {
+                if let unrecognizedForm { throw unrecognizedForm }
                 if sawSheet { throw Failure.unrecognizedPage(origin: lastOrigin) }
                 // A page that could not be read may have been the sheet's, such as one that another client inspects.
                 throw unreadable ?? Failure.noSheet

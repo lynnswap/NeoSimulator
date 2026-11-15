@@ -93,6 +93,13 @@ extension LoginStore {
                         failure.localizedDescription
                     }
                 return .signIn(SignInOutcome(kind, reason: reason))
+            } catch let failure as NativeFormSignIn.Failure {
+                let kind: SignInOutcome.Kind =
+                    switch failure {
+                    case .severalPasswordFields, .noButton: .unrecognized
+                    case .notFilled, .rejected, .timedOut: .failed
+                    }
+                return .signIn(SignInOutcome(kind, reason: failure.localizedDescription))
             } catch let failure as WebInspectorFailure {
                 // What a page's script threw, and what a page answered, are the page's words, which can repeat what
                 // was filled into it. The tool gets NeoSimulator's own words only.

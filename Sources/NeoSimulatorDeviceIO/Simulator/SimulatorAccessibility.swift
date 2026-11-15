@@ -53,10 +53,33 @@ package struct SimulatorAccessibilityFailure: LocalizedError, Equatable {
     }
 }
 
-/// Reads elements through the accessibility translator's requests to one device.
+/// What an assistive technology does to an element.
+package enum SimulatorAccessibilityAction: Equatable, Sendable {
+    /// Presses the element, as a button.
+    case press
+    /// Sets the element's value, as a text field's. The app gets the value whole, without keys or a keyboard.
+    case setValue(String)
+}
+
+/// Why an element did not get an action.
+package enum SimulatorAccessibilityActionFailure: LocalizedError, Equatable {
+    /// The app no longer has the element where it was read.
+    case elementGone
+    /// The element answered that it did not take the action.
+    case refused
+
+    package var errorDescription: String? {
+        switch self {
+        case .elementGone: "The app no longer shows the element."
+        case .refused: "The element did not take the action."
+        }
+    }
+}
+
+/// Reads and changes elements through the accessibility translator's requests to one device.
 ///
-/// A request names no client, so an app answers with the elements that VoiceOver reads: those accessible on the
-/// screen now. A client that asks for the automation tree also gets elements that a sheet covers.
+/// A request that names no client is answered with the elements that VoiceOver reads: those accessible on the screen
+/// now. A client that asks for the automation tree also gets the elements that an alert or a sheet covers.
 struct SimulatorAccessibilityReader {
     /// A translation object's process and its number within that process, which together name one element.
     struct Identity: Hashable {
@@ -64,11 +87,26 @@ struct SimulatorAccessibilityReader {
         let objectID: UInt64
     }
 
-    /// The translator's request types that a read sends.
+    /// The translator's request types that the reader sends.
     enum Request: UInt64 {
+        case application = 1
         case frontmostApplication = 4
         case attributes = 5
         case hitTest = 6
+        case action = 7
+        case setAttribute = 8
+    }
+
+    /// A request to the guest's translator.
+    struct Message {
+        var request: Request
+        /// The translation object that the request is about, or nil for none.
+        var element: AnyObject?
+        var parameters: [String: Any] = [:]
+        /// The translator's number of the attribute that the request sets, or 0.
+        var attribute: UInt64 = 0
+        /// The translator's number of the action that the request performs, or 0.
+        var action: UInt64 = 0
     }
 
     /// The translator's attribute numbers that a read asks for.
@@ -85,6 +123,8 @@ struct SimulatorAccessibilityReader {
 
     /// The translator's subrole number for a secure text field.
     private static let secureTextField = 5
+    /// The translator's action number for a press.
+    private static let press: UInt64 = 5
     /// The translator's error number for nothing accessible at a point, or an element that is gone.
     private static let noElement: UInt64 = 8
 
@@ -94,8 +134,8 @@ struct SimulatorAccessibilityReader {
         var result: Any?
     }
 
-    /// Sends a request about `element`, a translation object, or about none, and waits for the guest's answer.
-    let send: (_ request: Request, _ element: AnyObject?, _ parameters: [String: Any]) throws -> Answer
+    /// Sends a request and waits for the guest's answer.
+    let send: (Message) throws -> Answer
     /// Names a translation object, or nil for an object that is not one.
     let identity: (AnyObject) throws -> Identity?
 
@@ -114,22 +154,56 @@ struct SimulatorAccessibilityReader {
         return try read(found as AnyObject, descending: false, ancestors: &ancestors)
     }
 
+    /// The application of a guest process with its elements, or nil if the guest names none for the process. An
+    /// application that is not on the screen answers without elements.
+    func application(processIdentifier: Int32) throws -> SimulatorAccessibilityElement? {
+        guard let root = try result(of: .application, nil, ["pid": processIdentifier]) else { return nil }
+        var ancestors: Set<Identity> = []
+        return try read(root as AnyObject, descending: true, ancestors: &ancestors)
+    }
+
+    /// Performs `action` on the element of its process's application that is what `element` was read as: of the same
+    /// role, at the same place, with the same identifier. A press that the element refuses, and an element that the
+    /// application no longer has, throw a ``SimulatorAccessibilityActionFailure``.
+    ///
+    /// An element that takes no value answers a request to set one like one that does, so a caller that needs the
+    /// value to be there reads it afterwards.
+    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) throws {
+        var ancestors: Set<Identity> = []
+        guard let root = try result(of: .application, nil, ["pid": element.processIdentifier]),
+            let object = try find(element, under: root as AnyObject, ancestors: &ancestors)
+        else { throw SimulatorAccessibilityActionFailure.elementGone }
+        let message =
+            switch action {
+            case .press: Message(request: .action, element: object, action: Self.press)
+            case .setValue(let value):
+                Message(
+                    request: .setAttribute, element: object, parameters: ["value": value],
+                    attribute: UInt64(Attribute.value.rawValue))
+            }
+        let answer = try send(message)
+        guard answer.error != Self.noElement else { throw SimulatorAccessibilityActionFailure.elementGone }
+        guard answer.error == 0 else { throw SimulatorAccessibilityFailure(code: answer.error) }
+        if action == .press, (answer.result as? NSNumber)?.boolValue != true {
+            throw SimulatorAccessibilityActionFailure.refused
+        }
+    }
+
     /// The result of a request, or nil where the guest has no element for it.
     private func result(of request: Request, _ element: AnyObject?, _ parameters: [String: Any]) throws -> Any? {
-        let answer = try send(request, element, parameters)
+        let answer = try send(Message(request: request, element: element, parameters: parameters))
         guard answer.error != Self.noElement else { return nil }
         guard answer.error == 0 else { throw SimulatorAccessibilityFailure(code: answer.error) }
         return answer.result
     }
 
-    /// Reads an element, or nothing for one that is gone by the time it is asked.
-    private func read(
-        _ object: AnyObject, descending: Bool, ancestors: inout Set<Identity>
-    ) throws -> SimulatorAccessibilityElement? {
-        // An element that lists one of its ancestors would never end the read.
-        guard let identity = try identity(object), !ancestors.contains(identity) else { return nil }
+    /// What an element answers about itself, with the translation objects of its children if it is asked for them.
+    /// Nothing for an element that is gone by the time it is asked.
+    private func description(
+        of object: AnyObject, identity: Identity, withChildren: Bool
+    ) throws -> (element: SimulatorAccessibilityElement, children: [AnyObject])? {
         var attributes = Attribute.allCases
-        if !descending { attributes.removeAll { $0 == .children } }
+        if !withChildren { attributes.removeAll { $0 == .children } }
         let asked = ["attributes": attributes.map { NSNumber(value: $0.rawValue) }]
         guard let answer = try result(of: .attributes, object, asked) as? NSDictionary else { return nil }
         func value(_ attribute: Attribute) -> Any? { answer[NSNumber(value: attribute.rawValue)] }
@@ -140,17 +214,50 @@ struct SimulatorAccessibilityReader {
             default: nil
             }
         }
-        var element = SimulatorAccessibilityElement(
+        let element = SimulatorAccessibilityElement(
             role: (value(.role) as? NSNumber).flatMap { SimulatorAccessibilityElement.Role(rawValue: $0.intValue) },
             isSecureTextField: (value(.subrole) as? NSNumber)?.intValue == Self.secureTextField,
             label: text(.label), value: text(.value), identifier: text(.identifier),
             frame: (value(.frame) as? NSValue)?.rectValue ?? .zero, processIdentifier: identity.processIdentifier,
             bundleIdentifier: text(.bundleIdentifier))
+        return (element, value(.children) as? [AnyObject] ?? [])
+    }
+
+    /// Reads an element, or nothing for one that is gone by the time it is asked.
+    private func read(
+        _ object: AnyObject, descending: Bool, ancestors: inout Set<Identity>
+    ) throws -> SimulatorAccessibilityElement? {
+        // An element that lists one of its ancestors would never end the read.
+        guard let identity = try identity(object), !ancestors.contains(identity),
+            var (element, children) = try description(of: object, identity: identity, withChildren: descending)
+        else { return nil }
         ancestors.insert(identity)
         defer { ancestors.remove(identity) }
-        for child in value(.children) as? [AnyObject] ?? [] {
+        for child in children {
             if let read = try read(child, descending: true, ancestors: &ancestors) { element.children.append(read) }
         }
         return element
+    }
+
+    /// The translation object, at or under `object`, of the element that `wanted` was read as.
+    private func find(
+        _ wanted: SimulatorAccessibilityElement, under object: AnyObject, ancestors: inout Set<Identity>
+    ) throws -> AnyObject? {
+        guard let identity = try identity(object), !ancestors.contains(identity),
+            let (element, children) = try description(of: object, identity: identity, withChildren: true)
+        else { return nil }
+        // What an element holds and says changes while it is used, and where and what it is does not.
+        if element.role == wanted.role, element.isSecureTextField == wanted.isSecureTextField,
+            element.identifier == wanted.identifier, element.frame == wanted.frame,
+            element.processIdentifier == wanted.processIdentifier
+        {
+            return object
+        }
+        ancestors.insert(identity)
+        defer { ancestors.remove(identity) }
+        for child in children {
+            if let found = try find(wanted, under: child, ancestors: &ancestors) { return found }
+        }
+        return nil
     }
 }

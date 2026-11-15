@@ -3,9 +3,9 @@ import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 
 extension LoginStore {
-    /// Signs in to the web authentication session that `session`'s device shows, with the login that `id` names as
-    /// the keychain holds it now. Throws what kept the sign-in from finishing, such as a
-    /// ``WebAuthenticationSignIn/Failure``.
+    /// Signs in to what the login's app shows on `session`'s device, its own sign-in form or a web authentication
+    /// session, with the login that `id` names as the keychain holds it now. Throws what kept the sign-in from
+    /// finishing, such as a ``WebAuthenticationSignIn/Failure`` or a ``NativeFormSignIn/Failure``.
     ///
     /// One sign-in runs on a simulator at a time, whether the menu or the command-line tool asked for it: two would
     /// fill and submit the same form, and each would clear what the other filled in.
@@ -57,4 +57,12 @@ private final class SessionSignInDevice: SignInDevice {
     }
 
     func tap(at point: CGPoint) async throws { try await session.tap(at: point) }
+
+    func application(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement? {
+        try await session.display.accessibilityElements(ofProcess: processIdentifier)
+    }
+
+    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) async throws {
+        try await session.display.performAccessibilityAction(action, on: element)
+    }
 }

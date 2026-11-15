@@ -174,6 +174,16 @@ private struct LoginEditor: View {
                 }
             }
             Section {
+                TextField("Sign-In Button", text: $draft.signInButton, prompt: Text("Automatic"))
+            } footer: {
+                Text(
+                    """
+                    For the app’s own sign-in form: the label of the button that submits it, or # and its \
+                    accessibility identifier, as in #signIn. Without one, NeoSimulator presses the first button after \
+                    the password field.
+                    """)
+            }
+            Section {
                 Toggle("Allow automated sign-in", isOn: $draft.allowsAutomation)
             }
             if let issue = draft.issue {

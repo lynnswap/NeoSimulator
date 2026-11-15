@@ -54,6 +54,14 @@ package protocol DeviceSessionDisplay: AnyObject {
     /// The accessibility element at `point` of the integrated screen, in points from its top-left corner, as
     /// `SimulatorDevice.accessibilityElement(at:)` reads it. Throws for a display that reads none.
     func accessibilityElement(at point: CGPoint) async throws -> SimulatorAccessibilityElement?
+    /// The application of a guest process with its accessibility elements, among them those that an alert or a sheet
+    /// covers, as `SimulatorDevice.accessibilityElements(ofProcess:)` reads them. Throws for a display that reads none.
+    func accessibilityElements(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement?
+    /// Performs an action on an accessibility element of an app, as `SimulatorDevice.performAccessibilityAction(_:on:)`
+    /// does. Throws for a display that reads no accessibility elements.
+    func performAccessibilityAction(
+        _ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement
+    ) async throws
     /// A connection to the device's Web Inspector service. Throws for a device that has none.
     func webInspector() async throws -> SimulatorWebInspector
     /// Builds a remote touch message held until its end phase, for `send(_:completion:)`.
@@ -137,6 +145,16 @@ extension DeviceSessionDisplay {
         throw SimulatorError.unavailable("This display reads no accessibility elements.")
     }
     package func accessibilityElement(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
+        throw SimulatorError.unavailable("This display reads no accessibility elements.")
+    }
+    package func accessibilityElements(
+        ofProcess processIdentifier: Int32
+    ) async throws -> SimulatorAccessibilityElement? {
+        throw SimulatorError.unavailable("This display reads no accessibility elements.")
+    }
+    package func performAccessibilityAction(
+        _ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement
+    ) async throws {
         throw SimulatorError.unavailable("This display reads no accessibility elements.")
     }
     package func webInspector() async throws -> SimulatorWebInspector {

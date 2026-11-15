@@ -73,6 +73,9 @@ package struct SavedLogin: Equatable, Sendable, Identifiable {
     /// The login's own script, which fills a sign-in page where `webSignIn` says so. It is kept while the built-in
     /// filling is chosen, so that a person can go back to it.
     package var script: String
+    /// Names the button that submits the app's own sign-in form: its label, or `#` and its accessibility identifier.
+    /// Empty for the first button after the form's password field.
+    package var signInButton: String
 
     /// How a web sign-in fills a login into a page.
     package enum WebSignIn: String, Codable, Sendable {
@@ -86,7 +89,8 @@ package struct SavedLogin: Equatable, Sendable, Identifiable {
 
     package init(
         applicationIdentifier: String, label: String, userName: String, origins: [WebOrigin] = [],
-        allowsAutomation: Bool = true, webSignIn: WebSignIn = .automatic, script: String = ""
+        allowsAutomation: Bool = true, webSignIn: WebSignIn = .automatic, script: String = "",
+        signInButton: String = ""
     ) {
         self.applicationIdentifier = applicationIdentifier
         self.label = label
@@ -95,5 +99,6 @@ package struct SavedLogin: Equatable, Sendable, Identifiable {
         self.allowsAutomation = allowsAutomation
         self.webSignIn = webSignIn
         self.script = script
+        self.signInButton = signInButton
     }
 }

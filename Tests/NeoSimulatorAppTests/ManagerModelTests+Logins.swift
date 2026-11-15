@@ -141,18 +141,18 @@ extension ManagerModelTests {
     }
 
     private func premium(
-        userName: String = "premium@example.com", origins: [String], script: String? = nil
+        userName: String = "premium@example.com", origins: [String], script: String? = nil, signInButton: String = ""
     ) -> SavedLogin {
         SavedLogin(
             applicationIdentifier: "com.example.app", label: "Premium", userName: userName,
             origins: origins.map { WebOrigin($0)! }, webSignIn: script == nil ? .automatic : .script,
-            script: script ?? "")
+            script: script ?? "", signInButton: signInButton)
     }
 
     /// A sign-in that looks often and does not wait long, for a device that answers at once.
     private func signIn(
         on device: SignInFixture, userName: String = "premium@example.com",
-        origins: [String] = ["https://login.example.com"], script: String? = nil
+        origins: [String] = ["https://login.example.com"], script: String? = nil, signInButton: String = ""
     ) -> WebAuthenticationSignIn {
         var pace = WebAuthenticationSignIn.Pace()
         pace.appearance = .milliseconds(100)
@@ -160,8 +160,9 @@ extension ManagerModelTests {
         pace.interval = .milliseconds(5)
         pace.tapAgain = .milliseconds(20)
         return WebAuthenticationSignIn(
-            device: device, login: premium(userName: userName, origins: origins, script: script), password: "s3cret",
-            pace: pace)
+            device: device,
+            login: premium(userName: userName, origins: origins, script: script, signInButton: signInButton),
+            password: "s3cret", pace: pace)
     }
 
     @Test func aLoginsOwnScriptRunsOnceInEachPageAtItsOriginsUntilTheSheetCloses() async throws {
@@ -203,7 +204,7 @@ extension ManagerModelTests {
     @Test func aLoginKeepsItsScriptInTheKeychainAndAnOlderItemSignsInAutomatically() async throws {
         let keychain = InMemoryLoginKeychain()
         let store = LoginStore(keychain: keychain)
-        var login = premium(origins: ["https://login.example.com"], script: "sign()")
+        var login = premium(origins: ["https://login.example.com"], script: "sign()", signInButton: "#signIn")
         try await store.save(login, password: "s3cret")
         await store.reload()
         #expect(store.logins == [login])
@@ -221,6 +222,87 @@ extension ManagerModelTests {
         try keychain.add(Data(older.utf8), account: "com.example.app Older")
         await store.reload()
         #expect(store.logins.first { $0.label == "Older" }?.webSignIn == .automatic)
+    }
+
+    @Test func aSignInFillsTheAppsOwnFormPressesItsButtonAndWaitsForTheFormToGo() async throws {
+        func element(
+            _ role: SimulatorAccessibilityElement.Role, _ identifier: String, label: String? = nil, value: String? = nil,
+            row: CGFloat
+        ) -> SimulatorAccessibilityElement {
+            SimulatorAccessibilityElement(
+                role: role, isSecureTextField: identifier.hasPrefix("password"), label: label, value: value,
+                identifier: identifier, frame: CGRect(x: 16, y: 300 + row * 50, width: 370, height: 34),
+                processIdentifier: 5)
+        }
+        /// The app with elements of its own.
+        func application(_ children: [SimulatorAccessibilityElement]) -> SimulatorAccessibilityElement {
+            var application = SignInFixture.application("com.example.app")
+            application.children = children
+            return application
+        }
+        /// The app's sign-in screen, where a button that does not sign in comes before the one that does.
+        func form(userName: String = "", password: String = "") -> SimulatorAccessibilityElement {
+            application([
+                element(.textField, "user", value: userName.isEmpty ? "Email" : userName, row: 0),
+                element(
+                    .textField, "password", value: password.isEmpty ? "Password" : String(repeating: "•", count: password.count),
+                    row: 1),
+                element(.button, "forgot", label: "Forgot password?", row: 2),
+                element(.button, "signIn", label: "Sign In", row: 3),
+            ])
+        }
+        let home = application([element(.staticText, "welcome", label: "Welcome", row: 0)])
+
+        // The button is the first after the password field, or the one that the login names by label or identifier.
+        #expect(try NativeFormSignIn.form(in: form(), button: "")?.button.identifier == "forgot")
+        #expect(try NativeFormSignIn.form(in: form(), button: "Sign In")?.button.identifier == "signIn")
+        #expect(try NativeFormSignIn.form(in: form(), button: "#signIn")?.button.identifier == "signIn")
+        #expect(try NativeFormSignIn.form(in: home, button: "") == nil)
+        // A screen with two password fields registers an account or changes a password.
+        var registration = form()
+        registration.children.append(element(.textField, "passwordAgain", row: 4))
+        #expect(throws: NativeFormSignIn.Failure.severalPasswordFields) {
+            try NativeFormSignIn.form(in: registration, button: "")
+        }
+
+        /// How a sign-in ends on the app's form, which shows `shown` once its button is pressed, and what it did.
+        func signedIn(
+            button: String = "Sign In", then shown: @escaping (SignInFixture) -> Void
+        ) async -> (failure: (any Error)?, actions: [String]) {
+            let device = SignInFixture()
+            var (userName, password) = ("", "")
+            device.front = form()
+            device.onAction = { action, element in
+                switch action {
+                case .setValue(let value) where element.identifier == "user": userName = value
+                case .setValue(let value): password = value
+                case .press: return shown(device)
+                }
+                device.covered = form(userName: userName, password: password)
+                if device.front?.children.first?.identifier == "user" { device.front = device.covered }
+            }
+            var failure: (any Error)?
+            do { try await signIn(on: device, signInButton: button).run() } catch { failure = error }
+            return (failure, device.actions)
+        }
+        let filled = ["set user to premium@example.com", "set password to s3cret"]
+
+        var ended = await signedIn { device in (device.front, device.covered) = (home, home) }
+        #expect(ended.failure == nil && ended.actions == filled + ["press signIn"])
+
+        // An alert that says why the login was not taken covers the form, which the app still has under it. What was
+        // filled in does not stay there.
+        ended = await signedIn { device in
+            device.front = application([element(.staticText, "alert", label: "Wrong password", row: 1)])
+        }
+        #expect(ended.failure as? NativeFormSignIn.Failure == .rejected)
+        #expect(ended.actions == filled + ["press signIn", "set password to ", "set user to "])
+
+        // The login names a button that the screen does not have: nothing is filled in.
+        ended = await signedIn(button: "Log In") { _ in }
+        #expect(
+            ended.failure as? NativeFormSignIn.Failure == .noButton(named: "Log In", buttons: ["#forgot", "#signIn"]))
+        #expect(ended.actions.isEmpty)
     }
 
     @Test func aSignInGoesOnFromTheUserNamesPageToThePasswordsPageAtAnotherOfItsOrigins() async throws {
@@ -450,6 +532,26 @@ private final class SignInFixture: SignInDevice {
 
     func element(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
         offer.first { $0.contains(point) }.map { SimulatorAccessibilityElement(role: .button, frame: $0, processIdentifier: 7) }
+    }
+
+    /// The login's app as its process answers for its elements, also while an alert covers them. Without it, as `front`.
+    var covered: SimulatorAccessibilityElement?
+    /// Runs when an element is asked to take an action.
+    var onAction: ((SimulatorAccessibilityAction, SimulatorAccessibilityElement) -> Void)?
+    /// The actions that elements were asked to take, each with its element's identifier.
+    private(set) var actions: [String] = []
+
+    func application(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement? {
+        covered ?? front
+    }
+
+    func perform(_ action: SimulatorAccessibilityAction, on element: SimulatorAccessibilityElement) async throws {
+        try Task.checkCancellation()
+        switch action {
+        case .press: actions.append("press \(element.identifier ?? "")")
+        case .setValue(let value): actions.append("set \(element.identifier ?? "") to \(value)")
+        }
+        onAction?(action, element)
     }
 
     func pages() async throws -> [InspectablePage] { page == nil ? [] : [Self.sheet] }

@@ -21,18 +21,35 @@ struct SimulatorAccessibilityTests {
         }
     }
 
-    /// A translator that answers for `frontmost` and for the element at any point, `hit`.
+    /// A translator that answers for `frontmost`, for the element at any point, `hit`, and for the application of any
+    /// process, `application`.
     private final class Translator {
         var frontmost: Element?
         var hit: Element?
+        var application: Element?
+        /// Whether an element takes a press.
+        var takesPress = true
+        /// The actions that elements took, each with its element's number.
+        var performed: [String] = []
         /// The attribute numbers that each request for attributes asked for.
         var asked: [[Int]] = []
         var points: [CGPoint] = []
 
         var reader: SimulatorAccessibilityReader {
             SimulatorAccessibilityReader(
-                send: { [self] request, element, parameters in
-                    switch request {
+                send: { [self] message in
+                    let (element, parameters) = (message.element, message.parameters)
+                    switch message.request {
+                    case .application: return .init(result: application)
+                    case .action:
+                        guard takesPress, let element = element as? Element else { return .init(result: false) }
+                        performed.append("action \(message.action) on \(element.objectID)")
+                        return .init(result: true)
+                    case .setAttribute:
+                        guard let element = element as? Element else { return .init(error: 8) }
+                        performed.append(
+                            "set \(message.attribute) of \(element.objectID) to \(parameters["value"] ?? "nothing")")
+                        return .init()
                     case .frontmostApplication: return .init(result: frontmost)
                     case .hitTest:
                         points.append((parameters["point"] as? NSValue)?.pointValue ?? .zero)
@@ -97,6 +114,31 @@ struct SimulatorAccessibilityTests {
         #expect(translator.points == [CGPoint(x: 275, y: 529)])
         #expect(translator.asked.count == 1 && translator.asked[0].contains(children) == false)
         #expect(try Translator().reader.element(at: .zero) == nil)
+    }
+
+    @Test func anActionGoesToTheElementThatWasReadWhereTheAppStillHasIt() throws {
+        let translator = Translator()
+        let field = Element(
+            7, 2, [role: 15, subrole: 5, identifier: "password", frame: NSValue(rect: CGRect(x: 16, y: 441, width: 370, height: 34))])
+        let button = Element(7, 3, [role: 2, label: "Sign In", frame: NSValue(rect: CGRect(x: 149, y: 491, width: 104, height: 20))])
+        translator.application = Element(7, 1, [role: 1, children: [field, button]])
+        let read = try #require(try translator.reader.application(processIdentifier: 7))
+
+        try translator.reader.perform(.setValue("s3cret"), on: read.children[0])
+        try translator.reader.perform(.press, on: read.children[1])
+        // The value attribute, and the action that presses.
+        #expect(translator.performed == ["set 53 of 2 to s3cret", "action 5 on 3"])
+
+        translator.takesPress = false
+        #expect(throws: SimulatorAccessibilityActionFailure.refused) {
+            try translator.reader.perform(.press, on: read.children[1])
+        }
+        // The field is no longer where it was read: another element may be there now.
+        field.attributes?[frame] = NSValue(rect: CGRect(x: 16, y: 541, width: 370, height: 34))
+        #expect(throws: SimulatorAccessibilityActionFailure.elementGone) {
+            try translator.reader.perform(.setValue("s3cret"), on: read.children[0])
+        }
+        #expect(translator.performed.count == 2)
     }
 
     @Test func anElementThatAnswersWithAnErrorFailsTheRead() throws {

@@ -19,6 +19,7 @@ final class LoginsSettingsModel {
         var allowsAutomation = true
         var webSignIn = SavedLogin.WebSignIn.automatic
         var script = ""
+        var signInButton = ""
         var issue: String?
 
         init() { existing = nil }
@@ -32,6 +33,7 @@ final class LoginsSettingsModel {
             allowsAutomation = login.allowsAutomation
             webSignIn = login.webSignIn
             script = login.script
+            signInButton = login.signInButton
         }
 
         var canSave: Bool {
@@ -89,7 +91,7 @@ final class LoginsSettingsModel {
                 let login = SavedLogin(
                     applicationIdentifier: draft.applicationIdentifier, label: draft.label, userName: draft.userName,
                     origins: try WebOrigin.list(from: draft.origins), allowsAutomation: draft.allowsAutomation,
-                    webSignIn: draft.webSignIn, script: draft.script)
+                    webSignIn: draft.webSignIn, script: draft.script, signInButton: draft.signInButton)
                 selection = try await store.save(login, password: draft.password, replacing: draft.existing).id
                 self.draft = nil
             } catch {

@@ -54,6 +54,8 @@ extension ManagerModelTests {
         #expect(await kind(WebAuthenticationSignIn.Failure.otherApplication("com.example.c")) == .refused)
         #expect(await kind(WebAuthenticationSignIn.Failure.unrecognizedPage(origin: "https://other.example")) == .unrecognized)
         #expect(await kind(WebAuthenticationSignIn.Failure.rejected) == .failed)
+        #expect(await kind(NativeFormSignIn.Failure.noButton(named: nil, buttons: [])) == .unrecognized)
+        #expect(await kind(NativeFormSignIn.Failure.rejected) == .failed)
         // What a page's script threw, and the origin that a page moved to, are the page's words. They can repeat what
         // was filled into the page, and do not reach the tool.
         for failure: any Error in [

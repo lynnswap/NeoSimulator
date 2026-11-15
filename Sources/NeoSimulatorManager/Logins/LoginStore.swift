@@ -82,6 +82,7 @@ package final class LoginStore {
         login.applicationIdentifier = login.applicationIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         login.label = login.label.trimmingCharacters(in: .whitespacesAndNewlines)
         login.userName = login.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        login.signInButton = login.signInButton.trimmingCharacters(in: .whitespacesAndNewlines)
         // A space separates the identifier from the label in an item's account.
         guard !login.applicationIdentifier.isEmpty, !login.applicationIdentifier.contains(where: \.isWhitespace) else {
             throw Failure.invalidApplicationIdentifier
@@ -132,9 +133,10 @@ private struct LoginRecord: Codable {
     var password: String
     var origins: [WebOrigin]
     var allowsAutomation: Bool
-    // An item that was saved before a login could have a script holds neither of these.
+    // An item that was saved before a login could have these holds none of them.
     var webSignIn: SavedLogin.WebSignIn?
     var script: String?
+    var signInButton: String?
 
     init(_ login: SavedLogin, password: String) {
         applicationIdentifier = login.applicationIdentifier
@@ -145,12 +147,14 @@ private struct LoginRecord: Codable {
         allowsAutomation = login.allowsAutomation
         webSignIn = login.webSignIn
         script = login.script
+        signInButton = login.signInButton
     }
 
     var login: SavedLogin {
         SavedLogin(
             applicationIdentifier: applicationIdentifier, label: label, userName: userName, origins: origins,
-            allowsAutomation: allowsAutomation, webSignIn: webSignIn ?? .automatic, script: script ?? "")
+            allowsAutomation: allowsAutomation, webSignIn: webSignIn ?? .automatic, script: script ?? "",
+            signInButton: signInButton ?? "")
     }
 }
 
