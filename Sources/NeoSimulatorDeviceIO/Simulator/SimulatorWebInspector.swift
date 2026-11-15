@@ -254,8 +254,9 @@ package final class SimulatorWebInspector: @unchecked Sendable {
         listings[page.application] = nil
         try connection.send("_rpc_forwardGetListing:", ["WIRApplicationIdentifierKey": page.application])
         while listings[page.application] == nil {
+            // A process that does not answer has not said that the page is gone.
             guard ContinuousClock.now < deadline, try next(from: connection, before: deadline) != nil else {
-                throw WebInspectorFailure.pageGone
+                throw Self.noAnswer(answerLimit)
             }
         }
         guard let listed = listings[page.application]?.first(where: { $0.identifier == page.identifier }) else {
