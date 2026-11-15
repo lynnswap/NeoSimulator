@@ -11,9 +11,10 @@ final class SettingsViewController: NSTabViewController {
     let devices: DevicesSettingsViewController
     let capture: CaptureSettingsViewController
     let serviceProfiles: ServiceProfilesSettingsViewController
-    let logins: LoginsSettingsViewController
     let licenses: NSViewController
     #if DEBUG
+    /// Saved logins are not in a release yet.
+    let logins: LoginsSettingsViewController
     private let debugModel: SimulatorManagerModel
     var resetOnboarding: (() -> Void)?
     private(set) lazy var debug = DebugSettingsViewController(model: debugModel) { [weak self] in
@@ -30,21 +31,27 @@ final class SettingsViewController: NSTabViewController {
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
         serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
-        logins = LoginsSettingsViewController(store: model.logins)
         licenses = makeLicenses()
         #if DEBUG
+        logins = LoginsSettingsViewController(store: model.logins)
         debugModel = model
         #endif
         super.init(nibName: nil, bundle: nil)
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
         capture.sizingOptions = [.preferredContentSize]
+        #if DEBUG
         logins.sizingOptions = [.preferredContentSize]
+        #endif
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
         var tabs: [(NSViewController, String)] = [(general, "gear"), (devices, "iphone"), (capture, "camera"),
-                                                  (serviceProfiles, "cpu"), (logins, "key"), (licenses, "doc.text")]
+                                                  (serviceProfiles, "cpu")]
+        #if DEBUG
+        tabs.append((logins, "key"))
+        #endif
+        tabs.append((licenses, "doc.text"))
         #if DEBUG
         tabs.append((debug, "hammer"))
         #endif

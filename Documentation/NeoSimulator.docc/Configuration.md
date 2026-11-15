@@ -58,10 +58,11 @@ do not select another host.
 ## App preferences
 
 **NeoSimulator → Settings…** (Command-,) contains General, Devices, Capture,
-Service Profiles, Logins, and Licenses settings; Debug builds also show Debug.
+Service Profiles, and Licenses settings; Debug builds also show Logins and Debug.
 General controls the preferred display host, UI framework installation, keeping devices running when closing or
 quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
+Saved logins are in Debug builds only for now.
 Logins saves an app's user name and password in your login keychain, under the app's bundle identifier and a
 label, with the web origins where the login may be used. The pane never shows a saved password.
 **Device → Sign In with Saved Login** signs in to what the frontmost app of the active simulator shows: a
