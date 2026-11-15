@@ -583,11 +583,11 @@ enum GuestStartup: Equatable, Sendable {
         }
         // CoreSimulator's own monitor stops at a terminal status, so nothing would report a later one.
         guard !status.isTerminal else {
-            // WORKAROUND: FB25582142, FB25221101, #606. DataMigrator saves a migration as failed when its progress
-            // window does not support the device's screen class, as on iPhone Air and iPhone Duo, and each later boot
-            // reports that again without migrating. The guest starts either way, so only Booted is left to report it,
-            // as for a boot without a status. Remove this once a runtime migrates those devices without reporting the
-            // failure.
+            // WORKAROUND: FB25582236, FB25582241, #606. DataMigrator saves a migration as failed when its progress
+            // window does not support the device's screen class: iPhone Air's 39 is not in its table, and iPhone Duo
+            // has no main-screen-class in MobileGestalt. Each later boot reports that again without migrating. The
+            // guest starts either way, so only Booted is left to report it, as for a boot without a status. Remove
+            // this once a runtime migrates those devices without reporting the failure.
             if status.value == 3 {
                 self = state == 3 ? .startedAfterFailedMigration : .starting("booting")
             } else {
