@@ -122,6 +122,22 @@ extension ManagerModelTests {
         #expect(!model.isBusy && model.store.logins.isEmpty)
     }
 
+    @Test func theStoreRunsWhatItIsAskedInOrderAndReturnsALoginWithItsPassword() async throws {
+        let store = LoginStore(keychain: InMemoryLoginKeychain())
+        let login = SavedLogin(
+            applicationIdentifier: "com.example.app", label: "Premium", userName: "premium@example.com",
+            origins: try [#require(WebOrigin("https://login.example.com"))])
+        // The read was asked for while the save had not yet written, and still finds what the save wrote.
+        let saving = Task { try await store.save(login, password: "s3cret") }
+        let reading = Task { try await store.credentials(for: login.id) }
+        _ = try await saving.value
+        let credentials = try await reading.value
+        #expect(credentials.login == login && credentials.password == "s3cret")
+
+        try await store.delete(login.id)
+        await #expect(throws: LoginStore.Failure.missingLogin) { try await store.credentials(for: login.id) }
+    }
+
     @Test func webOriginsReadASchemeAHostAndAPort() throws {
         #expect(WebOrigin("Example.com")?.text == "https://example.com")
         #expect(WebOrigin("https://example.com:443/") == WebOrigin("example.com"))
