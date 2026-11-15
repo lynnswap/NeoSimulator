@@ -35,8 +35,7 @@ struct NativeDeviceCanvasTests {
         presentation.magnification = 0.6
         #expect(presentation.naturalSize == CGSize(width: 400, height: 800))
         let recorder = RecorderView()
-        let composition = ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: 1200, height: 1000)
+        let composition = ZoomedComposition(size: CGSize(width: 1200, height: 1000)) {
             Recorder(view: recorder).frame(width: 200, height: 400)
                 .padding(EdgeInsets(top: 200, leading: 300, bottom: 0, trailing: 0))
         }
@@ -84,17 +83,17 @@ struct NativeDeviceCanvasTests {
         screen.position = CGPoint(x: 700, y: 700)
         surface.addSublayer(screen)
         let presentation = NativeCanvasPresentation()
-        presentation.viewport = NativeCanvasProjection.viewport(for: [screen], frameMargin: 0,
-            controlMargin: NativeCanvasProjection.hoverControlMargin(renderingHeight: surface.bounds.height))
+        // The device covers 200 × 400 points, from 300 to 100 points left of the surface's center.
+        presentation.viewport = NativeCanvasProjection.viewport(for: [screen], frameMargin: 0)
+        let margin = NativeCanvasProjection.hoverControlMargin(renderingHeight: surface.bounds.height)
+        presentation.controlMargin = margin
         presentation.pointScale = 2
-        let size = presentation.naturalSize
+        // Outside a canvas viewport the natural size has the controls' room in it.
+        #expect(presentation.naturalSize == CGSize(width: (200 + margin * 2) * 2, height: (400 + margin * 2) * 2))
         let control = RecorderView()
         control.isHidden = true
-        let composition = ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: 1200, height: 1000)
-            Recorder(view: control).frame(width: 30, height: 30)
-                .padding(EdgeInsets(top: 350, leading: 530, bottom: 0, trailing: 0))
-        }
+        let composition = ControlBesideDevice(view: control, size: CGSize(width: 1200, height: 1000),
+                                              deviceEdge: CGPoint(x: -100, y: -100))
         let hosting = NativeCanvasHostingView(rootView: AnyView(NativeCanvasRoot(
             presentation: presentation, shown: AnyView(composition), hidden: AnyView(composition),
             canvasPath: \.nativeCanvasTestFlag, zoomPath: \.nativeCanvasTestZoom)))
@@ -104,19 +103,131 @@ struct NativeDeviceCanvasTests {
         defer { window.close() }
         window.contentView = hosting
         for zoom: CGFloat in [0.5, 1, 2] {
+            // A canvas viewport places the device's frame, and the view extends the controls' room beyond it.
             presentation.magnification = zoom
-            window.setContentSize(CGSize(width: size.width * zoom, height: size.height * zoom))
+            #expect(presentation.naturalSize == CGSize(width: 400, height: 800))
+            // DeviceKit has drawn the device at the app's scale.
+            presentation.picture.ask(for: presentation.preferredZoom, from: CGSize(width: 200, height: 400))
+            presentation.picture.arrived()
+            window.setContentSize(CGSize(width: 400 * zoom + margin * 2, height: 800 * zoom + margin * 2))
             hosting.layoutSubtreeIfNeeded()
             control.isHidden = false
             hosting.layoutSubtreeIfNeeded()
             let frame = control.convert(control.bounds, to: hosting)
+            // The control keeps its size and its distance from the device's right edge at any magnification.
+            #expect(abs(frame.minX - (margin + 400 * zoom + 20)) < 0.5 && abs(frame.width - 30) < 0.5,
+                    "Shown at \(NSStringFromRect(frame))")
             #expect(hosting.bounds.contains(frame))
             #expect(control.visibleRect.contains(control.bounds))
             let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
             #expect(hosting.hitTest(point).map { $0 === control || $0.isDescendant(of: control) } == true)
-            #expect(presentation.naturalSize == size)
             control.isHidden = true
         }
+    }
+
+    @Test func deviceKitIsAskedForTheAppsScaleBetweenTheDevicesPhysicalSizeAndTheRenderingSurface() {
+        let presentation = NativeCanvasPresentation()
+        presentation.viewport = CGRect(x: -400, y: -500, width: 800, height: 1000)
+        presentation.surfaceSize = CGSize(width: 2000, height: 2000)
+        presentation.pointScale = 1.25
+        presentation.zoom = 1.2
+        #expect(presentation.preferredZoom == 1.5)
+        // Outside a canvas viewport the natural size has the room of DeviceKit's controls as it is at the device's
+        // physical size, so the app reduces what DeviceKit drew at that size.
+        presentation.zoom = 0.6
+        #expect(presentation.scale == 0.75 && presentation.preferredZoom == 1)
+        // A canvas viewport gives the controls their room at any zoom.
+        presentation.magnification = 1
+        #expect(presentation.scale == 0.75 && presentation.preferredZoom == 0.75)
+        // The device is 500 points high from the surface's center, which is 1000 from its edge. The controls
+        // need 100 of them.
+        presentation.controlMargin = 100
+        presentation.magnification = 4
+        #expect(presentation.scale == 3 && presentation.preferredZoom == 1.8)
+        // The app scales the picture the rest of the way, and the controls' room with it.
+        #expect(abs(presentation.canvasOutset - 100 * 3 / 1.8) < 0.001)
+        presentation.magnification = 1
+        #expect(presentation.canvasOutset == 100)
+    }
+
+    @Test func pictureThatDeviceKitMovesToAnotherZoomHasArrivedWhenItRestsThere() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: CGSize(width: 300, height: 400))
+        #expect(picture.askedZoom == 2 && picture.zoom == 1 && picture.isMoving)
+        // DeviceKit does not move while its window is hidden. The picture has stopped on its way, and goes on later.
+        picture.rested(at: CGSize(width: 450, height: 600))
+        #expect(picture.zoom == 1 && picture.isMoving)
+        // It is asked elsewhere meanwhile.
+        picture.ask(for: 3, from: CGSize(width: 450, height: 600))
+        picture.rested(at: CGSize(width: 600, height: 800))
+        #expect(picture.isMoving)
+        // The nearer parts of the device grow a little faster than the zoom.
+        picture.rested(at: CGSize(width: 905, height: 1209))
+        #expect(picture.zoom == 3 && !picture.isMoving)
+    }
+
+    @Test func pictureWhoseDeviceFoldsOnTheWayHasArrivedOnceItRests() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: CGSize(width: 300, height: 400))
+        // The device opens to twice its width while DeviceKit zooms, so its extent no longer shows the zoom.
+        picture.rested(at: CGSize(width: 1200, height: 800))
+        #expect(picture.zoom == 2 && !picture.isMoving)
+    }
+
+    @Test func pictureWhoseDisplayChangesOnTheWayHasArrivedOnceItRests() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: CGSize(width: 300, height: 400))
+        // On a display of a lower density DeviceKit draws the device smaller at the same zoom, so twice the zoom
+        // looks like a picture that stopped on its way.
+        picture.loseExtent()
+        picture.rested(at: CGSize(width: 480, height: 640))
+        #expect(picture.zoom == 2 && !picture.isMoving)
+    }
+
+    @Test func pictureOfADeviceThatDeviceKitHasNotDrawnIsAtTheZoomItIsAskedFor() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: nil)
+        #expect(picture.zoom == 2 && !picture.isMoving)
+    }
+
+    /// DeviceKit reports each step of a turning or folding device through its screen layers, and the projection reads
+    /// them whenever its view is laid out.
+    @Test func pictureWhoseDeviceTurnsWhileDeviceKitZoomsArrivesOnceTheDeviceRests() async throws {
+        _ = NSApplication.shared
+        let surface = CALayer()
+        surface.bounds = CGRect(x: 0, y: 0, width: 2000, height: 2000)
+        let screen = CALayer()
+        screen.bounds = CGRect(x: 0, y: 0, width: 200, height: 400)
+        screen.position = CGPoint(x: 1000, y: 1000)
+        surface.addSublayer(screen)
+        let presentation = NativeCanvasPresentation()
+        let composition = ZoomedComposition(size: CGSize(width: 1200, height: 1000)) { Color.clear }
+        let hosting = NativeCanvasHostingView(rootView: AnyView(NativeCanvasRoot(
+            presentation: presentation, shown: AnyView(composition), hidden: AnyView(composition),
+            canvasPath: \.nativeCanvasTestFlag, zoomPath: \.nativeCanvasTestZoom)))
+        hosting.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.projection = NativeCanvasProjection(hosting: hosting, presentation: presentation, pointsPerInch: nil,
+                                                    frameMargin: { 0 }, screenLayers: { _ in [screen] })
+        hosting.layoutSubtreeIfNeeded()
+        func wait(for condition: @escaping @MainActor () -> Bool) async -> Bool {
+            let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                MainActor.assumeIsolated { condition() }
+            }, object: nil)
+            return await XCTWaiter.fulfillment(of: [expectation], timeout: 5) == .completed
+        }
+        try #require(await wait { presentation.viewport?.size == CGSize(width: 200, height: 400) })
+        presentation.magnification = 2
+        hosting.projection?.scaleChanged()
+        try #require(await wait { presentation.picture.askedZoom == 2 && presentation.picture.isMoving })
+        // DeviceKit has drawn the device at twice the size and turned it meanwhile.
+        screen.bounds = CGRect(x: 0, y: 0, width: 800, height: 400)
+        #expect(await wait { !presentation.picture.isMoving && presentation.viewport?.size == CGSize(width: 400, height: 200) },
+                "The picture is \(presentation.picture), of \(String(describing: presentation.viewport))")
     }
 
     /// The canvas frames the host at the scaled composition; Fit often shrinks a device below its natural size.
@@ -124,8 +235,7 @@ struct NativeDeviceCanvasTests {
         _ = NSApplication.shared
         let recorder = RecorderView()
         // A 400 × 800 composition with an AppKit-backed view centered at (200, 400), standing in for DeviceKit's.
-        let composition = ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: 400, height: 800)
+        let composition = ZoomedComposition(size: CGSize(width: 400, height: 800)) {
             Recorder(view: recorder)
                 .frame(width: 40, height: 40)
                 .padding(EdgeInsets(top: 380, leading: 180, bottom: 0, trailing: 0))
@@ -251,6 +361,39 @@ private struct Recorder: NSViewRepresentable {
     let view: RecorderView
     func makeNSView(context: Context) -> RecorderView { view }
     func updateNSView(_ nsView: RecorderView, context: Context) {}
+}
+
+/// Stands in for one of DeviceKit's controls beside a device's button: a view that keeps its size, 20 points right of
+/// the device's edge, which DeviceKit's surface draws at the canvas's zoom around its center.
+private struct ControlBesideDevice: View {
+    @Environment(\.nativeCanvasTestZoom) private var zoom
+    let view: RecorderView
+    let size: CGSize
+    /// A point of the device's right edge at a zoom of 1, from the surface's center.
+    let deviceEdge: CGPoint
+
+    var body: some View {
+        Recorder(view: view).frame(width: 30, height: 30)
+            .position(x: size.width / 2 + deviceEdge.x * zoom + 35, y: size.height / 2 + deviceEdge.y * zoom)
+            .frame(width: size.width, height: size.height)
+    }
+}
+
+/// Stands in for DeviceKit's device view: a surface of a fixed size that draws its contents, which start at its top
+/// left, at the canvas's zoom around its center.
+private struct ZoomedComposition<Content: View>: View {
+    @Environment(\.nativeCanvasTestZoom) private var zoom
+    let size: CGSize
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: size.width, height: size.height)
+            content
+        }
+        .scaleEffect(zoom)
+        .frame(width: size.width, height: size.height)
+    }
 }
 
 extension EnvironmentValues {
