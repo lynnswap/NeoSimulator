@@ -640,6 +640,20 @@ extension SimulatorHostTests {
         #expect(display.postedNotifications.isEmpty && display.notificationStates == [lockState: 1])
     }
 
+    @Test func showStandByPresentsNothingWhenTheLockButtonsReleaseIsNotDelivered() async throws {
+        let display = TestDisplay()
+        let standBy = TestStandBy()
+        display.standBy = standBy
+        let controller = try makeController(display, features: [DeviceCapabilities.standBy])
+        defer { controller.invalidate() }
+        // The press locks the guest, and only its release fails.
+        display.onSend = { display.notificationStates["com.apple.springboard.lockstate"] = 1 }
+        display.undeliveredStates = [.up]
+        controller.perform(.toggleStandBy)
+        try await wait { display.events.count == 2 && !controller.session.isBusy }
+        #expect(!standBy.isPresented)
+    }
+
     @Test func debugMenuFollowsSimulatorAppOrderAndShortcuts() throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)
