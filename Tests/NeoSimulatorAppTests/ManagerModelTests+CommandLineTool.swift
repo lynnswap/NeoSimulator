@@ -54,9 +54,15 @@ extension ManagerModelTests {
         #expect(await kind(WebAuthenticationSignIn.Failure.otherApplication("com.example.c")) == .refused)
         #expect(await kind(WebAuthenticationSignIn.Failure.unrecognizedPage(origin: "https://other.example")) == .unrecognized)
         #expect(await kind(WebAuthenticationSignIn.Failure.rejected) == .failed)
-        // What a page's script threw can repeat what was filled into the page, and does not reach the tool.
-        let thrown = await answer(request, failing: WebInspectorFailure.scriptThrew("Error: s3cret"))
-        #expect(thrown == .signIn(SignInOutcome(.failed, reason: "The page did not run the sign-in’s script.")))
+        // What a page's script threw, and the origin that a page moved to, are the page's words. They can repeat what
+        // was filled into the page, and do not reach the tool.
+        for failure: any Error in [
+            WebInspectorFailure.scriptThrew("Error: s3cret"),
+            WebAuthenticationSignIn.Failure.unrecognizedPage(origin: "https://s3cret.other.example"),
+        ] {
+            guard case .signIn(let outcome) = await answer(request, failing: failure) else { continue }
+            #expect(outcome.reason?.contains("s3cret") == false)
+        }
     }
 
     @Test func theAppAnswersTheToolOnItsSocketAndStopsWhatAToolThatWentAwayAskedFor() async throws {

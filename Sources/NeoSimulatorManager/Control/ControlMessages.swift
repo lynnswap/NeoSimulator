@@ -85,7 +85,14 @@ extension LoginStore {
                     case .noSheet, .unrecognizedPage: .unrecognized
                     case .rejected, .timedOut: .failed
                     }
-                return .signIn(SignInOutcome(kind, reason: failure.localizedDescription))
+                // The page chooses its own origin, so the tool is not told it.
+                let reason =
+                    if case .unrecognizedPage = failure {
+                        "The web sign-in sheet shows a page that is not a sign-in page of the login."
+                    } else {
+                        failure.localizedDescription
+                    }
+                return .signIn(SignInOutcome(kind, reason: reason))
             } catch let failure as WebInspectorFailure {
                 // What a page's script threw, and what a page answered, are the page's words, which can repeat what
                 // was filled into it. The tool gets NeoSimulator's own words only.
