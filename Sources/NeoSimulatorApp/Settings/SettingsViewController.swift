@@ -71,6 +71,9 @@ final class SettingsViewController: NSTabViewController {
         selectedTabViewItemIndex = 3
     }
 
+    /// Selects the default profile in the Service Profiles pane without showing the pane.
+    func selectDefaultServiceProfile() { serviceProfiles.model.selectDefaultProfile() }
+
     var simulatorLoading: Task<Void, Never>? { devices.state.loading }
 
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {

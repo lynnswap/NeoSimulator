@@ -9,12 +9,18 @@ final class ServiceProfilesSettingsModel {
     let store: ServiceProfileStore
     /// The selected profile's categories, which the filter and the selected category narrow to the services that show.
     let list = BackgroundServiceListModel(categories: [])
-    var selectedProfileID: UUID? = ServiceProfile.allServicesID
+    var selectedProfileID: UUID?
     var editingProfileID: UUID?
     var deleting: ServiceProfile?
     var issue: String?
 
-    init(store: ServiceProfileStore) { self.store = store }
+    init(store: ServiceProfileStore) {
+        self.store = store
+        selectedProfileID = store.defaultProfileID
+    }
+
+    /// Selects the default profile, which Settings shows when it opens.
+    func selectDefaultProfile() { selectedProfileID = store.defaultProfileID }
 
     var selectedProfile: ServiceProfile { selectedProfileID.flatMap(store.profile) ?? store.allServices }
     var canDelete: Bool { selectedProfile.canEdit }
