@@ -147,8 +147,21 @@ package final class CoreDeviceDeviceViewTransport: RemoteScreenTransport {
 
 /// Fits DeviceKit's device view, which has a natural size, inside the screen's area.
 @MainActor
-private final class DeviceViewFittingView: NSView {
+package final class DeviceViewFittingView: NSView {
     private var canvas: NativeDeviceCanvas?
+    /// The menu whose enabled commands come before the device's keys.
+    package var commandMenu: () -> NSMenu? = { NSApp.mainMenu }
+
+    /// DeviceKit's views take every key equivalent for the device, before the app's menu sees it. A key that an
+    /// enabled command uses runs that command instead. A disabled command's key still reaches the device, where the
+    /// menu alone would consume it: a simulator's Home command is disabled for a physical device, whose own
+    /// keyboard shortcut the same key is.
+    package override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let menu = commandMenu(), menu.hasEnabledCommand(for: event), menu.performKeyEquivalent(with: event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     func show(_ canvas: NativeDeviceCanvas?) {
         self.canvas?.onSizeChange = nil
@@ -161,7 +174,7 @@ private final class DeviceViewFittingView: NSView {
         needsLayout = true
     }
 
-    override func layout() {
+    package override func layout() {
         super.layout()
         guard let canvas else { return }
         let natural = canvas.naturalSize
@@ -171,5 +184,28 @@ private final class DeviceViewFittingView: NSView {
         let size = CGSize(width: natural.width * zoom, height: natural.height * zoom)
         canvas.view.frame = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
                                    width: size.width, height: size.height)
+    }
+}
+
+extension NSMenu {
+    /// Whether the menu or one of its submenus has an enabled, visible item whose key equivalent is the event's.
+    ///
+    /// The comparison follows AppKit's: an item whose modifiers include Shift, or whose key is an uppercase letter,
+    /// names the key without Shift; any other item names the character that the keys type, with or without Shift.
+    @MainActor fileprivate func hasEnabledCommand(for event: NSEvent) -> Bool {
+        let modifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let pressed = event.modifierFlags.intersection(modifiers)
+        update()
+        return items.contains { item in
+            if let submenu = item.submenu { return submenu.hasEnabledCommand(for: event) }
+            let key = item.keyEquivalent
+            guard !key.isEmpty, item.isEnabled, !item.isHidden else { return false }
+            var required = item.keyEquivalentModifierMask.intersection(modifiers)
+            if key != key.lowercased() { required.insert(.shift) }
+            if required.contains(.shift) {
+                return required == pressed && event.characters(byApplyingModifiers: [])?.lowercased() == key.lowercased()
+            }
+            return required == pressed.subtracting(.shift) && event.charactersIgnoringModifiers == key
+        }
     }
 }

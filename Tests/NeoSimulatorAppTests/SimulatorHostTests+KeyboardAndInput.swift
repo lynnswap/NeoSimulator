@@ -374,6 +374,24 @@ extension SimulatorHostTests {
             #expect(externalEvent.window === externalWindow)
             #expect(!editMenu.performKeyEquivalent(with: externalEvent))
         }
+        // A physical device's DeviceKit view keeps its editing keys too.
+        final class FocusView: NSView {
+            override var acceptsFirstResponder: Bool { true }
+        }
+        let deviceView = DeviceViewFittingView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let focus = FocusView(frame: deviceView.bounds)
+        deviceView.addSubview(focus)
+        let deviceWindow = NSWindow(contentRect: deviceView.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        deviceWindow.isReleasedWhenClosed = false
+        defer { deviceWindow.close() }
+        deviceWindow.contentView = deviceView
+        #expect(deviceWindow.makeFirstResponder(focus))
+        let copy = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: deviceWindow.windowNumber, context: nil,
+            characters: "c", charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 8))
+        #expect(copy.window === deviceWindow && !editMenu.performKeyEquivalent(with: copy))
+        deviceWindow.makeFirstResponder(deviceWindow)
+        #expect(editMenu.performKeyEquivalent(with: copy))
     }
 
     @Test(.timeLimit(.minutes(1)))

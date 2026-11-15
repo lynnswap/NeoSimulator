@@ -533,21 +533,25 @@ package final class AudioRouteMenu: NSObject, NSMenuDelegate {
 }
 
 // AppKit consumes a matching key equivalent even when its item is disabled, so
-// leave the standard editing shortcuts to the simulator while it has keyboard focus.
+// leave the standard editing shortcuts to the device while it has keyboard focus.
 package final class EditMenu: NSMenu {
     package override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let window = event.window
-        let simulatorHasFocus = MainActor.assumeIsolated {
+        let deviceHasFocus = MainActor.assumeIsolated {
             if let controller = window?.windowController as? ExternalDisplayWindowController {
                 return window?.firstResponder === controller.display.inputView
             }
             if let controller = DeviceWindowController.deviceWindow(for: window) {
                 return window?.firstResponder === controller.display.inputView
             }
+            // A physical device's DeviceKit view, which offers its key equivalents to this menu first.
+            if let responder = window?.firstResponder as? NSView {
+                return sequence(first: responder, next: \.superview).contains { $0 is DeviceViewFittingView }
+            }
             return false
         }
         // Copy Screen's Control-Command-C is not an editing shortcut.
-        return (!simulatorHasFocus || event.modifierFlags.contains(.control)) && super.performKeyEquivalent(with: event)
+        return (!deviceHasFocus || event.modifierFlags.contains(.control)) && super.performKeyEquivalent(with: event)
     }
 }
 
