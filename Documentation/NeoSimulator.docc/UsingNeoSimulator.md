@@ -319,7 +319,8 @@ document.querySelector('form').requestSubmit()
 ```
 
 A page that loads again after the script ran in it ends the sign-in as rejected, so that a login that the site
-refuses is not submitted again.
+refuses is not submitted again. Neo tells a page by its address without the query, so two pages of a sign-in whose
+addresses differ only in the query count as one.
 
 A coding agent asks for the same sign-in with the app's own executable, which works as a command-line tool when it
 is started with a command:

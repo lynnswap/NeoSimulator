@@ -136,6 +136,8 @@ package enum SignInScript: Equatable, Sendable {
                     window[filled].push(element);
                     set(element, value);
                   };
+                  // A page's content security policy that refuses `unsafe-eval` does not apply to what the Web
+                  // Inspector evaluates, so the script is compiled here on such a page too.
                   new Function('login', 'fill', \(Self.literal(script)))(login, fill);
                   ranScript = true;
                 }
