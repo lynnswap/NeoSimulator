@@ -35,8 +35,7 @@ struct NativeDeviceCanvasTests {
         presentation.magnification = 0.6
         #expect(presentation.naturalSize == CGSize(width: 400, height: 800))
         let recorder = RecorderView()
-        let composition = ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: 1200, height: 1000)
+        let composition = ZoomedComposition(size: CGSize(width: 1200, height: 1000)) {
             Recorder(view: recorder).frame(width: 200, height: 400)
                 .padding(EdgeInsets(top: 200, leading: 300, bottom: 0, trailing: 0))
         }
@@ -90,8 +89,7 @@ struct NativeDeviceCanvasTests {
         let size = presentation.naturalSize
         let control = RecorderView()
         control.isHidden = true
-        let composition = ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: 1200, height: 1000)
+        let composition = ZoomedComposition(size: CGSize(width: 1200, height: 1000)) {
             Recorder(view: control).frame(width: 30, height: 30)
                 .padding(EdgeInsets(top: 350, leading: 530, bottom: 0, trailing: 0))
         }
@@ -124,8 +122,7 @@ struct NativeDeviceCanvasTests {
         _ = NSApplication.shared
         let recorder = RecorderView()
         // A 400 × 800 composition with an AppKit-backed view centered at (200, 400), standing in for DeviceKit's.
-        let composition = ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: 400, height: 800)
+        let composition = ZoomedComposition(size: CGSize(width: 400, height: 800)) {
             Recorder(view: recorder)
                 .frame(width: 40, height: 40)
                 .padding(EdgeInsets(top: 380, leading: 180, bottom: 0, trailing: 0))
@@ -251,6 +248,23 @@ private struct Recorder: NSViewRepresentable {
     let view: RecorderView
     func makeNSView(context: Context) -> RecorderView { view }
     func updateNSView(_ nsView: RecorderView, context: Context) {}
+}
+
+/// Stands in for DeviceKit's device view: a surface of a fixed size that draws its contents, which start at its top
+/// left, at the canvas's zoom around its center.
+private struct ZoomedComposition<Content: View>: View {
+    @Environment(\.nativeCanvasTestZoom) private var zoom
+    let size: CGSize
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: size.width, height: size.height)
+            content
+        }
+        .scaleEffect(zoom)
+        .frame(width: size.width, height: size.height)
+    }
 }
 
 extension EnvironmentValues {
