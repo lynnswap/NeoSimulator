@@ -455,7 +455,11 @@ private struct AccessibilityMessages: @unchecked Sendable {
                 }
                 try unsafe send.unsafeInvoke(on: device, message, Self.answers, completion)
                 guard answered.wait(timeout: deadline) == .success else { throw unanswered }
-                guard let answer else { return .init() }
+                // CoreSimulator completes without a response when it cannot reach the guest's accessibility service.
+                guard let answer else {
+                    throw DeviceIOError.unavailable(
+                        "simulator-accessibility", "The device's accessibility service did not answer.")
+                }
                 return .init(
                     error: try unsafe responseError.unsafeInvoke(on: answer),
                     result: try unsafe resultData.unsafeInvoke(on: answer))
@@ -1001,7 +1005,8 @@ package final class SimulatorDevice {
     }
 
     /// The frontmost application of the main display with its elements as VoiceOver reads them, which are the elements
-    /// accessible on the screen now. Nil if the guest names no application.
+    /// accessible on the screen now. Nil if the guest names no application: the first request after a boot starts the
+    /// guest's accessibility, which names none for some seconds, so a caller that needs the application asks again.
     package func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement? {
         try await startedBridge().read("read the device's accessibility") { [guest] in
             try guest.messages.accessibility.get().reader(for: guest.device).frontmostApplication()
