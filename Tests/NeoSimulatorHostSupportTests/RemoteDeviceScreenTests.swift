@@ -1535,6 +1535,11 @@ struct RemoteDeviceScreenTests {
         _ = try await DeviceKitFinder.Bindings(runtime: .shared)
     }
 
+    @Test func nearbyPairingBindingsPrepareWithoutShowingTheSheet() async throws {
+        try await CoreDeviceRuntime.loadDeviceKit()
+        _ = try await NativeNearbyDevicePairing.Bindings(runtime: .shared)
+    }
+
     @Test func resizeGeometryBindingsPrepareWithoutADeviceOrAssertion() async throws {
         try await CoreDeviceRemoteScreenDevice.load("/Library/Developer/PrivateFrameworks/CoreDeviceUtilities.framework/Versions/A/CoreDeviceUtilities")
         let bindings = try await CoreDeviceAppResizeTransport.Bindings(runtime: .shared)

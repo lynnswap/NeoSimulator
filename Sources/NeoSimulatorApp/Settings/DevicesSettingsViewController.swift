@@ -1,5 +1,6 @@
 import NeoSimulatorKit
 import NeoSimulatorHostSupport
+import NeoSimulatorPresentationAdapters
 import AppKit
 import Observation
 import SwiftUI
@@ -24,13 +25,46 @@ final class DevicesSettingsState {
     var isLoading = false
     var issue: String?
     var isVisible = false
+    /// DeviceKit's sheet for pairing a nearby device, while it is presented.
+    var pairingSheet: PairingSheet?
+    var pairingIssue: String?
+    private(set) var isPreparingPairing = false
     @ObservationIgnored private let makeSimulator: () async throws -> NewSimulatorModel
+    @ObservationIgnored private let makePairingSheet: @MainActor () async throws -> AnyView
     @ObservationIgnored private let reportFailure: (Error) -> Void
     @ObservationIgnored private(set) var loading: Task<Void, Never>?
+    @ObservationIgnored private(set) var preparingPairing: Task<Void, Never>?
 
-    init(makeSimulator: @escaping () async throws -> NewSimulatorModel, reportFailure: @escaping (Error) -> Void) {
+    struct PairingSheet: Identifiable {
+        let id = UUID()
+        let content: AnyView
+    }
+
+    init(makeSimulator: @escaping () async throws -> NewSimulatorModel,
+         makePairingSheet: @escaping @MainActor () async throws -> AnyView = NativeNearbyDevicePairing.makeSheet,
+         reportFailure: @escaping (Error) -> Void) {
         self.makeSimulator = makeSimulator
+        self.makePairingSheet = makePairingSheet
         self.reportFailure = reportFailure
+    }
+
+    /// Presents DeviceKit's pairing sheet, loading DeviceKit first when nothing has loaded it yet.
+    func pairNearbyDevice() {
+        guard !isPreparingPairing, pairingSheet == nil else { return }
+        isPreparingPairing = true
+        preparingPairing = Task { [weak self, makePairingSheet] in
+            defer {
+                self?.isPreparingPairing = false
+                self?.preparingPairing = nil
+            }
+            do {
+                let content = try await makePairingSheet()
+                guard let self, self.isVisible else { return }
+                self.pairingSheet = PairingSheet(content: content)
+            } catch {
+                self?.pairingIssue = error.localizedDescription
+            }
+        }
     }
 
     func reload() {
@@ -91,9 +125,36 @@ final class DevicesSettingsViewController: NSHostingController<DevicesSettingsVi
 }
 
 struct DevicesSettingsView: View {
-    let state: DevicesSettingsState
+    @Bindable var state: DevicesSettingsState
 
     var body: some View {
+        VStack(spacing: 0) {
+            simulator
+            Form {
+                Section("Physical Devices") {
+                    LabeledContent {
+                        Button("Pair…", action: state.pairNearbyDevice)
+                            .disabled(state.isPreparingPairing)
+                    } label: {
+                        Text("Pair a Nearby Device")
+                        Text("The device starts pairing from Developer Mode in its Privacy & Security settings.")
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 560)
+        .fixedSize(horizontal: false, vertical: true)
+        .sheet(item: $state.pairingSheet) { $0.content }
+        .alert("Unable to Pair a Device", isPresented: Binding(
+            get: { state.pairingIssue != nil }, set: { if !$0 { state.pairingIssue = nil } })) {
+            Button("OK") { state.pairingIssue = nil }
+        } message: {
+            Text(state.pairingIssue ?? "")
+        }
+    }
+
+    private var simulator: some View {
         Group {
             switch state.content {
             case .loading:
@@ -115,8 +176,6 @@ struct DevicesSettingsView: View {
                     .disabled(state.isLoading)
             }
         }
-        .frame(width: 560)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
