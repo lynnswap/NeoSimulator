@@ -211,8 +211,9 @@ package struct WebAuthenticationSignIn {
             try await completion(of: page, submitting: filled.document)
         } catch {
             // What the sign-in put into the page does not stay there, also when its script failed part way or its
-            // answer was lost. A page that has moved on has dropped it already.
-            _ = try? await device.run(.clear(origin: origin), in: page)
+            // answer was lost. A page that has moved on has dropped it already. The clearing has a task of its own:
+            // a sign-in that was cancelled, as by a tool that went away, runs no more script in its own.
+            await Task { [device] in _ = try? await device.run(.clear(origin: origin), in: page) }.value
             throw error
         }
     }

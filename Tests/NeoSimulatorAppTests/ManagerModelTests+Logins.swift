@@ -232,6 +232,18 @@ extension ManagerModelTests {
         #expect(await outcome { $0.page?.document = "2" } == .rejected)
         // The page showed its answer without loading again.
         #expect(await outcome { _ in } == .rejected)
+        // The tool that asked went away while the sheet was still open.
+        let waiting = SignInFixture()
+        waiting.front = SignInFixture.application("com.example.app")
+        waiting.page = SignInPageState(origin: "https://login.example.com", hasPassword: true, document: "1")
+        let (submissions, submitted) = AsyncStream.makeStream(of: Void.self)
+        waiting.onSubmit = { submitted.yield() }
+        let abandoned = Task { try await signIn(on: waiting).run() }
+        for await _ in submissions { break }
+        abandoned.cancel()
+        await #expect(throws: CancellationError.self) { try await abandoned.value }
+        #expect(waiting.scripts.last == .clear(origin: "https://login.example.com"))
+
         // The sheet went on to a page that is not the login's, such as one that asks for a code.
         #expect(
             await outcome { $0.page = SignInPageState(origin: "https://codes.example", hasPassword: false) }
@@ -322,6 +334,8 @@ private final class SignInFixture: SignInDevice {
     func pages() async throws -> [InspectablePage] { page == nil ? [] : [Self.sheet] }
 
     func run(_ script: SignInScript, in page: InspectablePage) async throws -> SignInPageState {
+        // As the Web Inspector does, a cancelled task runs no script.
+        try Task.checkCancellation()
         scripts.append(script)
         var state = try #require(self.page)
         if case .signIn(_, _, let origin) = script, origin == state.origin, state.isVisible, state.hasPassword {

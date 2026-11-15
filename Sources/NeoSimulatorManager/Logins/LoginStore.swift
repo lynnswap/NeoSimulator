@@ -28,6 +28,8 @@ package final class LoginStore {
 
     package init(keychain: any LoginKeychain = SystemLoginKeychain()) { self.keychain = keychain }
 
+    /// The simulators that a sign-in is running on, by UDID.
+    @ObservationIgnored var signingIn: Set<String> = []
     /// The read or change that was asked for last, which the next one waits for.
     @ObservationIgnored private var lastOperation: Task<Void, Never>?
 

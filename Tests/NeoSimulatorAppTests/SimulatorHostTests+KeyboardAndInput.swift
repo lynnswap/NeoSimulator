@@ -1058,6 +1058,37 @@ extension SimulatorHostTests {
         #expect(display.typed.count == 1)
     }
 
+    @Test func oneSignInRunsOnASimulatorAtATime() async throws {
+        let store = LoginStore(keychain: InMemoryLoginKeychain())
+        let login = SavedLogin(applicationIdentifier: "com.example.app", label: "Premium", userName: "", origins: [])
+        try await store.save(login, password: "s3cret")
+        func application(_ identifier: String) -> SimulatorAccessibilityElement {
+            SimulatorAccessibilityElement(role: .application, frame: .zero, processIdentifier: 1, bundleIdentifier: identifier)
+        }
+        // The first sign-in waits for the device to say which app is in front.
+        let display = TestDisplay()
+        let (reads, didRead) = AsyncStream.makeStream(of: Void.self)
+        var answer: CheckedContinuation<SimulatorAccessibilityElement?, Never>?
+        display.frontmostApplication = {
+            await withCheckedContinuation {
+                answer = $0
+                didRead.yield()
+            }
+        }
+        let session = try makeSession(display)
+        let first = Task { try await store.signIn(with: login.id, on: session) }
+        for await _ in reads { break }
+        await #expect(throws: SignInRefusal.self) { try await store.signIn(with: login.id, on: session) }
+
+        answer?.resume(returning: application("com.example.other"))
+        await #expect(throws: WebAuthenticationSignIn.Failure.otherApplication("com.example.other")) { try await first.value }
+        // The simulator is free again once the first has ended.
+        display.frontmostApplication = { application("com.example.third") }
+        await #expect(throws: WebAuthenticationSignIn.Failure.otherApplication("com.example.third")) {
+            try await store.signIn(with: login.id, on: session)
+        }
+    }
+
     @Test func connectingAppliesTheDevicesKeyboardChoiceAndTheMacsLanguage() async throws {
         func apply(_ preferences: MemoryPreferences, device: String = "A", language: String? = "ja",
                    failing display: TestDisplay = TestDisplay()) async throws -> (TestDisplay, [String]) {
