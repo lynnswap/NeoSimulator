@@ -217,6 +217,20 @@ private struct LoginEditor: View {
         LoginEditor(draft: $draft, model: LoginsSettingsModel(store: LoginStore(keychain: InMemoryLoginKeychain())))
     }
 
+    #Preview("Logins — Editor, Own Script", traits: .sizeThatFitsLayout) {
+        @Previewable @State var draft = {
+            var draft = LoginsSettingsModel.Draft()
+            draft.webSignIn = .script
+            draft.script = """
+                fill(document.querySelector('#email'), login.userName)
+                fill(document.querySelector('#password'), login.password)
+                document.querySelector('form').requestSubmit()
+                """
+            return draft
+        }()
+        LoginEditor(draft: $draft, model: LoginsSettingsModel(store: LoginStore(keychain: InMemoryLoginKeychain())))
+    }
+
     #Preview("Logins — Empty", traits: .sizeThatFitsLayout) {
         LoginsSettingsViewController(store: LoginStore(keychain: InMemoryLoginKeychain()))
     }
