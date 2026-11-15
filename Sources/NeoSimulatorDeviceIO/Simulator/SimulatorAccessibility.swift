@@ -14,6 +14,8 @@ package struct SimulatorAccessibilityElement: Equatable, Sendable {
     package var role: Role?
     /// Whether the element is a text field that hides what it holds. Its value is then one bullet for each character.
     package var isSecureTextField: Bool
+    /// Whether the element takes input. A button that an app has disabled answers a press and does nothing.
+    package var isEnabled: Bool
     package var label: String?
     package var value: String?
     package var identifier: String?
@@ -26,12 +28,13 @@ package struct SimulatorAccessibilityElement: Equatable, Sendable {
     package var children: [SimulatorAccessibilityElement]
 
     package init(
-        role: Role?, isSecureTextField: Bool = false, label: String? = nil, value: String? = nil,
-        identifier: String? = nil, frame: CGRect, processIdentifier: Int32, bundleIdentifier: String? = nil,
-        children: [SimulatorAccessibilityElement] = []
+        role: Role?, isSecureTextField: Bool = false, isEnabled: Bool = true, label: String? = nil,
+        value: String? = nil, identifier: String? = nil, frame: CGRect, processIdentifier: Int32,
+        bundleIdentifier: String? = nil, children: [SimulatorAccessibilityElement] = []
     ) {
         self.role = role
         self.isSecureTextField = isSecureTextField
+        self.isEnabled = isEnabled
         self.label = label
         self.value = value
         self.identifier = identifier
@@ -115,6 +118,7 @@ struct SimulatorAccessibilityReader {
         case children = 8
         case frame = 21
         case identifier = 25
+        case isEnabled = 27
         case label = 33
         case role = 45
         case subrole = 51
@@ -227,6 +231,7 @@ struct SimulatorAccessibilityReader {
         let element = SimulatorAccessibilityElement(
             role: (value(.role) as? NSNumber).flatMap { SimulatorAccessibilityElement.Role(rawValue: $0.intValue) },
             isSecureTextField: (value(.subrole) as? NSNumber)?.intValue == Self.secureTextField,
+            isEnabled: (value(.isEnabled) as? NSNumber)?.boolValue ?? true,
             label: text(.label), value: text(.value), identifier: text(.identifier),
             frame: (value(.frame) as? NSValue)?.rectValue ?? .zero, processIdentifier: identity.processIdentifier,
             bundleIdentifier: text(.bundleIdentifier))

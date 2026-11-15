@@ -73,7 +73,8 @@ struct SimulatorAccessibilityTests {
     }
 
     // The translator's attribute numbers.
-    private let bundle = 6, children = 8, frame = 21, identifier = 25, label = 33, role = 45, subrole = 51, value = 53
+    private let bundle = 6, children = 8, frame = 21, identifier = 25, enabled = 27, label = 33, role = 45
+    private let subrole = 51, value = 53
 
     @Test func theFrontmostApplicationIsReadWithItsElements() throws {
         let translator = Translator()
@@ -120,7 +121,8 @@ struct SimulatorAccessibilityTests {
         let translator = Translator()
         let field = Element(
             7, 2, [role: 15, subrole: 5, identifier: "password", frame: NSValue(rect: CGRect(x: 16, y: 441, width: 370, height: 34))])
-        let button = Element(7, 3, [role: 2, label: "Sign In", frame: NSValue(rect: CGRect(x: 149, y: 491, width: 104, height: 20))])
+        // The app has disabled the button.
+        let button = Element(7, 3, [role: 2, label: "Sign In", enabled: false])
         translator.application = Element(7, 1, [role: 1, children: [field, button]])
         #expect(try translator.reader.application(processIdentifier: 7)?.children.count == 2)
 
@@ -131,6 +133,7 @@ struct SimulatorAccessibilityTests {
             return elements.firstIndex { $0.isSecureTextField }
         }
         #expect(listed.map(\.role) == [.application, .textField, .button] && listed.allSatisfy(\.children.isEmpty))
+        #expect(listed.map(\.isEnabled) == [true, true, false])
         try translator.reader.perform(.press, inProcess: 7) { $0.firstIndex { $0.label == "Sign In" } }
         // The value attribute, and the action that presses.
         #expect(translator.performed == ["set 53 of 2 to s3cret", "action 5 on 3"])

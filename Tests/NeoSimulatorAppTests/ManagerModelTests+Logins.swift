@@ -157,6 +157,7 @@ extension ManagerModelTests {
         var pace = WebAuthenticationSignIn.Pace()
         pace.appearance = .milliseconds(100)
         pace.completion = .milliseconds(100)
+        pace.button = .milliseconds(100)
         pace.interval = .milliseconds(5)
         pace.tapAgain = .milliseconds(20)
         return WebAuthenticationSignIn(
@@ -227,12 +228,12 @@ extension ManagerModelTests {
     @Test func aSignInFillsTheAppsOwnFormPressesItsButtonAndWaitsForTheFormToGo() async throws {
         func element(
             _ role: SimulatorAccessibilityElement.Role, _ identifier: String, label: String? = nil, value: String? = nil,
-            row: CGFloat
+            isEnabled: Bool = true, row: CGFloat, process: Int32 = 5
         ) -> SimulatorAccessibilityElement {
             SimulatorAccessibilityElement(
-                role: role, isSecureTextField: identifier.hasPrefix("password"), label: label, value: value,
-                identifier: identifier, frame: CGRect(x: 16, y: 300 + row * 50, width: 370, height: 34),
-                processIdentifier: 5)
+                role: role, isSecureTextField: identifier.hasPrefix("password"), isEnabled: isEnabled, label: label,
+                value: value, identifier: identifier, frame: CGRect(x: 16, y: 300 + row * 50, width: 370, height: 34),
+                processIdentifier: process)
         }
         /// The app with elements of its own.
         func application(_ children: [SimulatorAccessibilityElement]) -> SimulatorAccessibilityElement {
@@ -240,15 +241,16 @@ extension ManagerModelTests {
             application.children = children
             return application
         }
-        /// The app's sign-in screen, where a button that does not sign in comes before the one that does.
-        func form(userName: String = "", password: String = "") -> SimulatorAccessibilityElement {
+        /// The app's sign-in screen, where a button that does not sign in comes before the one that does. The app
+        /// enables the button that signs in once the form has a password.
+        func form(userName: String = "", password: String = "", enables: Bool = true) -> SimulatorAccessibilityElement {
             application([
                 element(.textField, "user", value: userName.isEmpty ? "Email" : userName, row: 0),
                 element(
                     .textField, "password", value: password.isEmpty ? "Password" : String(repeating: "•", count: password.count),
                     row: 1),
                 element(.button, "forgot", label: "Forgot password?", row: 2),
-                element(.button, "signIn", label: "Sign In", row: 3),
+                element(.button, "signIn", label: "Sign In", isEnabled: enables && !password.isEmpty, row: 3),
             ])
         }
         let home = application([element(.staticText, "welcome", label: "Welcome", row: 0)])
@@ -267,10 +269,12 @@ extension ManagerModelTests {
         var registration = form()
         registration.children.append(element(.textField, "passwordAgain", row: 4))
         #expect(throws: NativeFormSignIn.Failure.severalPasswordFields) { try button("", on: registration) }
+        // A password field of another process, as of one that renders a web page, is not the app's form.
+        #expect(try button("", on: application([element(.textField, "password", row: 0, process: 9)])) == nil)
 
         /// How a sign-in ends on the app's form, which shows `shown` once its button is pressed, and what it did.
         func signedIn(
-            button: String = "Sign In", then shown: @escaping (SignInFixture) -> Void
+            button: String = "Sign In", enables: Bool = true, then shown: @escaping (SignInFixture) -> Void
         ) async -> (failure: (any Error)?, actions: [String]) {
             let device = SignInFixture()
             var (userName, password) = ("", "")
@@ -282,7 +286,7 @@ extension ManagerModelTests {
                 case .press: return shown(device)
                 }
                 // A field that gets a value brings up the keyboard, which moves the form.
-                var moved = form(userName: userName, password: password)
+                var moved = form(userName: userName, password: password, enables: enables)
                 for index in moved.children.indices { moved.children[index].frame.origin.y -= 150 }
                 device.covered = moved
                 if device.front?.children.first?.identifier == "user" { device.front = moved }
@@ -304,6 +308,11 @@ extension ManagerModelTests {
         }
         #expect(ended.failure as? NativeFormSignIn.Failure == .rejected)
         #expect(ended.actions == filled + ["press signIn", "set password to ", "set user to "])
+
+        // The app keeps its button disabled: a press would do nothing, so the button is not pressed.
+        ended = await signedIn(enables: false) { _ in }
+        #expect(ended.failure as? NativeFormSignIn.Failure == .buttonDisabled)
+        #expect(ended.actions == filled + ["set password to ", "set user to "])
 
         // The login names a button that the screen does not have: nothing is filled in.
         ended = await signedIn(button: "Log In") { _ in }
