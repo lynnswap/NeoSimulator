@@ -288,6 +288,9 @@ private struct GuestMessages: @unchecked Sendable {
     let setKeyboardLanguage: NativeObjCMethod<Void, String>
     /// The lookup:error: return is a Mach port, so its error slot must be passed explicitly.
     let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
+    /// A variable of the guest's environment, or nil if the guest has none of that name. The method's nil is no
+    /// failure, so its error slot is passed explicitly, as nil.
+    let environmentValue: NativeObjCMethod<String?, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
     /// The accessibility translator's messages, or why this Mac's frameworks do not have them. CoreSimulator links the
     /// translator weakly, so the rest of a device works without it.
     let accessibility: Result<AccessibilityMessages, any Error>
@@ -371,6 +374,9 @@ private struct GuestMessages: @unchecked Sendable {
             on: device)
         lookup = try await runtime.resolve(
             .objc(.method("lookup:error:", as: ((String, AutoreleasingUnsafeMutablePointer<NSError?>?) -> UInt32).self)),
+            on: device)
+        environmentValue = try await runtime.resolve(
+            .objc(.method("getenv:error:", as: ((String, AutoreleasingUnsafeMutablePointer<NSError?>?) -> String?).self)),
             on: device)
         do { accessibility = .success(try await AccessibilityMessages(runtime: runtime, device: device)) }
         catch { accessibility = .failure(error) }
@@ -1020,6 +1026,18 @@ package final class SimulatorDevice {
         try await startedBridge().read("read the device's accessibility") { [guest] in
             try guest.messages.accessibility.get().reader(for: guest.device).element(at: point)
         }
+    }
+
+    /// A connection to the device's Web Inspector service, whose socket the guest's environment names. It connects when
+    /// it is first asked for pages, and stays connected for as long as it is kept.
+    package func webInspector() async throws -> SimulatorWebInspector {
+        let path = try await startedBridge().read("find the device's Web Inspector") { [guest] in
+            try unsafe guest.messages.environmentValue.unsafeInvoke(on: guest.device, "RWI_LISTEN_SOCKET", nil)
+        }
+        guard let path, !path.isEmpty else {
+            throw DeviceIOError.unavailable("simulator-web-inspector", "The device has no Web Inspector service.")
+        }
+        return SimulatorWebInspector(socketPath: path)
     }
 
     /// Recorded routes in runtime order; empty if none are reported.
