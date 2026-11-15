@@ -686,8 +686,13 @@ package final class NativeCanvasProjection {
             awaitRest()
         }
         if presentation.surfaceSize != surface { presentation.surfaceSize = surface }
-        // The scale, the display and the device's reach in the surface each change the zoom to ask for.
-        defer { followScale() }
+        // The scale, the display and the device's reach in the surface each change the zoom to ask for. DeviceKit
+        // draws the device at another size on a display of another density, whatever the zoom.
+        let changesDisplay = pointScale != presentation.pointScale
+        defer {
+            followScale()
+            if changesDisplay { changePicture { $0.loseExtent() } }
+        }
         if presentation.picture.isMoving {
             // DeviceKit is on its way to another zoom, so its layers show how far it has come, not what the device
             // covers. The viewport is read again when the picture arrives. The device's size on another display
@@ -870,14 +875,20 @@ package struct NativeCanvasPicture: Equatable {
     package private(set) var askedZoom: CGFloat = 1
     /// The zoom at which the picture last rested.
     package private(set) var zoom: CGFloat = 1
-    /// The device's extent in the picture where it last rested, until the picture arrives where DeviceKit was asked
-    /// to bring it.
-    private var start: CGSize?
+    /// How the picture's way to the zoom that DeviceKit was asked for is told, until it arrives there.
+    private var way: Way?
+
+    private enum Way: Equatable {
+        /// From the device's extent in the picture where it last rested.
+        case from(CGSize)
+        /// Not from the device's extent, which no longer compares with the one it had.
+        case untold
+    }
 
     package init() {}
 
     /// Whether DeviceKit has yet to bring the picture to the zoom it was asked for.
-    package var isMoving: Bool { start != nil }
+    package var isMoving: Bool { way != nil }
 
     /// Asks DeviceKit for another zoom, from a picture in which the device has an extent. Without one DeviceKit has
     /// drawn no device yet, and draws it at the zoom it finds.
@@ -885,23 +896,30 @@ package struct NativeCanvasPicture: Equatable {
         askedZoom = zoom
         guard let extent, extent.width > 0, extent.height > 0 else { return arrived() }
         // A picture that is asked elsewhere on its way still shows how far it is from where it rested.
-        if start == nil { start = extent }
+        if way == nil { way = .from(extent) }
+    }
+
+    /// The device has another size at the same zoom, as on a display of another density.
+    package mutating func loseExtent() {
+        if way != nil { way = .untold }
     }
 
     /// The picture has kept still at an extent. One whose device grew or shrank evenly to another zoom than
     /// DeviceKit was asked for has stopped on its way, and goes on later. One whose device changed its posture no
     /// longer shows its zoom, and is taken to have arrived.
     package mutating func rested(at extent: CGSize) {
-        guard let start else { return }
-        let across = extent.width / start.width, down = extent.height / start.height
-        // The parts of the device nearer its viewer grow a little faster than the zoom.
-        if abs(across / down - 1) <= 0.02, abs(zoom * across / askedZoom - 1) > 0.05 { return }
+        guard let way else { return }
+        if case .from(let start) = way {
+            let across = extent.width / start.width, down = extent.height / start.height
+            // The parts of the device nearer its viewer grow a little faster than the zoom.
+            if abs(across / down - 1) <= 0.02, abs(zoom * across / askedZoom - 1) > 0.05 { return }
+        }
         arrived()
     }
 
     /// The picture is at the zoom that DeviceKit was asked for.
     package mutating func arrived() {
-        start = nil
+        way = nil
         zoom = askedZoom
     }
 }

@@ -157,6 +157,16 @@ struct NativeDeviceCanvasTests {
         #expect(picture.zoom == 2 && !picture.isMoving)
     }
 
+    @Test func pictureWhoseDisplayChangesOnTheWayHasArrivedOnceItRests() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: CGSize(width: 300, height: 400))
+        // On a display of a lower density DeviceKit draws the device smaller at the same zoom, so twice the zoom
+        // looks like a picture that stopped on its way.
+        picture.loseExtent()
+        picture.rested(at: CGSize(width: 480, height: 640))
+        #expect(picture.zoom == 2 && !picture.isMoving)
+    }
+
     @Test func pictureOfADeviceThatDeviceKitHasNotDrawnIsAtTheZoomItIsAskedFor() {
         var picture = NativeCanvasPicture()
         picture.ask(for: 2, from: nil)
