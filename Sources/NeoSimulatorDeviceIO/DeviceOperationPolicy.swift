@@ -69,6 +69,11 @@ package enum DeviceOperationLimit {
     /// How long a read of a device's accessibility takes at most. A read sends one request for each element from the
     /// device's bridge worker, so it ends within the worker's own limit, ``bridge``, and sends nothing after this.
     package static let accessibilityRead: Duration = .seconds(5)
+    /// How long running script in one of a device's web pages waits for the page's answer.
+    package static let webInspector: Duration = .seconds(5)
+    /// How long a connection to a device's Web Inspector service waits for the service's first answer. The service can
+    /// end with its last connection, and launchd starts it again no sooner than ten seconds after its last start.
+    package static let webInspectorStart: Duration = .seconds(15)
     /// How long a request for an iCloud sync waits for CoreSimulator's completion, as long as a management operation.
     package static let cloudSync: Duration = .seconds(300)
     /// How long a command stopped by quitting may handle SIGTERM, and how long what it was part of then has to finish.
