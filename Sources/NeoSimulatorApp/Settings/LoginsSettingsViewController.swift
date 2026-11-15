@@ -164,7 +164,9 @@ private struct LoginEditor: View {
         .fixedSize(horizontal: false, vertical: true)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
+                // A save that is waiting for the keychain finishes in this editor, where it shows its result.
                 Button("Cancel") { model.draft = nil }
+                    .disabled(model.isSaving)
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { Task { await model.save() } }
