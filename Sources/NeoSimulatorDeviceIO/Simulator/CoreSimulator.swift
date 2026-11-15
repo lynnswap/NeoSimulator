@@ -493,27 +493,14 @@ private struct GuestBridge: @unchecked Sendable {
     /// How far the guest has started, from what CoreSimulatorService last reported: this asks the guest nothing.
     func startup() throws -> GuestStartup {
         let device = try device
-        // 2 booting, 3 booted.
         let state = try unsafe messages.state.unsafeInvoke(on: device)
-        guard state == 2 || state == 3 else { return .stopped }
-        // CoreSimulatorService reports a status from the start of each boot that it watches. Without one, nothing
-        // would report an end to wait for.
-        guard let status = try unsafe messages.bootStatus.unsafeInvoke(on: device) else {
-            return state == 3 ? .started : .starting("booting")
+        guard state == 2 || state == 3, let status = try unsafe messages.bootStatus.unsafeInvoke(on: device) else {
+            return GuestStartup(state: state, status: nil)
         }
-        let value = try unsafe messages.bootStatusValue.unsafeInvoke(on: status)
-        if value == UInt32.max { return .started }
-        // CoreSimulator's own monitor stops at a terminal status, so nothing would report a later one.
-        guard !(try unsafe messages.bootStatusIsTerminal.unsafeInvoke(on: status)) else {
-            return .failed(value == 3 ? "its data migration failed" : String(describing: status))
-        }
-        let phase = switch value {
-        case 1: "waiting for backboardd"
-        case 2: "migrating its data"
-        case 4: "waiting for its system app"
-        default: "booting"
-        }
-        return .starting(phase)
+        return GuestStartup(state: state, status: GuestStartup.BootStatus(
+            value: try unsafe messages.bootStatusValue.unsafeInvoke(on: status),
+            isTerminal: try unsafe messages.bootStatusIsTerminal.unsafeInvoke(on: status),
+            description: String(describing: status)))
     }
 
     /// Calls `changed` after each of the device's notifications, which include each change of its state and its boot
@@ -556,14 +543,65 @@ private struct GuestBridge: @unchecked Sendable {
 }
 
 /// How far a guest has started, as CoreSimulatorService last reported it.
-private enum GuestStartup: Equatable, Sendable {
+enum GuestStartup: Equatable, Sendable {
+    /// A boot's `SimDeviceBootInfo`.
+    struct BootStatus: Equatable, Sendable {
+        /// 0 booting, 1 waiting on backboardd, 2 waiting on data migration, 3 data migration failed, 4 waiting on the
+        /// system app, and `UInt32.max` finished.
+        var value: UInt32
+        var isTerminal: Bool
+        var description: String
+    }
+
     case started
+    /// The device is booted, and its boot status says that its data migration failed. The guest starts all the same.
+    case startedAfterFailedMigration
     /// What the boot waits for, as a phrase that completes "The device is still starting: …".
     case starting(String)
     /// The device is neither booting nor booted.
     case stopped
     /// How a boot ended before it finished, as a phrase that completes "The device did not finish starting: …".
     case failed(String)
+
+    /// Reads `state`, the device's SimDeviceState, with `status`, the boot status that CoreSimulatorService last
+    /// reported for it.
+    init(state: UInt, status: BootStatus?) {
+        // 2 booting, 3 booted.
+        guard state == 2 || state == 3 else {
+            self = .stopped
+            return
+        }
+        // CoreSimulatorService reports a status from the start of each boot that it watches. Without one, nothing
+        // would report an end to wait for.
+        guard let status else {
+            self = state == 3 ? .started : .starting("booting")
+            return
+        }
+        if status.value == UInt32.max {
+            self = .started
+            return
+        }
+        // CoreSimulator's own monitor stops at a terminal status, so nothing would report a later one.
+        guard !status.isTerminal else {
+            // WORKAROUND: FB25221101, #606. DataMigrator saves a migration as failed when its progress window does not
+            // support the device's screen class, as on iPhone Air and iPhone Duo, and each later boot reports that
+            // again without migrating. The guest starts either way, so only Booted is left to report it, as for a boot
+            // without a status. Remove this once a runtime migrates those devices without reporting the failure.
+            if status.value == 3 {
+                self = state == 3 ? .startedAfterFailedMigration : .starting("booting")
+            } else {
+                self = .failed(status.description)
+            }
+            return
+        }
+        let phase = switch status.value {
+        case 1: "waiting for backboardd"
+        case 2: "migrating its data"
+        case 4: "waiting for its system app"
+        default: "booting"
+        }
+        self = .starting(phase)
+    }
 }
 
 /// A boot that CoreSimulatorService reports as ended before the guest finished starting.
@@ -760,6 +798,8 @@ package final class SimulatorDevice {
     private let dataPath: String?
     /// Requests waiting for the guest to start, which the end of the connection wakes.
     private var startupWaiters: [UUID: AsyncStream<Void>.Continuation] = [:]
+    /// The boot whose failed data migration has been logged, `Date.distantPast` for a boot without a date.
+    private var failedMigrationLoggedBoot: Date?
     private var guest: GuestBridge { GuestBridge(client: client, object: object, messages: interface.guest) }
 
     fileprivate init(_ opened: NativeDeviceClient.OpenedDevice, client: NativeDeviceClient,
@@ -790,8 +830,9 @@ package final class SimulatorDevice {
 
     /// Returns once CoreSimulatorService reports that the guest has finished starting, which is when its own services
     /// answer. `progress` hears what the boot waits for, each time that changes while this waits. A device whose boot
-    /// has no status, as one booted before CoreSimulatorService watched it, counts as started once it is booted. Throws
-    /// if the device stops, or ``UnfinishedDeviceStartup`` if its boot ends unfinished, and cancellation ends the wait.
+    /// has no status, as one booted before CoreSimulatorService watched it, or whose status says that its data
+    /// migration failed, counts as started once it is booted. Throws if the device stops, or
+    /// ``UnfinishedDeviceStartup`` if its boot ends unfinished, and cancellation ends the wait.
     package func waitForStartup(progress: @escaping @MainActor (String) -> Void) async throws {
         try await waitForStartup(on: channel, progress: progress)
     }
@@ -813,6 +854,9 @@ package final class SimulatorDevice {
         while true {
             switch try await channel.read("read how far the device has started", { [guest] in try guest.startup() }) {
             case .started: return
+            case .startedAfterFailedMigration:
+                logFailedMigration()
+                return
             case .stopped:
                 throw DeviceIOError.unavailable("simulator-operation", "The device is not running.")
             case .failed(let reason):
@@ -835,6 +879,16 @@ package final class SimulatorDevice {
                 }
             }
         }
+    }
+
+    /// Says once for each boot that its startup counts from Booted, since every request that waits for the startup
+    /// reads it again.
+    private func logFailedMigration() {
+        let boot = record.lastBootDate ?? .distantPast
+        guard failedMigrationLoggedBoot != boot else { return }
+        failedMigrationLoggedBoot = boot
+        hostLog("CoreSimulatorService reports that the data migration of \(name) failed. "
+            + "Its guest starts all the same, so its startup counts from Booted.")
     }
 
     /// The bridge's channel, once the guest has started. CoreSimulatorBridge answers one request at a time, and one sent
