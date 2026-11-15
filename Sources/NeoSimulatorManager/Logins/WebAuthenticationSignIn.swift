@@ -106,7 +106,9 @@ package enum SignInScript: Equatable, Sendable {
                 """
         case .submit(let origin):
             action = """
-                if (location.origin === \(Self.literal(origin)) && isVisible && step && window[filled] && press()) {
+                // Only the form that was filled in is submitted: a page can have put another in its place.
+                if (location.origin === \(Self.literal(origin)) && isVisible && step
+                    && (window[filled] || []).includes(asked) && press()) {
                   submitted = step;
                 }
                 """
@@ -135,20 +137,20 @@ package enum SignInScript: Equatable, Sendable {
               // The controls that submit a form. A control named `elements` or `requestSubmit` hides the form's own
               // member of that name.
               const form = HTMLFormElement.prototype;
-              const submitsOf = (e) => e && e.form
-                ? Array.from(Object.getOwnPropertyDescriptor(form, 'elements').get.call(e.form))
-                    .filter((control) => control.type === 'submit')
-                : [];
+              const controlsOf = (e) => e && e.form
+                ? Array.from(Object.getOwnPropertyDescriptor(form, 'elements').get.call(e.form)) : [];
+              const submitsOf = (e) => controlsOf(e).filter((control) => control.type === 'submit');
               // Beside a password field, the field before it is the user name's. Alone, a field has to say so itself,
               // and the first that does in a form that can be submitted is taken: a page's other forms come after
-              // the one that signs in.
+              // the one that signs in. A form that asks for a new password registers an account or changes one.
               const beside = password ? texts.filter((e) => e.form === password.form) : [];
               const before = beside.filter((e) => e.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING);
-              const alone = texts.filter((e) => submitsOf(e).length > 0);
+              const asksNewPassword = (e) => controlsOf(e).some((control) => tokens(control).includes('new-password'));
+              const alone = texts.filter((e) => submitsOf(e).length > 0 && !asksNewPassword(e));
               const userName = password
                 ? beside.find((e) => tokens(e).includes('username')) || before.find(isEmail)
                   || before.filter(named).pop() || before[before.length - 1] || null
-                : alone.find((e) => tokens(e).includes('username')) || alone.find((e) => isEmail(e) || named(e)) || null;
+                : alone.find((e) => tokens(e).includes('username') || isEmail(e) || named(e)) || null;
               // The field that the page asks for.
               const asked = password || userName;
               const submits = submitsOf(asked);
