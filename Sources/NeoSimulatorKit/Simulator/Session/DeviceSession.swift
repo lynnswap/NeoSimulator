@@ -29,6 +29,9 @@ package struct DeviceCapabilities {
     /// Whether the guest runs Stage Manager, also on an external display
     /// (`DeviceSupportsEnhancedMultitasking`), as iPads from M1 do.
     package var supportsEnhancedMultitasking = false
+    /// Whether this presentation can ask the guest for StandBy. A folding iPhone presents it only for CoreDevice's
+    /// service, which a device outside the default set has none of.
+    package var requestsStandBy = true
 
     package init(family: Family?, runtimeVersion: UInt32, supportsFeature: @escaping (String) -> Bool,
                  controlsOrientation: Bool = true, hasFramebufferMask: Bool = false, screenCornerRadius: Double = 0,
@@ -51,6 +54,7 @@ package struct DeviceCapabilities {
     package var rotates: Bool { controlsOrientation && supportsFeature(Self.displayRotation) }
     package var supportsExternalDisplays: Bool { supportsFeature(Self.externalDisplay) && supportsFeature(Self.integratedDisplay) }
     package var supportsCarPlay: Bool { supportsExternalDisplays && supportsFeature(Self.carPlay) }
+    package var supportsStandBy: Bool { requestsStandBy && supportsFeature(Self.standBy) }
     /// Whether the device has a Digital Crown or Digital Dial, which the
     /// pointer's scrolling turns.
     package var hasCrownOrDial: Bool { supportsFeature(Self.digitalCrown) || supportsFeature(Self.digitalDial) }
@@ -957,12 +961,15 @@ package final class DeviceSession {
         try await send(resolution.rawValue, to: "com.apple.sos.user-fell")
     }
 
-    /// Whether StandBy shows, as the device last reported.
+    /// Whether StandBy is asked of the guest, as the device or its own StandBy service last reported.
     package var showsStandBy: Bool { canPerformCommands && model.showsStandBy == true }
 
     package func toggleStandBy() async throws {
         guard canPerformCommands else { return }
-        try await toggleState(of: Self.standBy)
+        guard let standBy = display.standBy else { return try await toggleState(of: Self.standBy) }
+        // The service holds this state, so the model takes it without a reading of the guest.
+        defer { if !isDisconnected { model.update(showsStandBy: standBy.isPresented) } }
+        if standBy.isPresented { try standBy.dismiss() } else { try await standBy.present() }
     }
 
     /// Flips a guest notification's state between 0 and 1 and posts it, as one request.
@@ -1119,7 +1126,7 @@ package final class DeviceSession {
         if [Biometric.touchID, .faceID, .opticID].contains(where: { capabilities.supportsFeature($0.feature) }) {
             names.append(Self.biometricEnrollment)
         }
-        if capabilities.supportsFeature(DeviceCapabilities.standBy) { names.append(Self.standBy) }
+        if capabilities.supportsStandBy, display.standBy == nil { names.append(Self.standBy) }
         return names
     }
 
@@ -1147,7 +1154,8 @@ package final class DeviceSession {
                 let reading = try await display.guestState(notifications: notifications, debugOptions: CADebugOption.allCases)
                 guard !isDisconnected else { break }
                 let state = { (name: String) in notifications.contains(name) ? reading.notifications[name] == 1 : nil }
-                changed = model.update(biometricEnrolled: state(Self.biometricEnrollment), showsStandBy: state(Self.standBy),
+                let showsStandBy = display.standBy.map { $0.isPresented } ?? state(Self.standBy)
+                changed = model.update(biometricEnrolled: state(Self.biometricEnrollment), showsStandBy: showsStandBy,
                                        debugOptions: Dictionary(uniqueKeysWithValues: reading.debugOptions.compactMap { option, isOn in
                                            CADebugOption(rawValue: option).map { ($0, isOn) }
                                        })) || changed

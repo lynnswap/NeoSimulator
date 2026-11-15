@@ -1,6 +1,18 @@
 import Foundation
 import NeoSimulatorDeviceIO
 
+/// A device's StandBy as its own service presents it, for a guest that presents StandBy only while that service holds it.
+@MainActor
+package protocol DeviceStandBy: AnyObject {
+    /// Whether this holds StandBy presented. The guest shows it for as long as the device's state supports StandBy.
+    var isPresented: Bool { get }
+    /// Presents StandBy and holds it until `dismiss()`. Throws what the device refuses it with as it is, such as a pose
+    /// that does not support StandBy.
+    func present() async throws
+    /// Lets go of StandBy. Does nothing when this holds none.
+    func dismiss() throws
+}
+
 /// What a device session needs of a connected display, whatever draws it: the device's guest messages, its input and its
 /// optional services. A presentation layer owns the views and frames of the display it implements this with.
 @MainActor
@@ -35,6 +47,8 @@ package protocol DeviceSessionDisplay: AnyObject {
     func send(_ gesture: WatchGesture, completion: @escaping @MainActor (Error?) -> Void) throws
     /// Reads and flips the guest's appearance as one request.
     func toggleAppearance() async throws
+    /// The device's own StandBy service, or nil when the guest presents StandBy for its notification.
+    var standBy: (any DeviceStandBy)? { get }
     /// Posts a Darwin notification in the guest.
     func postNotification(_ name: String) async throws
     /// Sets a Darwin notification's state in the guest and posts it, as one request. Throws
@@ -97,6 +111,7 @@ package protocol DeviceSessionDisplay: AnyObject {
 
 extension DeviceSessionDisplay {
     package var captureDisplayID: UInt32? { nil }
+    package var standBy: (any DeviceStandBy)? { nil }
     /// A display that does not report its guest's startup has nothing to wait for.
     package func waitForGuestStartup() async throws {}
     package func connectAppDisplay(uniqueID: String) async throws -> any DeviceSessionDisplay {

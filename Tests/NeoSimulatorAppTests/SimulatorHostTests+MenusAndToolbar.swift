@@ -607,6 +607,29 @@ extension SimulatorHostTests {
         #expect(display.contrastMode == 0)
     }
 
+    @Test func showStandByHoldsTheServiceOfADeviceWhoseGuestPresentsItOnlyForOne() async throws {
+        let display = TestDisplay()
+        let standBy = TestStandBy()
+        display.standBy = standBy
+        let model = standaloneDeviceModel()
+        let controller = try makeController(display, features: [DeviceCapabilities.standBy], model: model)
+        defer { controller.invalidate() }
+        // The service's state reaches the menu while the guest answers nothing.
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        display.worker = worker
+        worker.hold()
+        let title = { DeviceCommand.command(.toggleStandBy).stateTitle?(controller) }
+        controller.perform(.toggleStandBy)
+        try await wait { !controller.session.isBusy && title() == "Hide StandBy" }
+        #expect(standBy.isPresented && model.showsStandBy == true)
+        controller.perform(.toggleStandBy)
+        try await wait { !controller.session.isBusy && title() == "Show StandBy" }
+        #expect(!standBy.isPresented && model.showsStandBy == false)
+        // The notification that presents StandBy on other devices is left alone.
+        #expect(display.postedNotifications.isEmpty && display.notificationStates.isEmpty)
+    }
+
     @Test func debugMenuFollowsSimulatorAppOrderAndShortcuts() throws {
         _ = NSApplication.shared
         let menus = MenuController(application: nil)

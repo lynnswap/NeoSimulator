@@ -85,6 +85,13 @@ while `com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4` supports only Duo
 selected device family, and it shows each runtime's build. If it shows
 **No Runtimes Available**, install a runtime for Duo in Xcode.
 
+**Features → Show StandBy** keeps StandBy presented on a Duo until you choose
+**Hide StandBy** or close the screen. The device shows StandBy only while its lock
+screen is showing and it is in a pose that stands on its own: closed in landscape
+right, partially open in portrait, or open flat in portrait. In any other state the
+command reports that the device cannot show StandBy. The command is available
+for a Duo in the default device set.
+
 ## Main and compact windows
 
 Control-click a device and choose **Open in New Window** or **Open in New Tab**

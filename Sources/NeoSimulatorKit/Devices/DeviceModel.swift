@@ -103,10 +103,11 @@ public final class DeviceModel: Identifiable {
     /// Only a connected session reads this. It is `nil` before that read, after the session ends, and on a device
     /// without biometrics.
     public private(set) var isBiometricEnrolled: Bool?
-    /// Whether the guest is showing StandBy.
+    /// Whether StandBy is asked of the guest.
     ///
-    /// Only a connected session reads this. It is `nil` before that read, after the session ends, and on a device
-    /// without StandBy.
+    /// The guest shows StandBy only while its own state supports it, so this can be `true` while its screen shows
+    /// something else. Only a connected session reads this. It is `nil` before that read, after the session ends, and
+    /// on a device without StandBy.
     public private(set) var showsStandBy: Bool?
     /// The Core Animation debug options as the device last reported them.
     ///
@@ -433,6 +434,9 @@ public final class DeviceModel: Identifiable {
         assign(\.debugOptions, debugOptions)
         return true
     }
+
+    /// Holds whether the device's own service presents StandBy, which no reading of the guest tells.
+    package func update(showsStandBy: Bool) { assign(\.showsStandBy, showsStandBy) }
 
     package func note(issue: String) { lastIssue = issue }
 

@@ -57,6 +57,9 @@ package final class SimulatorConnection: SimulatorDisplay {
     /// What this connection's services ask CoreDevice through, which ends with the connection. A display that shares a
     /// device's connection has none of its own.
     private let deviceRecord: CoreDeviceSimulatorRecord?
+    /// StandBy through CoreDevice, for a device whose guest presents it only for that service.
+    private let standByService: CoreDeviceStandBy?
+    package var standBy: (any DeviceStandBy)? { standByService }
     private let displays: SimulatorDisplaySet
 
     /// The display starts with SimulatorKit's input, which the guest takes until `activateNativeInput` gives it native
@@ -64,8 +67,9 @@ package final class SimulatorConnection: SimulatorDisplay {
     package init(device: SimulatorDevice, screen: (identifier: UInt32, object: AnyObject), runtime: SimulatorPresentationRuntime,
          displays: SimulatorDisplaySet, pasteboardRoute: SimulatorPasteboardRoute,
          nativeCanvas: NativeDeviceCanvas? = nil, nativeKeyboard: SharedNativeKeyboard? = nil,
-         deviceRecord: CoreDeviceSimulatorRecord? = nil) async throws {
+         deviceRecord: CoreDeviceSimulatorRecord? = nil, standBy: CoreDeviceStandBy? = nil) async throws {
         self.deviceRecord = deviceRecord
+        standByService = standBy
         self.nativeCanvas = nativeCanvas
         self.device = device
         self.runtime = runtime
@@ -509,6 +513,7 @@ package final class SimulatorConnection: SimulatorDisplay {
         simulatorKeyboard.stop()
         disconnected = true
         inputActivation?.cancel()
+        standByService?.stop()
         deviceRecord?.stop()
         // The digitizer gets its own delegate back before SimulatorKit disconnects the display, so no more touches reach
         // the native touchscreen. A failed restore leaves the replacement with this connection, which `stop()` retries.
