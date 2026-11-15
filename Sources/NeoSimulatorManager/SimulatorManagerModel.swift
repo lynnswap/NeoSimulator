@@ -174,6 +174,8 @@ package final class SimulatorManagerModel {
     package let registry: DeviceRegistry
     package let selection = ManagerSelection()
     package let serviceProfiles: ServiceProfileStore
+    /// The logins that a person saved for apps.
+    package let logins: LoginStore
     @ObservationIgnored private var bootTracker = SimulatorBootTracker()
     /// Profile edits and retries waiting for management, by the profile whose selection must remain unchanged.
     @ObservationIgnored private var pendingServiceProfiles: [DeviceInventoryID: UUID] = [:]
@@ -283,7 +285,7 @@ package final class SimulatorManagerModel {
     package init(rendererApplicationURL: URL,
          presentSimulator: (@MainActor @Sendable (SimulatorPresentationContext) async throws -> Void)? = nil,
         deviceHubCompanions: DeviceHubCompanions? = nil,
-         serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
+         serviceProfiles: ServiceProfileStore = ServiceProfileStore(), logins: LoginStore = LoginStore()) {
         let controller = SimulatorHostController(
             rendererApplicationURL: rendererApplicationURL, presentSimulator: presentSimulator,
             deviceHubCompanions: deviceHubCompanions)
@@ -292,17 +294,19 @@ package final class SimulatorManagerModel {
         frameworks = UIFrameworkSettings { try await controller.installedXcodes() }
         registry = DeviceRegistry(source: controller)
         self.serviceProfiles = serviceProfiles
+        self.logins = logins
         followServiceProfiles()
     }
 
     package init(source: any SimulatorManagerSource,
          makeDevicePosture: @escaping @MainActor (DeviceInventoryID) -> DevicePostureModel = { DevicePostureModel(deviceID: $0) },
-         serviceProfiles: ServiceProfileStore = ServiceProfileStore()) {
+         serviceProfiles: ServiceProfileStore = ServiceProfileStore(), logins: LoginStore = LoginStore()) {
         controller = source
         self.makeDevicePosture = makeDevicePosture
         frameworks = UIFrameworkSettings { try await source.installedXcodes() }
         registry = DeviceRegistry(source: source)
         self.serviceProfiles = serviceProfiles
+        self.logins = logins
         followServiceProfiles()
     }
 

@@ -11,6 +11,7 @@ final class SettingsViewController: NSTabViewController {
     let devices: DevicesSettingsViewController
     let capture: CaptureSettingsViewController
     let serviceProfiles: ServiceProfilesSettingsViewController
+    let logins: LoginsSettingsViewController
     let licenses: NSViewController
     #if DEBUG
     private let debugModel: SimulatorManagerModel
@@ -29,6 +30,7 @@ final class SettingsViewController: NSTabViewController {
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
         serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
+        logins = LoginsSettingsViewController(store: model.logins)
         licenses = makeLicenses()
         #if DEBUG
         debugModel = model
@@ -37,11 +39,12 @@ final class SettingsViewController: NSTabViewController {
         general.sizingOptions = [.preferredContentSize]
         devices.sizingOptions = [.preferredContentSize]
         capture.sizingOptions = [.preferredContentSize]
+        logins.sizingOptions = [.preferredContentSize]
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
         var tabs: [(NSViewController, String)] = [(general, "gear"), (devices, "iphone"), (capture, "camera"),
-                                                  (serviceProfiles, "cpu"), (licenses, "doc.text")]
+                                                  (serviceProfiles, "cpu"), (logins, "key"), (licenses, "doc.text")]
         #if DEBUG
         tabs.append((debug, "hammer"))
         #endif
