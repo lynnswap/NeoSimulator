@@ -94,21 +94,30 @@ package struct NativeFormSignIn {
         return [alone] + element.children.flatMap(elements)
     }
 
-    /// The sign-in form among an app's elements, or nil if they have no password field.
+    /// The fields of the sign-in form among an app's elements, or nil if they have no password field.
     ///
     /// The password field is the screen's one text field that hides what it holds. The user name field is the text
-    /// field before it, in the order that the elements are read in. The button is the one that `name` names, or for
-    /// no name the first after the password field. A name is a button's label, or `#` and its accessibility
-    /// identifier, as in `#signIn`.
-    package nonisolated static func form(
-        among elements: [SimulatorAccessibilityElement], button name: String
-    ) throws -> Form? {
+    /// field before it, in the order that the elements are read in.
+    nonisolated static func fields(
+        among elements: [SimulatorAccessibilityElement]
+    ) throws -> (userName: Int?, password: Int)? {
         // An element without a frame is not one that the screen shows.
         let shown = elements.indices.filter { !elements[$0].frame.isEmpty }
         let passwords = shown.filter { elements[$0].role == .textField && elements[$0].isSecureTextField }
         guard let password = passwords.first else { return nil }
         guard passwords.count == 1 else { throw Failure.severalPasswordFields }
-        let buttons = shown.filter { elements[$0].role == .button }
+        return (shown.last { $0 < password && elements[$0].role == .textField }, password)
+    }
+
+    /// The sign-in form among an app's elements, or nil if they have no password field.
+    ///
+    /// The button is the one that `name` names, or for no name the first after the password field. A name is a
+    /// button's label, or `#` and its accessibility identifier, as in `#signIn`.
+    package nonisolated static func form(
+        among elements: [SimulatorAccessibilityElement], button name: String
+    ) throws -> Form? {
+        guard let (userName, password) = try fields(among: elements) else { return nil }
+        let buttons = elements.indices.filter { elements[$0].role == .button && !elements[$0].frame.isEmpty }
         let button: Int?
         if name.isEmpty {
             button = buttons.first { $0 > password }
@@ -125,37 +134,43 @@ package struct NativeFormSignIn {
             }
             throw Failure.noButton(named: name.isEmpty ? nil : name, buttons: names)
         }
-        return Form(
-            userName: shown.last { $0 < password && elements[$0].role == .textField }, password: password,
-            button: button)
+        return Form(userName: userName, password: password, button: button)
     }
 
     package func run() async throws {
         do {
-            if asksUserName, !login.userName.isEmpty { try await perform(.setValue(login.userName), on: \.userName) }
-            try await perform(.setValue(password), on: \.password)
+            if asksUserName, !login.userName.isEmpty { try await perform(.setValue(login.userName), on: .userName) }
+            try await perform(.setValue(password), on: .password)
             try await checkFilled()
-            try await perform(.press, on: \.button)
+            try await perform(.press, on: .button)
             try await waitForFormToGo()
         } catch {
             // What the sign-in put into the form does not stay there. The clearing has a task of its own: a sign-in
             // that was cancelled, as by a tool that went away, changes no more elements in its own.
             await Task {
-                try? await perform(.setValue(""), on: \.password)
-                if asksUserName { try? await perform(.setValue(""), on: \.userName) }
+                try? await perform(.setValue(""), on: .password)
+                if asksUserName { try? await perform(.setValue(""), on: .userName) }
             }.value
             throw error
         }
     }
 
+    private enum Part {
+        case userName, password, button
+    }
+
     /// Performs an action on a part of the form as the app has it when the action is asked for. Setting a field's
-    /// value can bring up the keyboard, which moves the form, so a part is found again for each action.
-    private func perform(
-        _ action: SimulatorAccessibilityAction, on part: @escaping @Sendable (Form) -> Int?
-    ) async throws {
+    /// value can bring up the keyboard, which moves the form, so a part is found again for each action. A field is
+    /// found without the button: an app can take its button away while it looks at what was submitted, and the
+    /// fields are still emptied then.
+    private func perform(_ action: SimulatorAccessibilityAction, on part: Part) async throws {
         let name = login.signInButton
         try await device.perform(action, inProcess: processIdentifier) { elements in
-            (try? Self.form(among: elements, button: name)).flatMap { $0 }.flatMap(part)
+            switch part {
+            case .userName: (try? Self.fields(among: elements)).flatMap { $0 }?.userName
+            case .password: (try? Self.fields(among: elements)).flatMap { $0 }?.password
+            case .button: (try? Self.form(among: elements, button: name)).flatMap { $0 }?.button
+            }
         }
     }
 
@@ -166,11 +181,11 @@ package struct NativeFormSignIn {
             throw Failure.notFilled
         }
         let elements = Self.elements(of: application)
-        guard let form = try Self.form(among: elements, button: login.signInButton),
-            let hidden = elements[form.password].value, !hidden.isEmpty, hidden.allSatisfy({ $0 == "•" })
+        guard let fields = try Self.fields(among: elements),
+            let hidden = elements[fields.password].value, !hidden.isEmpty, hidden.allSatisfy({ $0 == "•" })
         else { throw Failure.notFilled }
         if asksUserName, !login.userName.isEmpty {
-            guard let userName = form.userName, elements[userName].value == login.userName else {
+            guard let userName = fields.userName, elements[userName].value == login.userName else {
                 throw Failure.notFilled
             }
         }

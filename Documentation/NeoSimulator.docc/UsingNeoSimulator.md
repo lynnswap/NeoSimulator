@@ -310,7 +310,8 @@ the form. It sets the fields and presses the button through the app's accessibil
 Where another button comes first, such as one that resets the password, name the button in the login's **Sign-In
 Button**: its label, or `#` and its accessibility identifier, as in `#signIn`. Neo fills nothing on a screen with
 more than one password field. If the app still shows the form after 20 seconds, as under an alert that says the
-password is wrong, Neo empties the fields and reports the login as rejected.
+password is wrong, Neo empties the fields and reports the login as rejected. An app that takes the form off its
+screen while it checks the login looks signed in from then on.
 
 For a web sign-in sheet, Neo answers the system's question for the login's site, fills the user name and password
 fields that the page's form declares, submits the form, and waits for the sheet to close. Where a site asks for the user name first,

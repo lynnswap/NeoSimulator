@@ -296,10 +296,11 @@ extension ManagerModelTests {
         var ended = await signedIn { device in (device.front, device.covered) = (home, home) }
         #expect(ended.failure == nil && ended.actions == filled + ["press signIn"])
 
-        // An alert that says why the login was not taken covers the form, which the app still has under it. What was
-        // filled in does not stay there.
+        // An alert that says why the login was not taken covers the form, which the app still has under it, now
+        // without its buttons. What was filled in does not stay there.
         ended = await signedIn { device in
             device.front = application([element(.staticText, "alert", label: "Wrong password", row: 1)])
+            device.covered?.children.removeAll { $0.role == .button }
         }
         #expect(ended.failure as? NativeFormSignIn.Failure == .rejected)
         #expect(ended.actions == filled + ["press signIn", "set password to ", "set user to "])
