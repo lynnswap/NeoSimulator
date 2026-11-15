@@ -186,18 +186,19 @@ package struct NativeFormSignIn {
         func empty(_ choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?) async -> Bool {
             (try? await device.perform(.setValue(""), inProcess: processIdentifier, on: choose)) != nil
         }
-        if fillsUserName {
-            _ = await empty { elements in
-                Self.passwordFields(among: elements).first.flatMap { Self.userNameField(before: $0, among: elements) }
-            }
-        }
-        // A form has a password field, or two where it asks for the password again.
+        // The password goes first: a form can change with its user name. A form has a password field, or two where it
+        // asks for the password again.
         for field in 0..<4 {
             let emptied = await empty { elements in
                 let passwords = Self.passwordFields(among: elements)
                 return passwords.indices.contains(field) ? passwords[field] : nil
             }
             if !emptied { break }
+        }
+        if fillsUserName {
+            _ = await empty { elements in
+                Self.passwordFields(among: elements).first.flatMap { Self.userNameField(before: $0, among: elements) }
+            }
         }
     }
 
