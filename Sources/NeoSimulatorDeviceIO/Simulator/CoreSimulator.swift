@@ -391,6 +391,8 @@ private struct AccessibilityMessages: @unchecked Sendable {
     let setRequestType: NativeObjCMethod<Void, UInt64>
     let setParameters: NativeObjCMethod<Void, NSDictionary>
     let resultData: NativeObjCMethod<AnyObject?>
+    /// The response's error number, which is 0 for none.
+    let responseError: NativeObjCMethod<UInt64>
     let processIdentifier: NativeObjCMethod<Int32>
     let objectID: NativeObjCMethod<UInt64>
     let send: NativeObjCMethod<Void, AnyObject, DispatchQueue, Completion>
@@ -418,6 +420,7 @@ private struct AccessibilityMessages: @unchecked Sendable {
         setParameters = try await runtime.resolve(
             .objc(.method("setParameters:", as: ((NSDictionary) -> Void).self)), on: requestClass)
         resultData = try await runtime.resolve(.objc(.method("resultData", as: (() -> AnyObject?).self)), on: response)
+        responseError = try await runtime.resolve(.objc(.method("error", as: (() -> UInt64).self)), on: response)
         processIdentifier = try await runtime.resolve(.objc(.method("pid", as: (() -> Int32).self)), on: translation)
         objectID = try await runtime.resolve(.objc(.method("objectID", as: (() -> UInt64).self)), on: translation)
         send = try await runtime.resolve(
@@ -452,8 +455,10 @@ private struct AccessibilityMessages: @unchecked Sendable {
                 }
                 try unsafe send.unsafeInvoke(on: device, message, Self.answers, completion)
                 guard answered.wait(timeout: deadline) == .success else { throw unanswered }
-                guard let answer else { return nil }
-                return try unsafe resultData.unsafeInvoke(on: answer)
+                guard let answer else { return .init() }
+                return .init(
+                    error: try unsafe responseError.unsafeInvoke(on: answer),
+                    result: try unsafe resultData.unsafeInvoke(on: answer))
             },
             identity: { object in
                 guard object.isKind(of: translationClass) else { return nil }
