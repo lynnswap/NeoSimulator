@@ -2164,6 +2164,48 @@ struct RemoteDeviceScreenTests {
         #expect(transport.closed)
     }
 
+    @Test func aTapIsATouchThatBeginsAndEndsAndItsFailureReachesItsCaller() async throws {
+        let transport = ScreenFixtureTransport()
+        let input = NativeDeviceScreenInput(input: transport)
+        try await input.tap(at: CGPoint(x: 0.5, y: 0.4))
+        #expect(transport.deliveries == ["touch began", "touch ended"])
+        transport.sendFailures = 1
+        await #expect(throws: ScreenFixtureError.self) { try await input.tap(at: CGPoint(x: 0.5, y: 0.4)) }
+        try await input.stop()
+    }
+
+    @Test func theAppsTypingGoesToAKeyboardOfItsOwnAndHoldsShiftOnlyForTheKeysThatNeedIt() async throws {
+        let transport = KeyboardFixtureTransport()
+        let keyboard = NativeDeviceKeyboard(transport: transport)
+        // A Mac keyboard that sent input last takes the window's synthesized keys, with its own layout.
+        let pressed = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 1,
+            windowNumber: 0, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
+        transport.senders[ObjectIdentifier(pressed)] = 0xA
+        keyboard.handle(pressed)
+
+        try await keyboard.type([TypedKey(keyCode: 0), TypedKey(keyCode: 11, shift: true),
+                                 TypedKey(keyCode: 18, shift: true), TypedKey(keyCode: 36)])
+        #expect(transport.keyboards.map(\.sender) == [0xA, nil])
+        let typing = try #require(transport.keyboards.last)
+        let typed = typing.events.map { event in
+            switch event.type {
+            case .keyDown: "down \(event.keyCode)"
+            case .keyUp: "up \(event.keyCode)"
+            default: event.modifierFlags.contains(.shift) ? "shift" : "no shift"
+            }
+        }
+        #expect(typed == ["down 0", "up 0", "shift", "down 11", "up 11", "down 18", "up 18", "no shift", "down 36", "up 36"])
+
+        // A key that cannot be sent ends the typing, and removing the keyboard's service releases what it held.
+        typing.sendFailures = 1
+        await #expect(throws: ScreenFixtureError.self) { try await keyboard.type([TypedKey(keyCode: 0)]) }
+        #expect(typing.stops == 1)
+        // The guest counts the typing's keyboard as a hardware keyboard, so it goes with the others.
+        try await keyboard.type([TypedKey(keyCode: 0)])
+        try await keyboard.removeServices()
+        #expect(transport.keyboards.map(\.stops) == [1, 1, 1])
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func guestScreenInputSendsCoreDevicesIndigoEventsToEachGuestServiceAndReleasesWhatTheyHold() async throws {
         let runtime = ABIRuntime.shared

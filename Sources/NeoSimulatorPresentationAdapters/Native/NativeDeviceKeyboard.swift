@@ -22,6 +22,9 @@ package final class NativeDeviceKeyboard {
     private var activeSender: UInt64?
     /// Carries synthesized input before any Mac keyboard sends input, as Device Hub's main keyboard does.
     private var mainKeyboard: (any NativeKeyboardService)?
+    /// Carries the text that the app types. It is a generic keyboard of its own, so the guest reads its keys with the
+    /// same layout whatever keyboards the Mac has.
+    private var typingKeyboard: (any NativeKeyboardService)?
     /// Keyboards whose guest service could not be removed, which the next removal retries.
     private var unremoved: [any NativeKeyboardService] = []
     private var enabledDisplays: Set<ObjectIdentifier> = []
@@ -137,12 +140,53 @@ package final class NativeDeviceKeyboard {
         }
     }
 
+    /// Presses and releases `keys` in order on the keyboard that carries the app's typing, after the input accepted
+    /// before them. Returns once the keys are sent. When one cannot be sent, the keyboard's guest service is removed,
+    /// which releases what it held, and the failure is thrown.
+    package func type(_ keys: [TypedKey]) async throws {
+        guard !isStopped else {
+            throw RemoteScreenError.unavailable("native-keyboard", "The device's keyboard input has stopped.")
+        }
+        let keyboard = try typingKeyboard ?? transport.makeMainKeyboard()
+        typingKeyboard = keyboard
+        try await enqueue { [weak self] in
+            do {
+                for key in keys {
+                    let flags: NSEvent.ModifierFlags = key.shift ? .shift : []
+                    if keyboard.modifierFlags != flags { try await keyboard.send(Self.typedEvent(.flagsChanged, flags)) }
+                    try await keyboard.send(Self.typedEvent(.keyDown, flags, keyCode: key.keyCode))
+                    try await keyboard.send(Self.typedEvent(.keyUp, flags, keyCode: key.keyCode))
+                }
+                if !keyboard.modifierFlags.isEmpty { try await keyboard.send(Self.typedEvent(.flagsChanged, [])) }
+            } catch {
+                if self?.typingKeyboard === keyboard { self?.typingKeyboard = nil }
+                do { try await keyboard.stop() } catch { self?.unremoved.append(keyboard) }
+                throw error
+            }
+        }.value
+    }
+
+    /// An event of the app's typing. A keyboard's observer takes a key from its key code and the modifiers from
+    /// modifier changes, so the event carries no characters.
+    private static func typedEvent(
+        _ type: NSEvent.EventType, _ flags: NSEvent.ModifierFlags, keyCode: UInt16 = 0
+    ) throws -> NSEvent {
+        guard
+            let event = NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false,
+                keyCode: keyCode)
+        else { throw RemoteScreenError.io("native-keyboard", "AppKit made no key event to type with.") }
+        return event
+    }
+
     /// Removes every keyboard service so the guest no longer reports a connected hardware keyboard; later input
     /// creates them again with released keys. A service that could not be removed is retried by the next removal.
     package func removeServices() async throws {
-        let detached = allKeyboards
+        let detached = allKeyboards + (typingKeyboard.map { [$0] } ?? [])
         keyboards = [:]
         mainKeyboard = nil
+        typingKeyboard = nil
         try await enqueue { [weak self] in
             // Earlier removals, such as a replaced main keyboard's, have finished, so their failures are retried here.
             let removing = (self?.unremoved ?? []) + detached

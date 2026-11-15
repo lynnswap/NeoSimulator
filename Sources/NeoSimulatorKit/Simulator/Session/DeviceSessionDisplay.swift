@@ -40,6 +40,13 @@ package protocol DeviceSessionDisplay: AnyObject {
     /// Sends a message. `completion`, when present, receives SimulatorKit's
     /// delivery result; a thrown error means the message was not sent.
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
+    /// Taps the integrated screen at `point`, in unit coordinates from the top-left corner of the screen in its own
+    /// orientation, with the touch input that the display's own touches use. Returns once the device has taken the tap.
+    /// Throws when the tap could not be sent, and for a display whose touches the app cannot send.
+    func tap(at point: CGPoint) async throws
+    /// Presses and releases `keys` in order on a keyboard that the guest reads with the US layout. Returns once the
+    /// device has taken the keys. Throws when a key could not be sent, and for a display whose keys the app cannot send.
+    func type(_ keys: [TypedKey]) async throws
     /// Builds a remote touch message held until its end phase, for `send(_:completion:)`.
     func message(for touch: TVRemoteTouch) throws -> HIDMessage
     /// Sends a watch gesture. `completion` receives SimulatorKit's delivery
@@ -116,5 +123,11 @@ extension DeviceSessionDisplay {
     package func waitForGuestStartup() async throws {}
     package func connectAppDisplay(uniqueID: String) async throws -> any DeviceSessionDisplay {
         throw SimulatorError.unavailable("This display cannot connect to the app resizing screen.")
+    }
+    package func tap(at point: CGPoint) async throws {
+        throw SimulatorError.unavailable("This display takes no taps from the app.")
+    }
+    package func type(_ keys: [TypedKey]) async throws {
+        throw SimulatorError.unavailable("This display takes no typing from the app.")
     }
 }

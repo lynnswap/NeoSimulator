@@ -691,6 +691,32 @@ package final class DeviceSession {
     package var canPerformToolOperation: Bool { canPerformCommands && !isBusy }
     package var canStartRecording: Bool { canPerformToolOperation && recording == nil && recordingStart == nil && !isStartingAppResize }
 
+    // MARK: Input from the app
+
+    /// Taps the device's integrated screen at `point`, in unit coordinates from the top-left corner of the screen in its
+    /// own orientation, and returns once the device has taken the tap.
+    package func tap(at point: CGPoint) async throws {
+        guard canPerformCommands else { throw SimulatorError.operation("The device is not connected.") }
+        try await display.tap(at: point)
+    }
+
+    /// Types `text` on the device with a hardware keyboard that the guest reads with the US layout, and returns once
+    /// the device has taken its keys. A line feed is Return.
+    ///
+    /// What the keys become is the focused field's to decide. A secure field takes each character as it is. Another
+    /// field applies the guest's input method, capitalization and smart punctuation, as it does for a person's typing.
+    ///
+    /// Throws before any key is sent for a text with a character that the US layout does not type, and while Connect
+    /// Hardware Keyboard is off, when the guest takes no hardware keyboard's keys.
+    package func type(_ text: String) async throws {
+        let keys = try TypedKey.keys(typing: text)
+        guard canPerformCommands else { throw SimulatorError.operation("The device is not connected.") }
+        guard connectsHardwareKeyboard else {
+            throw SimulatorError.unavailable("Turn on Connect Hardware Keyboard to type on the device.")
+        }
+        try await display.type(keys)
+    }
+
     // MARK: Immediate device input
 
     /// Sends a hardware input. The first failure of its events, including a
