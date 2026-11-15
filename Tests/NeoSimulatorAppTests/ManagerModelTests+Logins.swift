@@ -164,6 +164,8 @@ extension ManagerModelTests {
         let device = SignInFixture()
         device.front = SignInFixture.application("com.example.app")
         device.page = SignInPageState(origin: "https://login.example.com", step: .userName, document: "1")
+        // The page enables its button once it has looked at the user name.
+        device.disabledButtonReads = 2
         // The password's page is another document, on another host that the login lists. The sheet closes after it.
         var pages = [SignInPageState(origin: "https://sso.example.org", step: .password, document: "2")]
         device.onSubmit = { device.page = pages.isEmpty ? nil : pages.removeFirst() }
@@ -171,6 +173,7 @@ extension ManagerModelTests {
         #expect(
             device.scripts.filter { $0 != .state } == [
                 .signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com"),
+                .submit(origin: "https://login.example.com"), .submit(origin: "https://login.example.com"),
                 .signIn(userName: "premium@example.com", password: "s3cret", origin: "https://sso.example.org"),
             ])
     }
@@ -352,6 +355,9 @@ private final class SignInFixture: SignInDevice {
     var onTap: (() -> Void)?
     /// Runs when the sign-in's script has filled the page's form and submitted it.
     var onSubmit: (() -> Void)?
+    /// How many times the form's button is still disabled when the sign-in tries to press it after filling the form.
+    var disabledButtonReads = 0
+    private var isFilled = false
     private(set) var taps: [CGPoint] = []
     private(set) var scripts: [SignInScript] = []
 
@@ -393,9 +399,22 @@ private final class SignInFixture: SignInDevice {
         if case .signIn(let userName, _, let origin) = script, origin == state.origin, state.isVisible,
             let step = state.step, step == .password || !userName.isEmpty
         {
-            state.submitted = step
-            onSubmit?()
+            if disabledButtonReads > 0 {
+                // The page has what was filled in, and enables its button a moment later.
+                isFilled = true
+            } else {
+                state.submitted = step
+                onSubmit?()
+            }
+        } else if case .submit(let origin) = script, origin == state.origin, isFilled {
+            disabledButtonReads -= 1
+            if disabledButtonReads <= 0 {
+                isFilled = false
+                state.submitted = state.step
+                onSubmit?()
+            }
         }
+        state.awaitsSubmit = isFilled
         return state
     }
 

@@ -26,8 +26,11 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
     /// What the page asks for next in a form that the sign-in can submit, or nil for a page that asks for nothing that
     /// the sign-in recognizes.
     package var step: Step?
-    /// The step that `SignInScript.signIn` filled in and submitted, if it did.
+    /// The step that a script of the sign-in submitted, if it did.
     package var submitted: Step?
+    /// Whether the document holds what `SignInScript.signIn` filled in and has yet to submit. A form's button can stay
+    /// disabled until the page has looked at what was filled in.
+    package var awaitsSubmit: Bool
     /// Names the document, so that a page that loaded again is told from the one that was submitted.
     package var document: String
 
@@ -45,12 +48,14 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
     }
 
     package init(
-        origin: String, isVisible: Bool = true, step: Step?, submitted: Step? = nil, document: String = ""
+        origin: String, isVisible: Bool = true, step: Step?, submitted: Step? = nil, awaitsSubmit: Bool = false,
+        document: String = ""
     ) {
         self.origin = origin
         self.isVisible = isVisible
         self.step = step
         self.submitted = submitted
+        self.awaitsSubmit = awaitsSubmit
         self.document = document
     }
 }
@@ -73,6 +78,8 @@ package enum SignInScript: Equatable, Sendable {
     /// has a field for it, or the user name alone. It fills nothing in a form without a submit control: submitting such
     /// a form would run its default action, which the page does not use, and which can put the fields into a URL.
     case signIn(userName: String, password: String, origin: String)
+    /// Submits the form that `signIn` filled in, once its button is enabled.
+    case submit(origin: String)
     /// Empties the fields that `signIn` set in the page's document, which `signIn` noted there.
     case clear(origin: String)
 
@@ -94,13 +101,12 @@ package enum SignInScript: Equatable, Sendable {
                     window[filled].push(password);
                     set(password, \(Self.literal(password)));
                   }
-                  // The form's button is the one a person would press after the field: the next that shows. A click
-                  // runs what the page does for its button, and then submits the form as a person's click does.
-                  const shown = submits.filter(takesInput);
-                  const follows = (e) => asked.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING;
-                  const press = shown.find(follows) || shown[0];
-                  // A form whose only submit control is hidden is submitted with Return, which names that control.
-                  if (press) HTMLElement.prototype.click.call(press); else form.requestSubmit.call(asked.form, submits[0]);
+                  if (press()) submitted = step;
+                }
+                """
+        case .submit(let origin):
+            action = """
+                if (location.origin === \(Self.literal(origin)) && isVisible && step && window[filled] && press()) {
                   submitted = step;
                 }
                 """
@@ -125,24 +131,41 @@ package enum SignInScript: Equatable, Sendable {
               const password = passwords.find((e) => tokens(e).includes('current-password')) || passwords[0] || null;
               const texts = inputs.filter((e) => ['text', 'email', 'tel'].includes(e.type));
               const named = (e) => /user|login|email|account/i.test(e.name + ' ' + e.id);
-              const says = (fields) => fields.find((e) => tokens(e).includes('username'))
-                || fields.find((e) => e.type === 'email' || tokens(e).includes('email'));
-              // Beside a password field, the field before it is the user name's. Alone, a field has to say so itself.
+              const isEmail = (e) => e.type === 'email' || tokens(e).includes('email');
+              // The controls that submit a form. A control named `elements` or `requestSubmit` hides the form's own
+              // member of that name.
+              const form = HTMLFormElement.prototype;
+              const submitsOf = (e) => e && e.form
+                ? Array.from(Object.getOwnPropertyDescriptor(form, 'elements').get.call(e.form))
+                    .filter((control) => control.type === 'submit')
+                : [];
+              // Beside a password field, the field before it is the user name's. Alone, a field has to say so itself,
+              // and the first that does in a form that can be submitted is taken: a page's other forms come after
+              // the one that signs in.
               const beside = password ? texts.filter((e) => e.form === password.form) : [];
               const before = beside.filter((e) => e.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING);
+              const alone = texts.filter((e) => submitsOf(e).length > 0);
               const userName = password
-                ? beside.find((e) => tokens(e).includes('username')) || says(before) || before.filter(named).pop()
-                  || before[before.length - 1] || null
-                : says(texts) || texts.find(named) || null;
-              // The field that the page asks for, and the controls that submit its form. A control named `elements`
-              // or `requestSubmit` hides the form's own member of that name.
+                ? beside.find((e) => tokens(e).includes('username')) || before.find(isEmail)
+                  || before.filter(named).pop() || before[before.length - 1] || null
+                : alone.find((e) => tokens(e).includes('username')) || alone.find((e) => isEmail(e) || named(e)) || null;
+              // The field that the page asks for.
               const asked = password || userName;
-              const form = HTMLFormElement.prototype;
-              const submits = asked && asked.form
-                ? Array.from(Object.getOwnPropertyDescriptor(form, 'elements').get.call(asked.form))
-                    .filter((e) => e.type === 'submit' && !e.disabled)
-                : [];
+              const submits = submitsOf(asked);
               const step = submits.length === 0 ? null : password ? 'password' : 'userName';
+              // Presses the form's button: the one a person would press after the field, which is the next that shows.
+              // A click runs what the page does for its button, and then submits the form as a person's click does.
+              // A form whose only submit control is hidden is submitted with Return, which names that control. A
+              // button that the page keeps disabled until it has looked at the fields is not pressed yet.
+              const press = () => {
+                const enabled = submits.filter((e) => !e.disabled);
+                if (enabled.length === 0) return false;
+                const shown = enabled.filter(takesInput);
+                const follows = (e) => asked.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING;
+                const button = shown.find(follows) || shown[0];
+                if (button) HTMLElement.prototype.click.call(button); else form.requestSubmit.call(asked.form, enabled[0]);
+                return true;
+              };
               const set = (e, value) => {
                 Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(e, value);
                 e.dispatchEvent(new Event('input', { bubbles: true }));
@@ -153,7 +176,7 @@ package enum SignInScript: Equatable, Sendable {
               let submitted = null;
               \(action)
               return {
-                origin: location.origin, isVisible, step, submitted,
+                origin: location.origin, isVisible, step, submitted, awaitsSubmit: !!window[filled] && !submitted,
                 document: String(performance.timeOrigin),
               };
             })()
@@ -207,6 +230,8 @@ package struct WebAuthenticationSignIn {
         package var appearance: Duration = .seconds(20)
         /// For the sheet to close after the form is submitted.
         package var completion: Duration = .seconds(20)
+        /// For a form's button to be enabled after its fields are filled in.
+        package var button: Duration = .seconds(3)
         package var interval: Duration = .milliseconds(250)
         /// Between two taps on the same alert. An alert that is still coming up ignores a tap.
         package var tapAgain: Duration = .seconds(1)
@@ -236,10 +261,16 @@ package struct WebAuthenticationSignIn {
         // step, so a sign-in fills in two pages at most.
         while true {
             do {
-                let filled = try await device.run(
+                var filled = try await device.run(
                     .signIn(userName: login.userName, password: password, origin: origin), in: page)
-                // The page moved, or lost its form, between the two scripts, or it asks for a user name that the login
-                // does not have. Nothing was filled.
+                // A page can keep its button disabled until it has looked at the fields.
+                let enabled = ContinuousClock.now + pace.button
+                while filled.submitted == nil, filled.awaitsSubmit, ContinuousClock.now < enabled {
+                    try await Task.sleep(for: pace.interval)
+                    filled = try await device.run(.submit(origin: origin), in: page)
+                }
+                // The page moved, or lost its form, between the scripts, it asks for a user name that the login does
+                // not have, or its button stayed disabled. What was filled in is cleared.
                 guard let submitted = filled.submitted else { throw Failure.unrecognizedPage(origin: filled.origin) }
                 let next = try await originOfNextStep(after: submitted, from: filled.document, of: page)
                 // The sheet closed.
