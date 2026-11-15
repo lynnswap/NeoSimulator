@@ -652,6 +652,12 @@ extension SimulatorHostTests {
         controller.perform(.toggleStandBy)
         try await wait { display.events.count == 2 && !controller.session.isBusy }
         #expect(!standBy.isPresented)
+
+        // The next attempt sends the release again instead of presenting with the button down.
+        display.undeliveredStates = []
+        controller.perform(.toggleStandBy)
+        try await wait { standBy.isPresented && !controller.session.isBusy }
+        #expect(display.events.map(\.state) == [.down, .up, .up])
     }
 
     @Test func debugMenuFollowsSimulatorAppOrderAndShortcuts() throws {

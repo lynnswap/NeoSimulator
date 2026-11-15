@@ -979,18 +979,27 @@ package final class DeviceSession {
     private static let lockState = "com.apple.springboard.lockstate"
     private static let lockLimit = Duration.seconds(5)
 
-    /// Presses the lock button of a device that is not locked, and returns once the device has taken the button's release
-    /// and the guest reports its lock. Throws the first failure of the press.
+    /// Presses the lock button of a device that is not locked, and returns once the lock button is up and the guest
+    /// reports its lock. Throws the first failure of the button's events.
     private func lock() async throws {
-        guard try await !isLocked() else { return }
         let button = HIDInput.button(.lock)
-        var pressFailure: (any Error)?
-        send(.press(button)) { pressFailure = $0 }
+        var failure: (any Error)?
+        let report = FirstFailure { failure = $0 }
+        // An earlier press whose release the device did not take keeps the button down, so its release is sent again.
+        releaseHeldInput(button, report: report)
+        var pressed = false
         let deadline = ContinuousClock.now + Self.lockLimit
         while true {
-            if let pressFailure { throw pressFailure }
+            if let failure { throw failure }
             // The button stays down until its release is delivered.
-            if downInputs[button] == nil, try await isLocked() { return }
+            if downInputs[button] == nil {
+                if try await isLocked() { return }
+                if !pressed {
+                    pressed = true
+                    press(button, report)
+                    continue
+                }
+            }
             guard ContinuousClock.now < deadline else {
                 throw SimulatorError.operation("\(device.name) did not lock, so it cannot show StandBy.")
             }
