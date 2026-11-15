@@ -439,6 +439,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             #endif
         }
         if let profileID { settingsWindow?.settings.selectServiceProfile(profileID) }
+        // Each opening starts from the default profile; an open window keeps its selection.
+        else if settingsWindow?.window?.isVisible != true { settingsWindow?.settings.selectDefaultServiceProfile() }
         model.frameworks.reload()
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.makeKeyAndOrderFront(nil)

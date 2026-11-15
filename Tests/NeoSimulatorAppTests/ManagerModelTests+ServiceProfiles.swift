@@ -782,6 +782,24 @@ extension ManagerModelTests {
         #expect(model.selectedProfile.name == "Profile (1)" && model.editingProfileID == model.selectedProfileID)
     }
 
+    @Test func serviceProfileSettingsSelectTheDefaultProfileWhenTheyOpen() throws {
+        let domain = "NeoSimulator.DefaultProfileSelection.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer {
+            defaults.removePersistentDomain(forName: domain)
+            try? FileManager.default.removeItem(at: serviceProfileURL(domain).deletingLastPathComponent())
+        }
+        let store = ServiceProfileStore(fileURL: serviceProfileURL(domain), legacyDefaults: defaults)
+        let other = try store.create(name: "Other", configuration: ServiceConfiguration())
+        let standard = try store.create(name: "Standard", configuration: ServiceConfiguration())
+        try store.setDefaultProfile(standard.id)
+        let model = ServiceProfilesSettingsModel(store: store)
+        #expect(model.selectedProfileID == standard.id)
+        model.selectedProfileID = other.id
+        model.selectDefaultProfile()
+        #expect(model.selectedProfileID == standard.id)
+    }
+
     @Test func addingServiceProfilesFocusesAndSelectsTheirNames() async throws {
         let domain = "NeoSimulator.ProfileNameEditing.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
