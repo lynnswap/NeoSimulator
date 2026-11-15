@@ -524,6 +524,7 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         content.framebufferFrame = { [weak self] in self?.display.framebufferFrame ?? .zero }
         content.onCanvasResize = { [weak self] in self?.resizeCanvas(from: $0, with: $1) }
         content.onNativeCanvasMagnification = { [weak self] in self?.display.setCanvasMagnification($0) }
+        content.nativeCanvasOutset = { [weak self] in self?.display.canvasOutset ?? 0 }
         content.canImport = { [weak self] in self?.session.canPerformToolOperation == true }
         content.importFiles = { [weak self] in self?.importFiles($0) }
         content.onDisplaySizeChange = { [weak self] in
@@ -1612,7 +1613,8 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
                 canvasZoom.mode = .fixed(scale)
                 canvasZoom.scale = scale
             }
-            let frame = display.view.convert(display.view.bounds, to: nil)
+            // A native composition's view extends beyond its device.
+            let frame = display.view.convert(display.usesNativeCanvas ? display.deviceFrame : display.view.bounds, to: nil)
             guard frame.width > 0, frame.height > 0 else { return }
             canvasResize = CanvasResize(corner: corner, size: frame.size,
                                         pointer: Self.screenLocation(of: event, in: window))
@@ -1936,6 +1938,7 @@ final class DeviceContentView: NSView, DisplayContentView {
         self.usesNativeCanvas = usesNativeCanvas
         self.display = display
         displayPresentation.setDisplay(display)
+        presentNativeCanvasSize()
         previousDisplaySize = nil
         if usesViewport { displayContainer.addSubview(displayPresentation) }
         else { addSubview(displayPresentation, positioned: .below, relativeTo: canvasControls) }
@@ -1952,6 +1955,8 @@ final class DeviceContentView: NSView, DisplayContentView {
     /// Renders the current magnification inside a native composition presented in `canvasOverlay`,
     /// or nil when the composition is presented at its own size.
     var onNativeCanvasMagnification: (CGFloat?) -> Void = { _ in }
+    /// How far a native composition's view extends beyond the device's frame in `canvasOverlay`.
+    var nativeCanvasOutset: () -> CGFloat = { 0 }
     private let canvasScrollView = NSScrollView()
     private let canvasDocumentView = NSView()
     /// Native compositions follow the magnified document from above the clip view. Magnifying their
@@ -1993,11 +1998,17 @@ final class DeviceContentView: NSView, DisplayContentView {
         guard usesViewport else { return self }
         return usesNativeCanvas ? canvasOverlay : canvasDocumentView
     }
+    /// A native composition has the device's own size in the viewport and room for its controls outside it, which
+    /// it has to know before the canvas is fitted or laid out.
+    private func presentNativeCanvasSize() {
+        if usesNativeCanvas { onNativeCanvasMagnification(usesViewport ? canvasScrollView.magnification : nil) }
+    }
     private func updateViewport() {
         retainedCanvasCenter = canvasMagnificationOperation?.center ?? canvasCenter
         if !isEmbedded || scrollsDisplay {
             requestCanvasMagnification(.init(preparation: .reset))
         }
+        presentNativeCanvasSize()
         let parent = displayContainer
         if displayPresentation.superview !== parent {
             displayPresentation.removeFromSuperview()
@@ -2305,12 +2316,14 @@ final class DeviceContentView: NSView, DisplayContentView {
         displayPresentation.animateRotation(from: snapshot, by: degrees)
     }
 
-    /// Presents a native composition at the magnified document's display rect.
+    /// Presents a native composition's device at the magnified document's display rect. The composition's view
+    /// extends beyond it, for what the composition shows beside the device.
     private func placeNativeCanvas() {
         guard usesViewport, usesNativeCanvas, canvasDisplayFrame.width > 0 else { return }
         canvasOverlay.frame = canvasScrollView.contentView.frame
         let frame = canvasOverlay.convert(canvasDisplayFrame, from: canvasDocumentView)
-        displayPresentation.setDisplayFrame(frame)
+        let outset = nativeCanvasOutset()
+        displayPresentation.setDisplayFrame(frame.insetBy(dx: -outset, dy: -outset))
         // Coordinate conversion can round differently while panning; SwiftUI must keep the scroll view's scale.
         onNativeCanvasMagnification(canvasScrollView.magnification)
     }

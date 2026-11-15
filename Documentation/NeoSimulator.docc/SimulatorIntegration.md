@@ -15,10 +15,13 @@ from the selected UI framework installation. That composition owns the cover and
 inner display providers, bezel, and pointer input. The app shows the device at its own
 scale at once by scaling the composition's picture, and once the scale rests it
 asks the composition for that zoom, which the composition draws at the display's
-resolution over about a second. The picture stays scaled only outside the sizes
-that the composition draws well: below the device's physical size, where the
-controls beside the device's buttons would not shrink with the device, and beyond
-the size that fits the composition's rendering surface. Posture controls send the
+resolution over about a second. The composition shows controls beside the device's
+buttons, which keep their size at any zoom. In the main window's canvas the
+device's size is the device's alone and the composition's view extends beyond it
+for those controls, so the picture stays scaled only beyond the size that fits the
+composition's rendering surface. A device's own window has the controls' room in
+its size, as large as it is at the device's physical size, so below that size the
+window reduces the picture drawn there. Posture controls send the
 device's native hinge commands and follow its reported motion state. Show StandBy
 holds CoreDevice's StandBy presentation on these screens, because a Duo presents
 StandBy only for that service and not for the notification that other devices take.

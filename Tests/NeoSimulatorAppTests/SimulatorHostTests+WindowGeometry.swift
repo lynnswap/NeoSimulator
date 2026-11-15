@@ -453,12 +453,16 @@ extension SimulatorHostTests {
         let scroll = try #require(content.subviews.compactMap { $0 as? NSScrollView }.first)
         var magnifications: [CGFloat?] = []
         content.onNativeCanvasMagnification = { magnifications.append($0) }
+        // The composition's view extends beyond the device's frame, for what it shows beside the device.
+        content.nativeCanvasOutset = { 12 }
         updateCanvas {
             window.setContentSize(NSSize(width: 500, height: 450))
             content.layoutSubtreeIfNeeded()
         }
         let finalFrame = host.convert(host.bounds, to: content)
         try #require(!magnifications.isEmpty)
+        #expect(abs(finalFrame.width - (800 * scroll.magnification + 24)) <= 1 / window.backingScaleFactor
+            && abs(finalFrame.height - (1200 * scroll.magnification + 24)) <= 1 / window.backingScaleFactor)
         updateCanvas {
             scroll.contentView.scroll(to: NSPoint(x: 100, y: 500))
             scroll.reflectScrolledClipView(scroll.contentView)

@@ -42,7 +42,12 @@ package protocol SimulatorDisplay: DeviceSessionDisplay {
     func setRenderScale(_ scale: CGFloat)
     /// The embedded canvas magnification of a native composition presented outside the
     /// magnified document, which renders it after measuring; nil outside the canvas viewport.
+    /// In the viewport the display's size is the device's alone, and its view extends `canvasOutset` beyond the
+    /// device's scaled frame on every side. Outside, the size has that room in it.
     func setCanvasMagnification(_ magnification: CGFloat?)
+    /// How far a native composition's view extends beyond the device's frame in the canvas viewport, for controls
+    /// that the composition shows beside the device.
+    var canvasOutset: CGFloat { get }
     /// The display's size at `scale`, with the bezel when it is shown.
     func size(for scale: CGFloat) -> NSSize
     /// The largest scale at which the display fits `size`.
@@ -94,6 +99,7 @@ extension SimulatorDisplay {
     package var usesNativeCanvas: Bool { false }
     package var nativePoseControls: NativeDevicePoseControls? { nil }
     package func setCanvasMagnification(_ magnification: CGFloat?) {}
+    package var canvasOutset: CGFloat { 0 }
 }
 
 /// The full displays of the sessions a presenter presents, each found from what its session holds without a downcast.

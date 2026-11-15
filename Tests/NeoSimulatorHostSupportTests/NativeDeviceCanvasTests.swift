@@ -83,16 +83,17 @@ struct NativeDeviceCanvasTests {
         screen.position = CGPoint(x: 700, y: 700)
         surface.addSublayer(screen)
         let presentation = NativeCanvasPresentation()
-        presentation.viewport = NativeCanvasProjection.viewport(for: [screen], frameMargin: 0,
-            controlMargin: NativeCanvasProjection.hoverControlMargin(renderingHeight: surface.bounds.height))
+        // The device covers 200 × 400 points, from 300 to 100 points left of the surface's center.
+        presentation.viewport = NativeCanvasProjection.viewport(for: [screen], frameMargin: 0)
+        let margin = NativeCanvasProjection.hoverControlMargin(renderingHeight: surface.bounds.height)
+        presentation.controlMargin = margin
         presentation.pointScale = 2
-        let size = presentation.naturalSize
+        // Outside a canvas viewport the natural size has the controls' room in it.
+        #expect(presentation.naturalSize == CGSize(width: (200 + margin * 2) * 2, height: (400 + margin * 2) * 2))
         let control = RecorderView()
         control.isHidden = true
-        let composition = ZoomedComposition(size: CGSize(width: 1200, height: 1000)) {
-            Recorder(view: control).frame(width: 30, height: 30)
-                .padding(EdgeInsets(top: 350, leading: 530, bottom: 0, trailing: 0))
-        }
+        let composition = ControlBesideDevice(view: control, size: CGSize(width: 1200, height: 1000),
+                                              deviceEdge: CGPoint(x: -100, y: -100))
         let hosting = NativeCanvasHostingView(rootView: AnyView(NativeCanvasRoot(
             presentation: presentation, shown: AnyView(composition), hidden: AnyView(composition),
             canvasPath: \.nativeCanvasTestFlag, zoomPath: \.nativeCanvasTestZoom)))
@@ -102,17 +103,24 @@ struct NativeDeviceCanvasTests {
         defer { window.close() }
         window.contentView = hosting
         for zoom: CGFloat in [0.5, 1, 2] {
+            // A canvas viewport places the device's frame, and the view extends the controls' room beyond it.
             presentation.magnification = zoom
-            window.setContentSize(CGSize(width: size.width * zoom, height: size.height * zoom))
+            #expect(presentation.naturalSize == CGSize(width: 400, height: 800))
+            // DeviceKit has drawn the device at the app's scale.
+            presentation.picture.ask(for: presentation.preferredZoom, from: CGSize(width: 200, height: 400))
+            presentation.picture.arrived()
+            window.setContentSize(CGSize(width: 400 * zoom + margin * 2, height: 800 * zoom + margin * 2))
             hosting.layoutSubtreeIfNeeded()
             control.isHidden = false
             hosting.layoutSubtreeIfNeeded()
             let frame = control.convert(control.bounds, to: hosting)
+            // The control keeps its size and its distance from the device's right edge at any magnification.
+            #expect(abs(frame.minX - (margin + 400 * zoom + 20)) < 0.5 && abs(frame.width - 30) < 0.5,
+                    "Shown at \(NSStringFromRect(frame))")
             #expect(hosting.bounds.contains(frame))
             #expect(control.visibleRect.contains(control.bounds))
             let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
             #expect(hosting.hitTest(point).map { $0 === control || $0.isDescendant(of: control) } == true)
-            #expect(presentation.naturalSize == size)
             control.isHidden = true
         }
     }
@@ -124,13 +132,18 @@ struct NativeDeviceCanvasTests {
         presentation.pointScale = 1.25
         presentation.zoom = 1.2
         #expect(presentation.preferredZoom == 1.5)
-        // DeviceKit's controls beside the device keep their size below the device's physical size, so the app
-        // reduces what DeviceKit drew at that size.
-        presentation.magnification = 0.5
+        // Outside a canvas viewport the natural size has the room of DeviceKit's controls as it is at the device's
+        // physical size, so the app reduces what DeviceKit drew at that size.
+        presentation.zoom = 0.6
         #expect(presentation.scale == 0.75 && presentation.preferredZoom == 1)
-        // The device is 500 points high from the surface's center, which is 1000 from its edge.
-        presentation.magnification = 2
-        #expect(presentation.scale == 3 && presentation.preferredZoom == 2)
+        // A canvas viewport gives the controls their room at any zoom.
+        presentation.magnification = 1
+        #expect(presentation.scale == 0.75 && presentation.preferredZoom == 0.75)
+        // The device is 500 points high from the surface's center, which is 1000 from its edge. The controls
+        // need 100 of them.
+        presentation.controlMargin = 100
+        presentation.magnification = 4
+        #expect(presentation.scale == 3 && presentation.preferredZoom == 1.8)
     }
 
     @Test func pictureThatDeviceKitMovesToAnotherZoomHasTheZoomThatTheDevicesExtentShows() {
@@ -288,6 +301,22 @@ private struct Recorder: NSViewRepresentable {
     let view: RecorderView
     func makeNSView(context: Context) -> RecorderView { view }
     func updateNSView(_ nsView: RecorderView, context: Context) {}
+}
+
+/// Stands in for one of DeviceKit's controls beside a device's button: a view that keeps its size, 20 points right of
+/// the device's edge, which DeviceKit's surface draws at the canvas's zoom around its center.
+private struct ControlBesideDevice: View {
+    @Environment(\.nativeCanvasTestZoom) private var zoom
+    let view: RecorderView
+    let size: CGSize
+    /// A point of the device's right edge at a zoom of 1, from the surface's center.
+    let deviceEdge: CGPoint
+
+    var body: some View {
+        Recorder(view: view).frame(width: 30, height: 30)
+            .position(x: size.width / 2 + deviceEdge.x * zoom + 35, y: size.height / 2 + deviceEdge.y * zoom)
+            .frame(width: size.width, height: size.height)
+    }
 }
 
 /// Stands in for DeviceKit's device view: a surface of a fixed size that draws its contents, which start at its top
