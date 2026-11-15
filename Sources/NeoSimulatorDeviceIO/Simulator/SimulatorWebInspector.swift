@@ -385,7 +385,6 @@ final class WebInspectorConnection {
 
     /// The next message, or nil if none arrives before `deadline`.
     func receive(until deadline: ContinuousClock.Instant) throws -> Message? {
-        var readAfterDeadline = false
         while true {
             if received.count >= 4 {
                 let length = Int(received.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
@@ -399,9 +398,9 @@ final class WebInspectorConnection {
                     return Message(selector: selector, arguments: message["__argument"] as? [String: Any] ?? [:])
                 }
             }
-            // A deadline that has passed still takes what has already arrived, in one read.
+            // A deadline that has passed still takes what has already arrived, however many reads that is: a message
+            // can be larger than one read, and the socket of a service that sends whole messages runs empty.
             let remaining = deadline - .now
-            guard remaining > .zero || !readAfterDeadline else { return nil }
             let (seconds, attoseconds) = remaining.components
             let milliseconds = remaining > .zero ? max(1, seconds * 1000 + attoseconds / 1_000_000_000_000_000) : 0
             var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
@@ -411,7 +410,6 @@ final class WebInspectorConnection {
                 if remaining > .zero { continue }
                 return nil
             }
-            if remaining <= .zero { readAfterDeadline = true }
             var chunk = [UInt8](repeating: 0, count: 65536)
             let count = read(descriptor, &chunk, chunk.count)
             if count < 0, errno == EINTR { continue }
