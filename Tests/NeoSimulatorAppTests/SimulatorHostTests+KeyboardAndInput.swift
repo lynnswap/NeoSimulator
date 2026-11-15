@@ -1087,6 +1087,12 @@ extension SimulatorHostTests {
         await #expect(throws: WebAuthenticationSignIn.Failure.otherApplication("com.example.third")) {
             try await store.signIn(with: login.id, on: session)
         }
+
+        // A login that a person has since kept to themself is not used for a caller that is not the person.
+        var kept = login
+        kept.allowsAutomation = false
+        try await store.save(kept, password: nil, replacing: login.id)
+        await #expect(throws: SignInRefusal.self) { try await store.signIn(with: login.id, on: session, automated: true) }
     }
 
     @Test func connectingAppliesTheDevicesKeyboardChoiceAndTheMacsLanguage() async throws {

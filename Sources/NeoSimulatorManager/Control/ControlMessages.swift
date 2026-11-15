@@ -1,4 +1,5 @@
 import Foundation
+import NeoSimulatorDeviceIO
 
 /// What the command-line tool asks the running app. A request and its answer are each one JSON object on a line.
 package enum ControlRequest: Codable, Equatable, Sendable {
@@ -85,6 +86,15 @@ extension LoginStore {
                     case .rejected, .timedOut: .failed
                     }
                 return .signIn(SignInOutcome(kind, reason: failure.localizedDescription))
+            } catch let failure as WebInspectorFailure {
+                // What a page's script threw, and what a page answered, are the page's words, which can repeat what
+                // was filled into it. The tool gets NeoSimulator's own words only.
+                let reason =
+                    switch failure {
+                    case .scriptThrew, .unreadableAnswer: "The page did not run the sign-in’s script."
+                    case .disconnected, .pageGone, .pageInUse: failure.localizedDescription
+                    }
+                return .signIn(SignInOutcome(.failed, reason: reason))
             } catch {
                 return .signIn(SignInOutcome(.failed, reason: error.localizedDescription))
             }

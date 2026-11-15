@@ -88,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let session = screens.simulatorSession(withUDID: device) else {
                 throw SignInRefusal("The simulator’s screen is not open in NeoSimulator.")
             }
-            try await model.logins.signIn(with: login, on: session)
+            try await model.logins.signIn(with: login, on: session, automated: true)
         }
     }
 
