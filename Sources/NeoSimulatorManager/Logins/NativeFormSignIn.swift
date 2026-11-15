@@ -65,8 +65,8 @@ package struct NativeFormSignIn {
     private let login: SavedLogin
     private let password: String
     private let pace: WebAuthenticationSignIn.Pace
-    /// Whether the form has a field for the user name.
-    private let asksUserName: Bool
+    /// Whether the sign-in fills in the user name: the form has a field for it, and the login has one.
+    private let fillsUserName: Bool
     /// The process of the login's app, whose elements the sign-in reads and changes.
     private let processIdentifier: Int32
 
@@ -86,7 +86,7 @@ package struct NativeFormSignIn {
         self.login = login
         self.password = password
         self.pace = pace
-        asksUserName = form.userName != nil
+        fillsUserName = form.userName != nil && !login.userName.isEmpty
         processIdentifier = application.processIdentifier
     }
 
@@ -165,7 +165,7 @@ package struct NativeFormSignIn {
 
     package func run() async throws {
         do {
-            if asksUserName, !login.userName.isEmpty { try await perform(.setValue(login.userName), on: .userName) }
+            if fillsUserName { try await perform(.setValue(login.userName), on: .userName) }
             try await perform(.setValue(password), on: .password)
             try await checkFilled()
             try await pressButton()
@@ -179,13 +179,14 @@ package struct NativeFormSignIn {
     }
 
     /// Empties what the sign-in filled in. The screen can have changed since, as to one that asks for the password
-    /// twice, so each password field of the app is emptied, whatever it reads as, and the text field before them.
+    /// twice, so each password field of the app is emptied, whatever it reads as, and the text field before them if
+    /// the sign-in set it.
     private func clear() async {
         let processIdentifier = processIdentifier
         func empty(_ choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?) async -> Bool {
             (try? await device.perform(.setValue(""), inProcess: processIdentifier, on: choose)) != nil
         }
-        if asksUserName {
+        if fillsUserName {
             _ = await empty { elements in
                 Self.passwordFields(among: elements).first.flatMap { Self.userNameField(before: $0, among: elements) }
             }
@@ -249,7 +250,7 @@ package struct NativeFormSignIn {
         guard let fields = try Self.fields(among: elements),
             elements[fields.password].value == String(repeating: "•", count: password.utf16.count)
         else { throw Failure.notFilled }
-        if asksUserName, !login.userName.isEmpty {
+        if fillsUserName {
             guard let userName = fields.userName, elements[userName].value == login.userName else {
                 throw Failure.notFilled
             }

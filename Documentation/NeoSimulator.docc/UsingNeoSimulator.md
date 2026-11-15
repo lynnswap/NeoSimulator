@@ -308,7 +308,8 @@ For a form on the app's own screen, Neo sets the password in the screen's passwo
 text field before it, presses the first button after the password field, and waits until the app no longer shows
 the form. It sets the fields and presses the button through the app's accessibility elements, without the keyboard.
 Where another button comes first, such as one that resets the password, name the button in the login's **Sign-In
-Button**: its label, or `#` and its accessibility identifier, as in `#signIn`. Neo fills nothing on a screen with
+Button**: its label, or `#` and its accessibility identifier, as in `#signIn`. Where a screen has no button for the
+login to press, the message of the menu's command lists the screen's buttons as a login names them. Neo fills nothing on a screen with
 more than one password field. If the app still shows the form after 20 seconds, as under an alert that says the
 password is wrong, Neo empties the fields and reports the login as rejected. An app that takes the form off its
 screen while it checks the login looks signed in from then on.
@@ -346,8 +347,7 @@ Neo and waits for the outcome; add `--app` with a bundle identifier where two ap
 one command signs in to a form or to a sheet, whichever the app shows. The exit status is 0 when the form went away
 or the sheet closed signed in, 1 when the sign-in failed, such as with a login that was rejected, 2 when Neo refused
 to start it, 3 when the simulator showed a screen that Neo does not recognize, and 69 when Neo is not running. The
-reason goes to standard error. For a form without a button that Neo can press, the reason lists the screen's
-buttons as a login's **Sign-In Button** names them.
+reason goes to standard error.
 
 The tool takes a label and never a URL, an origin, a field or a button, and nothing that it prints is a user name
 or a password. It reaches only the logins whose **Allow automated sign-in** is on.
