@@ -330,6 +330,8 @@ package final class SimulatorConnection: SimulatorDisplay {
         guard !disconnected, digitizerTouches != nil, let screenInput else {
             throw SimulatorError.unavailable("The device's screen takes no taps from NeoSimulator.")
         }
+        // As for a mouse press, the tap takes over from any trackpad gesture before it starts its own touch.
+        trackpad?.endGestures()
         try await screenInput.tap(at: point)
     }
 

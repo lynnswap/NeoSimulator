@@ -41,11 +41,12 @@ package protocol DeviceSessionDisplay: AnyObject {
     /// delivery result; a thrown error means the message was not sent.
     func send(_ message: HIDMessage, completion: (@MainActor (Error?) -> Void)?) throws
     /// Taps the integrated screen at `point`, in unit coordinates from the top-left corner of the screen in its own
-    /// orientation, with the touch input that the display's own touches use. Returns once the device has taken the tap.
-    /// Throws when the tap could not be sent, and for a display whose touches the app cannot send.
+    /// orientation, with the touch input that the display's own touches use. Returns once the tap is sent; the guest
+    /// acts on it after that. Throws when the tap could not be sent, and for a display whose touches the app cannot send.
     func tap(at point: CGPoint) async throws
     /// Presses and releases `keys` in order on a keyboard that the guest reads with the US layout. Returns once the
-    /// device has taken the keys. Throws when a key could not be sent, and for a display whose keys the app cannot send.
+    /// keys are sent; the guest acts on them after that. Throws when a key could not be sent, and for a display whose
+    /// keys the app cannot send.
     func type(_ keys: [TypedKey]) async throws
     /// Builds a remote touch message held until its end phase, for `send(_:completion:)`.
     func message(for touch: TVRemoteTouch) throws -> HIDMessage

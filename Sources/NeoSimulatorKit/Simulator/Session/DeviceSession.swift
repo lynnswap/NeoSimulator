@@ -694,14 +694,15 @@ package final class DeviceSession {
     // MARK: Input from the app
 
     /// Taps the device's integrated screen at `point`, in unit coordinates from the top-left corner of the screen in its
-    /// own orientation, and returns once the device has taken the tap.
+    /// own orientation, and returns once the tap is sent. The guest acts on it after that, so a caller that needs what
+    /// the tap does, such as a field's focus, waits until it sees that.
     package func tap(at point: CGPoint) async throws {
         guard canPerformCommands else { throw SimulatorError.operation("The device is not connected.") }
         try await display.tap(at: point)
     }
 
     /// Types `text` on the device with a hardware keyboard that the guest reads with the US layout, and returns once
-    /// the device has taken its keys. A line feed is Return.
+    /// its keys are sent. A line feed is Return.
     ///
     /// What the keys become is the focused field's to decide. A secure field takes each character as it is. Another
     /// field applies the guest's input method, capitalization and smart punctuation, as it does for a person's typing.

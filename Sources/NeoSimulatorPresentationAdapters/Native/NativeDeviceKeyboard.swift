@@ -141,12 +141,13 @@ package final class NativeDeviceKeyboard {
     }
 
     /// Presses and releases `keys` in order on the keyboard that carries the app's typing, after the input accepted
-    /// before them. Returns once the keys are sent. When one cannot be sent, the keyboard's guest service is removed,
-    /// which releases what it held, and the failure is thrown.
+    /// before them. Returns once the keys are sent; the guest acts on them after that. When one cannot be sent, the
+    /// keyboard's guest service is removed, which releases what it held, and the failure is thrown.
     package func type(_ keys: [TypedKey]) async throws {
         guard !isStopped else {
             throw RemoteScreenError.unavailable("native-keyboard", "The device's keyboard input has stopped.")
         }
+        // The keyboard is the typing's from now on, so a removal that follows the typing finds it.
         let keyboard = try typingKeyboard ?? transport.makeMainKeyboard()
         typingKeyboard = keyboard
         try await enqueue { [weak self] in
