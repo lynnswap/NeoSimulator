@@ -500,6 +500,7 @@ package final class NativeDeviceCanvas {
                  buttons: NativeDeviceScreenInput, captureDisplay: @escaping () throws -> UInt32, values: [NativeSwiftValue]) {
         hosting = NativeCanvasHostingView(rootView: root)
         hosting.sizingOptions = []
+        hosting.clipsToBounds = true
         self.presentation = presentation
         self.poseControls = poseControls
         self.buttons = buttons
@@ -521,15 +522,21 @@ package final class NativeDeviceCanvas {
         hosting.projection?.invalidate()
     }
     /// Scales the measured composition, keeping AppKit-backed layout unchanged.
-    /// A magnified composition uses its top-leading origin and a scaled frame;
+    /// A magnified composition uses its top-leading origin and a scaled frame, and may draw beyond it;
     /// with nil magnification, it is centered at its natural size.
     package func setMagnification(_ magnification: CGFloat?) {
         guard presentation.magnification != magnification else { return }
         presentation.magnification = magnification
+        // A picture on its way to another zoom is larger or smaller than the frame it will have. What magnifies the
+        // composition clips it to its own viewport.
+        hosting.clipsToBounds = magnification == nil
+        hosting.projection?.scaleChanged()
     }
     package func setZoom(_ zoom: CGFloat) {
+        guard presentation.zoom != zoom else { return }
         presentation.zoom = zoom
         hosting.invalidateIntrinsicContentSize()
+        hosting.projection?.scaleChanged()
     }
     package func disconnect() {
         hosting.projection = nil
@@ -595,40 +602,61 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     }
 }
 
-/// DeviceKit's 3D canvas includes a large, fixed rendering surface. Its screen layers carry the
-/// projected geometry, including perspective and posture, independently of the surrounding SwiftUI layout.
+/// DeviceKit's 3D canvas includes a large, fixed rendering surface, in which it draws its device at the canvas's
+/// zoom. Its screen layers carry the projected geometry, including perspective and posture, independently of the
+/// surrounding SwiftUI layout.
+///
+/// The projection asks DeviceKit for the zoom of the app's scale, and DeviceKit moves its picture there itself, drawn
+/// at the display's resolution. While it moves, its layers do not show what the device covers at a zoom of 1, so the
+/// projection reads the viewport again once the picture has arrived.
 @MainActor
 package final class NativeCanvasProjection {
     private weak var hosting: NativeCanvasHostingView?
     private let presentation: NativeCanvasPresentation
     private let pointsPerInch: CGFloat?
+    private let findScreenLayers: @MainActor (NSView) -> [CALayer]
     private let readFrameMargin: @MainActor () async throws -> CGFloat?
     private var frameMargin: CGFloat?
     private var marginTask: Task<Void, Never>?
     private var layers: [CALayer] = []
     private var observations: [NSKeyValueObservation] = []
+    private var rest: Task<Void, Never>?
+    /// What the screen layers last showed of the device's screens, at whatever zoom DeviceKit had drawn them.
+    private var shown: CGRect?
+    /// How long the screen layers must keep still before a picture that DeviceKit was moving counts as arrived.
+    private static let restTime = Duration.milliseconds(150)
 
+    /// - Parameter screenLayers: Finds the layers that carry the screens' projected geometry in the hosted views.
     package init(hosting: NativeCanvasHostingView, presentation: NativeCanvasPresentation,
-                 pointsPerInch: CGFloat?, frameMargin: @escaping @MainActor () async throws -> CGFloat?) {
+                 pointsPerInch: CGFloat?, frameMargin: @escaping @MainActor () async throws -> CGFloat?,
+                 screenLayers: @escaping @MainActor (NSView) -> [CALayer] = NativeCanvasProjection.deviceKitScreenLayers) {
         self.hosting = hosting
         self.presentation = presentation
         self.pointsPerInch = pointsPerInch.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         readFrameMargin = frameMargin
+        findScreenLayers = screenLayers
     }
 
-    isolated deinit { marginTask?.cancel() }
+    /// The layers of DeviceKit's screens in a view's subtree.
+    package static func deviceKitScreenLayers(in view: NSView) -> [CALayer] {
+        if NSStringFromClass(type(of: view)).hasPrefix("_TtGC31CoreDevicePopDeviceKitExtension19ScreenLayerHostView") {
+            return view.subviews.compactMap(\.layer)
+        }
+        return view.subviews.flatMap { deviceKitScreenLayers(in: $0) }
+    }
+
+    isolated deinit {
+        marginTask?.cancel()
+        rest?.cancel()
+    }
 
     package func update() {
         guard let hosting else { return }
-        func screenLayers(in view: NSView) -> [CALayer] {
-            if NSStringFromClass(type(of: view)).hasPrefix("_TtGC31CoreDevicePopDeviceKitExtension19ScreenLayerHostView") {
-                return view.subviews.compactMap(\.layer)
-            }
-            return view.subviews.flatMap { screenLayers(in: $0) }
-        }
-        let current = screenLayers(in: hosting)
+        let current = findScreenLayers(hosting)
         if current != layers {
             layers = current
+            // A graph that DeviceKit rebuilt draws its device at the zoom it finds, without moving there.
+            changePicture { $0.arrived() }
             observations = current.flatMap { layer in
                 [layer.observe(\.transform) { @Sendable [weak self] _, _ in self?.invalidate() },
                  layer.observe(\.bounds) { @Sendable [weak self] _, _ in self?.invalidate() },
@@ -647,10 +675,37 @@ package final class NativeCanvasProjection {
         guard !current.isEmpty, let screen = hosting.window?.screen else { return }
         // Keep the complete canvas while its bezel is unknown. Frameless displays need no artwork,
         // and point conversion is independent of either measurement.
-        let controlMargin = Self.hoverControlMargin(in: hosting)
-        let viewport = Self.viewport(for: current, frameMargin: frameMargin,
-            controlMargin: controlMargin, showsChrome: presentation.showsChrome)
+        let surface = Self.renderingSurface(in: hosting)?.bounds.size
         let pointScale = pointsPerInch.map { $0 / Self.hostDensity(on: screen) } ?? 1
+        // The screens alone show how far the picture has come, before the bezel's width is known as well.
+        let shown = Self.viewport(for: current, frameMargin: 0)
+        // SwiftUI lays the view out for each change of the picture, and each layout reads the layers again. Only a
+        // reading that differs puts off the rest, or a picture whose device changed its posture would never arrive.
+        if shown != self.shown || pointScale != presentation.pointScale || surface != presentation.surfaceSize {
+            self.shown = shown
+            awaitRest()
+        }
+        if presentation.surfaceSize != surface { presentation.surfaceSize = surface }
+        // The scale, the display and the device's reach in the surface each change the zoom to ask for. DeviceKit
+        // draws the device at another size on a display of another density, whatever the zoom.
+        let changesDisplay = pointScale != presentation.pointScale
+        defer {
+            followScale()
+            if changesDisplay { changePicture { $0.loseExtent() } }
+        }
+        if presentation.picture.isMoving {
+            // DeviceKit is on its way to another zoom, so its layers show how far it has come, not what the device
+            // covers. The viewport is read again when the picture arrives. The device's size on another display
+            // does not wait for it.
+            if pointScale != presentation.pointScale {
+                presentation.pointScale = pointScale
+                presentation.onSizeChange?()
+            }
+            return
+        }
+        let controlMargin = surface.map { Self.hoverControlMargin(renderingHeight: $0.height) } ?? 0
+        let viewport = Self.viewport(for: current, frameMargin: frameMargin, controlMargin: controlMargin,
+            showsChrome: presentation.showsChrome, zoom: presentation.picture.zoom)
         if let previous = presentation.viewport, let viewport,
            abs(viewport.minX - previous.minX) <= 0.25, abs(viewport.minY - previous.minY) <= 0.25,
            abs(viewport.width - previous.width) <= 0.25, abs(viewport.height - previous.height) <= 0.25,
@@ -666,6 +721,42 @@ package final class NativeCanvasProjection {
         Task { @MainActor [weak self] in self?.update() }
     }
 
+    /// The app shows the device at another scale.
+    package func scaleChanged() { followScale() }
+
+    /// Asks DeviceKit for the zoom of the app's scale, which it moves its picture to.
+    private func followScale() {
+        let zoom = presentation.preferredZoom
+        guard zoom != presentation.picture.askedZoom else { return }
+        changePicture { $0.ask(for: zoom, from: shown?.size) }
+        // A picture that DeviceKit has no way to go has arrived, though no layer changes.
+        awaitRest()
+    }
+
+    private func awaitRest() {
+        rest?.cancel()
+        rest = Task { [weak self] in
+            guard (try? await Task.sleep(for: Self.restTime)) != nil else { return }
+            self?.rested()
+        }
+    }
+
+    /// The screen layers have kept still.
+    private func rested() {
+        rest = nil
+        guard presentation.picture.isMoving, let extent = shown?.size else { return }
+        changePicture { $0.rested(at: extent) }
+        // What the device covers in a picture that has arrived is read now.
+        if !presentation.picture.isMoving { update() }
+    }
+
+    /// Changes the picture where it differs. Every change of it has SwiftUI lay the view out again.
+    private func changePicture(_ change: (inout NativeCanvasPicture) -> Void) {
+        var picture = presentation.picture
+        change(&picture)
+        if picture != presentation.picture { presentation.picture = picture }
+    }
+
     private func loadFrameMargin() {
         marginTask?.cancel()
         let read = readFrameMargin
@@ -677,9 +768,10 @@ package final class NativeCanvasProjection {
         }
     }
 
+    /// What the device covers at a canvas zoom of 1, from screen layers that DeviceKit placed at `zoom`.
     /// Coordinates are relative to the rendering surface's center, independent of SwiftUI's layout timing.
     package static func viewport(for layers: [CALayer], frameMargin: CGFloat?,
-                                 controlMargin: CGFloat = 0, showsChrome: Bool = true) -> CGRect? {
+                                 controlMargin: CGFloat = 0, showsChrome: Bool = true, zoom: CGFloat = 1) -> CGRect? {
         guard let margin = showsChrome ? frameMargin : 0 else { return nil }
         var result = CGRect.null
         for layer in layers where !layer.isHidden {
@@ -690,16 +782,17 @@ package final class NativeCanvasProjection {
                   projected.width.isFinite, projected.height.isFinite else { continue }
             result = result.union(projected)
         }
-        guard !result.isNull else { return nil }
+        guard !result.isNull, zoom > 0 else { return nil }
+        // DeviceKit zooms around the surface's center.
+        result = result.applying(CGAffineTransform(scaleX: 1 / zoom, y: 1 / zoom))
         let clearance = showsChrome ? controlMargin : 0
         return result.insetBy(dx: -clearance, dy: -clearance)
     }
 
-    private static func hoverControlMargin(in view: NSView) -> CGFloat {
-        if NSStringFromClass(type(of: view)) == "CoreDevicePopDeviceKitExtension.RealityRendererHostView" {
-            return hoverControlMargin(renderingHeight: view.bounds.height)
-        }
-        return view.subviews.map { hoverControlMargin(in: $0) }.max() ?? 0
+    /// The view that DeviceKit draws its device in.
+    private static func renderingSurface(in view: NSView) -> NSView? {
+        if NSStringFromClass(type(of: view)) == "CoreDevicePopDeviceKitExtension.RealityRendererHostView" { return view }
+        return view.subviews.lazy.compactMap { renderingSurface(in: $0) }.first
     }
 
     /// The pop renderer sizes its icons against the full rendering surface, not the cropped screens.
@@ -742,13 +835,93 @@ package final class NativeCanvasPresentation {
     package var zoom: CGFloat = 1
     package var magnification: CGFloat?
     package var compositionSize = CGSize(width: 500, height: 700)
+    /// What the device covers of the composition at a canvas zoom of 1, relative to the composition's center.
     package var viewport: CGRect?
     package var pointScale: CGFloat = 1
+    /// The size of the surface that DeviceKit draws its device in, once the surface is found.
+    package var surfaceSize: CGSize?
     package var naturalSize: CGSize {
         let size = viewport?.size ?? compositionSize
         return CGSize(width: size.width * pointScale, height: size.height * pointScale)
     }
+    /// How large the device is shown, where 1 is the size that DeviceKit calls physical.
+    package var scale: CGFloat { pointScale * zoom * (magnification ?? 1) }
+    /// DeviceKit's picture of the device, which the app scales to `scale`.
+    package var picture = NativeCanvasPicture()
+    /// The zoom at which DeviceKit's picture needs no scaling, between the sizes that DeviceKit can draw for it.
+    ///
+    /// DeviceKit sizes the controls that appear beside the device's buttons against its rendering surface, not
+    /// against the device, so they keep their size at any zoom. The viewport reserves room for them at a zoom of 1.
+    /// Below 1 the app therefore reduces what DeviceKit drew at 1, controls and all. Above, the device must stay
+    /// inside the surface.
+    package var preferredZoom: CGFloat {
+        let zoom = max(scale, 1)
+        guard let surfaceSize, let viewport else { return zoom }
+        let reach = CGSize(width: max(abs(viewport.minX), abs(viewport.maxX)), height: max(abs(viewport.minY), abs(viewport.maxY)))
+        guard reach.width > 0, reach.height > 0 else { return zoom }
+        return min(zoom, surfaceSize.width / 2 / reach.width, surfaceSize.height / 2 / reach.height)
+    }
     @ObservationIgnored package var onSizeChange: (() -> Void)?
+}
+
+/// The zoom of DeviceKit's picture of the device.
+///
+/// DeviceKit draws its device at the canvas zoom of its environment, and moves to another zoom over about a second,
+/// or later: it does not move while its window is hidden. Nothing reports where it is, and nothing stops it. The
+/// device's extent in its screen layers shows whether it has arrived once it rests, as long as the device has kept
+/// its posture.
+package struct NativeCanvasPicture: Equatable {
+    /// The canvas zoom that DeviceKit was last asked for.
+    package private(set) var askedZoom: CGFloat = 1
+    /// The zoom at which the picture last rested.
+    package private(set) var zoom: CGFloat = 1
+    /// How the picture's way to the zoom that DeviceKit was asked for is told, until it arrives there.
+    private var way: Way?
+
+    private enum Way: Equatable {
+        /// From the device's extent in the picture where it last rested.
+        case from(CGSize)
+        /// Not from the device's extent, which no longer compares with the one it had.
+        case untold
+    }
+
+    package init() {}
+
+    /// Whether DeviceKit has yet to bring the picture to the zoom it was asked for.
+    package var isMoving: Bool { way != nil }
+
+    /// Asks DeviceKit for another zoom, from a picture in which the device has an extent. Without one DeviceKit has
+    /// drawn no device yet, and draws it at the zoom it finds.
+    package mutating func ask(for zoom: CGFloat, from extent: CGSize?) {
+        askedZoom = zoom
+        guard let extent, extent.width > 0, extent.height > 0 else { return arrived() }
+        // A picture that is asked elsewhere on its way still shows how far it is from where it rested.
+        if way == nil { way = .from(extent) }
+    }
+
+    /// The device has another size at the same zoom, as on a display of another density.
+    package mutating func loseExtent() {
+        if way != nil { way = .untold }
+    }
+
+    /// The picture has kept still at an extent. One whose device grew or shrank evenly to another zoom than
+    /// DeviceKit was asked for has stopped on its way, and goes on later. One whose device changed its posture no
+    /// longer shows its zoom, and is taken to have arrived.
+    package mutating func rested(at extent: CGSize) {
+        guard let way else { return }
+        if case .from(let start) = way {
+            let across = extent.width / start.width, down = extent.height / start.height
+            // The parts of the device nearer its viewer grow a little faster than the zoom.
+            if abs(across / down - 1) <= 0.02, abs(zoom * across / askedZoom - 1) > 0.05 { return }
+        }
+        arrived()
+    }
+
+    /// The picture is at the zoom that DeviceKit was asked for.
+    package mutating func arrived() {
+        way = nil
+        zoom = askedZoom
+    }
 }
 
 package struct NativeCanvasRoot: View {
@@ -761,29 +934,31 @@ package struct NativeCanvasRoot: View {
         // AppKit owns the host frame: the root takes exactly the proposed size, even when the measured
         // composition is larger. A magnified presentation keeps the composition at the host's origin,
         // so the host frame changing on every zoom and pan step does not move it within SwiftUI's
-        // pixel grid, and the scale effect maps it onto the frame.
+        // pixel grid.
         let magnification = presentation.magnification
         let viewport = presentation.viewport ?? CGRect(x: -presentation.compositionSize.width / 2,
             y: -presentation.compositionSize.height / 2, width: presentation.compositionSize.width,
             height: presentation.compositionSize.height)
-        let scale = presentation.pointScale * presentation.zoom
+        // DeviceKit moves its picture to the zoom it is asked for by itself. The layout is that of the picture where
+        // it will arrive, so that nothing of the app moves against DeviceKit meanwhile.
+        let scale = presentation.scale, drawn = presentation.picture.askedZoom
         (presentation.showsChrome ? shown : hidden)
             .environment(canvasPath, false)
-            // DeviceKit's 1 means physical size. Convert once here, so the rest of the app uses device points.
-            .environment(zoomPath, 1)
+            // DeviceKit draws its device at this zoom around the center of its rendering surface, at the display's
+            // own resolution. A zoom of 1 is the device's physical size.
+            .environment(zoomPath, drawn)
             .fixedSize()
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
                 guard size.width > 0, size.height > 0, size != presentation.compositionSize else { return }
                 presentation.compositionSize = size
                 presentation.onSizeChange?()
             }
-            .offset(x: -viewport.midX, y: -viewport.midY)
-            .frame(width: viewport.width, height: viewport.height)
-            .scaleEffect(scale)
+            .offset(x: -viewport.midX * drawn, y: -viewport.midY * drawn)
+            .frame(width: viewport.width * drawn, height: viewport.height * drawn)
+            // The picture is scaled to the app's scale where DeviceKit cannot draw it.
+            .scaleEffect(scale / drawn)
             .frame(width: viewport.width * scale, height: viewport.height * scale)
-            .scaleEffect(magnification ?? 1, anchor: magnification == nil ? .center : .topLeading)
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                    alignment: magnification == nil ? .center : .topLeading)
-            .clipped()
     }
 }
