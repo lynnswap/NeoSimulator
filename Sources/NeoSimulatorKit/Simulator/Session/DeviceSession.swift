@@ -981,6 +981,10 @@ package final class DeviceSession {
 
     /// Presses the lock button of a device that is not locked, and returns once the lock button is up and the guest
     /// reports its lock. Throws the first failure of the button's events.
+    ///
+    /// The button is down until the device has taken its release, and nothing here ends that wait but the release, its
+    /// failure, or the end of the session: a press given up on would still lock the device later. The guest then has
+    /// `lockLimit` to report the lock.
     private func lock() async throws {
         let button = HIDInput.button(.lock)
         var failure: (any Error)?
@@ -988,10 +992,9 @@ package final class DeviceSession {
         // An earlier press whose release the device did not take keeps the button down, so its release is sent again.
         releaseHeldInput(button, report: report)
         var pressed = false
-        var deadline = ContinuousClock.now + Self.lockLimit
+        var deadline: ContinuousClock.Instant?
         while true {
             if let failure { throw failure }
-            // The button stays down until its release is delivered.
             if downInputs[button] == nil {
                 let presses = lastDownGeneration
                 let locked = try await isLocked()
@@ -1001,13 +1004,13 @@ package final class DeviceSession {
                 if !pressed {
                     pressed = true
                     press(button, report)
-                    // The guest has this long to report the lock from its press, however long the reads before it took.
-                    deadline = ContinuousClock.now + Self.lockLimit
                     continue
                 }
-            }
-            guard ContinuousClock.now < deadline else {
-                throw SimulatorError.operation("\(device.name) did not lock, so it cannot show StandBy.")
+                let limit = deadline ?? ContinuousClock.now + Self.lockLimit
+                deadline = limit
+                guard ContinuousClock.now < limit else {
+                    throw SimulatorError.operation("\(device.name) did not lock, so it cannot show StandBy.")
+                }
             }
             try await Task.sleep(for: .milliseconds(100))
         }
