@@ -17,10 +17,10 @@ struct SimulatorWebInspectorTests {
 
         /// `answer` gets each message of a connection and sends what the service answers.
         ///
-        /// With `closingFirstConnection`, the service reports a process to its first connection and ends the connection,
-        /// as a service does that is ending with the processes it knew.
+        /// With `closingFirstConnectionOn`, the service closes its first connection when that selector arrives on it,
+        /// instead of answering, as a service does that is ending.
         init(
-            closingFirstConnection: Bool = false,
+            closingFirstConnectionOn closing: String? = nil,
             answer: @escaping @Sendable (WebInspectorConnection.Message, Reply) throws -> Void
         ) throws {
             let directory = FileManager.default.temporaryDirectory.appending(path: "wi-\(UUID().uuidString.prefix(8))")
@@ -41,21 +41,18 @@ struct SimulatorWebInspectorTests {
             self.listener = listener
             self.arrivals = arrivals
             Thread.detachNewThread {
-                var closesNext = closingFirstConnection
+                var closing = closing
                 while true {
                     let accepted = accept(listener, nil, nil)
                     guard accepted >= 0 else { return }
                     let connection = WebInspectorConnection(descriptor: accepted)
-                    if closesNext {
-                        closesNext = false
-                        let process = ["PID:9": ["WIRApplicationIdentifierKey": "PID:9"]]
-                        try? connection.send(
-                            "_rpc_reportConnectedApplicationList:", ["WIRApplicationDictionaryKey": process])
-                        continue
-                    }
                     // The connection ends when its client closes it.
                     while let message = try? connection.receive(until: .now + .seconds(30)) {
                         arrived.yield(message.selector)
+                        if message.selector == closing {
+                            closing = nil
+                            break
+                        }
                         try? answer(message) { try connection.send($0, $1) }
                     }
                     arrived.yield(nil)
@@ -106,12 +103,12 @@ struct SimulatorWebInspectorTests {
     /// A service that knows `processes`, of which `PID:2` shows one page and the others none. A process outside
     /// `listing` does not answer for its pages.
     private func service(
-        closingFirstConnection: Bool = false, processes: Processes,
+        closingFirstConnectionOn closing: String? = nil, processes: Processes,
         listing: Set<String> = ["PID:1", "PID:2"], inspected: Bool = false, evaluatingTo result: [String: Any] = [:]
     ) throws -> Service {
         // Property lists and JSON objects are not Sendable; the closure only reads this one.
         nonisolated(unsafe) let result = result
-        return try Service(closingFirstConnection: closingFirstConnection) { message, reply in
+        return try Service(closingFirstConnectionOn: closing) { message, reply in
             switch message.selector {
             case "_rpc_reportIdentifier:": try reply("_rpc_reportCurrentState:", [:])
             case "_rpc_getConnectedApplications:":
@@ -214,10 +211,22 @@ struct SimulatorWebInspectorTests {
         #expect(await service.received().contains("_rpc_forwardSocketSetup:") == false)
     }
 
-    @Test func aConnectionThatAnEndingServiceClosesIsMadeAgain() async throws {
-        let service = try service(closingFirstConnection: true, processes: Processes(viewService))
+    @Test func aRequestIsMadeAgainWhenAnEndingServiceClosesTheConnectionOpenedForIt() async throws {
+        // The service answered the connection's first message before it closed it.
+        let service = try service(
+            closingFirstConnectionOn: "_rpc_getConnectedApplications:", processes: Processes(viewService))
         let inspector = SimulatorWebInspector(
             socketPath: service.socketPath, startLimit: .seconds(5), answerLimit: .milliseconds(300))
         #expect(try await inspector.pages() == [page])
+    }
+
+    @Test func aScriptIsNotSentAgainWhenItsConnectionCloses() async throws {
+        let service = try service(
+            closingFirstConnectionOn: "_rpc_forwardSocketData:", processes: Processes(viewService),
+            evaluatingTo: ["result": ["type": "string", "value": "https://login.example.com"], "wasThrown": false])
+        let inspector = SimulatorWebInspector(socketPath: service.socketPath)
+        await #expect(throws: WebInspectorFailure.disconnected) {
+            try await inspector.evaluate("location.origin", in: page, as: String.self)
+        }
     }
 }

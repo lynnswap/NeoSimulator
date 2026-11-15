@@ -91,19 +91,21 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     /// the service starts, processes have yet to report to it, and a caller that waits for a page asks again.
     package func pages() async throws -> [InspectablePage] {
         try await onQueue { inspector, _ in
-            let connection = try inspector.connected()
-            let deadline = ContinuousClock.now + inspector.answerLimit
-            inspector.hasApplications = false
-            try connection.send("_rpc_getConnectedApplications:", [:])
-            while !inspector.hasApplications
-                || inspector.applications.keys.contains(where: { inspector.listings[$0] == nil })
-            {
-                // Messages that keep arriving do not extend the request's time.
-                guard ContinuousClock.now < deadline, try inspector.next(from: connection, before: deadline) != nil
-                else { throw Self.noAnswer(inspector.answerLimit) }
-            }
-            return inspector.listings.values.flatMap(\.self).sorted {
-                ($0.application, $0.identifier) < ($1.application, $1.identifier)
+            try inspector.overConnection { connection, _ in
+                let deadline = ContinuousClock.now + inspector.answerLimit
+                inspector.hasApplications = false
+                try connection.send("_rpc_getConnectedApplications:", [:])
+                while !inspector.hasApplications
+                    || inspector.applications.keys.contains(where: { inspector.listings[$0] == nil })
+                {
+                    // Messages that keep arriving do not extend the request's time.
+                    guard ContinuousClock.now < deadline,
+                        try inspector.next(from: connection, before: deadline) != nil
+                    else { throw Self.noAnswer(inspector.answerLimit) }
+                }
+                return inspector.listings.values.flatMap(\.self).sorted {
+                    ($0.application, $0.identifier) < ($1.application, $1.identifier)
+                }
             }
         }
     }
@@ -153,31 +155,38 @@ package final class SimulatorWebInspector: @unchecked Sendable {
         .noAnswer(operation: "ask the device's Web Inspector", limit: limit)
     }
 
-    /// The connection, opened if it is not.
-    private func connected() throws -> WebInspectorConnection {
-        if let connection { return connection }
-        let connection = try open(until: .now + startLimit)
-        self.connection = connection
-        return connection
-    }
-
-    /// Connects and waits for the service's first answer.
-    private func open(until deadline: ContinuousClock.Instant) throws -> WebInspectorConnection {
+    /// Makes `request` over the connection, which is opened for it if there is none.
+    ///
+    /// A service that is ending with its last connection still takes a new one, and can answer on it before it closes
+    /// it. A request that loses the connection that was opened for it is made again over the next one, which reaches
+    /// the service's successor, for as long as the service has to start. A request that must not be made twice sets
+    /// `mayRepeat` to false.
+    private func overConnection<Value>(
+        _ request: (WebInspectorConnection, _ mayRepeat: inout Bool) throws -> Value
+    ) throws -> Value {
+        var mayRepeat = true
+        if let connection { return try request(connection, &mayRepeat) }
+        let deadline = ContinuousClock.now + startLimit
         while true {
-            guard ContinuousClock.now < deadline else { throw Self.noAnswer(startLimit) }
-            let attempt = try WebInspectorConnection(socketPath: socketPath)
             do {
-                try attempt.send("_rpc_reportIdentifier:", [:])
-                guard let first = try attempt.receive(until: deadline) else { throw Self.noAnswer(startLimit) }
-                try take(first, from: attempt)
-                return attempt
-            } catch WebInspectorFailure.disconnected {
-                // A service that was ending with its last connection took this one. The next reaches its successor,
-                // which knows nothing of what this one reported.
+                let connection = try open(until: deadline)
+                self.connection = connection
+                return try request(connection, &mayRepeat)
+            } catch WebInspectorFailure.disconnected where mayRepeat && ContinuousClock.now < deadline {
+                // The successor knows nothing of what this connection reported.
                 forgetConnection()
                 Thread.sleep(forTimeInterval: 0.1)
             }
         }
+    }
+
+    /// Connects and waits for the service's first answer.
+    private func open(until deadline: ContinuousClock.Instant) throws -> WebInspectorConnection {
+        let connection = try WebInspectorConnection(socketPath: socketPath)
+        try connection.send("_rpc_reportIdentifier:", [:])
+        guard let first = try connection.receive(until: deadline) else { throw Self.noAnswer(startLimit) }
+        try take(first, from: connection)
+        return connection
     }
 
     /// The next message before `limit`, with what it says about processes and pages taken in.
@@ -241,84 +250,89 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     private func evaluate(
         _ expression: String, in page: InspectablePage, checkCancellation: () throws -> Void
     ) throws -> Data {
-        let connection = try connected()
-        let deadline = ContinuousClock.now + answerLimit
-        // Messages that keep arriving do not extend the request's time.
-        func awaited() throws -> WebInspectorConnection.Message {
-            guard ContinuousClock.now < deadline, let message = try next(from: connection, before: deadline) else {
-                throw Self.noAnswer(answerLimit)
+        try overConnection { connection, mayRepeat in
+            let deadline = ContinuousClock.now + answerLimit
+            // Messages that keep arriving do not extend the request's time.
+            func awaited() throws -> WebInspectorConnection.Message {
+                guard ContinuousClock.now < deadline, let message = try next(from: connection, before: deadline) else {
+                    throw Self.noAnswer(answerLimit)
+                }
+                return message
             }
-            return message
-        }
-        // The page's process says whether the page is still there and whether another client inspects it.
-        listings[page.application] = nil
-        try connection.send("_rpc_forwardGetListing:", ["WIRApplicationIdentifierKey": page.application])
-        while listings[page.application] == nil {
-            // A process that does not answer has not said that the page is gone.
-            guard ContinuousClock.now < deadline, try next(from: connection, before: deadline) != nil else {
-                throw Self.noAnswer(answerLimit)
+            // The page's process says whether the page is still there and whether another client inspects it.
+            listings[page.application] = nil
+            try connection.send("_rpc_forwardGetListing:", ["WIRApplicationIdentifierKey": page.application])
+            while listings[page.application] == nil {
+                // A process that does not answer has not said that the page is gone.
+                guard ContinuousClock.now < deadline, try next(from: connection, before: deadline) != nil else {
+                    throw Self.noAnswer(answerLimit)
+                }
             }
-        }
-        guard let listed = listings[page.application]?.first(where: { $0.identifier == page.identifier }) else {
-            throw WebInspectorFailure.pageGone
-        }
-        guard !listed.isInspected else { throw WebInspectorFailure.pageInUse }
-
-        let sender = UUID().uuidString
-        let route: [String: Any] = [
-            "WIRApplicationIdentifierKey": page.application, "WIRPageIdentifierKey": page.identifier,
-            "WIRSenderKey": sender,
-        ]
-        try connection.send("_rpc_forwardSocketSetup:", route.merging(["WIRAutomaticallyPause": false]) { $1 })
-        // The page takes another client once this one lets go. A connection that fails here is forgotten with the page.
-        defer { try? connection.send("_rpc_forwardDidClose:", route) }
-
-        var target: String?
-        while target == nil {
-            guard let sent = debuggerMessage(try awaited(), for: sender),
-                sent["method"] as? String == "Target.targetCreated",
-                let information = (sent["params"] as? [String: Any])?["targetInfo"] as? [String: Any],
-                information["type"] as? String == "page"
-            else { continue }
-            target = information["targetId"] as? String
-        }
-
-        // Answers to what other clients send for the page arrive here too, under their own numbers.
-        let number = Int.random(in: 1_000_000...999_999_999)
-        let request: [String: Any] = [
-            "id": number, "method": "Runtime.evaluate",
-            "params": ["expression": expression, "returnByValue": true],
-        ]
-        let forwarded: [String: Any] = [
-            "id": number, "method": "Target.sendMessageToTarget",
-            "params": [
-                "targetId": target ?? "",
-                "message": String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self),
-            ],
-        ]
-        // Up to here the page is unchanged. A caller that gave up while the service started does not get its script run.
-        try checkCancellation()
-        try connection.send(
-            "_rpc_forwardSocketData:",
-            route.merging(["WIRSocketDataKey": try JSONSerialization.data(withJSONObject: forwarded)]) { $1 })
-
-        while true {
-            guard let sent = debuggerMessage(try awaited(), for: sender),
-                sent["method"] as? String == "Target.dispatchMessageFromTarget",
-                let text = (sent["params"] as? [String: Any])?["message"] as? String,
-                let answer = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
-                answer["id"] as? Int == number
-            else { continue }
-            if let error = answer["error"] as? [String: Any] {
-                throw WebInspectorFailure.unreadableAnswer(error["message"] as? String ?? "")
+            guard let listed = listings[page.application]?.first(where: { $0.identifier == page.identifier }) else {
+                throw WebInspectorFailure.pageGone
             }
-            guard let outcome = answer["result"] as? [String: Any], let result = outcome["result"] as? [String: Any]
-            else { throw WebInspectorFailure.unreadableAnswer(text) }
-            if outcome["wasThrown"] as? Bool == true {
-                throw WebInspectorFailure.scriptThrew(result["description"] as? String ?? "")
+            guard !listed.isInspected else { throw WebInspectorFailure.pageInUse }
+
+            let sender = UUID().uuidString
+            let route: [String: Any] = [
+                "WIRApplicationIdentifierKey": page.application, "WIRPageIdentifierKey": page.identifier,
+                "WIRSenderKey": sender,
+            ]
+            try connection.send("_rpc_forwardSocketSetup:", route.merging(["WIRAutomaticallyPause": false]) { $1 })
+            // The page takes another client once this one lets go. A connection that fails here is forgotten with the
+            // page.
+            defer { try? connection.send("_rpc_forwardDidClose:", route) }
+
+            var target: String?
+            while target == nil {
+                guard let sent = debuggerMessage(try awaited(), for: sender),
+                    sent["method"] as? String == "Target.targetCreated",
+                    let information = (sent["params"] as? [String: Any])?["targetInfo"] as? [String: Any],
+                    information["type"] as? String == "page"
+                else { continue }
+                target = information["targetId"] as? String
             }
-            // A script that evaluates to undefined has no value.
-            return try JSONSerialization.data(withJSONObject: result["value"] ?? NSNull(), options: .fragmentsAllowed)
+
+            // Answers to what other clients send for the page arrive here too, under their own numbers.
+            let number = Int.random(in: 1_000_000...999_999_999)
+            let request: [String: Any] = [
+                "id": number, "method": "Runtime.evaluate",
+                "params": ["expression": expression, "returnByValue": true],
+            ]
+            let forwarded: [String: Any] = [
+                "id": number, "method": "Target.sendMessageToTarget",
+                "params": [
+                    "targetId": target ?? "",
+                    "message": String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self),
+                ],
+            ]
+            // Up to here the page is unchanged. A caller that gave up while the service started does not get its script
+            // run, and a script that may have reached the page is not sent again.
+            try checkCancellation()
+            mayRepeat = false
+            try connection.send(
+                "_rpc_forwardSocketData:",
+                route.merging(["WIRSocketDataKey": try JSONSerialization.data(withJSONObject: forwarded)]) { $1 })
+
+            while true {
+                guard let sent = debuggerMessage(try awaited(), for: sender),
+                    sent["method"] as? String == "Target.dispatchMessageFromTarget",
+                    let text = (sent["params"] as? [String: Any])?["message"] as? String,
+                    let answer = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+                    answer["id"] as? Int == number
+                else { continue }
+                if let error = answer["error"] as? [String: Any] {
+                    throw WebInspectorFailure.unreadableAnswer(error["message"] as? String ?? "")
+                }
+                guard let outcome = answer["result"] as? [String: Any], let result = outcome["result"] as? [String: Any]
+                else { throw WebInspectorFailure.unreadableAnswer(text) }
+                if outcome["wasThrown"] as? Bool == true {
+                    throw WebInspectorFailure.scriptThrew(result["description"] as? String ?? "")
+                }
+                // A script that evaluates to undefined has no value.
+                return try JSONSerialization.data(
+                    withJSONObject: result["value"] ?? NSNull(), options: .fragmentsAllowed)
+            }
         }
     }
 }
