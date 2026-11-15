@@ -156,7 +156,9 @@ package final class SimulatorWebInspector: @unchecked Sendable {
                 try take(first, from: attempt)
                 return attempt
             } catch WebInspectorFailure.disconnected {
-                // A service that was ending with its last connection took this one. The next reaches its successor.
+                // A service that was ending with its last connection took this one. The next reaches its successor,
+                // which knows nothing of what this one reported.
+                forgetConnection()
                 Thread.sleep(forTimeInterval: 0.1)
             }
         }
@@ -309,6 +311,9 @@ final class WebInspectorConnection {
         var on: Int32 = 1
         // A write to a service that has gone away fails instead of ending the process.
         setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        // A service that stops reading is gone too: a write that it does not take in this time fails.
+        var limit = timeval(tv_sec: Int(DeviceOperationLimit.webInspector.components.seconds), tv_usec: 0)
+        setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
     }
 
     convenience init(socketPath: String) throws {

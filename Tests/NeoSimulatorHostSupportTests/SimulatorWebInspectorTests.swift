@@ -31,7 +31,8 @@ struct SimulatorWebInspectorTests {
         func send(_ selector: String, _ arguments: [String: Any]) throws { try current.send(selector, arguments) }
 
         /// `answer` gets each message of a connection and sends what the service answers.
-        /// With `closingFirstConnection`, the service ends its first connection at once, as one that is ending does.
+        /// With `closingFirstConnection`, the service reports a process to its first connection and ends the connection,
+        /// as a service does that is ending with the processes it knew.
         init(
             closingFirstConnection: Bool = false,
             answer: @escaping @Sendable (WebInspectorConnection.Message, Reply) throws -> Void
@@ -62,6 +63,9 @@ struct SimulatorWebInspectorTests {
                     let connection = WebInspectorConnection(descriptor: accepted)
                     if closesNext {
                         closesNext = false
+                        let process = ["PID:9": ["WIRApplicationIdentifierKey": "PID:9"]]
+                        try? connection.send(
+                            "_rpc_reportConnectedApplicationList:", ["WIRApplicationDictionaryKey": process])
                         continue
                     }
                     // The connection ends when its client closes it.
@@ -265,6 +269,8 @@ struct SimulatorWebInspectorTests {
             default: break
             }
         }
-        #expect(try await SimulatorWebInspector(socketPath: service.socketPath).pages() == [page])
+        let inspector = SimulatorWebInspector(
+            socketPath: service.socketPath, startLimit: .seconds(5), answerLimit: .milliseconds(300))
+        #expect(try await inspector.pages() == [page])
     }
 }
