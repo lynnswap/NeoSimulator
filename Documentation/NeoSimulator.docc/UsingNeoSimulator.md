@@ -300,6 +300,9 @@ active device.
 An app under development often puts its content behind a sign-in: a form on its own screen, or a web sign-in sheet.
 Neo can fill either from a login that you saved, so that neither you nor a coding agent has to type it.
 
+Saved logins are in Debug builds only for now. A release has no Logins settings, no **Sign In with Saved Login**
+command, and its executable does not take the commands below.
+
 Save a login in **Settings → Logins**: the app's bundle identifier, a label, the user name and password, and for a
 web sign-in the origins of its page. Open the app's sign-in screen, or start its web sign-in, then choose the login
 in **Device → Sign In with Saved Login**.
