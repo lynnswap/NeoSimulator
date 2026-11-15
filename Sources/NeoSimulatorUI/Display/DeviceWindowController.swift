@@ -1998,10 +1998,10 @@ final class DeviceContentView: NSView, DisplayContentView {
         guard usesViewport else { return self }
         return usesNativeCanvas ? canvasOverlay : canvasDocumentView
     }
-    /// A native composition has the device's own size in the viewport and room for its controls outside it, which
-    /// it has to know before the canvas is fitted or laid out.
+    /// A native composition outside the viewport has room for its controls in its size, which it has to know
+    /// before a window is fitted to it. In the viewport it learns its magnification when it is laid out there.
     private func presentNativeCanvasSize() {
-        if usesNativeCanvas { onNativeCanvasMagnification(usesViewport ? canvasScrollView.magnification : nil) }
+        if usesNativeCanvas, !usesViewport { onNativeCanvasMagnification(nil) }
     }
     private func updateViewport() {
         retainedCanvasCenter = canvasMagnificationOperation?.center ?? canvasCenter
@@ -2401,6 +2401,8 @@ final class DeviceContentView: NSView, DisplayContentView {
                 canvasScrollView.tile()
             }
             canvasScrollView.frame = drawing
+            // A native composition in the viewport has the device's own size, which is read next.
+            if usesNativeCanvas { onNativeCanvasMagnification(canvasScrollView.magnification) }
             let intrinsic = display.intrinsicContentSize
             let size = intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic : display.frame.size
             // Layout prepares space for both the current and requested magnification.
