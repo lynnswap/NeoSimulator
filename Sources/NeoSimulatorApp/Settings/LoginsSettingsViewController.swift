@@ -151,6 +151,29 @@ private struct LoginEditor: View {
                 Text("A web sign-in may fill the login in only on these origins. Separate origins with commas.")
             }
             Section {
+                Picker("Web Sign-In", selection: $draft.webSignIn) {
+                    Text("Automatic").tag(SavedLogin.WebSignIn.automatic)
+                    Text("Own Script").tag(SavedLogin.WebSignIn.script)
+                }
+                if draft.webSignIn == .script {
+                    TextEditor(text: $draft.script)
+                        .font(.body.monospaced())
+                        .frame(height: 120)
+                        .accessibilityLabel("Script")
+                }
+            } footer: {
+                if draft.webSignIn == .script {
+                    Text(
+                        """
+                        JavaScript that runs in each page of the sign-in. `login.userName` and `login.password` hold \
+                        the login, and `fill(element, value)` sets a field as typing does. The script fills the page \
+                        and submits it.
+                        """)
+                } else {
+                    Text("NeoSimulator finds the user name and password fields from what the page’s form declares.")
+                }
+            }
+            Section {
                 Toggle("Allow automated sign-in", isOn: $draft.allowsAutomation)
             }
             if let issue = draft.issue {

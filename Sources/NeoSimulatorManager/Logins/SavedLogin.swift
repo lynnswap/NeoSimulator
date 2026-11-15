@@ -68,17 +68,32 @@ package struct SavedLogin: Equatable, Sendable, Identifiable {
     package var origins: [WebOrigin]
     /// Whether a caller other than the person at the Mac may ask to sign in with the login.
     package var allowsAutomation: Bool
+    /// How a web sign-in fills the login in.
+    package var webSignIn: WebSignIn
+    /// The login's own script, which fills a sign-in page where `webSignIn` says so. It is kept while the built-in
+    /// filling is chosen, so that a person can go back to it.
+    package var script: String
+
+    /// How a web sign-in fills a login into a page.
+    package enum WebSignIn: String, Codable, Sendable {
+        /// NeoSimulator finds the page's fields from what its form declares.
+        case automatic
+        /// The login's own script fills the page.
+        case script
+    }
 
     package var id: ID { ID(applicationIdentifier: applicationIdentifier, label: label) }
 
     package init(
         applicationIdentifier: String, label: String, userName: String, origins: [WebOrigin] = [],
-        allowsAutomation: Bool = true
+        allowsAutomation: Bool = true, webSignIn: WebSignIn = .automatic, script: String = ""
     ) {
         self.applicationIdentifier = applicationIdentifier
         self.label = label
         self.userName = userName
         self.origins = origins
         self.allowsAutomation = allowsAutomation
+        self.webSignIn = webSignIn
+        self.script = script
     }
 }

@@ -140,16 +140,19 @@ extension ManagerModelTests {
         await #expect(throws: LoginStore.Failure.missingLogin) { try await store.credentials(for: login.id) }
     }
 
-    private func premium(userName: String = "premium@example.com", origins: [String]) -> SavedLogin {
+    private func premium(
+        userName: String = "premium@example.com", origins: [String], script: String? = nil
+    ) -> SavedLogin {
         SavedLogin(
             applicationIdentifier: "com.example.app", label: "Premium", userName: userName,
-            origins: origins.map { WebOrigin($0)! })
+            origins: origins.map { WebOrigin($0)! }, webSignIn: script == nil ? .automatic : .script,
+            script: script ?? "")
     }
 
     /// A sign-in that looks often and does not wait long, for a device that answers at once.
     private func signIn(
         on device: SignInFixture, userName: String = "premium@example.com",
-        origins: [String] = ["https://login.example.com"]
+        origins: [String] = ["https://login.example.com"], script: String? = nil
     ) -> WebAuthenticationSignIn {
         var pace = WebAuthenticationSignIn.Pace()
         pace.appearance = .milliseconds(100)
@@ -157,7 +160,67 @@ extension ManagerModelTests {
         pace.interval = .milliseconds(5)
         pace.tapAgain = .milliseconds(20)
         return WebAuthenticationSignIn(
-            device: device, login: premium(userName: userName, origins: origins), password: "s3cret", pace: pace)
+            device: device, login: premium(userName: userName, origins: origins, script: script), password: "s3cret",
+            pace: pace)
+    }
+
+    @Test func aLoginsOwnScriptRunsOnceInEachPageAtItsOriginsUntilTheSheetCloses() async throws {
+        let origins = ["https://login.example.com", "https://sso.example.org"]
+        func own(_ origin: String) -> SignInScript {
+            .own(script: "sign()", userName: "premium@example.com", password: "s3cret", origin: origin)
+        }
+        /// A sign-in with the login's own script that starts on a page which the built-in filling does not recognize,
+        /// and which `next` follows once the script has run.
+        func signedIn(then next: [SignInPageState]) async -> (failure: (any Error)?, scripts: [SignInScript]) {
+            let device = SignInFixture()
+            device.front = SignInFixture.application("com.example.app")
+            device.page = SignInPageState(origin: "https://login.example.com", step: nil, document: "1", path: "/login")
+            var next = next
+            device.onSubmit = { device.page = next.isEmpty ? nil : next.removeFirst() }
+            var failure: (any Error)?
+            do { try await signIn(on: device, origins: origins, script: "sign()").run() } catch { failure = error }
+            return (failure, device.scripts.filter { $0 != .state })
+        }
+
+        // The second page is another document at another of the login's origins, and the sheet closes after it.
+        let password = SignInPageState(origin: "https://sso.example.org", step: nil, document: "2", path: "/password")
+        var ended = await signedIn(then: [password])
+        #expect(ended.failure == nil && ended.scripts == [own("https://login.example.com"), own("https://sso.example.org")])
+
+        // The first page loads again: the site did not take what the script submitted, and it is not submitted again.
+        let again = SignInPageState(origin: "https://login.example.com", step: nil, document: "2", path: "/login")
+        ended = await signedIn(then: [again])
+        #expect(ended.failure as? WebAuthenticationSignIn.Failure == .rejected)
+        #expect(ended.scripts == [own("https://login.example.com"), .clear(origin: "https://login.example.com")])
+
+        // The script does not run in a page at an origin that the login does not list.
+        let other = SignInPageState(origin: "https://other.example", step: nil, document: "2", path: "/password")
+        ended = await signedIn(then: [other])
+        #expect(ended.failure as? WebAuthenticationSignIn.Failure == .unrecognizedPage(origin: "https://other.example"))
+        #expect(ended.scripts.count { if case .own = $0 { true } else { false } } == 1)
+    }
+
+    @Test func aLoginKeepsItsScriptInTheKeychainAndAnOlderItemSignsInAutomatically() async throws {
+        let keychain = InMemoryLoginKeychain()
+        let store = LoginStore(keychain: keychain)
+        var login = premium(origins: ["https://login.example.com"], script: "sign()")
+        try await store.save(login, password: "s3cret")
+        await store.reload()
+        #expect(store.logins == [login])
+        // A login that signs in with its own script has one.
+        login.script = "  "
+        await #expect(throws: LoginStore.Failure.emptyScript) {
+            try await store.save(login, password: nil, replacing: login.id)
+        }
+
+        // An item from before a login could have a script.
+        let older = """
+            {"applicationIdentifier": "com.example.app", "label": "Older", "userName": "older@example.com",
+             "password": "s3cret", "origins": [], "allowsAutomation": true}
+            """
+        try keychain.add(Data(older.utf8), account: "com.example.app Older")
+        await store.reload()
+        #expect(store.logins.first { $0.label == "Older" }?.webSignIn == .automatic)
     }
 
     @Test func aSignInGoesOnFromTheUserNamesPageToThePasswordsPageAtAnotherOfItsOrigins() async throws {
@@ -406,6 +469,9 @@ private final class SignInFixture: SignInDevice {
                 state.submitted = step
                 onSubmit?()
             }
+        } else if case .own(_, _, _, let origin) = script, origin == state.origin, state.isVisible {
+            state.ranScript = true
+            onSubmit?()
         } else if case .submit(let origin) = script, origin == state.origin, isFilled {
             disabledButtonReads -= 1
             if disabledButtonReads <= 0 {

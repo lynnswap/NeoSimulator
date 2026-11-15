@@ -17,6 +17,8 @@ final class LoginsSettingsModel {
         /// The origins as the person enters them, separated by commas.
         var origins = ""
         var allowsAutomation = true
+        var webSignIn = SavedLogin.WebSignIn.automatic
+        var script = ""
         var issue: String?
 
         init() { existing = nil }
@@ -28,6 +30,8 @@ final class LoginsSettingsModel {
             userName = login.userName
             origins = login.origins.map(\.text).joined(separator: ", ")
             allowsAutomation = login.allowsAutomation
+            webSignIn = login.webSignIn
+            script = login.script
         }
 
         var canSave: Bool {
@@ -84,7 +88,8 @@ final class LoginsSettingsModel {
             do {
                 let login = SavedLogin(
                     applicationIdentifier: draft.applicationIdentifier, label: draft.label, userName: draft.userName,
-                    origins: try WebOrigin.list(from: draft.origins), allowsAutomation: draft.allowsAutomation)
+                    origins: try WebOrigin.list(from: draft.origins), allowsAutomation: draft.allowsAutomation,
+                    webSignIn: draft.webSignIn, script: draft.script)
                 selection = try await store.save(login, password: draft.password, replacing: draft.existing).id
                 self.draft = nil
             } catch {
