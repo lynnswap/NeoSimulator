@@ -961,13 +961,14 @@ package final class DeviceSession {
         try await send(resolution.rawValue, to: "com.apple.sos.user-fell")
     }
 
-    /// Whether StandBy shows, as the device last reported.
+    /// Whether StandBy is asked of the guest, as the device or its own StandBy service last reported.
     package var showsStandBy: Bool { canPerformCommands && model.showsStandBy == true }
 
     package func toggleStandBy() async throws {
         guard canPerformCommands else { return }
         guard let standBy = display.standBy else { return try await toggleState(of: Self.standBy) }
-        defer { refreshGuestState() }
+        // The service holds this state, so the model takes it without a reading of the guest.
+        defer { if !isDisconnected { model.update(showsStandBy: standBy.isPresented) } }
         if standBy.isPresented { try standBy.dismiss() } else { try await standBy.present() }
     }
 

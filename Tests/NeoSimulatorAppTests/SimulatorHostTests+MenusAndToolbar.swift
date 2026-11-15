@@ -614,6 +614,11 @@ extension SimulatorHostTests {
         let model = standaloneDeviceModel()
         let controller = try makeController(display, features: [DeviceCapabilities.standBy], model: model)
         defer { controller.invalidate() }
+        // The service's state reaches the menu while the guest answers nothing.
+        let worker = HeldDeviceWorker()
+        defer { worker.release() }
+        display.worker = worker
+        worker.hold()
         let title = { DeviceCommand.command(.toggleStandBy).stateTitle?(controller) }
         controller.perform(.toggleStandBy)
         try await wait { !controller.session.isBusy && title() == "Hide StandBy" }
