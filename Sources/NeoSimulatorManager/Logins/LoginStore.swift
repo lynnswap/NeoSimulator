@@ -56,7 +56,7 @@ package final class LoginStore {
         }
     }
 
-    /// A login with its password, as the keychain holds them when it is asked. A sign-in reads what it types from
+    /// A login with its password, as the keychain holds them when it is asked. A sign-in reads what it fills in from
     /// here, and `logins` keeps no password.
     package func credentials(for id: SavedLogin.ID) async throws -> (login: SavedLogin, password: String) {
         try await inTurn { [keychain] in
@@ -117,7 +117,7 @@ extension SavedLogin.ID {
     fileprivate var account: String { "\(applicationIdentifier) \(label)" }
 }
 
-/// What a keychain item's data holds. Everything that decides where a login is typed is in the data, which only
+/// What a keychain item's data holds. Everything that decides where a login is used is in the data, which only
 /// this app reads without a prompt, so that another process can't point a saved password at another app or origin
 /// by changing an item's attributes.
 private struct LoginRecord: Codable {
