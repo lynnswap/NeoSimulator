@@ -73,7 +73,10 @@ package enum SignInScript: Equatable, Sendable {
                   // A control named `elements` or `requestSubmit` hides the form's own member of that name.
                   const form = HTMLFormElement.prototype;
                   const controls = Object.getOwnPropertyDescriptor(form, 'elements').get.call(password.form);
-                  const submit = Array.from(controls).find((e) => e.type === 'submit' && !e.disabled);
+                  // The form's button is the one a person would press after the password: the next that shows.
+                  const submits = Array.from(controls).filter((e) => e.type === 'submit' && takesInput(e));
+                  const follows = (e) => password.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING;
+                  const submit = submits.find(follows) || submits[0];
                   // A click runs what the page does for its button, and then submits the form as a person's click does.
                   if (submit) HTMLElement.prototype.click.call(submit); else form.requestSubmit.call(password.form);
                   submitted = true;
@@ -215,11 +218,20 @@ package struct WebAuthenticationSignIn {
         var acceptedConsent: ContinuousClock.Instant?
         var lastOrigin: String?
         var sawSheet = false
+        var unreadable: (any Error)?
         while true {
             if let application = try await device.frontmostApplication() {
                 if application.bundleIdentifier == login.applicationIdentifier {
                     for page in try await device.pages() where page.bundleIdentifier == Self.sheetService {
-                        let state = try await device.run(.state, in: page)
+                        // The pages of sheets that closed stay listed, and one of them that cannot be read does not
+                        // keep the sign-in from the sheet that is up.
+                        let state: SignInPageState
+                        do {
+                            state = try await device.run(.state, in: page)
+                        } catch let error where !(error is CancellationError) {
+                            unreadable = error
+                            continue
+                        }
                         guard state.isVisible else { continue }
                         sawSheet = true
                         lastOrigin = state.origin
@@ -245,7 +257,9 @@ package struct WebAuthenticationSignIn {
                 // After the alert is answered, the system stays in front until the sheet is up.
             }
             guard ContinuousClock.now < deadline else {
-                throw sawSheet ? Failure.unrecognizedPage(origin: lastOrigin) : Failure.noSheet
+                if sawSheet { throw Failure.unrecognizedPage(origin: lastOrigin) }
+                // A page that could not be read may have been the sheet's, such as one that another client inspects.
+                throw unreadable ?? Failure.noSheet
             }
             try await Task.sleep(for: pace.interval)
         }
@@ -320,13 +334,11 @@ package struct WebAuthenticationSignIn {
                 guard let element = try await device.element(at: CGPoint(x: screen.width * x, y: y)),
                     element.processIdentifier == process
                 else { continue }
-                if element.role == .button {
-                    if element.frame.width >= screen.width / 4, !buttons.contains(element.frame) {
-                        buttons.append(element.frame)
-                    }
-                } else if let label = element.label, Self.isRightToLeft(label) {
-                    readsRightToLeft = true
+                if element.role == .button, element.frame.width >= screen.width / 4, !buttons.contains(element.frame) {
+                    buttons.append(element.frame)
                 }
+                // The offer's text and its buttons' titles are in the device's language.
+                if let label = element.label, Self.isRightToLeft(label) { readsRightToLeft = true }
             }
         }
         let choices = buttons.filter { button in buttons.count { $0.size == button.size } > 1 }
