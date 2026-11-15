@@ -989,8 +989,6 @@ package final class DeviceSession {
         let button = HIDInput.button(.lock)
         var failure: (any Error)?
         let report = FirstFailure { failure = $0 }
-        // An earlier press whose release the device did not take keeps the button down, so its release is sent again.
-        releaseHeldInput(button, report: report)
         var pressed = false
         var deadline: ContinuousClock.Instant?
         while true {
@@ -1011,6 +1009,10 @@ package final class DeviceSession {
                 guard ContinuousClock.now < limit else {
                     throw SimulatorError.operation("\(device.name) did not lock, so it cannot show StandBy.")
                 }
+            } else if pendingHolds[button] == nil {
+                // A press whose release the device did not take keeps the button down, whoever pressed it, so the
+                // release is sent again. One that is still on its way is left alone.
+                releaseHeldInput(button, report: report)
             }
             try await Task.sleep(for: .milliseconds(100))
         }
