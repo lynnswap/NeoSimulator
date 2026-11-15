@@ -59,6 +59,7 @@ package enum ControlSocket {
         var address = try address(path)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw Failure.system(errno) }
+        // Before the socket connects: the option is refused on a socket whose other end has closed.
         var on: Int32 = 1
         setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         let result = withUnsafePointer(to: &address) {
@@ -126,6 +127,15 @@ package final class ControlServer: Sendable {
         var address = try ControlSocket.address(path)
         let listener = socket(AF_UNIX, SOCK_STREAM, 0)
         guard listener >= 0 else { throw ControlSocket.Failure.system(errno) }
+        // A write to a tool that has gone away fails instead of ending the app. The connections that the listener
+        // accepts take the option from it. Set on a connection itself, it is refused once the tool has closed its
+        // end, which a tool that is interrupted can do before the connection is accepted.
+        var on: Int32 = 1
+        guard setsockopt(listener, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            let code = errno
+            close(listener)
+            throw ControlSocket.Failure.system(code)
+        }
         let bound = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
@@ -147,8 +157,6 @@ package final class ControlServer: Sendable {
                     // The server stopped.
                     return
                 }
-                var on: Int32 = 1
-                setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
                 Task { await Self.serve(connection, answer: answer) }
             }
         }

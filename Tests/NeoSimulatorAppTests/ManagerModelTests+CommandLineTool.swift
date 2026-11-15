@@ -81,25 +81,31 @@ extension ManagerModelTests {
         // A second app does not take the socket from the one that answers.
         #expect(throws: ControlSocket.Failure.inUse) { try ControlServer(path: path) { _ in .logins([]) } }
 
-        // A tool that is interrupted closes its connection without reading the answer.
-        let tool = socket(AF_UNIX, SOCK_STREAM, 0)
+        // A tool that is interrupted closes its connection without reading the answer, and can do so before the app
+        // has taken the connection. The answer that the app then writes to it must not end the app.
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(path.utf8)) }
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(tool, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
-        }
-        try #require(connected == 0)
         var line = try JSONEncoder().encode(ControlRequest.signIn(device: "D", application: nil, label: "Premium"))
         line.append(0x0A)
-        try #require(line.withUnsafeBytes { write(tool, $0.baseAddress, $0.count) } == line.count)
-        close(tool)
-        var wasCancelled: Bool?
-        for await value in cancellations {
-            wasCancelled = value
-            break
+        let interrupted = 8
+        for _ in 0..<interrupted {
+            let tool = socket(AF_UNIX, SOCK_STREAM, 0)
+            let connected = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(tool, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            try #require(connected == 0)
+            try #require(line.withUnsafeBytes { write(tool, $0.baseAddress, $0.count) } == line.count)
+            close(tool)
         }
-        #expect(wasCancelled == true)
+        var cancelledRequests = 0
+        for await wasCancelled in cancellations {
+            #expect(wasCancelled)
+            cancelledRequests += 1
+            if cancelledRequests == interrupted { break }
+        }
 
         server.stop()
         await #expect(throws: ControlSocket.Failure.notRunning) {
