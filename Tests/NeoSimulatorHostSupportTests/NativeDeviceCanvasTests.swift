@@ -138,15 +138,23 @@ struct NativeDeviceCanvasTests {
         picture.ask(for: 2, from: CGSize(width: 300, height: 400))
         #expect(picture.askedZoom == 2 && picture.zoom == 1 && picture.isMoving)
         picture.moved(to: CGSize(width: 450, height: 600))
-        #expect(picture.zoom == 1.5)
-        // A device that folds meanwhile is as large as its larger side shows.
-        picture.moved(to: CGSize(width: 480, height: 720))
-        #expect(picture.zoom == 1.8)
-        picture.arrived()
+        #expect(picture.zoom == 1.5 && picture.isMoving)
+        // DeviceKit does not move while its window is hidden. The picture is where it stopped, and goes on later.
+        picture.rested(at: CGSize(width: 450, height: 600))
+        #expect(picture.zoom == 1.5 && picture.isMoving)
+        // The nearer parts of the device grow a little faster than the zoom.
+        picture.moved(to: CGSize(width: 603, height: 806))
         #expect(picture.zoom == 2 && !picture.isMoving)
-        // A picture that is not moving keeps its zoom whatever the device's extent.
-        picture.moved(to: CGSize(width: 100, height: 100))
-        #expect(picture.zoom == 2)
+    }
+
+    @Test func pictureWhoseDeviceFoldsOnTheWayStaysInsideItsRoomAndHasArrivedOnceItRests() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: CGSize(width: 300, height: 400))
+        // The device opens to twice its width while DeviceKit zooms: its larger side shows how large it is.
+        picture.moved(to: CGSize(width: 1200, height: 800))
+        #expect(picture.zoom == 4 && picture.isMoving)
+        picture.rested(at: CGSize(width: 1200, height: 800))
+        #expect(picture.zoom == 2 && !picture.isMoving)
     }
 
     /// The canvas frames the host at the scaled composition; Fit often shrinks a device below its natural size.

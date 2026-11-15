@@ -673,8 +673,10 @@ package final class NativeCanvasProjection {
             if let extent = Self.viewport(for: current, frameMargin: frameMargin, showsChrome: presentation.showsChrome)?.size {
                 presentation.picture.moved(to: extent)
             }
-            if pointScale != presentation.pointScale { presentation.pointScale = pointScale }
-            return
+            guard !presentation.picture.isMoving else {
+                if pointScale != presentation.pointScale { presentation.pointScale = pointScale }
+                return
+            }
         }
         let controlMargin = surface.map { Self.hoverControlMargin(renderingHeight: $0.height) } ?? 0
         let viewport = Self.viewport(for: current, frameMargin: frameMargin, controlMargin: controlMargin,
@@ -708,21 +710,18 @@ package final class NativeCanvasProjection {
     /// The scale and the screen layers have kept still.
     private func rested() {
         rest = nil
-        if presentation.picture.isMoving {
-            // DeviceKit's picture has arrived at the zoom it was asked for. What the device covers there is read now,
-            // and a scale that changed meanwhile is taken up once that has rested too.
-            presentation.picture.arrived()
-            update()
-            return
-        }
         // The bezel's width, which is part of what the device covers, may still be unknown.
-        let zoom = presentation.preferredZoom
-        // A picture within a fiftieth of the scale is not worth a second of DeviceKit redrawing it.
-        guard abs(zoom / presentation.picture.zoom - 1) > 0.02,
-              let extent = Self.viewport(for: layers, frameMargin: frameMargin, showsChrome: presentation.showsChrome)?.size
+        guard let extent = Self.viewport(for: layers, frameMargin: frameMargin, showsChrome: presentation.showsChrome)?.size
         else { return }
+        if presentation.picture.isMoving {
+            presentation.picture.rested(at: extent)
+            // What the device covers in a picture that has arrived is read now.
+            if !presentation.picture.isMoving { update() }
+        }
+        // A picture within a fiftieth of the scale is not worth a second of DeviceKit redrawing it.
+        let zoom = presentation.preferredZoom
+        guard abs(zoom / presentation.picture.askedZoom - 1) > 0.02 else { return }
         presentation.picture.ask(for: zoom, from: extent)
-        awaitRest()
     }
 
     private func loadFrameMargin() {
@@ -834,8 +833,9 @@ package final class NativeCanvasPresentation {
 
 /// The zoom of DeviceKit's picture of the device.
 ///
-/// DeviceKit draws its device at the canvas zoom of its environment, and moves to another zoom over about a second.
-/// While it moves, its screen layers show how far it has come, as long as the device keeps its posture.
+/// DeviceKit draws its device at the canvas zoom of its environment, and moves to another zoom over about a second,
+/// or later: it does not move while its window is hidden. Nothing reports where it is. While it moves, the device's
+/// extent in its screen layers shows how far it has come, as long as the device keeps its posture.
 package struct NativeCanvasPicture: Equatable {
     /// The canvas zoom that DeviceKit was last asked for.
     package private(set) var askedZoom: CGFloat = 1
@@ -852,7 +852,7 @@ package struct NativeCanvasPicture: Equatable {
 
     package init() {}
 
-    /// Whether DeviceKit is moving the picture to the zoom it was asked for.
+    /// Whether DeviceKit has yet to bring the picture to the zoom it was asked for.
     package var isMoving: Bool { start != nil }
 
     /// Asks DeviceKit for another zoom, from a picture in which the device has an extent.
@@ -862,17 +862,34 @@ package struct NativeCanvasPicture: Equatable {
         askedZoom = zoom
     }
 
-    /// The device's extent in the moving picture has changed. A device that changes its posture meanwhile is taken
-    /// to be as large as its larger side shows, so that it stays inside the room it had.
+    /// The device's extent in the picture has changed. The picture has arrived when the device has grown or shrunk
+    /// evenly to the zoom that DeviceKit was asked for. A device that changes its posture meanwhile is taken to be as
+    /// large as its larger side shows, so that it stays inside the room it had.
     package mutating func moved(to extent: CGSize) {
         guard let start else { return }
-        zoom = start.zoom * max(extent.width / start.extent.width, extent.height / start.extent.height)
+        let growth = Self.growth(from: start.extent, to: extent)
+        zoom = start.zoom * max(growth.across, growth.down)
+        if growth.isEven, abs(zoom / askedZoom - 1) <= 0.02 { arrived() }
     }
 
-    /// The picture has stopped at the zoom that DeviceKit was asked for.
+    /// The picture has kept still at an extent. One that grew or shrank evenly has stopped on its way, and goes on
+    /// later. One whose device changed its posture no longer shows its zoom, and is taken to have arrived.
+    package mutating func rested(at extent: CGSize) {
+        guard let start else { return }
+        if !Self.growth(from: start.extent, to: extent).isEven { arrived() }
+    }
+
+    /// The picture is at the zoom that DeviceKit was asked for.
     package mutating func arrived() {
         start = nil
         zoom = askedZoom
+    }
+
+    /// How much the device grew each way. A zoom grows it evenly, but for the parts nearer its viewer, which grow a
+    /// little faster.
+    private static func growth(from start: CGSize, to extent: CGSize) -> (across: CGFloat, down: CGFloat, isEven: Bool) {
+        let across = extent.width / start.width, down = extent.height / start.height
+        return (across, down, abs(across / down - 1) <= 0.02)
     }
 }
 
