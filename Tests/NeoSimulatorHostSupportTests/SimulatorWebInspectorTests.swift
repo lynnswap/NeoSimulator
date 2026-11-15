@@ -14,23 +14,9 @@ struct SimulatorWebInspectorTests {
         private let listener: Int32
         /// The selectors that a connection sent, in order, which end when its client closes it.
         private let arrivals: AsyncStream<String?>
-        /// The connection that the service answers now, which `send` also writes to.
-        private let current = Current()
-
-        private final class Current: @unchecked Sendable {
-            private let lock = NSLock()
-            private var connection: WebInspectorConnection?
-
-            func set(_ connection: WebInspectorConnection?) { lock.withLock { self.connection = connection } }
-            func send(_ selector: String, _ arguments: [String: Any]) throws {
-                try lock.withLock { try connection?.send(selector, arguments) }
-            }
-        }
-
-        /// Sends a message that no message of the client asked for.
-        func send(_ selector: String, _ arguments: [String: Any]) throws { try current.send(selector, arguments) }
 
         /// `answer` gets each message of a connection and sends what the service answers.
+        ///
         /// With `closingFirstConnection`, the service reports a process to its first connection and ends the connection,
         /// as a service does that is ending with the processes it knew.
         init(
@@ -54,7 +40,6 @@ struct SimulatorWebInspectorTests {
             self.socketPath = socketPath
             self.listener = listener
             self.arrivals = arrivals
-            let current = current
             Thread.detachNewThread {
                 var closesNext = closingFirstConnection
                 while true {
@@ -69,12 +54,10 @@ struct SimulatorWebInspectorTests {
                         continue
                     }
                     // The connection ends when its client closes it.
-                    current.set(connection)
                     while let message = try? connection.receive(until: .now + .seconds(30)) {
                         arrived.yield(message.selector)
-                        try? answer(message) { try current.send($0, $1) }
+                        try? answer(message) { try connection.send($0, $1) }
                     }
-                    current.set(nil)
                     arrived.yield(nil)
                 }
             }
@@ -96,70 +79,54 @@ struct SimulatorWebInspectorTests {
         }
     }
 
+    /// The processes that a service knows, by its name for each, with their bundle identifiers.
+    private final class Processes: Sendable {
+        let known: Mutex<[String: String]>
+
+        init(_ known: [String: String]) { self.known = Mutex(known) }
+    }
+
     private static func debuggerData(_ message: [String: Any]) throws -> [String: Any] {
         ["WIRMessageDataKey": try JSONSerialization.data(withJSONObject: message)]
     }
 
-    @Test func pagesComeFromEveryProcessThatReportsItself() async throws {
-        let service = try Service { message, reply in
-            switch message.selector {
-            case "_rpc_reportIdentifier:":
-                try reply(
-                    "_rpc_reportConnectedApplicationList:",
-                    [
-                        "WIRApplicationDictionaryKey": [
-                            "PID:1": [
-                                "WIRApplicationIdentifierKey": "PID:1",
-                                "WIRApplicationBundleIdentifierKey": "com.apple.mobilesafari",
-                            ]
-                        ]
-                    ])
-                // A process that reports itself after the first list.
-                try reply(
-                    "_rpc_applicationConnected:",
-                    [
-                        "WIRApplicationIdentifierKey": "PID:2",
-                        "WIRApplicationBundleIdentifierKey": "com.apple.SafariViewService",
-                    ])
-            case "_rpc_forwardGetListing:":
-                let application = try #require(message.arguments["WIRApplicationIdentifierKey"] as? String)
-                let pages: [String: Any] =
-                    application == "PID:1"
-                    ? [:]
-                    : [
-                        "1": [
-                            "WIRPageIdentifierKey": 1, "WIRURLKey": "https://login.example.com/",
-                            "WIRTitleKey": "Sign In", "WIRConnectionIdentifierKey": "another-client",
-                        ]
-                    ]
-                try reply(
-                    "_rpc_applicationSentListing:",
-                    ["WIRApplicationIdentifierKey": application, "WIRListingKey": pages])
-            default: break
-            }
+    private static func applicationList(_ processes: [String: String]) -> [String: Any] {
+        let applications = processes.reduce(into: [String: Any]()) { list, process in
+            list[process.key] = [
+                "WIRApplicationIdentifierKey": process.key, "WIRApplicationBundleIdentifierKey": process.value,
+            ]
         }
-        let pages = try await SimulatorWebInspector(socketPath: service.socketPath).pages()
-        #expect(
-            pages == [
-                InspectablePage(
-                    application: "PID:2", bundleIdentifier: "com.apple.SafariViewService", identifier: 1,
-                    url: "https://login.example.com/", title: "Sign In", isInspected: true)
-            ])
+        return ["WIRApplicationDictionaryKey": applications]
     }
 
-    /// A service with one page that evaluates to `result`, a debugger's answer to `Runtime.evaluate`.
-    private func service(inspected: Bool = false, evaluatingTo result: [String: Any]) throws -> Service {
+    private let page = InspectablePage(
+        application: "PID:2", bundleIdentifier: "com.apple.SafariViewService", identifier: 1,
+        url: "https://login.example.com/", title: "")
+
+    /// A service that knows `processes`, of which `PID:2` shows one page and the others none. A process outside
+    /// `listing` does not answer for its pages.
+    private func service(
+        closingFirstConnection: Bool = false, processes: Processes,
+        listing: Set<String> = ["PID:1", "PID:2"], inspected: Bool = false, evaluatingTo result: [String: Any] = [:]
+    ) throws -> Service {
         // Property lists and JSON objects are not Sendable; the closure only reads this one.
         nonisolated(unsafe) let result = result
-        return try Service { message, reply in
-            let route: [String: Any] = ["WIRApplicationIdentifierKey": "PID:2"]
+        return try Service(closingFirstConnection: closingFirstConnection) { message, reply in
             switch message.selector {
-            case "_rpc_reportIdentifier:":
-                try reply("_rpc_applicationConnected:", route)
+            case "_rpc_reportIdentifier:": try reply("_rpc_reportCurrentState:", [:])
+            case "_rpc_getConnectedApplications:":
+                try reply("_rpc_reportConnectedApplicationList:", Self.applicationList(processes.known.withLock { $0 }))
             case "_rpc_forwardGetListing:":
-                var page: [String: Any] = ["WIRPageIdentifierKey": 1, "WIRURLKey": "https://login.example.com/"]
-                if inspected { page["WIRConnectionIdentifierKey"] = "another-client" }
-                try reply("_rpc_applicationSentListing:", route.merging(["WIRListingKey": ["1": page]]) { $1 })
+                let application = try #require(message.arguments["WIRApplicationIdentifierKey"] as? String)
+                guard listing.contains(application) else { break }
+                var shown: [String: Any] = ["WIRPageIdentifierKey": 1, "WIRURLKey": "https://login.example.com/"]
+                if inspected { shown["WIRConnectionIdentifierKey"] = "another-client" }
+                try reply(
+                    "_rpc_applicationSentListing:",
+                    [
+                        "WIRApplicationIdentifierKey": application,
+                        "WIRListingKey": application == "PID:2" ? ["1": shown] : [:],
+                    ])
             case "_rpc_forwardSocketSetup:":
                 let created: [String: Any] = [
                     "method": "Target.targetCreated",
@@ -190,13 +157,27 @@ struct SimulatorWebInspectorTests {
         }
     }
 
-    private let page = InspectablePage(
-        application: "PID:2", bundleIdentifier: nil, identifier: 1, url: "https://login.example.com/", title: "")
+    private let viewService = ["PID:2": "com.apple.SafariViewService"]
+
+    @Test func pagesAreAskedForEachTimeAndComeFromEveryProcessTheServiceKnows() async throws {
+        let processes = Processes(["PID:1": "com.apple.mobilesafari"])
+        let service = try service(processes: processes, listing: ["PID:1", "PID:2"])
+        let inspector = SimulatorWebInspector(
+            socketPath: service.socketPath, startLimit: .seconds(5), answerLimit: .milliseconds(300))
+        #expect(try await inspector.pages().isEmpty)
+        // The process that shows a web authentication sheet starts with the sheet.
+        processes.known.withLock { $0["PID:2"] = "com.apple.SafariViewService" }
+        #expect(try await inspector.pages() == [page])
+
+        // A process that the service knows and that does not list its pages leaves the pages unknown.
+        processes.known.withLock { $0["PID:3"] = "com.example.app" }
+        await #expect(throws: DeviceOperationFailure.self) { try await inspector.pages() }
+    }
 
     @Test func aPageEvaluatesExpressionsOverOneConnectionAndIsLetGoAfterEach() async throws {
-        let service = try service(evaluatingTo: [
-            "result": ["type": "string", "value": "https://login.example.com"], "wasThrown": false,
-        ])
+        let service = try service(
+            processes: Processes(viewService),
+            evaluatingTo: ["result": ["type": "string", "value": "https://login.example.com"], "wasThrown": false])
         do {
             let inspector = SimulatorWebInspector(socketPath: service.socketPath)
             for _ in 1...2 {
@@ -211,9 +192,11 @@ struct SimulatorWebInspectorTests {
     }
 
     @Test func aScriptThatThrowsFailsWithWhatItThrew() async throws {
-        let service = try service(evaluatingTo: [
-            "result": ["type": "object", "subtype": "error", "description": "Error: boom"], "wasThrown": true,
-        ])
+        let service = try service(
+            processes: Processes(viewService),
+            evaluatingTo: [
+                "result": ["type": "object", "subtype": "error", "description": "Error: boom"], "wasThrown": true,
+            ])
         let inspector = SimulatorWebInspector(socketPath: service.socketPath)
         await #expect(throws: WebInspectorFailure.scriptThrew("Error: boom")) {
             try await inspector.evaluate("location.origin", in: page, as: String.self)
@@ -221,7 +204,7 @@ struct SimulatorWebInspectorTests {
     }
 
     @Test func aPageThatAnotherClientInspectsIsRefused() async throws {
-        let service = try service(inspected: true, evaluatingTo: [:])
+        let service = try service(processes: Processes(viewService), inspected: true)
         do {
             let inspector = SimulatorWebInspector(socketPath: service.socketPath)
             await #expect(throws: WebInspectorFailure.pageInUse) {
@@ -231,44 +214,8 @@ struct SimulatorWebInspectorTests {
         #expect(await service.received().contains("_rpc_forwardSocketSetup:") == false)
     }
 
-    @Test func aProcessThatReportsItselfLaterHasListedItsPagesWhenPagesReturn() async throws {
-        let listsPages = Mutex(true)
-        let service = try Service { message, reply in
-            switch message.selector {
-            case "_rpc_reportIdentifier:": try reply("_rpc_reportConnectedApplicationList:", [:])
-            case "_rpc_forwardGetListing:":
-                guard listsPages.withLock({ $0 }) else { break }
-                let page: [String: Any] = ["WIRPageIdentifierKey": 1, "WIRURLKey": "https://login.example.com/"]
-                try reply(
-                    "_rpc_applicationSentListing:",
-                    ["WIRApplicationIdentifierKey": "PID:2", "WIRListingKey": ["1": page]])
-            default: break
-            }
-        }
-        let inspector = SimulatorWebInspector(
-            socketPath: service.socketPath, startLimit: .seconds(5), answerLimit: .milliseconds(300))
-        #expect(try await inspector.pages().isEmpty)
-        // The process that shows a web authentication sheet starts with the sheet.
-        try service.send("_rpc_applicationConnected:", ["WIRApplicationIdentifierKey": "PID:2"])
-        #expect(try await inspector.pages() == [page])
-
-        // A process that reports itself and lists nothing leaves the pages unknown.
-        listsPages.withLock { $0 = false }
-        try service.send("_rpc_applicationConnected:", ["WIRApplicationIdentifierKey": "PID:3"])
-        await #expect(throws: DeviceOperationFailure.self) { try await inspector.pages() }
-    }
-
     @Test func aConnectionThatAnEndingServiceClosesIsMadeAgain() async throws {
-        let service = try Service(closingFirstConnection: true) { message, reply in
-            let route: [String: Any] = ["WIRApplicationIdentifierKey": "PID:2"]
-            switch message.selector {
-            case "_rpc_reportIdentifier:": try reply("_rpc_applicationConnected:", route)
-            case "_rpc_forwardGetListing:":
-                let page: [String: Any] = ["WIRPageIdentifierKey": 1, "WIRURLKey": "https://login.example.com/"]
-                try reply("_rpc_applicationSentListing:", route.merging(["WIRListingKey": ["1": page]]) { $1 })
-            default: break
-            }
-        }
+        let service = try service(closingFirstConnection: true, processes: Processes(viewService))
         let inspector = SimulatorWebInspector(
             socketPath: service.socketPath, startLimit: .seconds(5), answerLimit: .milliseconds(300))
         #expect(try await inspector.pages() == [page])

@@ -71,8 +71,8 @@ package enum DeviceOperationLimit {
     package static let accessibilityRead: Duration = .seconds(5)
     /// How long running script in one of a device's web pages waits for the page's answer.
     package static let webInspector: Duration = .seconds(5)
-    /// How long a connection to a device's Web Inspector service waits for the service's first answer. The service ends
-    /// with its last connection, and launchd starts it again no sooner than ten seconds after its last start.
+    /// How long a connection to a device's Web Inspector service waits for the service's first answer. The service can
+    /// end with its last connection, and launchd starts it again no sooner than ten seconds after its last start.
     package static let webInspectorStart: Duration = .seconds(15)
     /// How long a request for an iCloud sync waits for CoreSimulator's completion, as long as a management operation.
     package static let cloudSync: Duration = .seconds(300)

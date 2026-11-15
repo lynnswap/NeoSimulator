@@ -58,9 +58,9 @@ package enum WebInspectorFailure: LocalizedError, Equatable {
 /// time, but that does not keep others out: script that a client sends for a page that another one inspects still runs
 /// there, and only its answer goes to the inspecting client.
 ///
-/// Keep one of these for as long as the pages are needed. The service ends with its last connection, and launchd holds
-/// back its next start until ten seconds after the last one, so a connection made right after another closed waits
-/// that long for its first answer.
+/// Keep one of these for as long as the pages are needed. The service can end with its last connection, and launchd
+/// then holds back its next start until ten seconds after the last one, so a connection made right after another
+/// closed can wait that long for its first answer.
 package final class SimulatorWebInspector: @unchecked Sendable {
     package let socketPath: String
     /// Everything below is read and written on this queue, which also waits for the service's messages.
@@ -69,6 +69,8 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     /// The bundle identifier of each process that reported itself, by the service's name for it.
     private var applications: [String: String?] = [:]
     private var listings: [String: [InspectablePage]] = [:]
+    /// Whether the service has listed its processes since the last request for them.
+    private var hasApplications = false
 
     /// How long the service has for its first answer, and how long it then has for the answers to one request.
     private let startLimit: Duration
@@ -83,22 +85,22 @@ package final class SimulatorWebInspector: @unchecked Sendable {
         self.answerLimit = answerLimit
     }
 
-    /// The pages that the device's apps show now: those of every process that has reported itself to the service.
+    /// The pages that the device's apps show now: those of every process that the service knows.
+    ///
+    /// Each call asks the service, so the answer does not depend on what the service has reported unasked. Right after
+    /// the service starts, processes have yet to report to it, and a caller that waits for a page asks again.
     package func pages() async throws -> [InspectablePage] {
         try await onQueue { inspector, _ in
-            let isNew = inspector.connection == nil
             let connection = try inspector.connected()
             let deadline = ContinuousClock.now + inspector.answerLimit
-            while true {
+            inspector.hasApplications = false
+            try connection.send("_rpc_getConnectedApplications:", [:])
+            while !inspector.hasApplications
+                || inspector.applications.keys.contains(where: { inspector.listings[$0] == nil })
+            {
                 // Messages that keep arriving do not extend the request's time.
-                guard ContinuousClock.now < deadline else { throw Self.noAnswer(inspector.answerLimit) }
-                let isWaiting = inspector.applications.keys.contains { inspector.listings[$0] == nil }
-                // Processes report themselves to a new connection one after another, so it waits until they are quiet.
-                // After that the service reports each change as it happens, and what has arrived is what there is.
-                let quiet = isNew ? min(deadline, .now + .milliseconds(300)) : .now
-                if try inspector.next(from: connection, before: isWaiting ? deadline : quiet) != nil { continue }
-                guard !isWaiting else { throw Self.noAnswer(inspector.answerLimit) }
-                break
+                guard ContinuousClock.now < deadline, try inspector.next(from: connection, before: deadline) != nil
+                else { throw Self.noAnswer(inspector.answerLimit) }
             }
             return inspector.listings.values.flatMap(\.self).sorted {
                 ($0.application, $0.identifier) < ($1.application, $1.identifier)
@@ -144,6 +146,7 @@ package final class SimulatorWebInspector: @unchecked Sendable {
         connection = nil
         applications = [:]
         listings = [:]
+        hasApplications = false
     }
 
     private static func noAnswer(_ limit: Duration) -> DeviceOperationFailure {
@@ -190,6 +193,10 @@ package final class SimulatorWebInspector: @unchecked Sendable {
         let arguments = message.arguments
         switch message.selector {
         case "_rpc_reportConnectedApplicationList:":
+            // The list is every process that the service knows, so what an earlier one named is gone.
+            applications = [:]
+            listings = [:]
+            hasApplications = true
             for (_, application) in arguments["WIRApplicationDictionaryKey"] as? [String: [String: Any]] ?? [:] {
                 try add(application, on: connection)
             }
@@ -243,8 +250,9 @@ package final class SimulatorWebInspector: @unchecked Sendable {
             }
             return message
         }
-        while ContinuousClock.now < deadline, try next(from: connection, before: .now) != nil {}
-        // On a connection that has not listed pages yet, the page's process has still to report itself.
+        // The page's process says whether the page is still there and whether another client inspects it.
+        listings[page.application] = nil
+        try connection.send("_rpc_forwardGetListing:", ["WIRApplicationIdentifierKey": page.application])
         while listings[page.application] == nil {
             guard ContinuousClock.now < deadline, try next(from: connection, before: deadline) != nil else {
                 throw WebInspectorFailure.pageGone
