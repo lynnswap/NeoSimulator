@@ -189,19 +189,23 @@ package final class DeviceViewFittingView: NSView {
 
 extension NSMenu {
     /// Whether the menu or one of its submenus has an enabled, visible item whose key equivalent is the event's.
+    ///
+    /// The comparison follows AppKit's: an item whose modifiers include Shift, or whose key is an uppercase letter,
+    /// names the key without Shift; any other item names the character that the keys type, with or without Shift.
     @MainActor fileprivate func hasEnabledCommand(for event: NSEvent) -> Bool {
         let modifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
-        guard let characters = event.charactersIgnoringModifiers?.lowercased(), !characters.isEmpty else { return false }
         let pressed = event.modifierFlags.intersection(modifiers)
         update()
         return items.contains { item in
             if let submenu = item.submenu { return submenu.hasEnabledCommand(for: event) }
             let key = item.keyEquivalent
-            guard !key.isEmpty, item.isEnabled, !item.isHidden, key.lowercased() == characters else { return false }
+            guard !key.isEmpty, item.isEnabled, !item.isHidden else { return false }
             var required = item.keyEquivalentModifierMask.intersection(modifiers)
-            // An uppercase key equivalent asks for Shift.
             if key != key.lowercased() { required.insert(.shift) }
-            return required == pressed
+            if required.contains(.shift) {
+                return required == pressed && event.characters(byApplyingModifiers: [])?.lowercased() == key.lowercased()
+            }
+            return required == pressed.subtracting(.shift) && event.charactersIgnoringModifiers == key
         }
     }
 }

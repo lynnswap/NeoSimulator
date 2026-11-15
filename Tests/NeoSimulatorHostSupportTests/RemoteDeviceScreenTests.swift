@@ -916,16 +916,19 @@ struct RemoteDeviceScreenTests {
         container.commandMenu = { menu }
         let device = DeviceKeys()
         container.addSubview(device)
-        func press(_ key: String) throws -> Bool {
+        menu.addItem(withTitle: "Help", action: #selector(Command.run(_:)), keyEquivalent: "?").target = command
+        func press(_ key: String, _ flags: NSEvent.ModifierFlags = .command) throws -> Bool {
             container.performKeyEquivalent(with: try #require(NSEvent.keyEvent(
-                with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 1, windowNumber: 0, context: nil,
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 1, windowNumber: 0, context: nil,
                 characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)))
         }
         #expect(try press("s") && command.runs == 1 && device.equivalents.isEmpty)
         #expect(try press("j") && device.equivalents == ["j"])
+        // Shift types the character of a command whose own modifiers leave Shift out.
+        #expect(try press("?", [.command, .shift]) && command.runs == 2 && device.equivalents == ["j"])
         // The menu alone would consume a disabled command's key.
         command.isEnabled = false
-        #expect(try press("s") && command.runs == 1 && device.equivalents == ["j", "s"])
+        #expect(try press("s") && command.runs == 2 && device.equivalents == ["j", "s"])
     }
 
     @Test func primaryDisplayFramesExcludeEncodingPaddingBeforeAndAfterRotation() async throws {
