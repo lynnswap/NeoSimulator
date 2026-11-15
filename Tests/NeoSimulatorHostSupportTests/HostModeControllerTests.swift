@@ -1367,20 +1367,20 @@ struct HostModeControllerTests {
     @Test func deviceHubRecoveryWaitsForAnUntrackedHubFromAnotherXcode() {
         let xcode = URL(filePath: "/Applications/Test Xcode.app")
         var exits: [pid_t: @MainActor () -> Void] = [:]
-        var running: [pid_t] = [41, 42]
+        let running = Mutex<[pid_t]>([41, 42])
         var recovered: [URL] = []
         let companions = DeviceHubCompanions(
             rendererApplicationURL: URL(filePath: "/Renderer.app"),
             observeExit: { pid, exited in
                 exits[pid] = exited; return {}
             },
-            runningDeviceHubs: { running })
+            runningDeviceHubs: { running.withLock { $0 } })
         companions.onDeviceHubExit = { recovered.append($0) }
         companions.observeDeviceHub(processIdentifier: 41, xcodeURL: xcode)
         exits[41]?()
         #expect(recovered.isEmpty)
         #expect(exits[42] != nil)
-        running = []
+        running.withLock { $0 = [] }
         exits[42]?()
         #expect(recovered == [xcode])
     }

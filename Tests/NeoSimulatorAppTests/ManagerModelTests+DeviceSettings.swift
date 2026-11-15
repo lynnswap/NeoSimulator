@@ -119,16 +119,16 @@ extension ManagerModelTests {
     }
 
     @Test func devicesSettingsPresentThePairingSheetOrTheFailureToMakeIt() async {
-        var fails = true
+        let fails = Mutex(true)
         let state = DevicesSettingsState(makeSimulator: { throw CancellationError() }, makePairingSheet: {
-            if fails { throw SimulatorError.operation("DeviceKit unavailable") }
+            if fails.withLock({ $0 }) { throw SimulatorError.operation("DeviceKit unavailable") }
             return AnyView(EmptyView())
         }, reportFailure: { _ in Issue.record("Unexpected failure") })
         state.isVisible = true
         state.pairNearbyDevice()
         await state.preparingPairing?.value
         #expect(state.pairingSheet == nil && state.pairingIssue == "DeviceKit unavailable")
-        fails = false
+        fails.withLock { $0 = false }
         state.pairingIssue = nil
         state.pairNearbyDevice()
         await state.preparingPairing?.value

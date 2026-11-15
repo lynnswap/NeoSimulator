@@ -657,7 +657,7 @@ struct RemoteDeviceScreenTests {
         let frameReady = ScreenFixtureGate()
         let transport = ScreenFixtureTransport(suspendStart: true)
         var reads = 0
-        var displayReady = false
+        let displayReady = Mutex(false)
         let session = RemoteDeviceScreenSession(
             device: try device(),
             readDisplay: { _ in
@@ -667,7 +667,7 @@ struct RemoteDeviceScreenTests {
                     if finishesAfterConnection { await finishInitialRead.hold() }
                     return nil
                 }
-                return displayReady ? reported : nil
+                return displayReady.withLock { $0 } ? reported : nil
             }
         ) { _, _, _ in transport }
         let frame = try #require(session.contentView as? RemoteDeviceFrameView)
@@ -676,7 +676,7 @@ struct RemoteDeviceScreenTests {
         let start = Task { try await session.start() }
         try await initialRead.wait(timeout: .seconds(5))
         await transport.waitUntilStarting()
-        displayReady = true
+        displayReady.withLock { $0 = true }
         transport.finishStarting()
         try await start.value
         if finishesAfterConnection { finishInitialRead.resume() }

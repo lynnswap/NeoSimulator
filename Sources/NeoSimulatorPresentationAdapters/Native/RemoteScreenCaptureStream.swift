@@ -199,7 +199,7 @@ actor RemoteScreenCaptureStream {
         guard !stopped, let current else {
             throw RemoteScreenError.unavailable("remote-screen-image", "The capture source has not supplied a frame to capture.")
         }
-        nonisolated(unsafe) let frame = current
+        let frame = current
         return try await performBlockingIO { try Self.image(from: frame.buffer, sourceRect: frame.sourceRect) }
     }
 
