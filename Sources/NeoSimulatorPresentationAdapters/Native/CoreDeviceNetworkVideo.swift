@@ -111,7 +111,7 @@ private final class RemoteScreenSocketReservation {
         guard inet_ntop(AF_INET6, &local.sin6_addr, &text, socklen_t(text.count)) != nil else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        address = String(cString: text)
+        address = String(decoding: text.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         let reserved = socket(AF_INET6, SOCK_DGRAM, 0)
         guard reserved >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         do {
