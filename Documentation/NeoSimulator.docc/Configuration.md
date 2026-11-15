@@ -58,10 +58,12 @@ do not select another host.
 ## App preferences
 
 **NeoSimulator → Settings…** (Command-,) contains General, Devices, Capture,
-Service Profiles, and Licenses settings; Debug builds also show Debug.
+Service Profiles, Logins, and Licenses settings; Debug builds also show Debug.
 General controls the preferred display host, UI framework installation, keeping devices running when closing or
 quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
+Logins saves an app's user name and password in your login keychain, under the app's bundle identifier and a
+label, with the web origins where the login may be typed. The pane never shows a saved password.
 
 Renderer preferences use `dev.lynnswap.NeoSimulator.Renderer`. Existing values
 are migrated from `dev.lynnswap.NeoSimulator` on first use.
