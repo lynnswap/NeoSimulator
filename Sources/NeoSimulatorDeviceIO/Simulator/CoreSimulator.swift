@@ -395,6 +395,9 @@ private struct AccessibilityMessages: @unchecked Sendable {
     let requestClass: AnyClass
     let makeRequest: NativeObjCMethod<AnyObject?, AnyObject?>
     let setRequestType: NativeObjCMethod<Void, UInt64>
+    let setAttributeType: NativeObjCMethod<Void, UInt64>
+    let setActionType: NativeObjCMethod<Void, UInt64>
+    let setClientType: NativeObjCMethod<Void, UInt64>
     let setParameters: NativeObjCMethod<Void, NSDictionary>
     let resultData: NativeObjCMethod<AnyObject?>
     /// The response's error number, which is 0 for none.
@@ -423,6 +426,12 @@ private struct AccessibilityMessages: @unchecked Sendable {
             on: requestClass, classMethod: true)
         setRequestType = try await runtime.resolve(
             .objc(.method("setRequestType:", as: ((UInt64) -> Void).self)), on: requestClass)
+        setAttributeType = try await runtime.resolve(
+            .objc(.method("setAttributeType:", as: ((UInt64) -> Void).self)), on: requestClass)
+        setActionType = try await runtime.resolve(
+            .objc(.method("setActionType:", as: ((UInt64) -> Void).self)), on: requestClass)
+        setClientType = try await runtime.resolve(
+            .objc(.method("setClientType:", as: ((UInt64) -> Void).self)), on: requestClass)
         setParameters = try await runtime.resolve(
             .objc(.method("setParameters:", as: ((NSDictionary) -> Void).self)), on: requestClass)
         resultData = try await runtime.resolve(.objc(.method("resultData", as: (() -> AnyObject?).self)), on: response)
@@ -435,23 +444,32 @@ private struct AccessibilityMessages: @unchecked Sendable {
             on: device)
     }
 
+    /// The translator's client type for which a guest also lists the elements that an alert or a sheet covers.
+    /// Measured on iOS 27.2: the types 2 to 4 are answered so, and 0 and 1 with what is on the screen.
+    private static let automationClient: UInt64 = 2
+
     /// A reader for one read, whose requests go to `device` and wait for their answers on the calling worker. The read
     /// has ``DeviceOperationLimit/accessibilityRead`` from now for all of its requests.
-    func reader(for device: AnyObject) -> SimulatorAccessibilityReader {
+    ///
+    /// - Parameter listsCovered: Whether the guest also answers with the elements that an alert or a sheet covers.
+    func reader(for device: AnyObject, listsCovered: Bool = false) -> SimulatorAccessibilityReader {
         let limit = DeviceOperationLimit.accessibilityRead
         let (seconds, attoseconds) = limit.components
         let deadline = DispatchTime.now() + Double(seconds) + Double(attoseconds) / 1e18
         let unanswered = DeviceOperationFailure.noAnswer(operation: "read the device's accessibility", limit: limit)
         return SimulatorAccessibilityReader(
-            send: { request, element, parameters in
+            send: { sent in
                 guard DispatchTime.now() < deadline else { throw unanswered }
                 // A request about no element still carries a translation object, an empty one.
-                let translation = element ?? translationClass.init()
+                let translation = sent.element ?? translationClass.init()
                 guard let message = try unsafe makeRequest.unsafeInvoke(on: requestClass, translation) else {
                     throw DeviceIOError.unavailable("simulator-accessibility", "The translator made no request")
                 }
-                try unsafe setRequestType.unsafeInvoke(on: message, request.rawValue)
-                try unsafe setParameters.unsafeInvoke(on: message, parameters as NSDictionary)
+                try unsafe setRequestType.unsafeInvoke(on: message, sent.request.rawValue)
+                try unsafe setAttributeType.unsafeInvoke(on: message, sent.attribute)
+                try unsafe setActionType.unsafeInvoke(on: message, sent.action)
+                if listsCovered { try unsafe setClientType.unsafeInvoke(on: message, Self.automationClient) }
+                try unsafe setParameters.unsafeInvoke(on: message, sent.parameters as NSDictionary)
                 let answered = DispatchSemaphore(value: 0)
                 // Written before the signal and read only after it.
                 nonisolated(unsafe) var answer: AnyObject?
@@ -1080,6 +1098,30 @@ package final class SimulatorDevice {
     package func accessibilityElement(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
         try await startedBridge().read("read the device's accessibility") { [guest] in
             try guest.messages.accessibility.get().reader(for: guest.device).element(at: point)
+        }
+    }
+
+    /// The application of a guest process with its elements, among them those that an alert or a sheet covers. It has
+    /// no elements while the application is not on the screen. Nil if the guest names no application for the process.
+    package func accessibilityElements(ofProcess processIdentifier: Int32) async throws -> SimulatorAccessibilityElement? {
+        try await startedBridge().read("read the device's accessibility") { [guest] in
+            try guest.messages.accessibility.get().reader(for: guest.device, listsCovered: true)
+                .application(processIdentifier: processIdentifier)
+        }
+    }
+
+    /// Performs `action` on one element of a guest process's application, whether or not an alert or a sheet covers
+    /// it: the one whose index `choose` answers with, among the application's elements as they are when the action is
+    /// asked for, in the order that they are read in and each without its children. Throws a
+    /// ``SimulatorAccessibilityActionFailure`` when `choose` answers with none, and for a press that the element
+    /// refuses.
+    package func performAccessibilityAction(
+        _ action: SimulatorAccessibilityAction, inProcess processIdentifier: Int32,
+        on choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?
+    ) async throws {
+        try await startedBridge().change("change an element on the device") { [guest] in
+            try guest.messages.accessibility.get().reader(for: guest.device, listsCovered: true)
+                .perform(action, inProcess: processIdentifier, on: choose)
         }
     }
 

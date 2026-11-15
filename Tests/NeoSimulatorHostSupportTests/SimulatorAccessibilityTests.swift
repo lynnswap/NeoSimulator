@@ -21,18 +21,35 @@ struct SimulatorAccessibilityTests {
         }
     }
 
-    /// A translator that answers for `frontmost` and for the element at any point, `hit`.
+    /// A translator that answers for `frontmost`, for the element at any point, `hit`, and for the application of any
+    /// process, `application`.
     private final class Translator {
         var frontmost: Element?
         var hit: Element?
+        var application: Element?
+        /// Whether an element takes a press.
+        var takesPress = true
+        /// The actions that elements took, each with its element's number.
+        var performed: [String] = []
         /// The attribute numbers that each request for attributes asked for.
         var asked: [[Int]] = []
         var points: [CGPoint] = []
 
         var reader: SimulatorAccessibilityReader {
             SimulatorAccessibilityReader(
-                send: { [self] request, element, parameters in
-                    switch request {
+                send: { [self] message in
+                    let (element, parameters) = (message.element, message.parameters)
+                    switch message.request {
+                    case .application: return .init(result: application)
+                    case .action:
+                        guard takesPress, let element = element as? Element else { return .init(result: false) }
+                        performed.append("action \(message.action) on \(element.objectID)")
+                        return .init(result: true)
+                    case .setAttribute:
+                        guard let element = element as? Element else { return .init(error: 8) }
+                        performed.append(
+                            "set \(message.attribute) of \(element.objectID) to \(parameters["value"] ?? "nothing")")
+                        return .init()
                     case .frontmostApplication: return .init(result: frontmost)
                     case .hitTest:
                         points.append((parameters["point"] as? NSValue)?.pointValue ?? .zero)
@@ -56,7 +73,8 @@ struct SimulatorAccessibilityTests {
     }
 
     // The translator's attribute numbers.
-    private let bundle = 6, children = 8, frame = 21, identifier = 25, label = 33, role = 45, subrole = 51, value = 53
+    private let bundle = 6, children = 8, frame = 21, identifier = 25, enabled = 27, label = 33, role = 45
+    private let subrole = 51, value = 53
 
     @Test func theFrontmostApplicationIsReadWithItsElements() throws {
         let translator = Translator()
@@ -97,6 +115,38 @@ struct SimulatorAccessibilityTests {
         #expect(translator.points == [CGPoint(x: 275, y: 529)])
         #expect(translator.asked.count == 1 && translator.asked[0].contains(children) == false)
         #expect(try Translator().reader.element(at: .zero) == nil)
+    }
+
+    @Test func anActionGoesToTheElementThatIsChosenFromWhatTheAppHasNow() throws {
+        let translator = Translator()
+        let field = Element(
+            7, 2, [role: 15, subrole: 5, identifier: "password", frame: NSValue(rect: CGRect(x: 16, y: 441, width: 370, height: 34))])
+        // The app has disabled the button.
+        let button = Element(7, 3, [role: 2, label: "Sign In", enabled: false])
+        translator.application = Element(7, 1, [role: 1, children: [field, button]])
+        #expect(try translator.reader.application(processIdentifier: 7)?.children.count == 2)
+
+        // The elements are listed in the order that they are read in, each without its children.
+        var listed: [SimulatorAccessibilityElement] = []
+        try translator.reader.perform(.setValue("s3cret"), inProcess: 7) { elements in
+            listed = elements
+            return elements.firstIndex { $0.isSecureTextField }
+        }
+        #expect(listed.map(\.role) == [.application, .textField, .button] && listed.allSatisfy(\.children.isEmpty))
+        #expect(listed.map(\.isEnabled) == [true, true, false])
+        try translator.reader.perform(.press, inProcess: 7) { $0.firstIndex { $0.label == "Sign In" } }
+        // The value attribute, and the action that presses.
+        #expect(translator.performed == ["set 53 of 2 to s3cret", "action 5 on 3"])
+
+        translator.takesPress = false
+        #expect(throws: SimulatorAccessibilityActionFailure.refused) {
+            try translator.reader.perform(.press, inProcess: 7) { $0.firstIndex { $0.label == "Sign In" } }
+        }
+        // The app no longer has the element.
+        #expect(throws: SimulatorAccessibilityActionFailure.elementGone) {
+            try translator.reader.perform(.setValue("s3cret"), inProcess: 7) { $0.firstIndex { $0.role == .slider } }
+        }
+        #expect(translator.performed.count == 2)
     }
 
     @Test func anElementThatAnswersWithAnErrorFailsTheRead() throws {
