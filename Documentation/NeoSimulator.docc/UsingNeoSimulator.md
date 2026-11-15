@@ -308,6 +308,20 @@ Neo goes on to the page that asks for the password, which can be on another of t
 for another app, on an origin that the login does not list, or on a page that has no form that asks for the user name
 or the password with a button to submit it.
 
+Where a page does not fit this, set the login's **Web Sign-In** to **Own Script** in its editor and write the
+JavaScript that fills the page. Neo runs it once in each page of the sign-in that is at one of the login's origins.
+`login.userName` and `login.password` hold the login, and `fill(element, value)` sets a field as typing does:
+
+```js
+fill(document.querySelector('#email'), login.userName)
+fill(document.querySelector('#password'), login.password)
+document.querySelector('form').requestSubmit()
+```
+
+A page that loads again after the script ran in it ends the sign-in as rejected, so that a login that the site
+refuses is not submitted again. Neo tells a page by its address without the query, so two pages of a sign-in whose
+addresses differ only in the query count as one.
+
 A coding agent asks for the same sign-in with the app's own executable, which works as a command-line tool when it
 is started with a command:
 

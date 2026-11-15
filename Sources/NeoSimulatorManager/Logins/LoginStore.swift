@@ -7,13 +7,14 @@ import Security
 @MainActor @Observable
 package final class LoginStore {
     package enum Failure: Error, LocalizedError {
-        case invalidApplicationIdentifier, emptyLabel, emptyPassword, duplicate, missingLogin
+        case invalidApplicationIdentifier, emptyLabel, emptyPassword, emptyScript, duplicate, missingLogin
 
         package var errorDescription: String? {
             switch self {
             case .invalidApplicationIdentifier: "Enter the app’s bundle identifier, such as com.example.app."
             case .emptyLabel: "Enter a label for the login."
             case .emptyPassword: "Enter a password."
+            case .emptyScript: "Enter the script that signs in, or choose the automatic web sign-in."
             case .duplicate: "The app already has a login with this label."
             case .missingLogin: "This login no longer exists."
             }
@@ -86,6 +87,7 @@ package final class LoginStore {
             throw Failure.invalidApplicationIdentifier
         }
         guard !login.label.isEmpty else { throw Failure.emptyLabel }
+        guard login.webSignIn == .automatic || !login.script.allSatisfy(\.isWhitespace) else { throw Failure.emptyScript }
         return try await inTurn { [self, keychain, login] in
             do {
                 try await performBlockingIO {
@@ -130,6 +132,9 @@ private struct LoginRecord: Codable {
     var password: String
     var origins: [WebOrigin]
     var allowsAutomation: Bool
+    // An item that was saved before a login could have a script holds neither of these.
+    var webSignIn: SavedLogin.WebSignIn?
+    var script: String?
 
     init(_ login: SavedLogin, password: String) {
         applicationIdentifier = login.applicationIdentifier
@@ -138,12 +143,14 @@ private struct LoginRecord: Codable {
         self.password = password
         origins = login.origins
         allowsAutomation = login.allowsAutomation
+        webSignIn = login.webSignIn
+        script = login.script
     }
 
     var login: SavedLogin {
         SavedLogin(
             applicationIdentifier: applicationIdentifier, label: label, userName: userName, origins: origins,
-            allowsAutomation: allowsAutomation)
+            allowsAutomation: allowsAutomation, webSignIn: webSignIn ?? .automatic, script: script ?? "")
     }
 }
 

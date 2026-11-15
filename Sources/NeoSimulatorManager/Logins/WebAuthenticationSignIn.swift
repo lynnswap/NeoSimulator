@@ -33,6 +33,12 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
     package var awaitsSubmit: Bool
     /// Names the document, so that a page that loaded again is told from the one that was submitted.
     package var document: String
+    /// The page's path, without what follows it in its address.
+    package var path: String
+    /// Whether the login's own script ran in the page.
+    package var ranScript: Bool
+    /// Whether the page has finished loading, so that a script finds the elements that the page starts with.
+    package var isLoaded: Bool
 
     /// A step of a sign-in, which a page asks for in a form. The steps come in this order, and a page that asks for a
     /// step that does not come later asks again.
@@ -49,7 +55,7 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
 
     package init(
         origin: String, isVisible: Bool = true, step: Step?, submitted: Step? = nil, awaitsSubmit: Bool = false,
-        document: String = ""
+        document: String = "", path: String = "/", ranScript: Bool = false, isLoaded: Bool = true
     ) {
         self.origin = origin
         self.isVisible = isVisible
@@ -57,6 +63,9 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
         self.submitted = submitted
         self.awaitsSubmit = awaitsSubmit
         self.document = document
+        self.path = path
+        self.ranScript = ranScript
+        self.isLoaded = isLoaded
     }
 }
 
@@ -80,6 +89,10 @@ package enum SignInScript: Equatable, Sendable {
     case signIn(userName: String, password: String, origin: String)
     /// Submits the form that `signIn` filled in, once its button is enabled.
     case submit(origin: String)
+    /// Runs a login's own script, which fills the page and submits it. The script is the body of a function that
+    /// gets `login`, with the login's `userName` and `password`, and `fill(element, value)`, which sets a field's value
+    /// as typing does and notes the field so that it can be emptied.
+    case own(script: String, userName: String, password: String, origin: String)
     /// Empties the fields that `signIn` set in the page's document, which `signIn` noted there.
     case clear(origin: String)
 
@@ -112,6 +125,21 @@ package enum SignInScript: Equatable, Sendable {
                 const last = noted[noted.length - 1];
                 if (location.origin === \(Self.literal(origin)) && isVisible && last && press(last)) {
                   submitted = last.type === 'password' ? 'password' : 'userName';
+                }
+                """
+        case .own(let script, let userName, let password, let origin):
+            action = """
+                if (location.origin === \(Self.literal(origin)) && isVisible && isLoaded) {
+                  window[filled] = window[filled] || [];
+                  const login = Object.freeze({ userName: \(Self.literal(userName)), password: \(Self.literal(password)) });
+                  const fill = (element, value) => {
+                    window[filled].push(element);
+                    set(element, value);
+                  };
+                  // A page's content security policy that refuses `unsafe-eval` does not apply to what the Web
+                  // Inspector evaluates, so the script is compiled here on such a page too.
+                  new Function('login', 'fill', \(Self.literal(script)))(login, fill);
+                  ranScript = true;
                 }
                 """
         case .clear(let origin):
@@ -179,10 +207,13 @@ package enum SignInScript: Equatable, Sendable {
               const isVisible = document.visibilityState === 'visible';
               const filled = Symbol.for('dev.lynnswap.NeoSimulator.filled');
               let submitted = null;
+              let ranScript = false;
+              // Scripts that a page defers, which can build its form, have run by then.
+              const isLoaded = document.readyState === 'complete';
               \(action)
               return {
                 origin: location.origin, isVisible, step, submitted, awaitsSubmit: !!window[filled] && !submitted,
-                document: String(performance.timeOrigin),
+                document: String(performance.timeOrigin), path: location.pathname, ranScript, isLoaded,
               };
             })()
             """
@@ -261,34 +292,82 @@ package struct WebAuthenticationSignIn {
     }
 
     package func run() async throws {
-        var (page, origin) = try await signInPage()
+        let (page, first) = try await signInPage()
+        var origin = first
+        do {
+            switch login.webSignIn {
+            case .automatic: try await fillSteps(of: page, at: &origin)
+            case .script: try await runOwnScript(in: page, at: &origin)
+            }
+        } catch {
+            // What the sign-in put into the page does not stay there, also when a script failed part way or its
+            // answer was lost. A page that has moved on has dropped it already. The clearing has a task of its own: a
+            // sign-in that was cancelled, as by a tool that went away, runs no more script in its own.
+            await Task { [device, origin] in _ = try? await device.run(.clear(origin: origin), in: page) }.value
+            throw error
+        }
+    }
+
+    /// Fills in what the page asks for, with the built-in filling, until the sheet closes. `origin` is the origin of
+    /// the page that was filled last.
+    private func fillSteps(of page: InspectablePage, at origin: inout String) async throws {
         // A page asks for the user name alone, or for the password. Each page that follows has to ask for a later
         // step, so a sign-in fills in two pages at most.
         while true {
-            do {
-                var filled = try await device.run(
-                    .signIn(userName: login.userName, password: password, origin: origin), in: page)
-                // A page can keep its button disabled until it has looked at the fields.
-                let enabled = ContinuousClock.now + pace.button
-                while filled.submitted == nil, filled.awaitsSubmit, ContinuousClock.now < enabled {
-                    try await Task.sleep(for: pace.interval)
-                    filled = try await device.run(.submit(origin: origin), in: page)
-                }
-                // The page moved, or lost its form, between the scripts, it asks for a user name that the login does
-                // not have, or its button stayed disabled. What was filled in is cleared.
-                guard let submitted = filled.submitted else { throw Failure.unrecognizedPage(origin: filled.origin) }
-                let next = try await originOfNextStep(after: submitted, from: filled.document, of: page)
-                // The sheet closed.
-                guard let next else { return }
-                origin = next
-            } catch {
-                // What the sign-in put into the page does not stay there, also when its script failed part way or
-                // its answer was lost. A page that has moved on has dropped it already. The clearing has a task of
-                // its own: a sign-in that was cancelled, as by a tool that went away, runs no more script in its own.
-                await Task { [device, origin] in _ = try? await device.run(.clear(origin: origin), in: page) }.value
-                throw error
+            var filled = try await device.run(
+                .signIn(userName: login.userName, password: password, origin: origin), in: page)
+            // A page can keep its button disabled until it has looked at the fields.
+            let enabled = ContinuousClock.now + pace.button
+            while filled.submitted == nil, filled.awaitsSubmit, ContinuousClock.now < enabled {
+                try await Task.sleep(for: pace.interval)
+                filled = try await device.run(.submit(origin: origin), in: page)
             }
+            // The page moved, or lost its form, between the scripts, it asks for a user name that the login does not
+            // have, or its button stayed disabled. What was filled in is cleared.
+            guard let submitted = filled.submitted else { throw Failure.unrecognizedPage(origin: filled.origin) }
+            let next = try await originOfNextStep(after: submitted, from: filled.document, of: page)
+            // The sheet closed.
+            guard let next else { return }
+            origin = next
         }
+    }
+
+    /// Runs the login's own script in the pages of the sign-in until the sheet closes. `origin` is the origin of the
+    /// page that the script ran in last.
+    ///
+    /// The script runs once in each document at one of the login's origins. A page is told by its origin and path:
+    /// one that loads again after the script ran in it asks again, which ends the sign-in as rejected, so that a
+    /// login that a site refuses is not submitted over and over.
+    private func runOwnScript(in page: InspectablePage, at origin: inout String) async throws {
+        var deadline = ContinuousClock.now + pace.completion
+        var addresses: Set<String> = []
+        var document: String?
+        var last: SignInPageState?
+        var declinedSaving: ContinuousClock.Instant?
+        while true {
+            try await declineSavingPassword(in: page, tapped: &declinedSaving)
+            guard case .open(let state) = try await sheet(showing: page) else { return }
+            last = state ?? last
+            // A document that is still being read in does not have the elements that a script looks for.
+            if let state, isAllowed(state.origin), state.isLoaded, state.document != document {
+                guard !addresses.contains(state.origin + state.path) else { throw Failure.rejected }
+                origin = state.origin
+                let ran = try await device.run(
+                    .own(script: login.script, userName: login.userName, password: password, origin: state.origin),
+                    in: page)
+                // A page that moved to another origin between the two scripts did not run it, and is looked at again.
+                // The page that it ran in is the one that answers, which can be a later one at the same origin.
+                if ran.ranScript {
+                    addresses.insert(ran.origin + ran.path)
+                    document = ran.document
+                    deadline = ContinuousClock.now + pace.completion
+                }
+            }
+            guard ContinuousClock.now < deadline else { break }
+            try await Task.sleep(for: pace.interval)
+        }
+        guard let last, isAllowed(last.origin) else { throw Failure.unrecognizedPage(origin: last?.origin) }
+        throw Failure.timedOut
     }
 
     /// Waits for the sheet's sign-in page: accepts the system's consent alert on the way, and returns the page once it
@@ -315,7 +394,10 @@ package struct WebAuthenticationSignIn {
                         guard state.isVisible else { continue }
                         sawSheet = true
                         lastOrigin = state.origin
-                        if isAllowed(state.origin), state.step != nil { return (page, state.origin) }
+                        // The login's own script decides what a page asks for, once the page has been read in.
+                        if isAllowed(state.origin), login.webSignIn == .script ? state.isLoaded : state.step != nil {
+                            return (page, state.origin)
+                        }
                     }
                 } else if application.bundleIdentifier != Self.springBoard {
                     throw Failure.otherApplication(application.bundleIdentifier)
@@ -432,6 +514,37 @@ package struct WebAuthenticationSignIn {
         return decline.map { CGPoint(x: $0.midX / screen.width, y: $0.midY / screen.height) }
     }
 
+    /// What the sheet shows: its page's state, where the page answers, or nothing once it has closed.
+    private enum Sheet {
+        case closed
+        /// A page that is loading or closing may not answer.
+        case open(SignInPageState?)
+    }
+
+    private func sheet(showing page: InspectablePage) async throws -> Sheet {
+        let pages = try await device.pages()
+        let isListed = pages.contains { $0.application == page.application && $0.identifier == page.identifier }
+        let state = isListed ? try? await device.run(.state, in: page) : nil
+        guard !isListed || state?.isVisible == false else { return .open(state) }
+        // The sheet closed. Its page is also off the screen while another app is in front.
+        let application = try await device.frontmostApplication()
+        guard application?.bundleIdentifier == login.applicationIdentifier else {
+            throw Failure.otherApplication(application?.bundleIdentifier)
+        }
+        return .closed
+    }
+
+    /// Declines the sheet's offer to save the password, if it shows. The sheet offers that for a password that its form
+    /// submitted, and stays open until the offer is answered. An offer that is still coming up ignores a tap, and is
+    /// tapped again if it is still there after a pause.
+    private func declineSavingPassword(in page: InspectablePage, tapped: inout ContinuousClock.Instant?) async throws {
+        guard tapped.map({ ContinuousClock.now - $0 >= pace.tapAgain }) ?? true,
+            let decline = try await declineOfSavingPassword(in: page)
+        else { return }
+        try await device.tap(at: decline)
+        tapped = .now
+    }
+
     /// Waits for what follows a step that was submitted from the document that `document` names. Returns nil once the
     /// sheet has closed, and the page's origin once the page asks for a later step at one of the login's origins. The
     /// page that asks for a later step can be another document, at another of the login's origins.
@@ -442,26 +555,8 @@ package struct WebAuthenticationSignIn {
         var last: SignInPageState?
         var declinedSaving: ContinuousClock.Instant?
         while true {
-            // The sheet offers to save the password that its form submitted, and stays open until it is answered. An
-            // offer that is still coming up ignores a tap, and is tapped again if it is still there after a pause.
-            if submitted == .password, declinedSaving.map({ ContinuousClock.now - $0 >= pace.tapAgain }) ?? true,
-                let decline = try await declineOfSavingPassword(in: page)
-            {
-                try await device.tap(at: decline)
-                declinedSaving = .now
-            }
-            let pages = try await device.pages()
-            let isListed = pages.contains { $0.application == page.application && $0.identifier == page.identifier }
-            // A page that is loading or closing may not answer.
-            let state = isListed ? try? await device.run(.state, in: page) : nil
-            if !isListed || state?.isVisible == false {
-                // The sheet closed. Its page is also off the screen while another app is in front.
-                let application = try await device.frontmostApplication()
-                guard application?.bundleIdentifier == login.applicationIdentifier else {
-                    throw Failure.otherApplication(application?.bundleIdentifier)
-                }
-                return nil
-            }
+            if submitted == .password { try await declineSavingPassword(in: page, tapped: &declinedSaving) }
+            guard case .open(let state) = try await sheet(showing: page) else { return nil }
             last = state ?? last
             if let state, isAllowed(state.origin), let step = state.step {
                 if step > submitted { return state.origin }
