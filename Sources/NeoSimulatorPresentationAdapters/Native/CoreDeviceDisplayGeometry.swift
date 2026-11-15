@@ -674,7 +674,11 @@ package final class NativeCanvasProjection {
                 presentation.picture.moved(to: extent)
             }
             guard !presentation.picture.isMoving else {
-                if pointScale != presentation.pointScale { presentation.pointScale = pointScale }
+                // The device's size on another display does not wait for the picture.
+                if pointScale != presentation.pointScale {
+                    presentation.pointScale = pointScale
+                    presentation.onSizeChange?()
+                }
                 return
             }
         }
