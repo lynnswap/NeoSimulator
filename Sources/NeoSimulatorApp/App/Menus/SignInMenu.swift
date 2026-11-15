@@ -11,8 +11,6 @@ import NeoSimulatorUI
 @MainActor
 final class SignInMenu: NSMenu, NSMenuDelegate {
     private let logins: LoginStore
-    /// The sign-in that is running. The menu starts one at a time.
-    private var running: Task<Void, Never>?
 
     init(logins: LoginStore) {
         self.logins = logins
@@ -25,7 +23,7 @@ final class SignInMenu: NSMenu, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         removeAllItems()
-        let canSignIn = DeviceWindowController.keyDeviceWindow?.session.canPerformCommands == true && running == nil
+        let canSignIn = DeviceWindowController.keyDeviceWindow?.session.canPerformCommands == true
         var application: String?
         // The store keeps the logins by app and then by label.
         for login in logins.logins {
@@ -47,11 +45,10 @@ final class SignInMenu: NSMenu, NSMenuDelegate {
     }
 
     @objc private func signIn(_ sender: NSMenuItem) {
-        guard running == nil, let id = sender.representedObject as? SavedLogin.ID,
+        guard let id = sender.representedObject as? SavedLogin.ID,
             let controller = DeviceWindowController.keyDeviceWindow
         else { return }
-        running = Task { [logins] in
-            defer { running = nil }
+        Task { [logins] in
             do {
                 try await logins.signIn(with: id, on: controller.session)
             } catch {

@@ -27,6 +27,9 @@ struct SimulatorWebInspectorTests {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let socketPath = directory.appending(path: "s").path
             let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+            // The connections that it accepts take the option from it, also one whose client has already closed.
+            var on: Int32 = 1
+            setsockopt(listener, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             var address = sockaddr_un()
             address.sun_family = sa_family_t(AF_UNIX)
             withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(socketPath.utf8)) }

@@ -372,6 +372,10 @@ final class WebInspectorConnection {
         withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: path) }
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+        // Before the socket connects: the option is refused on a socket whose other end has closed, and a service that
+        // is ending closes a connection as soon as it takes it. Without the option, the next write would end the app.
+        var on: Int32 = 1
+        setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         let connected = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))

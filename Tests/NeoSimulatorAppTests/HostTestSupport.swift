@@ -609,6 +609,14 @@ final class TestDisplay: SimulatorDisplay {
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
     var trackpad: [Bool] = []
     func setTrackpadEnabled(_ enabled: Bool) { trackpad.append(enabled) }
+    /// What the display answers for the frontmost application. Without it the display reads none.
+    var frontmostApplication: (() async throws -> SimulatorAccessibilityElement?)?
+    func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement? {
+        guard let frontmostApplication else {
+            throw SimulatorError.unavailable("This display reads no accessibility elements.")
+        }
+        return try await frontmostApplication()
+    }
     var typed: [[TypedKey]] = []
     func type(_ keys: [TypedKey]) async throws { typed.append(keys) }
     var hardwareKeyboard: [Bool] = []

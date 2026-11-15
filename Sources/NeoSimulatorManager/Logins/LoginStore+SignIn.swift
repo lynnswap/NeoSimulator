@@ -6,8 +6,22 @@ extension LoginStore {
     /// Signs in to the web authentication session that `session`'s device shows, with the login that `id` names as
     /// the keychain holds it now. Throws what kept the sign-in from finishing, such as a
     /// ``WebAuthenticationSignIn/Failure``.
-    package func signIn(with id: SavedLogin.ID, on session: DeviceSession) async throws {
+    ///
+    /// One sign-in runs on a simulator at a time, whether the menu or the command-line tool asked for it: two would
+    /// fill and submit the same form, and each would clear what the other filled in.
+    ///
+    /// - Parameter automated: Whether a caller other than the person at the Mac asked. Such a sign-in uses only a
+    ///   login that allows it, as the keychain holds the login when the sign-in reads its password.
+    package func signIn(with id: SavedLogin.ID, on session: DeviceSession, automated: Bool = false) async throws {
+        let device = session.device.identifier
+        guard signingIn.insert(device).inserted else {
+            throw SignInRefusal("Another sign-in is running on this simulator.")
+        }
+        defer { signingIn.remove(device) }
         let (login, password) = try await credentials(for: id)
+        guard !automated || login.allowsAutomation else {
+            throw SignInRefusal("No login with this label allows automated use.")
+        }
         try await WebAuthenticationSignIn(device: SessionSignInDevice(session), login: login, password: password).run()
     }
 }

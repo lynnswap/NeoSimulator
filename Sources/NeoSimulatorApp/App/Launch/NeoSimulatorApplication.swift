@@ -1,4 +1,5 @@
 import AppKit
+import ArgumentParser
 import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
@@ -8,6 +9,11 @@ import NeoSimulatorManager
 /// Starts the NeoSimulator manager. Only the app's Xcode target calls this; it is not a supported API.
 @_spi(AppBootstrap) public enum NeoSimulatorApplication {
     @MainActor public static func main(makeLicenses: @escaping @MainActor () -> NSViewController) {
+        // Started with one of the command-line tool's commands, the executable asks the NeoSimulator that is running
+        // and exits. Other arguments, such as those that Xcode and AppKit pass, start the app.
+        if let command = CommandLine.arguments.dropFirst().first, NeoSimulatorCommand.launchArguments.contains(command) {
+            NeoSimulatorCommand.main()
+        }
         let app = NSApplication.shared
 #if DEBUG
         let environment = ProcessInfo.processInfo.environment
