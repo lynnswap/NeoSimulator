@@ -46,13 +46,14 @@ package final class LoginStore {
 
     /// Reads the logins from the keychain.
     package func reload() async {
-        do {
-            logins = try await inTurn { [keychain] in
-                try await performBlockingIO { try readLogins(from: keychain) }.sorted(by: Self.precedes)
+        // The read's result is taken in its turn too, so that a change that follows it is not undone by it.
+        try? await inTurn { [self, keychain] in
+            do {
+                logins = try await performBlockingIO { try readLogins(from: keychain) }.sorted(by: Self.precedes)
+                issue = nil
+            } catch {
+                issue = error.localizedDescription
             }
-            issue = nil
-        } catch {
-            issue = error.localizedDescription
         }
     }
 

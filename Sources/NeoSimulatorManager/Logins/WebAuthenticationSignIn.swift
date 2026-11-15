@@ -56,7 +56,7 @@ package enum SignInScript: Equatable, Sendable {
     case state
     /// Sets the user name and the password, and submits the form that holds the password field.
     case signIn(userName: String, password: String, origin: String)
-    /// Empties the fields that `signIn` set.
+    /// Empties the fields that `signIn` set in the page's document, which `signIn` noted there.
     case clear(origin: String)
 
     package var expression: String {
@@ -66,18 +66,25 @@ package enum SignInScript: Equatable, Sendable {
         case .signIn(let userName, let password, let origin):
             action = """
                 if (location.origin === \(Self.literal(origin)) && isVisible && password && password.form) {
-                  if (userName && \(Self.literal(userName)) !== '') set(userName, \(Self.literal(userName)));
+                  // The fields are noted before they are filled, so that they can be emptied whatever follows.
+                  window[filled] = userName && \(Self.literal(userName)) !== '' ? [userName, password] : [password];
+                  if (window[filled].length > 1) set(userName, \(Self.literal(userName)));
                   set(password, \(Self.literal(password)));
-                  const submit = Array.from(password.form.elements).find((e) => e.type === 'submit' && !e.disabled);
-                  password.form.requestSubmit(submit);
+                  // A control named `elements` or `requestSubmit` hides the form's own member of that name.
+                  const form = HTMLFormElement.prototype;
+                  const controls = Object.getOwnPropertyDescriptor(form, 'elements').get.call(password.form);
+                  const submit = Array.from(controls).find((e) => e.type === 'submit' && !e.disabled);
+                  // A click runs what the page does for its button, and then submits the form as a person's click does.
+                  if (submit) HTMLElement.prototype.click.call(submit); else form.requestSubmit.call(password.form);
                   submitted = true;
                 }
                 """
         case .clear(let origin):
             action = """
                 if (location.origin === \(Self.literal(origin))) {
-                  if (password) set(password, '');
-                  if (userName) set(userName, '');
+                  // A page that is submitting can have disabled or hidden the fields, which no longer take input.
+                  for (const field of window[filled] || []) set(field, '');
+                  delete window[filled];
                 }
                 """
         }
@@ -105,6 +112,7 @@ package enum SignInScript: Equatable, Sendable {
                 e.dispatchEvent(new Event('change', { bubbles: true }));
               };
               const isVisible = document.visibilityState === 'visible';
+              const filled = Symbol.for('dev.lynnswap.NeoSimulator.filled');
               let submitted = false;
               \(action)
               return {
@@ -186,13 +194,15 @@ package struct WebAuthenticationSignIn {
 
     package func run() async throws {
         let (page, origin) = try await signInPage()
-        let filled = try await device.run(.signIn(userName: login.userName, password: password, origin: origin), in: page)
-        // The page moved, or lost its form, between the two scripts. Nothing was filled.
-        guard filled.submitted else { throw Failure.unrecognizedPage(origin: filled.origin) }
         do {
+            let filled = try await device.run(
+                .signIn(userName: login.userName, password: password, origin: origin), in: page)
+            // The page moved, or lost its form, between the two scripts. Nothing was filled.
+            guard filled.submitted else { throw Failure.unrecognizedPage(origin: filled.origin) }
             try await completion(of: page, submitting: filled.document)
         } catch {
-            // What the sign-in put into the page does not stay there. A page that has moved on has dropped it already.
+            // What the sign-in put into the page does not stay there, also when its script failed part way or its
+            // answer was lost. A page that has moved on has dropped it already.
             _ = try? await device.run(.clear(origin: origin), in: page)
             throw error
         }
