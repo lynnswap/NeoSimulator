@@ -426,10 +426,16 @@ private struct AccessibilityMessages: @unchecked Sendable {
             on: device)
     }
 
-    /// A reader whose requests go to `device`, each waiting for its answer on the calling worker.
+    /// A reader for one read, whose requests go to `device` and wait for their answers on the calling worker. The read
+    /// has ``DeviceOperationLimit/accessibilityRead`` from now for all of its requests.
     func reader(for device: AnyObject) -> SimulatorAccessibilityReader {
-        SimulatorAccessibilityReader(
+        let limit = DeviceOperationLimit.accessibilityRead
+        let (seconds, attoseconds) = limit.components
+        let deadline = DispatchTime.now() + Double(seconds) + Double(attoseconds) / 1e18
+        let unanswered = DeviceOperationFailure.noAnswer(operation: "read the device's accessibility", limit: limit)
+        return SimulatorAccessibilityReader(
             send: { request, element, parameters in
+                guard DispatchTime.now() < deadline else { throw unanswered }
                 // A request about no element still carries a translation object, an empty one.
                 let translation = element ?? translationClass.init()
                 guard let message = try unsafe makeRequest.unsafeInvoke(on: requestClass, translation) else {
@@ -445,11 +451,7 @@ private struct AccessibilityMessages: @unchecked Sendable {
                     answered.signal()
                 }
                 try unsafe send.unsafeInvoke(on: device, message, Self.answers, completion)
-                let limit = DeviceOperationLimit.accessibilityRequest
-                let (seconds, attoseconds) = limit.components
-                guard answered.wait(timeout: .now() + Double(seconds) + Double(attoseconds) / 1e18) == .success else {
-                    throw DeviceOperationFailure.noAnswer(operation: "read the device's accessibility", limit: limit)
-                }
+                guard answered.wait(timeout: deadline) == .success else { throw unanswered }
                 guard let answer else { return nil }
                 return try unsafe resultData.unsafeInvoke(on: answer)
             },
