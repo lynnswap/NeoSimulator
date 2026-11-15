@@ -969,7 +969,33 @@ package final class DeviceSession {
         guard let standBy = display.standBy else { return try await toggleState(of: Self.standBy) }
         // The service holds this state, so the model takes it without a reading of the guest.
         defer { if !isDisconnected { model.update(showsStandBy: standBy.isPresented) } }
-        if standBy.isPresented { try standBy.dismiss() } else { try await standBy.present() }
+        guard !standBy.isPresented else { return try standBy.dismiss() }
+        // A service presents StandBy only over the lock screen, which the notification of other devices brings up itself.
+        try await lock()
+        try await standBy.present()
+    }
+
+    /// The guest's lock, which is 1 while the device is locked.
+    private static let lockState = "com.apple.springboard.lockstate"
+    private static let lockLimit = Duration.seconds(5)
+
+    /// Presses the lock button of a device that is not locked, and returns once the guest reports its lock.
+    private func lock() async throws {
+        guard try await !isLocked() else { return }
+        var pressFailure: (any Error)?
+        send(.press(.button(.lock))) { pressFailure = $0 }
+        let deadline = ContinuousClock.now + Self.lockLimit
+        while try await !isLocked() {
+            if let pressFailure { throw pressFailure }
+            guard ContinuousClock.now < deadline else {
+                throw SimulatorError.operation("\(device.name) did not lock, so it cannot show StandBy.")
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func isLocked() async throws -> Bool {
+        try await display.guestState(notifications: [Self.lockState], debugOptions: []).notifications[Self.lockState] == 1
     }
 
     /// Flips a guest notification's state between 0 and 1 and posts it, as one request.
