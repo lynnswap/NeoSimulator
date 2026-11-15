@@ -327,6 +327,9 @@ package final class SimulatorConnection: SimulatorDisplay {
     package func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement? {
         try await device.frontmostAccessibilityElements()
     }
+    package func accessibilityElement(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
+        try await device.accessibilityElement(at: point)
+    }
     package func webInspector() async throws -> SimulatorWebInspector { try await device.webInspector() }
 
     package func tap(at point: CGPoint) async throws {

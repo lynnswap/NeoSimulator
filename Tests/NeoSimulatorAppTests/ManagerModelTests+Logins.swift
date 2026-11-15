@@ -156,23 +156,40 @@ extension ManagerModelTests {
         return WebAuthenticationSignIn(device: device, login: premium, password: "s3cret", pace: pace)
     }
 
-    @Test func aSignInAcceptsItsSitesConsentFillsThePageAtItsOriginAndWaitsForTheSheetToClose() async throws {
-        let device = SignInFixture()
-        device.front = SignInFixture.consentAlert(naming: "login.example.com")
-        // The first tap reaches an alert that is still coming up, which ignores it.
-        device.onTap = {
-            guard device.taps.count == 2 else { return }
-            device.front = SignInFixture.application("com.example.app")
-            device.page = SignInPageState(origin: "https://login.example.com", hasPassword: true, document: "1")
+    @Test func aSignInAcceptsItsSitesConsentFillsThePageAtItsOriginAndDeclinesToSaveThePassword() async throws {
+        /// The taps of a sign-in whose sheet offers to save the password with `offer`'s buttons, and its scripts.
+        func signedIn(offering offer: [CGRect]) async throws -> SignInFixture {
+            let device = SignInFixture()
+            device.front = SignInFixture.consentAlert(naming: "login.example.com")
+            // The first tap reaches an alert that is still coming up, which ignores it.
+            device.onTap = {
+                switch device.taps.count {
+                case 2:
+                    device.front = SignInFixture.application("com.example.app")
+                    device.page = SignInPageState(origin: "https://login.example.com", hasPassword: true, document: "1")
+                case 3:
+                    // The sheet closes once its offer is answered.
+                    device.offer = []
+                    device.page = nil
+                default: break
+                }
+            }
+            device.onSubmit = { device.offer = offer }
+            try await signIn(on: device).run()
+            return device
         }
-        device.onSubmit = { device.page = nil }
-        try await signIn(on: device).run()
 
-        // The button that continues is the trailing one.
-        #expect(device.taps == [CGPoint(x: 0.75, y: 0.5), CGPoint(x: 0.75, y: 0.5)])
+        // The alert's trailing button continues. Of three stacked choices, the lowest declines.
+        let stacked = [400, 460, 520].map { CGRect(x: 50, y: $0, width: 300, height: 48) }
+        var device = try await signedIn(offering: stacked)
+        #expect(device.taps == [CGPoint(x: 0.75, y: 0.5), CGPoint(x: 0.75, y: 0.5), CGPoint(x: 0.5, y: 0.68)])
         #expect(
             device.scripts.filter { $0 != .state }
                 == [.signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com")])
+
+        // Of two choices side by side, the leading one declines.
+        device = try await signedIn(offering: [CGRect(x: 40, y: 520, width: 140, height: 48), CGRect(x: 220, y: 520, width: 140, height: 48)])
+        #expect(device.taps.last == CGPoint(x: 0.275, y: 0.68))
     }
 
     @Test func aSignInFillsNothingForAnotherAppAnotherSiteOrAPageThatIsOffTheScreen() async throws {
@@ -294,6 +311,13 @@ private final class SignInFixture: SignInDevice {
     }
 
     func frontmostApplication() async throws -> SimulatorAccessibilityElement? { front }
+
+    /// The buttons of the sheet's offer to save the password, while it shows. They belong to the sheet's process.
+    var offer: [CGRect] = []
+
+    func element(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
+        offer.first { $0.contains(point) }.map { SimulatorAccessibilityElement(role: .button, frame: $0, processIdentifier: 7) }
+    }
 
     func pages() async throws -> [InspectablePage] { page == nil ? [] : [Self.sheet] }
 

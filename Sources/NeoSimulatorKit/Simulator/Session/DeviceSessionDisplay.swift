@@ -51,6 +51,9 @@ package protocol DeviceSessionDisplay: AnyObject {
     /// The frontmost application of the integrated screen with its accessibility elements, as
     /// `SimulatorDevice.frontmostAccessibilityElements()` reads them. Throws for a display that reads none.
     func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement?
+    /// The accessibility element at `point` of the integrated screen, in points from its top-left corner, as
+    /// `SimulatorDevice.accessibilityElement(at:)` reads it. Throws for a display that reads none.
+    func accessibilityElement(at point: CGPoint) async throws -> SimulatorAccessibilityElement?
     /// A connection to the device's Web Inspector service. Throws for a device that has none.
     func webInspector() async throws -> SimulatorWebInspector
     /// Builds a remote touch message held until its end phase, for `send(_:completion:)`.
@@ -131,6 +134,9 @@ extension DeviceSessionDisplay {
         throw SimulatorError.unavailable("This display cannot connect to the app resizing screen.")
     }
     package func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement? {
+        throw SimulatorError.unavailable("This display reads no accessibility elements.")
+    }
+    package func accessibilityElement(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
         throw SimulatorError.unavailable("This display reads no accessibility elements.")
     }
     package func webInspector() async throws -> SimulatorWebInspector {

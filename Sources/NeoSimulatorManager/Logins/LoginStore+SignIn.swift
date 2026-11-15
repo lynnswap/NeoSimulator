@@ -32,6 +32,10 @@ private final class SessionSignInDevice: SignInDevice {
         try await session.display.frontmostAccessibilityElements()
     }
 
+    func element(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
+        try await session.display.accessibilityElement(at: point)
+    }
+
     func pages() async throws -> [InspectablePage] { try await connectedInspector().pages() }
 
     func run(_ script: SignInScript, in page: InspectablePage) async throws -> SignInPageState {

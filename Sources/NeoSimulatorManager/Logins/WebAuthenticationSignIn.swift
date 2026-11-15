@@ -7,6 +7,8 @@ import NeoSimulatorDeviceIO
 package protocol SignInDevice: AnyObject {
     /// The frontmost application with its accessibility elements, or nil while the device names none.
     func frontmostApplication() async throws -> SimulatorAccessibilityElement?
+    /// The accessibility element at a point of the screen, in points from its top-left corner.
+    func element(at point: CGPoint) async throws -> SimulatorAccessibilityElement?
     /// The web pages that the device's apps show.
     func pages() async throws -> [InspectablePage]
     func run(_ script: SignInScript, in page: InspectablePage) async throws -> SignInPageState
@@ -287,11 +289,61 @@ package struct WebAuthenticationSignIn {
         }
     }
 
+    /// Where to tap to decline, in the unit coordinates of a tap, if the sheet offers to save the password.
+    ///
+    /// The offer is in the device's language, and nothing in its elements names it. It is told by its choices: two or
+    /// three buttons of one size, each at least a quarter of the screen wide, that the sheet's own process puts over
+    /// the page. Measured on iOS 26.5 and 27.2, three choices are stacked with the one that declines lowest, and two
+    /// are side by side with the one that declines leading. Declining saves nothing and decides nothing for later.
+    private func declineOfSavingPassword(in page: InspectablePage) async throws -> CGPoint? {
+        // The service names the sheet's process by its process identifier, as in `PID:123`. The page's own elements
+        // belong to another process, which renders it.
+        guard let process = Int32(page.application.drop { !$0.isNumber }),
+            let application = try await device.frontmostApplication(),
+            application.bundleIdentifier == login.applicationIdentifier
+        else { return nil }
+        let screen = application.frame.size
+        var buttons: [CGRect] = []
+        var readsRightToLeft = false
+        for x in [0.25, 0.5, 0.75] {
+            for y in stride(from: 10.0, to: screen.height, by: 20) {
+                guard let element = try await device.element(at: CGPoint(x: screen.width * x, y: y)),
+                    element.processIdentifier == process
+                else { continue }
+                if element.role == .button {
+                    if element.frame.width >= screen.width / 4, !buttons.contains(element.frame) {
+                        buttons.append(element.frame)
+                    }
+                } else if let label = element.label, Self.isRightToLeft(label) {
+                    readsRightToLeft = true
+                }
+            }
+        }
+        let choices = buttons.filter { button in buttons.count { $0.size == button.size } > 1 }
+        guard choices.count > 1, choices.allSatisfy({ $0.size == choices[0].size }) else { return nil }
+        let isStacked = Set(choices.map(\.minY)).count > 1
+        let decline = choices.max { first, second in
+            if isStacked { return first.minY < second.minY }
+            // The leading choice is the leftmost, or the rightmost where the device reads from right to left.
+            return readsRightToLeft ? first.minX < second.minX : first.minX > second.minX
+        }
+        return decline.map { CGPoint(x: $0.midX / screen.width, y: $0.midY / screen.height) }
+    }
+
     /// Waits for the sheet to close after the form is submitted from the document that `document` names.
     private func completion(of page: InspectablePage, submitting document: String) async throws {
         let deadline = ContinuousClock.now + pace.completion
         var last: SignInPageState?
+        var declinedSaving: ContinuousClock.Instant?
         while true {
+            // The sheet offers to save the password that its form submitted, and stays open until it is answered. An
+            // offer that is still coming up ignores a tap, and is tapped again if it is still there after a pause.
+            if declinedSaving.map({ ContinuousClock.now - $0 >= pace.tapAgain }) ?? true,
+                let decline = try await declineOfSavingPassword(in: page)
+            {
+                try await device.tap(at: decline)
+                declinedSaving = .now
+            }
             let pages = try await device.pages()
             let isListed = pages.contains { $0.application == page.application && $0.identifier == page.identifier }
             // A page that is loading or closing may not answer.
