@@ -37,6 +37,8 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
     package var path: String
     /// Whether the login's own script ran in the page.
     package var ranScript: Bool
+    /// Whether the page's document has been read in, so that a script finds its elements.
+    package var isLoaded: Bool
 
     /// A step of a sign-in, which a page asks for in a form. The steps come in this order, and a page that asks for a
     /// step that does not come later asks again.
@@ -53,7 +55,7 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
 
     package init(
         origin: String, isVisible: Bool = true, step: Step?, submitted: Step? = nil, awaitsSubmit: Bool = false,
-        document: String = "", path: String = "/", ranScript: Bool = false
+        document: String = "", path: String = "/", ranScript: Bool = false, isLoaded: Bool = true
     ) {
         self.origin = origin
         self.isVisible = isVisible
@@ -63,6 +65,7 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
         self.document = document
         self.path = path
         self.ranScript = ranScript
+        self.isLoaded = isLoaded
     }
 }
 
@@ -126,7 +129,7 @@ package enum SignInScript: Equatable, Sendable {
                 """
         case .own(let script, let userName, let password, let origin):
             action = """
-                if (location.origin === \(Self.literal(origin)) && isVisible) {
+                if (location.origin === \(Self.literal(origin)) && isVisible && isLoaded) {
                   window[filled] = window[filled] || [];
                   const login = Object.freeze({ userName: \(Self.literal(userName)), password: \(Self.literal(password)) });
                   const fill = (element, value) => {
@@ -203,10 +206,11 @@ package enum SignInScript: Equatable, Sendable {
               const filled = Symbol.for('dev.lynnswap.NeoSimulator.filled');
               let submitted = null;
               let ranScript = false;
+              const isLoaded = document.readyState !== 'loading';
               \(action)
               return {
                 origin: location.origin, isVisible, step, submitted, awaitsSubmit: !!window[filled] && !submitted,
-                document: String(performance.timeOrigin), path: location.pathname, ranScript,
+                document: String(performance.timeOrigin), path: location.pathname, ranScript, isLoaded,
               };
             })()
             """
@@ -341,14 +345,17 @@ package struct WebAuthenticationSignIn {
             try await declineSavingPassword(in: page, tapped: &declinedSaving)
             guard case .open(let state) = try await sheet(showing: page) else { return }
             last = state ?? last
-            if let state, isAllowed(state.origin), state.document != document {
-                guard addresses.insert(state.origin + state.path).inserted else { throw Failure.rejected }
+            // A document that is still being read in does not have the elements that a script looks for.
+            if let state, isAllowed(state.origin), state.isLoaded, state.document != document {
+                guard !addresses.contains(state.origin + state.path) else { throw Failure.rejected }
                 origin = state.origin
                 let ran = try await device.run(
                     .own(script: login.script, userName: login.userName, password: password, origin: state.origin),
                     in: page)
-                // A page that moved between the two scripts did not run it, and is looked at again.
+                // A page that moved to another origin between the two scripts did not run it, and is looked at again.
+                // The page that it ran in is the one that answers, which can be a later one at the same origin.
                 if ran.ranScript {
+                    addresses.insert(ran.origin + ran.path)
                     document = ran.document
                     deadline = ContinuousClock.now + pace.completion
                 }
@@ -384,8 +391,8 @@ package struct WebAuthenticationSignIn {
                         guard state.isVisible else { continue }
                         sawSheet = true
                         lastOrigin = state.origin
-                        // The login's own script decides what a page asks for.
-                        if isAllowed(state.origin), login.webSignIn == .script || state.step != nil {
+                        // The login's own script decides what a page asks for, once the page has been read in.
+                        if isAllowed(state.origin), login.webSignIn == .script ? state.isLoaded : state.step != nil {
                             return (page, state.origin)
                         }
                     }
