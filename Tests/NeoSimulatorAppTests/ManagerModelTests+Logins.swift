@@ -1,4 +1,4 @@
-import CoreGraphics
+import AppKit
 import Foundation
 @testable import NeoSimulatorApp
 import NeoSimulatorDeviceIO
@@ -225,6 +225,25 @@ extension ManagerModelTests {
         let alert = SignInFixture.consentAlert(naming: "login.example.com", message: "يريد “App” استخدام “login.example.com”")
         let button = WebAuthenticationSignIn.consentButton(in: alert, hosts: ["login.example.com"])
         #expect(button?.frame.midX == 100)
+    }
+
+    @Test func theDeviceMenuListsTheSavedLoginsUnderTheirApps() async throws {
+        // The menu asks the app for its key window.
+        _ = NSApplication.shared
+        let store = LoginStore(keychain: InMemoryLoginKeychain())
+        let menu = SignInMenu(logins: store)
+        menu.menuNeedsUpdate(menu)
+        #expect(menu.items.map(\.title) == ["No Saved Logins"] && menu.items.allSatisfy { !$0.isEnabled })
+
+        for (application, label) in [("com.example.b", "Free"), ("com.example.a", "Premium"), ("com.example.a", "Free")] {
+            try await store.save(
+                SavedLogin(applicationIdentifier: application, label: label, userName: "", origins: []), password: "s3cret")
+        }
+        menu.menuNeedsUpdate(menu)
+        #expect(menu.items.map(\.title) == ["com.example.a", "Free", "Premium", "com.example.b", "Free"])
+        #expect(
+            menu.items.compactMap { $0.representedObject as? SavedLogin.ID }.map(\.applicationIdentifier)
+                == ["com.example.a", "com.example.a", "com.example.b"])
     }
 
     @Test func webOriginsReadASchemeAHostAndAPort() throws {

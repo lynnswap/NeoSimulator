@@ -137,6 +137,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.screens.setDeviceBezelsVisible(shows)
         }
         installMenu()
+        // The Device menu lists the logins. Settings reads them again whenever its pane opens.
+        Task { await model.logins.reload() }
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
         ) { [weak self] _ in
@@ -648,6 +650,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A remote screen and its frame can cover the canvas, whose context menu also offers this command.
         device.insertItem(NSMenuItem(title: "Choose Screen Source…",
             action: #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)), keyEquivalent: ""), at: 1)
+        device.addItem(.separator())
+        let signIn = NSMenuItem(title: "Sign In with Saved Login", action: nil, keyEquivalent: "")
+        signIn.submenu = SignInMenu(logins: model.logins)
+        device.addItem(signIn)
         let view = addSubmenu("View", to: main)
         addItem("Show Devices", action: #selector(showDevices(_:)), to: view)
         simulatorMenus.addScreenCommands(file: file, edit: edit, view: view)
