@@ -288,6 +288,9 @@ private struct GuestMessages: @unchecked Sendable {
     let setKeyboardLanguage: NativeObjCMethod<Void, String>
     /// The lookup:error: return is a Mach port, so its error slot must be passed explicitly.
     let lookup: NativeObjCMethod<UInt32, String, AutoreleasingUnsafeMutablePointer<NSError?>?>
+    /// The accessibility translator's messages, or why this Mac's frameworks do not have them. CoreSimulator links the
+    /// translator weakly, so the rest of a device works without it.
+    let accessibility: Result<AccessibilityMessages, any Error>
 
     @MainActor
     init(runtime: ABIRuntime, device: AnyClass, bootInfo: AnyClass) async throws {
@@ -369,6 +372,93 @@ private struct GuestMessages: @unchecked Sendable {
         lookup = try await runtime.resolve(
             .objc(.method("lookup:error:", as: ((String, AutoreleasingUnsafeMutablePointer<NSError?>?) -> UInt32).self)),
             on: device)
+        do { accessibility = .success(try await AccessibilityMessages(runtime: runtime, device: device)) }
+        catch { accessibility = .failure(error) }
+    }
+}
+
+/// Prepared messages of AccessibilityPlatformTranslation's requests, which a device's bridge worker sends through
+/// CoreSimulatorBridge to the guest's apps.
+private struct AccessibilityMessages: @unchecked Sendable {
+    typealias Completion = @convention(block) (AnyObject?) -> Void
+
+    private static let answers = DispatchQueue(label: "dev.lynnswap.NeoSimulator.device-accessibility")
+
+    /// `AXPTranslationObject`, which names an element of a guest process.
+    let translationClass: NSObject.Type
+    let requestClass: AnyClass
+    let makeRequest: NativeObjCMethod<AnyObject?, AnyObject?>
+    let setRequestType: NativeObjCMethod<Void, UInt64>
+    let setParameters: NativeObjCMethod<Void, NSDictionary>
+    let resultData: NativeObjCMethod<AnyObject?>
+    let processIdentifier: NativeObjCMethod<Int32>
+    let objectID: NativeObjCMethod<UInt64>
+    let send: NativeObjCMethod<Void, AnyObject, DispatchQueue, Completion>
+
+    @MainActor
+    init(runtime: ABIRuntime, device: AnyClass) async throws {
+        func requireClass(_ name: String) throws -> AnyClass {
+            guard let type = NSClassFromString(name) else {
+                throw DeviceIOError.unavailable("simulator-accessibility", "Required private class \(name) is unavailable")
+            }
+            return type
+        }
+        let translation: AnyClass = try requireClass("AXPTranslationObject")
+        guard let translationClass = translation as? NSObject.Type else {
+            throw DeviceIOError.unavailable("simulator-accessibility", "AXPTranslationObject is not an NSObject")
+        }
+        self.translationClass = translationClass
+        requestClass = try requireClass("AXPTranslatorRequest")
+        let response: AnyClass = try requireClass("AXPTranslatorResponse")
+        makeRequest = try await runtime.resolve(
+            .objc(.method("requestWithTranslation:", as: ((AnyObject?) -> AnyObject?).self)),
+            on: requestClass, classMethod: true)
+        setRequestType = try await runtime.resolve(
+            .objc(.method("setRequestType:", as: ((UInt64) -> Void).self)), on: requestClass)
+        setParameters = try await runtime.resolve(
+            .objc(.method("setParameters:", as: ((NSDictionary) -> Void).self)), on: requestClass)
+        resultData = try await runtime.resolve(.objc(.method("resultData", as: (() -> AnyObject?).self)), on: response)
+        processIdentifier = try await runtime.resolve(.objc(.method("pid", as: (() -> Int32).self)), on: translation)
+        objectID = try await runtime.resolve(.objc(.method("objectID", as: (() -> UInt64).self)), on: translation)
+        send = try await runtime.resolve(
+            .objc(.method("sendAccessibilityRequestAsync:completionQueue:completionHandler:",
+                as: ((AnyObject, DispatchQueue, @escaping Completion) -> Void).self)),
+            on: device)
+    }
+
+    /// A reader whose requests go to `device`, each waiting for its answer on the calling worker.
+    func reader(for device: AnyObject) -> SimulatorAccessibilityReader {
+        SimulatorAccessibilityReader(
+            send: { request, element, parameters in
+                // A request about no element still carries a translation object, an empty one.
+                let translation = element ?? translationClass.init()
+                guard let message = try unsafe makeRequest.unsafeInvoke(on: requestClass, translation) else {
+                    throw DeviceIOError.unavailable("simulator-accessibility", "The translator made no request")
+                }
+                try unsafe setRequestType.unsafeInvoke(on: message, request.rawValue)
+                try unsafe setParameters.unsafeInvoke(on: message, parameters as NSDictionary)
+                let answered = DispatchSemaphore(value: 0)
+                // Written before the signal and read only after it.
+                nonisolated(unsafe) var answer: AnyObject?
+                let completion: Completion = { response in
+                    answer = response
+                    answered.signal()
+                }
+                try unsafe send.unsafeInvoke(on: device, message, Self.answers, completion)
+                let limit = DeviceOperationLimit.accessibilityRequest
+                let (seconds, attoseconds) = limit.components
+                guard answered.wait(timeout: .now() + Double(seconds) + Double(attoseconds) / 1e18) == .success else {
+                    throw DeviceOperationFailure.noAnswer(operation: "read the device's accessibility", limit: limit)
+                }
+                guard let answer else { return nil }
+                return try unsafe resultData.unsafeInvoke(on: answer)
+            },
+            identity: { object in
+                guard object.isKind(of: translationClass) else { return nil }
+                return SimulatorAccessibilityReader.Identity(
+                    processIdentifier: try unsafe processIdentifier.unsafeInvoke(on: object),
+                    objectID: try unsafe objectID.unsafeInvoke(on: object))
+            })
     }
 }
 
@@ -900,6 +990,23 @@ package final class SimulatorDevice {
             let enabled = try !guest.debugOption(option)
             try unsafe guest.messages.setCADebugOption.unsafeInvoke(on: guest.device, option, enabled)
             return CADebugOptionChange(requested: enabled, observed: try guest.debugOption(option))
+        }
+    }
+
+    /// The frontmost application of the main display with its elements as VoiceOver reads them, which are the elements
+    /// accessible on the screen now. Nil if the guest names no application.
+    package func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement? {
+        try await startedBridge().read("read the device's accessibility") { [guest] in
+            try guest.messages.accessibility.get().reader(for: guest.device).frontmostApplication()
+        }
+    }
+
+    /// The element at `point` of the main display, in points from its top-left corner, in whichever process draws there.
+    /// It comes without its children. Nil if nothing accessible is there. Web content can answer with an element whose
+    /// frame does not contain the point, so a caller that needs the element under the point compares the frame.
+    package func accessibilityElement(at point: CGPoint) async throws -> SimulatorAccessibilityElement? {
+        try await startedBridge().read("read the device's accessibility") { [guest] in
+            try guest.messages.accessibility.get().reader(for: guest.device).element(at: point)
         }
     }
 

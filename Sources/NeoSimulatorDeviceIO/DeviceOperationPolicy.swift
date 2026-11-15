@@ -66,6 +66,9 @@ package enum DeviceOperationLimit {
     /// How long a guest service may take to create a HID service or send what a connection accepted.
     /// Closing the connection on the limit also ends what it created in the guest.
     package static let guestService: Duration = .seconds(10)
+    /// How long a read of a device's accessibility waits for the guest's answer to one of its requests. A read sends one
+    /// request for each element, and gives up at the first that goes unanswered.
+    package static let accessibilityRequest: Duration = .seconds(5)
     /// How long a request for an iCloud sync waits for CoreSimulator's completion, as long as a management operation.
     package static let cloudSync: Duration = .seconds(300)
     /// How long a command stopped by quitting may handle SIGTERM, and how long what it was part of then has to finish.
