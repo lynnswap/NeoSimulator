@@ -48,6 +48,11 @@ package protocol DeviceSessionDisplay: AnyObject {
     /// keys are sent; the guest acts on them after that. Throws when a key could not be sent, and for a display whose
     /// keys the app cannot send.
     func type(_ keys: [TypedKey]) async throws
+    /// The frontmost application of the integrated screen with its accessibility elements, as
+    /// `SimulatorDevice.frontmostAccessibilityElements()` reads them. Throws for a display that reads none.
+    func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement?
+    /// A connection to the device's Web Inspector service. Throws for a device that has none.
+    func webInspector() async throws -> SimulatorWebInspector
     /// Builds a remote touch message held until its end phase, for `send(_:completion:)`.
     func message(for touch: TVRemoteTouch) throws -> HIDMessage
     /// Sends a watch gesture. `completion` receives SimulatorKit's delivery
@@ -124,6 +129,12 @@ extension DeviceSessionDisplay {
     package func waitForGuestStartup() async throws {}
     package func connectAppDisplay(uniqueID: String) async throws -> any DeviceSessionDisplay {
         throw SimulatorError.unavailable("This display cannot connect to the app resizing screen.")
+    }
+    package func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement? {
+        throw SimulatorError.unavailable("This display reads no accessibility elements.")
+    }
+    package func webInspector() async throws -> SimulatorWebInspector {
+        throw SimulatorError.unavailable("This display's device has no Web Inspector service.")
     }
     package func tap(at point: CGPoint) async throws {
         throw SimulatorError.unavailable("This display takes no taps from the app.")

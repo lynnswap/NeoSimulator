@@ -324,6 +324,11 @@ package final class SimulatorConnection: SimulatorDisplay {
         if message.state == .down { simulatorKitButtonsDown.insert(message.input) } else { simulatorKitButtonsDown.remove(message.input) }
     }
 
+    package func frontmostAccessibilityElements() async throws -> SimulatorAccessibilityElement? {
+        try await device.frontmostAccessibilityElements()
+    }
+    package func webInspector() async throws -> SimulatorWebInspector { try await device.webInspector() }
+
     package func tap(at point: CGPoint) async throws {
         // The native touchscreen takes the screen's touches once the digitizer has handed them over. Before that, and
         // on a screen that keeps SimulatorKit's touches, a tap would have to be a mouse event in the window.
