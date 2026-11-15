@@ -609,22 +609,36 @@ package final class NativeCanvasProjection {
     private weak var hosting: NativeCanvasHostingView?
     private let presentation: NativeCanvasPresentation
     private let pointsPerInch: CGFloat?
+    private let findScreenLayers: @MainActor (NSView) -> [CALayer]
     private let readFrameMargin: @MainActor () async throws -> CGFloat?
     private var frameMargin: CGFloat?
     private var marginTask: Task<Void, Never>?
     private var layers: [CALayer] = []
     private var observations: [NSKeyValueObservation] = []
     private var rest: Task<Void, Never>?
+    /// What the screen layers last showed of the device, at whatever zoom DeviceKit had drawn it.
+    private var shown: CGRect?
     /// How long the scale and the screen layers must keep still before DeviceKit is asked for another picture, and
     /// before a picture that DeviceKit was moving counts as arrived.
     private static let restTime = Duration.milliseconds(150)
 
+    /// - Parameter screenLayers: Finds the layers that carry the screens' projected geometry in the hosted views.
     package init(hosting: NativeCanvasHostingView, presentation: NativeCanvasPresentation,
-                 pointsPerInch: CGFloat?, frameMargin: @escaping @MainActor () async throws -> CGFloat?) {
+                 pointsPerInch: CGFloat?, frameMargin: @escaping @MainActor () async throws -> CGFloat?,
+                 screenLayers: @escaping @MainActor (NSView) -> [CALayer] = NativeCanvasProjection.deviceKitScreenLayers) {
         self.hosting = hosting
         self.presentation = presentation
         self.pointsPerInch = pointsPerInch.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         readFrameMargin = frameMargin
+        findScreenLayers = screenLayers
+    }
+
+    /// The layers of DeviceKit's screens in a view's subtree.
+    package static func deviceKitScreenLayers(in view: NSView) -> [CALayer] {
+        if NSStringFromClass(type(of: view)).hasPrefix("_TtGC31CoreDevicePopDeviceKitExtension19ScreenLayerHostView") {
+            return view.subviews.compactMap(\.layer)
+        }
+        return view.subviews.flatMap { deviceKitScreenLayers(in: $0) }
     }
 
     isolated deinit {
@@ -634,17 +648,11 @@ package final class NativeCanvasProjection {
 
     package func update() {
         guard let hosting else { return }
-        func screenLayers(in view: NSView) -> [CALayer] {
-            if NSStringFromClass(type(of: view)).hasPrefix("_TtGC31CoreDevicePopDeviceKitExtension19ScreenLayerHostView") {
-                return view.subviews.compactMap(\.layer)
-            }
-            return view.subviews.flatMap { screenLayers(in: $0) }
-        }
-        let current = screenLayers(in: hosting)
+        let current = findScreenLayers(hosting)
         if current != layers {
             layers = current
             // A graph that DeviceKit rebuilt draws its device at the zoom it finds, without moving there.
-            presentation.picture.arrived()
+            changePicture { $0.arrived() }
             observations = current.flatMap { layer in
                 [layer.observe(\.transform) { @Sendable [weak self] _, _ in self?.invalidate() },
                  layer.observe(\.bounds) { @Sendable [weak self] _, _ in self?.invalidate() },
@@ -664,15 +672,19 @@ package final class NativeCanvasProjection {
         // Keep the complete canvas while its bezel is unknown. Frameless displays need no artwork,
         // and point conversion is independent of either measurement.
         let surface = Self.renderingSurface(in: hosting)?.bounds.size
-        if presentation.surfaceSize != surface { presentation.surfaceSize = surface }
         let pointScale = pointsPerInch.map { $0 / Self.hostDensity(on: screen) } ?? 1
-        defer { awaitRest() }
+        let shown = Self.viewport(for: current, frameMargin: frameMargin, showsChrome: presentation.showsChrome)
+        // SwiftUI lays the view out for each change of the picture, and each layout reads the layers again. Only a
+        // reading that differs puts off the rest, or a picture whose device changed its posture would never arrive.
+        if shown != self.shown || pointScale != presentation.pointScale || surface != presentation.surfaceSize {
+            self.shown = shown
+            awaitRest()
+        }
+        if presentation.surfaceSize != surface { presentation.surfaceSize = surface }
         if presentation.picture.isMoving {
             // DeviceKit is on its way to another zoom, so its layers show how far it has come, not what the device
             // covers. The viewport is read again when the picture arrives.
-            if let extent = Self.viewport(for: current, frameMargin: frameMargin, showsChrome: presentation.showsChrome)?.size {
-                presentation.picture.moved(to: extent)
-            }
+            if let extent = shown?.size { changePicture { $0.moved(to: extent) } }
             guard !presentation.picture.isMoving else {
                 // The device's size on another display does not wait for the picture.
                 if pointScale != presentation.pointScale {
@@ -718,7 +730,7 @@ package final class NativeCanvasProjection {
         guard let extent = Self.viewport(for: layers, frameMargin: frameMargin, showsChrome: presentation.showsChrome)?.size
         else { return }
         if presentation.picture.isMoving {
-            presentation.picture.rested(at: extent)
+            changePicture { $0.rested(at: extent) }
             // What the device covers in a picture that has arrived is read now.
             if !presentation.picture.isMoving { update() }
         }
@@ -726,6 +738,13 @@ package final class NativeCanvasProjection {
         let zoom = presentation.preferredZoom
         guard abs(zoom / presentation.picture.askedZoom - 1) > 0.02 else { return }
         presentation.picture.ask(for: zoom, from: extent)
+    }
+
+    /// Changes the picture where it differs. Every change of it has SwiftUI lay the view out again.
+    private func changePicture(_ change: (inout NativeCanvasPicture) -> Void) {
+        var picture = presentation.picture
+        change(&picture)
+        if picture != presentation.picture { presentation.picture = picture }
     }
 
     private func loadFrameMargin() {

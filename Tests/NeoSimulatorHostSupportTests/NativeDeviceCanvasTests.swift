@@ -157,6 +157,46 @@ struct NativeDeviceCanvasTests {
         #expect(picture.zoom == 2 && !picture.isMoving)
     }
 
+    /// DeviceKit reports each step of a turning or folding device through its screen layers, and the projection reads
+    /// them whenever its view is laid out.
+    @Test func pictureWhoseDeviceTurnsWhileDeviceKitZoomsArrivesOnceTheDeviceRests() async throws {
+        _ = NSApplication.shared
+        let surface = CALayer()
+        surface.bounds = CGRect(x: 0, y: 0, width: 2000, height: 2000)
+        let screen = CALayer()
+        screen.bounds = CGRect(x: 0, y: 0, width: 200, height: 400)
+        screen.position = CGPoint(x: 1000, y: 1000)
+        surface.addSublayer(screen)
+        let presentation = NativeCanvasPresentation()
+        let composition = ZoomedComposition(size: CGSize(width: 1200, height: 1000)) { Color.clear }
+        let hosting = NativeCanvasHostingView(rootView: AnyView(NativeCanvasRoot(
+            presentation: presentation, shown: AnyView(composition), hidden: AnyView(composition),
+            canvasPath: \.nativeCanvasTestFlag, zoomPath: \.nativeCanvasTestZoom)))
+        hosting.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.projection = NativeCanvasProjection(hosting: hosting, presentation: presentation, pointsPerInch: nil,
+                                                    frameMargin: { 0 }, screenLayers: { _ in [screen] })
+        hosting.layoutSubtreeIfNeeded()
+        func wait(for condition: @escaping @MainActor () -> Bool) async -> Bool {
+            let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                MainActor.assumeIsolated { condition() }
+            }, object: nil)
+            return await XCTWaiter.fulfillment(of: [expectation], timeout: 5) == .completed
+        }
+        try #require(await wait { presentation.viewport?.size == CGSize(width: 200, height: 400) })
+        presentation.magnification = 2
+        hosting.projection?.scaleChanged()
+        try #require(await wait { presentation.picture.askedZoom == 2 && presentation.picture.isMoving })
+        // DeviceKit has drawn the device at twice the size and turned it meanwhile.
+        screen.bounds = CGRect(x: 0, y: 0, width: 800, height: 400)
+        #expect(await wait { !presentation.picture.isMoving && presentation.viewport?.size == CGSize(width: 400, height: 200) },
+                "The picture is \(presentation.picture), of \(String(describing: presentation.viewport))")
+    }
+
     /// The canvas frames the host at the scaled composition; Fit often shrinks a device below its natural size.
     @Test func shrunkenCanvasPresentsTheMeasuredCompositionInItsHostFrame() async throws {
         _ = NSApplication.shared
