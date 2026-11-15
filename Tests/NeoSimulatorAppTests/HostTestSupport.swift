@@ -609,6 +609,8 @@ final class TestDisplay: SimulatorDisplay {
     func setKeyboardEnabled(_ enabled: Bool) { keyboard.append(enabled) }
     var trackpad: [Bool] = []
     func setTrackpadEnabled(_ enabled: Bool) { trackpad.append(enabled) }
+    var typed: [[TypedKey]] = []
+    func type(_ keys: [TypedKey]) async throws { typed.append(keys) }
     var hardwareKeyboard: [Bool] = []
     var keyboardLanguages: [String] = []
     var hardwareKeyboardError: Error?

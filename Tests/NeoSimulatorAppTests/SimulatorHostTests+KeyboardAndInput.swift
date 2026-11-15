@@ -1044,6 +1044,20 @@ extension SimulatorHostTests {
         window.endSheet(try #require(window.attachedSheet))
     }
 
+    @Test func theAppTypesWhatTheUSLayoutTypesWhileTheHardwareKeyboardIsConnected() async throws {
+        let preferences = MemoryPreferences()
+        let display = TestDisplay()
+        let session = try makeSession(display, device: "A", preferences: preferences)
+        try await session.type("b?\n")
+        #expect(display.typed == [[TypedKey(keyCode: 11), TypedKey(keyCode: 44, shift: true), TypedKey(keyCode: 36)]])
+        // A text with another character sends none of its keys.
+        await #expect(throws: SimulatorError.self) { try await session.type("pässword") }
+        // The guest takes no hardware keyboard's keys while the device's is disconnected.
+        preferences.setConnectsHardwareKeyboard(false, forDevice: "A")
+        await #expect(throws: SimulatorError.self) { try await session.type("b") }
+        #expect(display.typed.count == 1)
+    }
+
     @Test func connectingAppliesTheDevicesKeyboardChoiceAndTheMacsLanguage() async throws {
         func apply(_ preferences: MemoryPreferences, device: String = "A", language: String? = "ja",
                    failing display: TestDisplay = TestDisplay()) async throws -> (TestDisplay, [String]) {

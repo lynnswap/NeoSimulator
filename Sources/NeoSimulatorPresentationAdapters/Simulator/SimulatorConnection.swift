@@ -324,6 +324,25 @@ package final class SimulatorConnection: SimulatorDisplay {
         if message.state == .down { simulatorKitButtonsDown.insert(message.input) } else { simulatorKitButtonsDown.remove(message.input) }
     }
 
+    package func tap(at point: CGPoint) async throws {
+        // The native touchscreen takes the screen's touches once the digitizer has handed them over. Before that, and
+        // on a screen that keeps SimulatorKit's touches, a tap would have to be a mouse event in the window.
+        guard !disconnected, digitizerTouches != nil, let screenInput else {
+            throw SimulatorError.unavailable("The device's screen takes no taps from NeoSimulator.")
+        }
+        // As for a mouse press, the tap takes over from any trackpad gesture before it starts its own touch.
+        trackpad?.endGestures()
+        try await screenInput.tap(at: point)
+    }
+
+    package func type(_ keys: [TypedKey]) async throws {
+        // SimulatorKit's keyboard takes key events of the window, which the guest reads with the Mac keyboard's type.
+        guard !disconnected, let keyboard else {
+            throw SimulatorError.unavailable("The device's keyboard takes no typing from NeoSimulator.")
+        }
+        try await keyboard.type(keys)
+    }
+
     package func message(for touch: TVRemoteTouch) throws -> HIDMessage {
         HIDMessage(input: .tvRemoteTouch, state: touch.phase == .ended ? .up : .down,
                    pointer: try runtime.input.message(for: touch))

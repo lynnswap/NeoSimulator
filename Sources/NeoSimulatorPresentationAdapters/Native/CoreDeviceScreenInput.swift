@@ -776,6 +776,26 @@ package final class NativeDeviceScreenInput {
         }
     }
 
+    /// Taps at `point`, in the coordinates of `sendTouch`, after the input accepted before it: a touch that begins there
+    /// and ends there, held for as long as a quick finger holds one. Returns once both are sent, and throws what kept
+    /// either from being sent. Like the screen's other touches, a tap that was accepted is sent whatever becomes of its
+    /// caller, and the guest acts on it after it is sent.
+    package func tap(at point: CGPoint) async throws {
+        guard !isStopped else {
+            throw RemoteScreenError.unavailable("native-screen-input", "The device's screen input has stopped.")
+        }
+        // The tap is a pointer's touch, which keeps trackpad gestures out for as long as it is down.
+        hasPointerTouch = true
+        defer { hasPointerTouch = false }
+        try await enqueue { [input] in
+            try await input.send(.touch(point, nil, .began, .none))
+            try? await Task.sleep(for: Self.tapHold)
+            try await input.send(.touch(point, nil, .ended, .none))
+        }.value
+    }
+
+    private static let tapHold = Duration.milliseconds(60)
+
     /// Waits for accepted touches before their owner removes the guest HID services.
     package func waitForPendingInput() async { await lastOperation?.value }
 
