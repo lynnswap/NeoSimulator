@@ -146,27 +146,43 @@ struct NativeDeviceCanvasTests {
         #expect(presentation.scale == 3 && presentation.preferredZoom == 1.8)
     }
 
-    @Test func pictureThatDeviceKitMovesToAnotherZoomHasTheZoomThatTheDevicesExtentShows() {
+    @Test func pictureThatDeviceKitMovesToAnotherZoomHasArrivedWhenItRestsThere() {
         var picture = NativeCanvasPicture()
         picture.ask(for: 2, from: CGSize(width: 300, height: 400))
         #expect(picture.askedZoom == 2 && picture.zoom == 1 && picture.isMoving)
-        picture.moved(to: CGSize(width: 450, height: 600))
-        #expect(picture.zoom == 1.5 && picture.isMoving)
-        // DeviceKit does not move while its window is hidden. The picture is where it stopped, and goes on later.
+        // DeviceKit does not move while its window is hidden. The picture has stopped on its way, and goes on later.
         picture.rested(at: CGSize(width: 450, height: 600))
-        #expect(picture.zoom == 1.5 && picture.isMoving)
+        #expect(picture.zoom == 1 && picture.isMoving)
+        // It is asked elsewhere meanwhile.
+        picture.ask(for: 3, from: CGSize(width: 450, height: 600))
+        picture.rested(at: CGSize(width: 600, height: 800))
+        #expect(picture.isMoving)
         // The nearer parts of the device grow a little faster than the zoom.
-        picture.moved(to: CGSize(width: 603, height: 806))
+        picture.rested(at: CGSize(width: 905, height: 1209))
+        #expect(picture.zoom == 3 && !picture.isMoving)
+    }
+
+    @Test func pictureWhoseDeviceFoldsOnTheWayHasArrivedOnceItRests() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: CGSize(width: 300, height: 400))
+        // The device opens to twice its width while DeviceKit zooms, so its extent no longer shows the zoom.
+        picture.rested(at: CGSize(width: 1200, height: 800))
         #expect(picture.zoom == 2 && !picture.isMoving)
     }
 
-    @Test func pictureWhoseDeviceFoldsOnTheWayStaysInsideItsRoomAndHasArrivedOnceItRests() {
+    @Test func pictureWhoseDisplayChangesOnTheWayHasArrivedOnceItRests() {
         var picture = NativeCanvasPicture()
         picture.ask(for: 2, from: CGSize(width: 300, height: 400))
-        // The device opens to twice its width while DeviceKit zooms: its larger side shows how large it is.
-        picture.moved(to: CGSize(width: 1200, height: 800))
-        #expect(picture.zoom == 4 && picture.isMoving)
-        picture.rested(at: CGSize(width: 1200, height: 800))
+        // On a display of a lower density DeviceKit draws the device smaller at the same zoom, so twice the zoom
+        // looks like a picture that stopped on its way.
+        picture.loseExtent()
+        picture.rested(at: CGSize(width: 480, height: 640))
+        #expect(picture.zoom == 2 && !picture.isMoving)
+    }
+
+    @Test func pictureOfADeviceThatDeviceKitHasNotDrawnIsAtTheZoomItIsAskedFor() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: nil)
         #expect(picture.zoom == 2 && !picture.isMoving)
     }
 
