@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 @testable import NeoSimulatorDeviceIO
+import Synchronization
 import Testing
 
 @Suite(.timeLimit(.minutes(1)))
@@ -13,6 +14,21 @@ struct SimulatorWebInspectorTests {
         private let listener: Int32
         /// The selectors that a connection sent, in order, which end when its client closes it.
         private let arrivals: AsyncStream<String?>
+        /// The connection that the service answers now, which `send` also writes to.
+        private let current = Current()
+
+        private final class Current: @unchecked Sendable {
+            private let lock = NSLock()
+            private var connection: WebInspectorConnection?
+
+            func set(_ connection: WebInspectorConnection?) { lock.withLock { self.connection = connection } }
+            func send(_ selector: String, _ arguments: [String: Any]) throws {
+                try lock.withLock { try connection?.send(selector, arguments) }
+            }
+        }
+
+        /// Sends a message that no message of the client asked for.
+        func send(_ selector: String, _ arguments: [String: Any]) throws { try current.send(selector, arguments) }
 
         /// `answer` gets each message of a connection and sends what the service answers.
         /// With `closingFirstConnection`, the service ends its first connection at once, as one that is ending does.
@@ -37,6 +53,7 @@ struct SimulatorWebInspectorTests {
             self.socketPath = socketPath
             self.listener = listener
             self.arrivals = arrivals
+            let current = current
             Thread.detachNewThread {
                 var closesNext = closingFirstConnection
                 while true {
@@ -48,10 +65,12 @@ struct SimulatorWebInspectorTests {
                         continue
                     }
                     // The connection ends when its client closes it.
+                    current.set(connection)
                     while let message = try? connection.receive(until: .now + .seconds(30)) {
                         arrived.yield(message.selector)
-                        try? answer(message) { try connection.send($0, $1) }
+                        try? answer(message) { try current.send($0, $1) }
                     }
+                    current.set(nil)
                     arrived.yield(nil)
                 }
             }
@@ -206,6 +225,33 @@ struct SimulatorWebInspectorTests {
             }
         }
         #expect(await service.received().contains("_rpc_forwardSocketSetup:") == false)
+    }
+
+    @Test func aProcessThatReportsItselfLaterHasListedItsPagesWhenPagesReturn() async throws {
+        let listsPages = Mutex(true)
+        let service = try Service { message, reply in
+            switch message.selector {
+            case "_rpc_reportIdentifier:": try reply("_rpc_reportConnectedApplicationList:", [:])
+            case "_rpc_forwardGetListing:":
+                guard listsPages.withLock({ $0 }) else { break }
+                let page: [String: Any] = ["WIRPageIdentifierKey": 1, "WIRURLKey": "https://login.example.com/"]
+                try reply(
+                    "_rpc_applicationSentListing:",
+                    ["WIRApplicationIdentifierKey": "PID:2", "WIRListingKey": ["1": page]])
+            default: break
+            }
+        }
+        let inspector = SimulatorWebInspector(
+            socketPath: service.socketPath, startLimit: .seconds(5), answerLimit: .milliseconds(300))
+        #expect(try await inspector.pages().isEmpty)
+        // The process that shows a web authentication sheet starts with the sheet.
+        try service.send("_rpc_applicationConnected:", ["WIRApplicationIdentifierKey": "PID:2"])
+        #expect(try await inspector.pages() == [page])
+
+        // A process that reports itself and lists nothing leaves the pages unknown.
+        listsPages.withLock { $0 = false }
+        try service.send("_rpc_applicationConnected:", ["WIRApplicationIdentifierKey": "PID:3"])
+        await #expect(throws: DeviceOperationFailure.self) { try await inspector.pages() }
     }
 
     @Test func aConnectionThatAnEndingServiceClosesIsMadeAgain() async throws {

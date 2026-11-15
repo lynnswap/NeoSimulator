@@ -69,14 +69,34 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     private var applications: [String: String?] = [:]
     private var listings: [String: [InspectablePage]] = [:]
 
-    package init(socketPath: String) { self.socketPath = socketPath }
+    /// How long the service has for its first answer, and how long it then has for the answers to one request.
+    private let startLimit: Duration
+    private let answerLimit: Duration
 
-    /// The pages that the device's apps show now.
+    package init(
+        socketPath: String, startLimit: Duration = DeviceOperationLimit.webInspectorStart,
+        answerLimit: Duration = DeviceOperationLimit.webInspector
+    ) {
+        self.socketPath = socketPath
+        self.startLimit = startLimit
+        self.answerLimit = answerLimit
+    }
+
+    /// The pages that the device's apps show now: those of every process that has reported itself to the service.
     package func pages() async throws -> [InspectablePage] {
         try await onQueue { inspector in
+            let isNew = inspector.connection == nil
             let connection = try inspector.connected()
-            // The service reports each change of a page as it happens, so what has arrived is what there is.
-            while try inspector.next(from: connection, before: .now) != nil {}
+            let deadline = ContinuousClock.now + inspector.answerLimit
+            while true {
+                let isWaiting = inspector.applications.keys.contains { inspector.listings[$0] == nil }
+                // Processes report themselves to a new connection one after another, so it waits until they are quiet.
+                // After that the service reports each change as it happens, and what has arrived is what there is.
+                let quiet = isNew ? min(deadline, .now + .milliseconds(300)) : .now
+                if try inspector.next(from: connection, before: isWaiting ? deadline : quiet) != nil { continue }
+                guard !isWaiting else { throw Self.noAnswer(inspector.answerLimit) }
+                break
+            }
             return inspector.listings.values.flatMap(\.self).sorted {
                 ($0.application, $0.identifier) < ($1.application, $1.identifier)
             }
@@ -117,31 +137,22 @@ package final class SimulatorWebInspector: @unchecked Sendable {
         .noAnswer(operation: "ask the device's Web Inspector", limit: limit)
     }
 
-    /// The connection, opened if it is not: the service has answered on it, and the processes that reported
-    /// themselves have listed their pages.
+    /// The connection, opened if it is not.
     private func connected() throws -> WebInspectorConnection {
         if let connection { return connection }
-        let limit = DeviceOperationLimit.webInspectorStart
-        let deadline = ContinuousClock.now + limit
-        let connection = try open(until: deadline, limit: limit)
+        let connection = try open(until: .now + startLimit)
         self.connection = connection
-        // Processes report themselves one after another.
-        while true {
-            let quiet = ContinuousClock.now + .milliseconds(300)
-            if try next(from: connection, before: min(quiet, deadline)) != nil { continue }
-            if ContinuousClock.now >= deadline || applications.keys.allSatisfy({ listings[$0] != nil }) { break }
-        }
         return connection
     }
 
     /// Connects and waits for the service's first answer.
-    private func open(until deadline: ContinuousClock.Instant, limit: Duration) throws -> WebInspectorConnection {
+    private func open(until deadline: ContinuousClock.Instant) throws -> WebInspectorConnection {
         while true {
-            guard ContinuousClock.now < deadline else { throw Self.noAnswer(limit) }
+            guard ContinuousClock.now < deadline else { throw Self.noAnswer(startLimit) }
             let attempt = try WebInspectorConnection(socketPath: socketPath)
             do {
                 try attempt.send("_rpc_reportIdentifier:", [:])
-                guard let first = try attempt.receive(until: deadline) else { throw Self.noAnswer(limit) }
+                guard let first = try attempt.receive(until: deadline) else { throw Self.noAnswer(startLimit) }
                 try take(first, from: attempt)
                 return attempt
             } catch WebInspectorFailure.disconnected {
@@ -207,13 +218,16 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     /// Evaluates `expression` in `page` and returns its value as JSON.
     private func evaluate(_ expression: String, in page: InspectablePage) throws -> Data {
         let connection = try connected()
-        let limit = DeviceOperationLimit.webInspector
-        let deadline = ContinuousClock.now + limit
+        let deadline = ContinuousClock.now + answerLimit
         func awaited() throws -> WebInspectorConnection.Message {
-            guard let message = try next(from: connection, before: deadline) else { throw Self.noAnswer(limit) }
+            guard let message = try next(from: connection, before: deadline) else { throw Self.noAnswer(answerLimit) }
             return message
         }
         while try next(from: connection, before: .now) != nil {}
+        // On a connection that has not listed pages yet, the page's process has still to report itself.
+        while listings[page.application] == nil {
+            guard try next(from: connection, before: deadline) != nil else { throw WebInspectorFailure.pageGone }
+        }
         guard let listed = listings[page.application]?.first(where: { $0.identifier == page.identifier }) else {
             throw WebInspectorFailure.pageGone
         }
