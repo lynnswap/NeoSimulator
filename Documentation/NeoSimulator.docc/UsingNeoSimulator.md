@@ -303,8 +303,10 @@ that you saved, so that neither you nor a coding agent has to type it.
 Save a login in **Settings → Logins**: the app's bundle identifier, a label, the user name and password, and the web
 origins of the sign-in page. Start the sign-in in the app, then choose the login in **Device → Sign In with Saved
 Login**. Neo answers the system's question for the login's site, fills the user name and password fields that the
-page's form declares, submits the form, and waits for the sheet to close. It fills nothing for another app, on an
-origin that the login does not list, or on a page that has no form with a password field and a button to submit it.
+page's form declares, submits the form, and waits for the sheet to close. Where a site asks for the user name first,
+Neo goes on to the page that asks for the password, which can be on another of the login's origins. It fills nothing
+for another app, on an origin that the login does not list, or on a page that has no form that asks for the user name
+or the password with a button to submit it.
 
 A coding agent asks for the same sign-in with the app's own executable, which works as a command-line tool when it
 is started with a command:
