@@ -993,9 +993,10 @@ package final class DeviceSession {
             if let failure { throw failure }
             // The button stays down until its release is delivered.
             if downInputs[button] == nil {
+                let presses = lastDownGeneration
                 let locked = try await isLocked()
-                // The read suspended, and the button can have gone down meanwhile.
-                guard downInputs[button] == nil else { continue }
+                // The read suspended, and a press meanwhile, such as the Lock command's, can have changed what it read.
+                guard downInputs[button] == nil, lastDownGeneration == presses else { continue }
                 if locked { return }
                 if !pressed {
                     pressed = true
