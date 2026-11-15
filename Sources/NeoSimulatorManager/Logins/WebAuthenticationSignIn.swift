@@ -54,7 +54,9 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
 /// so the page cannot move between them.
 package enum SignInScript: Equatable, Sendable {
     case state
-    /// Sets the user name and the password, and submits the form that holds the password field.
+    /// Sets the user name and the password, and submits the form that holds the password field. It fills nothing in a
+    /// form without a submit control: submitting such a form would run its default action, which the page does not use,
+    /// and which can put the fields into a URL.
     case signIn(userName: String, password: String, origin: String)
     /// Empties the fields that `signIn` set in the page's document, which `signIn` noted there.
     case clear(origin: String)
@@ -65,20 +67,23 @@ package enum SignInScript: Equatable, Sendable {
         case .state: action = ""
         case .signIn(let userName, let password, let origin):
             action = """
-                if (location.origin === \(Self.literal(origin)) && isVisible && password && password.form) {
+                // A control named `elements` or `requestSubmit` hides the form's own member of that name.
+                const form = HTMLFormElement.prototype;
+                const controls = password && password.form
+                  ? Array.from(Object.getOwnPropertyDescriptor(form, 'elements').get.call(password.form)) : [];
+                const submits = controls.filter((e) => e.type === 'submit' && !e.disabled);
+                if (location.origin === \(Self.literal(origin)) && isVisible && submits.length > 0) {
                   // The fields are noted before they are filled, so that they can be emptied whatever follows.
                   window[filled] = userName && \(Self.literal(userName)) !== '' ? [userName, password] : [password];
                   if (window[filled].length > 1) set(userName, \(Self.literal(userName)));
                   set(password, \(Self.literal(password)));
-                  // A control named `elements` or `requestSubmit` hides the form's own member of that name.
-                  const form = HTMLFormElement.prototype;
-                  const controls = Object.getOwnPropertyDescriptor(form, 'elements').get.call(password.form);
-                  // The form's button is the one a person would press after the password: the next that shows.
-                  const submits = Array.from(controls).filter((e) => e.type === 'submit' && takesInput(e));
+                  // The form's button is the one a person would press after the password: the next that shows. A
+                  // click runs what the page does for its button, and then submits the form as a person's click does.
+                  const shown = submits.filter(takesInput);
                   const follows = (e) => password.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING;
-                  const submit = submits.find(follows) || submits[0];
-                  // A click runs what the page does for its button, and then submits the form as a person's click does.
-                  if (submit) HTMLElement.prototype.click.call(submit); else form.requestSubmit.call(password.form);
+                  const press = shown.find(follows) || shown[0];
+                  // A form whose only submit control is hidden is submitted with Return, which names that control.
+                  if (press) HTMLElement.prototype.click.call(press); else form.requestSubmit.call(password.form, submits[0]);
                   submitted = true;
                 }
                 """
@@ -144,7 +149,8 @@ package struct WebAuthenticationSignIn {
         case otherApplication(String?)
         /// The app showed no web authentication sheet in time.
         case noSheet
-        /// The sheet's page is not at one of the login's origins, or shows no form that takes a password to sign in.
+        /// The sheet's page is not at one of the login's origins, or has no form with a password field and a control
+        /// that submits it.
         case unrecognizedPage(origin: String?)
         /// The page asked for the password again.
         case rejected
@@ -158,7 +164,7 @@ package struct WebAuthenticationSignIn {
             case .noSheet: "The app showed no web sign-in sheet. Start the sign-in in the app, then choose the login."
             case .unrecognizedPage(let origin?):
                 "The page at \(origin) is not a sign-in page of the login: it is not at one of the login’s origins, "
-                    + "or it shows no form with a password field."
+                    + "or it has no form with a password field and a button that submits it."
             case .unrecognizedPage(nil): "The web sign-in sheet shows no page that the login can sign in to."
             case .rejected: "The page asked for the password again. It may have rejected the login."
             case .timedOut: "The sign-in did not finish in time."
