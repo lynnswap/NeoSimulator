@@ -197,7 +197,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     package var inputView: NSView { nativeCanvas?.inputView ?? plugin?.overlayView ?? digitizerView ?? view }
 
     package var deviceFrame: NSRect {
-        guard nativeCanvas == nil else { return view.bounds }
+        if let nativeCanvas { return nativeCanvas.deviceFrame }
         if chromePadding != nil {
             // SimDisplayView also reserves space for hardware buttons outside the device artwork.
             guard let artwork = chromeView?.subviews.first(where: {
@@ -209,7 +209,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     }
 
     package var framebufferFrame: NSRect {
-        guard nativeCanvas == nil else { return view.bounds }
+        if let nativeCanvas { return nativeCanvas.deviceFrame }
         return read("measure the displayed screen", otherwise: view.bounds) {
             let framebuffer = try unsafe runtime.display.renderableView.unsafeInvoke(on: view)
             return view.convert(framebuffer.bounds, from: framebuffer)
@@ -265,6 +265,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     }
 
     package func setCanvasMagnification(_ magnification: CGFloat?) { nativeCanvas?.setMagnification(magnification) }
+    package var canvasOutset: CGFloat { nativeCanvas?.canvasOutset ?? 0 }
 
     package func size(for scale: CGFloat) -> NSSize {
         if let nativeCanvas { return NSSize(width: nativeCanvas.naturalSize.width * scale, height: nativeCanvas.naturalSize.height * scale) }
