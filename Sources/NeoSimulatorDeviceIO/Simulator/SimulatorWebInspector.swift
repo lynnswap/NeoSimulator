@@ -85,7 +85,7 @@ package final class SimulatorWebInspector: @unchecked Sendable {
 
     /// The pages that the device's apps show now: those of every process that has reported itself to the service.
     package func pages() async throws -> [InspectablePage] {
-        try await onQueue { inspector in
+        try await onQueue { inspector, _ in
             let isNew = inspector.connection == nil
             let connection = try inspector.connected()
             let deadline = ContinuousClock.now + inspector.answerLimit
@@ -110,21 +110,24 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     package func evaluate<Value: Decodable & Sendable>(
         _ expression: String, in page: InspectablePage, as type: Value.Type = Value.self
     ) async throws -> Value {
-        let value = try await onQueue { try $0.evaluate(expression, in: page) }
+        let value = try await onQueue { try $0.evaluate(expression, in: page, checkCancellation: $1) }
         return try JSONDecoder().decode(Value.self, from: value)
     }
 
     private func onQueue<Value: Sendable>(
-        _ work: @escaping @Sendable (SimulatorWebInspector) throws -> Value
+        _ work: @escaping @Sendable (SimulatorWebInspector, _ checkCancellation: () throws -> Void) throws -> Value
     ) async throws -> Value {
-        // A request whose caller gave up while it waited for the queue does not start: its script would still run.
+        // A request whose caller gave up does not start, and does not go on to send its script.
         let isCancelled = Mutex(false)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     do {
-                        if isCancelled.withLock({ $0 }) { throw CancellationError() }
-                        continuation.resume(returning: try work(self))
+                        func checkCancellation() throws {
+                            if isCancelled.withLock({ $0 }) { throw CancellationError() }
+                        }
+                        try checkCancellation()
+                        continuation.resume(returning: try work(self, checkCancellation))
                     } catch {
                         // The next request starts over with a new connection.
                         if error as? WebInspectorFailure == .disconnected { self.forgetConnection() }
@@ -228,7 +231,9 @@ package final class SimulatorWebInspector: @unchecked Sendable {
     }
 
     /// Evaluates `expression` in `page` and returns its value as JSON.
-    private func evaluate(_ expression: String, in page: InspectablePage) throws -> Data {
+    private func evaluate(
+        _ expression: String, in page: InspectablePage, checkCancellation: () throws -> Void
+    ) throws -> Data {
         let connection = try connected()
         let deadline = ContinuousClock.now + answerLimit
         // Messages that keep arriving do not extend the request's time.
@@ -282,6 +287,8 @@ package final class SimulatorWebInspector: @unchecked Sendable {
                 "message": String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self),
             ],
         ]
+        // Up to here the page is unchanged. A caller that gave up while the service started does not get its script run.
+        try checkCancellation()
         try connection.send(
             "_rpc_forwardSocketData:",
             route.merging(["WIRSocketDataKey": try JSONSerialization.data(withJSONObject: forwarded)]) { $1 })
@@ -378,6 +385,7 @@ final class WebInspectorConnection {
 
     /// The next message, or nil if none arrives before `deadline`.
     func receive(until deadline: ContinuousClock.Instant) throws -> Message? {
+        var readAfterDeadline = false
         while true {
             if received.count >= 4 {
                 let length = Int(received.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
@@ -391,8 +399,9 @@ final class WebInspectorConnection {
                     return Message(selector: selector, arguments: message["__argument"] as? [String: Any] ?? [:])
                 }
             }
-            // A deadline that has passed still takes what has already arrived.
+            // A deadline that has passed still takes what has already arrived, in one read.
             let remaining = deadline - .now
+            guard remaining > .zero || !readAfterDeadline else { return nil }
             let (seconds, attoseconds) = remaining.components
             let milliseconds = remaining > .zero ? max(1, seconds * 1000 + attoseconds / 1_000_000_000_000_000) : 0
             var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
@@ -402,6 +411,7 @@ final class WebInspectorConnection {
                 if remaining > .zero { continue }
                 return nil
             }
+            if remaining <= .zero { readAfterDeadline = true }
             var chunk = [UInt8](repeating: 0, count: 65536)
             let count = read(descriptor, &chunk, chunk.count)
             if count < 0, errno == EINTR { continue }
