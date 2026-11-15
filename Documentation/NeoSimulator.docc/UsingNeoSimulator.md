@@ -43,6 +43,10 @@ in its preview or device menu. Unlock it and approve trust on the device if aske
 enter a pairing code in Neo only when the device requests one. Cancel closes the
 instructions and requests cancellation; **Pair** becomes available again when the
 previous attempt finishes. Trust already approved on the device may still take effect.
+To pair a device that the list does not show yet, choose **Pair…** in
+**Settings → Devices**. Neo presents DeviceKit's pairing sheet, as Device Hub's
+Add button does: the Mac advertises itself while the sheet is open, and the
+device starts pairing from Developer Mode in its Privacy & Security settings.
 After pairing, choose **View Screen**. Neo selects this
 stream when the device reports support; no screen-source choice or Camera
 permission is needed.
