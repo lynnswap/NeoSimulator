@@ -101,15 +101,17 @@ package enum SignInScript: Equatable, Sendable {
                     window[filled].push(password);
                     set(password, \(Self.literal(password)));
                   }
-                  if (press()) submitted = step;
+                  if (press(asked)) submitted = step;
                 }
                 """
         case .submit(let origin):
             action = """
-                // Only the form that was filled in is submitted: a page can have put another in its place.
-                if (location.origin === \(Self.literal(origin)) && isVisible && step
-                    && (window[filled] || []).includes(asked) && press()) {
-                  submitted = step;
+                // The form that was filled in is submitted, by the field that was noted last: a page can have put
+                // another form in its place, and can have disabled the field while it looks at it.
+                const noted = (window[filled] || []).filter((e) => e.isConnected);
+                const last = noted[noted.length - 1];
+                if (location.origin === \(Self.literal(origin)) && isVisible && last && press(last)) {
+                  submitted = last.type === 'password' ? 'password' : 'userName';
                 }
                 """
         case .clear(let origin):
@@ -129,43 +131,44 @@ package enum SignInScript: Equatable, Sendable {
               };
               const tokens = (e) => (e.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
               const inputs = Array.from(document.querySelectorAll('input')).filter(takesInput);
-              const passwords = inputs.filter((e) => e.type === 'password' && !tokens(e).includes('new-password'));
-              const password = passwords.find((e) => tokens(e).includes('current-password')) || passwords[0] || null;
-              const texts = inputs.filter((e) => ['text', 'email', 'tel'].includes(e.type));
-              const named = (e) => /user|login|email|account/i.test(e.name + ' ' + e.id);
-              const isEmail = (e) => e.type === 'email' || tokens(e).includes('email');
-              // The controls that submit a form. A control named `elements` or `requestSubmit` hides the form's own
-              // member of that name.
+              // The controls that submit a field's form. A control named `elements` or `requestSubmit` hides the form's
+              // own member of that name.
               const form = HTMLFormElement.prototype;
               const controlsOf = (e) => e && e.form
                 ? Array.from(Object.getOwnPropertyDescriptor(form, 'elements').get.call(e.form)) : [];
               const submitsOf = (e) => controlsOf(e).filter((control) => control.type === 'submit');
+              // A field counts where its form can be submitted.
+              const fields = inputs.filter((e) => submitsOf(e).length > 0);
+              const passwords = fields.filter((e) => e.type === 'password' && !tokens(e).includes('new-password'));
+              const password = passwords.find((e) => tokens(e).includes('current-password')) || passwords[0] || null;
+              const texts = fields.filter((e) => ['text', 'email', 'tel'].includes(e.type));
+              const named = (e) => /user|login|email|account/i.test(e.name + ' ' + e.id);
+              const isEmail = (e) => e.type === 'email' || tokens(e).includes('email');
               // Beside a password field, the field before it is the user name's. Alone, a field has to say so itself,
-              // and the first that does in a form that can be submitted is taken: a page's other forms come after
-              // the one that signs in. A form that asks for a new password registers an account or changes one.
+              // and the first that does is taken: a page's other forms come after the one that signs in. A form that
+              // asks for a new password registers an account or changes one.
               const beside = password ? texts.filter((e) => e.form === password.form) : [];
               const before = beside.filter((e) => e.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING);
               const asksNewPassword = (e) => controlsOf(e).some((control) => tokens(control).includes('new-password'));
-              const alone = texts.filter((e) => submitsOf(e).length > 0 && !asksNewPassword(e));
+              const alone = texts.filter((e) => !asksNewPassword(e));
               const userName = password
                 ? beside.find((e) => tokens(e).includes('username')) || before.find(isEmail)
                   || before.filter(named).pop() || before[before.length - 1] || null
                 : alone.find((e) => tokens(e).includes('username') || isEmail(e) || named(e)) || null;
               // The field that the page asks for.
               const asked = password || userName;
-              const submits = submitsOf(asked);
-              const step = submits.length === 0 ? null : password ? 'password' : 'userName';
-              // Presses the form's button: the one a person would press after the field, which is the next that shows.
-              // A click runs what the page does for its button, and then submits the form as a person's click does.
-              // A form whose only submit control is hidden is submitted with Return, which names that control. A
-              // button that the page keeps disabled until it has looked at the fields is not pressed yet.
-              const press = () => {
-                const enabled = submits.filter((e) => !e.disabled);
+              const step = !asked ? null : password ? 'password' : 'userName';
+              // Presses the button of a field's form: the one a person would press after the field, which is the next
+              // that shows. A click runs what the page does for its button, and then submits the form as a person's
+              // click does. A form whose only submit control is hidden is submitted with Return, which names that
+              // control. A button that the page keeps disabled until it has looked at the fields is not pressed yet.
+              const press = (field) => {
+                const enabled = submitsOf(field).filter((e) => !e.disabled);
                 if (enabled.length === 0) return false;
                 const shown = enabled.filter(takesInput);
-                const follows = (e) => asked.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING;
+                const follows = (e) => field.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING;
                 const button = shown.find(follows) || shown[0];
-                if (button) HTMLElement.prototype.click.call(button); else form.requestSubmit.call(asked.form, enabled[0]);
+                if (button) HTMLElement.prototype.click.call(button); else form.requestSubmit.call(field.form, enabled[0]);
                 return true;
               };
               const set = (e, value) => {
