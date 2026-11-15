@@ -117,6 +117,22 @@ struct NativeDeviceCanvasTests {
         }
     }
 
+    @Test func deviceKitDrawsTheDeviceAtTheAppsScaleBetweenItsPhysicalSizeAndItsRenderingSurface() {
+        let presentation = NativeCanvasPresentation()
+        presentation.viewport = CGRect(x: -400, y: -500, width: 800, height: 1000)
+        presentation.surfaceSize = CGSize(width: 2000, height: 2000)
+        presentation.pointScale = 1.25
+        presentation.zoom = 1.2
+        #expect(presentation.canvasZoom == 1.5)
+        // DeviceKit's controls beside the device keep their size below the device's physical size, so the app
+        // reduces what DeviceKit drew at that size.
+        presentation.magnification = 0.5
+        #expect(presentation.scale == 0.75 && presentation.canvasZoom == 1)
+        // The device is 500 points high from the surface's center, which is 1000 from its edge.
+        presentation.magnification = 2
+        #expect(presentation.scale == 3 && presentation.canvasZoom == 2)
+    }
+
     /// The canvas frames the host at the scaled composition; Fit often shrinks a device below its natural size.
     @Test func shrunkenCanvasPresentsTheMeasuredCompositionInItsHostFrame() async throws {
         _ = NSApplication.shared

@@ -785,13 +785,18 @@ package final class NativeCanvasPresentation {
     }
     /// How large the device is shown, where 1 is the size that DeviceKit calls physical.
     package var scale: CGFloat { pointScale * zoom * (magnification ?? 1) }
-    /// The zoom that DeviceKit draws the device at: `scale`, as far as the device then stays inside the surface that
-    /// DeviceKit draws it in.
+    /// The zoom that DeviceKit draws the device at: `scale`, between the sizes that DeviceKit can draw for it.
+    ///
+    /// DeviceKit sizes the controls that appear beside the device's buttons against its rendering surface, not
+    /// against the device, so they keep their size at any zoom. The viewport reserves room for them at a zoom of 1.
+    /// Below 1 the app therefore reduces what DeviceKit drew at 1, controls and all. Above, the device must stay
+    /// inside the surface.
     package var canvasZoom: CGFloat {
-        guard let surfaceSize, let viewport else { return scale }
+        let zoom = max(scale, 1)
+        guard let surfaceSize, let viewport else { return zoom }
         let reach = CGSize(width: max(abs(viewport.minX), abs(viewport.maxX)), height: max(abs(viewport.minY), abs(viewport.maxY)))
-        guard reach.width > 0, reach.height > 0 else { return scale }
-        return min(scale, surfaceSize.width / 2 / reach.width, surfaceSize.height / 2 / reach.height)
+        guard reach.width > 0, reach.height > 0 else { return zoom }
+        return min(zoom, surfaceSize.width / 2 / reach.width, surfaceSize.height / 2 / reach.height)
     }
     @ObservationIgnored package var onSizeChange: (() -> Void)?
 }
@@ -825,8 +830,7 @@ package struct NativeCanvasRoot: View {
             }
             .offset(x: -viewport.midX * drawn, y: -viewport.midY * drawn)
             .frame(width: viewport.width * drawn, height: viewport.height * drawn)
-            // DeviceKit cannot draw the device larger than its rendering surface. The rest of the scale magnifies
-            // what it drew.
+            // What DeviceKit cannot draw at the scale itself, the rest of the scale reduces or magnifies.
             .scaleEffect(scale / drawn)
             .frame(width: viewport.width * scale, height: viewport.height * scale)
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,

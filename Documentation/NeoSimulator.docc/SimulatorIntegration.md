@@ -14,8 +14,10 @@ Duo screens in the default device set use DeviceKit's native device composition
 from the selected UI framework installation. That composition owns the cover and
 inner display providers, bezel, and pointer input. The app gives the composition
 its own zoom, and the composition draws the device at that size at the display's
-resolution. The app magnifies what DeviceKit drew only beyond the size that fits
-the composition's rendering surface. Posture controls send the
+resolution. The app scales what DeviceKit drew only outside the sizes that the
+composition draws well: below the device's physical size, where the controls
+beside the device's buttons would not shrink with the device, and beyond the size
+that fits the composition's rendering surface. Posture controls send the
 device's native hinge commands and follow its reported motion state. Show StandBy
 holds CoreDevice's StandBy presentation on these screens, because a Duo presents
 StandBy only for that service and not for the notification that other devices take.
