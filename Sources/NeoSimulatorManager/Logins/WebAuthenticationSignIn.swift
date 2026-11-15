@@ -37,7 +37,7 @@ package struct SignInPageState: Decodable, Equatable, Sendable {
     package var path: String
     /// Whether the login's own script ran in the page.
     package var ranScript: Bool
-    /// Whether the page's document has been read in, so that a script finds its elements.
+    /// Whether the page has finished loading, so that a script finds the elements that the page starts with.
     package var isLoaded: Bool
 
     /// A step of a sign-in, which a page asks for in a form. The steps come in this order, and a page that asks for a
@@ -206,7 +206,8 @@ package enum SignInScript: Equatable, Sendable {
               const filled = Symbol.for('dev.lynnswap.NeoSimulator.filled');
               let submitted = null;
               let ranScript = false;
-              const isLoaded = document.readyState !== 'loading';
+              // Scripts that a page defers, which can build its form, have run by then.
+              const isLoaded = document.readyState === 'complete';
               \(action)
               return {
                 origin: location.origin, isVisible, step, submitted, awaitsSubmit: !!window[filled] && !submitted,
