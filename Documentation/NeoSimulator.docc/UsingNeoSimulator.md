@@ -295,6 +295,40 @@ Partial failures list both completed imports and failed files.
 **I/O → Open URL…** opens web addresses and custom app URL schemes in the
 active device.
 
+## Sign in with a saved login
+
+An app under development often puts its content behind a web sign-in sheet. Neo can fill that sheet from a login
+that you saved, so that neither you nor a coding agent has to type it.
+
+Save a login in **Settings → Logins**: the app's bundle identifier, a label, the user name and password, and the web
+origins of the sign-in page. Start the sign-in in the app, then choose the login in **Device → Sign In with Saved
+Login**. Neo answers the system's question for the login's site, fills the user name and password fields that the
+page's form declares, submits the form, and waits for the sheet to close. Where a site asks for the user name first,
+Neo goes on to the page that asks for the password, which can be on another of the login's origins. It fills nothing
+for another app, on an origin that the login does not list, or on a page that has no form that asks for the user name
+or the password with a button to submit it.
+
+A coding agent asks for the same sign-in with the app's own executable, which works as a command-line tool when it
+is started with a command:
+
+```sh
+/Applications/NeoSimulator.app/Contents/MacOS/NeoSimulator logins com.example.app
+/Applications/NeoSimulator.app/Contents/MacOS/NeoSimulator sign-in Premium --device <UDID>
+```
+
+`logins` prints the labels saved for an app. `sign-in` signs in on a simulator whose screen is open in the running
+Neo and waits for the outcome; add `--app` with a bundle identifier where two apps have a login with the label. The
+exit status is 0 when the sheet closed signed in, 1 when the sign-in failed, such as with a login that the page
+rejected, 2 when Neo refused to start it, 3 when the simulator showed a screen that Neo does not recognize, and 69
+when Neo is not running. The reason goes to standard error.
+
+The tool takes a label and never a URL, an origin or a field, and nothing that it prints is a user name or a
+password. It reaches only the logins whose **Allow automated sign-in** is on.
+
+This keeps a password out of what a caller normally sees, and limits where it is filled in. It does not hide the
+password from a process that can already inspect the simulator: any process of your user can connect to the
+simulator's Web Inspector and read a filled field. Save logins of test accounts only.
+
 ## Browse device reports
 
 Select a device in the main window and choose **Reports** at the top of the right

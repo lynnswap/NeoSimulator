@@ -148,7 +148,7 @@ private struct LoginEditor: View {
                     "Web Origins", text: $draft.origins, prompt: Text(verbatim: "https://example.com"),
                     axis: .vertical)
             } footer: {
-                Text("A web sign-in may type the login only on these origins. Separate origins with commas.")
+                Text("A web sign-in may fill the login in only on these origins. Separate origins with commas.")
             }
             Section {
                 Toggle("Allow automated sign-in", isOn: $draft.allowsAutomation)

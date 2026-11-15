@@ -28,18 +28,45 @@ package final class LoginStore {
 
     package init(keychain: any LoginKeychain = SystemLoginKeychain()) { self.keychain = keychain }
 
+    /// The simulators that a sign-in is running on, by UDID.
+    @ObservationIgnored var signingIn: Set<String> = []
+    /// The read or change that was asked for last, which the next one waits for.
+    @ObservationIgnored private var lastOperation: Task<Void, Never>?
+
     // A keychain call waits for as long as macOS asks the person for access, so each one runs as blocking I/O.
-    // A caller finishes one read or change before it starts another: each leaves `logins` as the keychain was when
-    // it ran.
+    // Each read or change leaves `logins` as the keychain was when it ran, so they run one at a time, in the order
+    // that their callers asked for them: the Logins pane, the menu's list and a sign-in share the store.
+    private func inTurn<Value: Sendable>(_ operation: @escaping @MainActor () async throws -> Value) async throws -> Value {
+        let previous = lastOperation
+        let task = Task { @MainActor in
+            await previous?.value
+            return try await operation()
+        }
+        lastOperation = Task { _ = await task.result }
+        return try await task.value
+    }
 
     /// Reads the logins from the keychain.
     package func reload() async {
-        do {
-            logins = try await performBlockingIO { [keychain] in try readLogins(from: keychain) }
-                .sorted(by: Self.precedes)
-            issue = nil
-        } catch {
-            issue = error.localizedDescription
+        // The read's result is taken in its turn too, so that a change that follows it is not undone by it.
+        try? await inTurn { [self, keychain] in
+            do {
+                logins = try await performBlockingIO { try readLogins(from: keychain) }.sorted(by: Self.precedes)
+                issue = nil
+            } catch {
+                issue = error.localizedDescription
+            }
+        }
+    }
+
+    /// A login with its password, as the keychain holds them when it is asked. A sign-in reads what it fills in from
+    /// here, and `logins` keeps no password.
+    package func credentials(for id: SavedLogin.ID) async throws -> (login: SavedLogin, password: String) {
+        try await inTurn { [keychain] in
+            try await performBlockingIO {
+                guard let record = try record(for: id.account, in: keychain) else { throw Failure.missingLogin }
+                return (record.login, record.password)
+            }
         }
     }
 
@@ -59,24 +86,28 @@ package final class LoginStore {
             throw Failure.invalidApplicationIdentifier
         }
         guard !login.label.isEmpty else { throw Failure.emptyLabel }
-        do {
-            try await performBlockingIO { [keychain, login] in
-                try write(login, password: password, replacing: existing?.account, in: keychain)
+        return try await inTurn { [self, keychain, login] in
+            do {
+                try await performBlockingIO {
+                    try write(login, password: password, replacing: existing?.account, in: keychain)
+                }
+            } catch let failure as KeychainFailure where failure.status == errSecDuplicateItem {
+                throw Failure.duplicate
+            } catch let failure as KeychainFailure where failure.status == errSecItemNotFound {
+                throw Failure.missingLogin
             }
-        } catch let failure as KeychainFailure where failure.status == errSecDuplicateItem {
-            throw Failure.duplicate
-        } catch let failure as KeychainFailure where failure.status == errSecItemNotFound {
-            throw Failure.missingLogin
+            logins.removeAll { $0.id == existing || $0.id == login.id }
+            logins.append(login)
+            logins.sort(by: Self.precedes)
+            return login
         }
-        logins.removeAll { $0.id == existing || $0.id == login.id }
-        logins.append(login)
-        logins.sort(by: Self.precedes)
-        return login
     }
 
     package func delete(_ id: SavedLogin.ID) async throws {
-        try await performBlockingIO { [keychain] in try keychain.delete(id.account) }
-        logins.removeAll { $0.id == id }
+        try await inTurn { [self, keychain] in
+            try await performBlockingIO { try keychain.delete(id.account) }
+            logins.removeAll { $0.id == id }
+        }
     }
 
     private static func precedes(_ first: SavedLogin, _ second: SavedLogin) -> Bool {
@@ -89,7 +120,7 @@ extension SavedLogin.ID {
     fileprivate var account: String { "\(applicationIdentifier) \(label)" }
 }
 
-/// What a keychain item's data holds. Everything that decides where a login is typed is in the data, which only
+/// What a keychain item's data holds. Everything that decides where a login is used is in the data, which only
 /// this app reads without a prompt, so that another process can't point a saved password at another app or origin
 /// by changing an item's attributes.
 private struct LoginRecord: Codable {

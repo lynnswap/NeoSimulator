@@ -50,7 +50,7 @@ GRAPH = {
     },
     "NeoSimulatorApp": {
         "NeoSimulatorSidebar", "NeoSimulatorDeviceDisplay", "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit",
-        "NeoSimulatorDeviceIO", "ObservationBridge",
+        "NeoSimulatorDeviceIO", "ObservationBridge", "ArgumentParser",
     },
     "NeoSimulatorService": {"NeoSimulatorHostSupport", "NeoSimulatorKit"},
     "CoreDeviceInventoryProbe": {"NeoSimulatorKit"},

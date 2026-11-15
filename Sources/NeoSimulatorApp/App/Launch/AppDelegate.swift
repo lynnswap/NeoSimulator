@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         screens.onShowInMainWindow = { [weak self] identifier in self?.prepareMainWindow().showDevice(identifier) }
         return screens
     }()
+    private var controlServer: ControlServer?
     private(set) var mainWindow: ManagerWindowController?
     private(set) var onboardingWindow: OnboardingWindowController?
     private var startupTask: Task<Void, Never>?
@@ -68,6 +69,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.hostPreferenceAccess = hostPreferenceAccess
         self.splitViewAutosaveName = splitViewAutosaveName
         super.init()
+    }
+
+    /// Answers the command-line tool, which is this app's executable started with one of the tool's commands.
+    private func startControlServer() {
+        do {
+            controlServer = try ControlServer { [weak self] request in
+                await self?.answer(request) ?? .failure("NeoSimulator is quitting.")
+            }
+        } catch {
+            // Another NeoSimulator that runs beside this one answers the tool, as with two Debug builds.
+            hostLog("Could not answer the command-line tool: \(error.localizedDescription)")
+        }
+    }
+
+    private func answer(_ request: ControlRequest) async -> ControlResponse {
+        await model.logins.answer(request) { [model, screens] login, device in
+            guard let session = screens.simulatorSession(withUDID: device) else {
+                throw SignInRefusal("The simulator’s screen is not open in NeoSimulator.")
+            }
+            try await model.logins.signIn(with: login, on: session, automated: true)
+        }
     }
 
     private func openSimulatorPresentation(_ context: SimulatorPresentationContext) async throws {
@@ -137,6 +159,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.screens.setDeviceBezelsVisible(shows)
         }
         installMenu()
+        // The Device menu lists the logins. Settings reads them again whenever its pane opens.
+        Task { await model.logins.reload() }
+        startControlServer()
         rendererDevicesObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("dev.lynnswap.NeoSimulator.RendererDevicesDidChange"), object: nil, queue: .main
         ) { [weak self] _ in
@@ -648,6 +673,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A remote screen and its frame can cover the canvas, whose context menu also offers this command.
         device.insertItem(NSMenuItem(title: "Choose Screen Source…",
             action: #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)), keyEquivalent: ""), at: 1)
+        device.addItem(.separator())
+        let signIn = NSMenuItem(title: "Sign In with Saved Login", action: nil, keyEquivalent: "")
+        signIn.submenu = SignInMenu(logins: model.logins)
+        device.addItem(signIn)
         let view = addSubmenu("View", to: main)
         addItem("Show Devices", action: #selector(showDevices(_:)), to: view)
         simulatorMenus.addScreenCommands(file: file, edit: edit, view: view)
