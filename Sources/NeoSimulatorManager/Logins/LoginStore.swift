@@ -24,13 +24,21 @@ package final class LoginStore {
     /// Why the logins couldn't be read.
     package private(set) var issue: String?
     @ObservationIgnored private let keychain: any LoginKeychain
+    /// Counts the saves and deletions, so that a read that one of them overtook is read again.
+    @ObservationIgnored private var changeCount = 0
 
     package init(keychain: any LoginKeychain = SystemLoginKeychain()) { self.keychain = keychain }
 
     /// Reads the logins from the keychain. macOS can ask the person for access, so the read waits off the main actor.
     package func reload() async {
         do {
-            logins = try await readLogins(from: keychain).sorted(by: Self.precedes)
+            var read: [SavedLogin]
+            var readAt: Int
+            repeat {
+                readAt = changeCount
+                read = try await readLogins(from: keychain)
+            } while readAt != changeCount
+            logins = read.sorted(by: Self.precedes)
             issue = nil
         } catch {
             issue = error.localizedDescription
@@ -60,6 +68,7 @@ package final class LoginStore {
         } catch let failure as KeychainFailure where failure.status == errSecItemNotFound {
             throw Failure.missingLogin
         }
+        changeCount += 1
         logins.removeAll { $0.id == existing || $0.id == login.id }
         logins.append(login)
         logins.sort(by: Self.precedes)
@@ -68,6 +77,7 @@ package final class LoginStore {
 
     package func delete(_ id: SavedLogin.ID) async throws {
         try await remove(id.account, from: keychain)
+        changeCount += 1
         logins.removeAll { $0.id == id }
     }
 

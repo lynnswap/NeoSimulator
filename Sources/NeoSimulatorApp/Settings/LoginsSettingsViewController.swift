@@ -65,7 +65,10 @@ struct LoginsSettingsView: View {
             "Delete the login “\(model.deleting?.label ?? "")”?",
             isPresented: Binding(get: { model.deleting != nil }, set: { if !$0 { model.deleting = nil } })
         ) {
-            Button("Delete", role: .destructive) { Task { await model.delete() } }
+            // Dismissing the dialog clears `deleting`, so the login is read before the task starts.
+            if let login = model.deleting {
+                Button("Delete", role: .destructive) { Task { await model.delete(login) } }
+            }
         } message: {
             Text("The login is removed from your login keychain.")
         }

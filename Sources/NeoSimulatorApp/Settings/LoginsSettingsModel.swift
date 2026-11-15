@@ -81,11 +81,9 @@ final class LoginsSettingsModel {
         }
     }
 
-    func delete() async {
-        guard let deleting else { return }
-        self.deleting = nil
+    func delete(_ login: SavedLogin) async {
         do {
-            try await store.delete(deleting.id)
+            try await store.delete(login.id)
         } catch {
             issue = error.localizedDescription
         }
