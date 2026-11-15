@@ -307,12 +307,12 @@ extension ManagerModelTests {
             device.covered?.children.removeAll { $0.role == .button }
         }
         #expect(ended.failure as? NativeFormSignIn.Failure == .rejected)
-        #expect(ended.actions == filled + ["press signIn", "set password to ", "set user to "])
+        #expect(ended.actions == filled + ["press signIn", "set user to ", "set password to "])
 
         // The app keeps its button disabled: a press would do nothing, so the button is not pressed.
         ended = await signedIn(enables: false) { _ in }
-        #expect(ended.failure as? NativeFormSignIn.Failure == .buttonDisabled)
-        #expect(ended.actions == filled + ["set password to ", "set user to "])
+        #expect(ended.failure as? NativeFormSignIn.Failure == .buttonUnavailable)
+        #expect(ended.actions == filled + ["set user to ", "set password to "])
 
         // The login names a button that the screen does not have: nothing is filled in.
         ended = await signedIn(button: "Log In") { _ in }

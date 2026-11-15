@@ -96,7 +96,7 @@ extension LoginStore {
             } catch let failure as NativeFormSignIn.Failure {
                 let kind: SignInOutcome.Kind =
                     switch failure {
-                    case .severalPasswordFields, .noButton, .buttonDisabled: .unrecognized
+                    case .severalPasswordFields, .noButton, .buttonUnavailable: .unrecognized
                     case .notFilled, .rejected, .timedOut: .failed
                     }
                 return .signIn(SignInOutcome(kind, reason: failure.localizedDescription))
