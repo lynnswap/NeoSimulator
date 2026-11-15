@@ -53,6 +53,7 @@ struct LoginsSettingsView: View {
                     .disabled(model.selectedLogin == nil)
                 Spacer()
             }
+            .disabled(model.isBusy)
             Text("Logins are saved in your login keychain.")
                 .foregroundStyle(.secondary)
         }
@@ -65,9 +66,8 @@ struct LoginsSettingsView: View {
             "Delete the login “\(model.deleting?.label ?? "")”?",
             isPresented: Binding(get: { model.deleting != nil }, set: { if !$0 { model.deleting = nil } })
         ) {
-            // Dismissing the dialog clears `deleting`, so the login is read before the task starts.
             if let login = model.deleting {
-                Button("Delete", role: .destructive) { Task { await model.delete(login) } }
+                Button("Delete", role: .destructive) { model.delete(login) }
             }
         } message: {
             Text("The login is removed from your login keychain.")
@@ -159,18 +159,18 @@ private struct LoginEditor: View {
         }
         .formStyle(.grouped)
         .autocorrectionDisabled()
-        .disabled(model.isSaving)
+        .disabled(model.isBusy)
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 // A save that is waiting for the keychain finishes in this editor, where it shows its result.
                 Button("Cancel") { model.draft = nil }
-                    .disabled(model.isSaving)
+                    .disabled(model.isBusy)
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { Task { await model.save() } }
-                    .disabled(!draft.canSave || model.isSaving)
+                Button("Save", action: model.save)
+                    .disabled(!draft.canSave || model.isBusy)
             }
         }
     }

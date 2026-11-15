@@ -20,7 +20,8 @@ extension ManagerModelTests {
         model.draft?.userName = "premium@example.com"
         model.draft?.password = "s3cret"
         model.draft?.origins = "login.example.com, http://localhost:3000"
-        await model.save()
+        model.save()
+        await model.operation?.value
 
         let origins = try [#require(WebOrigin("https://login.example.com")), #require(WebOrigin("http://localhost:3000"))]
         var login = SavedLogin(
@@ -35,7 +36,8 @@ extension ManagerModelTests {
         #expect(model.draft?.password == "" && model.draft?.origins == "https://login.example.com, http://localhost:3000")
         model.draft?.label = "Free"
         model.draft?.allowsAutomation = false
-        await model.save()
+        model.save()
+        await model.operation?.value
 
         login.label = "Free"
         login.allowsAutomation = false
@@ -46,7 +48,8 @@ extension ManagerModelTests {
         await reopened.reload()
         #expect(reopened.logins == [login] && reopened.issue == nil)
 
-        await model.delete(login)
+        model.delete(login)
+        await model.operation?.value
         #expect(model.store.logins.isEmpty && keychain.accounts().isEmpty)
     }
 
@@ -58,7 +61,8 @@ extension ManagerModelTests {
             model.draft?.applicationIdentifier = "com.example.app"
             model.draft?.label = "Premium"
             model.draft?.password = password
-            await model.save()
+            model.save()
+        await model.operation?.value
         }
         #expect(model.draft?.issue == LoginStore.Failure.duplicate.localizedDescription)
         #expect(model.store.logins.count == 1)
@@ -78,43 +82,25 @@ extension ManagerModelTests {
         #expect(store.logins.isEmpty && store.issue == nil)
     }
 
-    @Test func aReadThatASaveOvertakesListsTheSavedLogin() async throws {
-        /// Holds the first read of the accounts until the test lets it finish.
-        final class HeldKeychain: LoginKeychain {
-            let items = InMemoryLoginKeychain()
-            let reading = DispatchSemaphore(value: 0)
-            let finish = DispatchSemaphore(value: 0)
-            let held = Mutex(false)
+    @Test func thePaneFinishesOneKeychainOperationBeforeItStartsAnother() async throws {
+        let model = LoginsSettingsModel(store: LoginStore(keychain: InMemoryLoginKeychain()))
+        model.reload()
+        model.add()
+        #expect(model.isBusy && model.draft == nil)
+        await model.operation?.value
+        model.add()
+        model.draft?.applicationIdentifier = "com.example.app"
+        model.draft?.label = "Premium"
+        model.draft?.password = "s3cret"
+        model.save()
+        await model.operation?.value
+        let login = try #require(model.store.logins.first)
 
-            func accounts() throws -> [String] {
-                let accounts = items.accounts()
-                if held.withLock({ held in defer { held = true }; return !held }) {
-                    reading.signal()
-                    finish.wait()
-                }
-                return accounts
-            }
-            func data(for account: String) throws -> Data? { items.data(for: account) }
-            func add(_ data: Data, account: String) throws { try items.add(data, account: account) }
-            func update(_ account: String, to data: Data, account newAccount: String) throws {
-                try items.update(account, to: data, account: newAccount)
-            }
-            func delete(_ account: String) throws { items.delete(account) }
-        }
-        let keychain = HeldKeychain()
-        let store = LoginStore(keychain: keychain)
-        let reload = Task { await store.reload() }
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                keychain.reading.wait()
-                continuation.resume()
-            }
-        }
-        let login = try await store.save(
-            SavedLogin(applicationIdentifier: "com.example.app", label: "Premium", userName: ""), password: "s3cret")
-        keychain.finish.signal()
-        await reload.value
-        #expect(store.logins == [login])
+        model.delete(login)
+        model.edit(login.id)
+        #expect(model.isBusy && model.draft == nil)
+        await model.operation?.value
+        #expect(!model.isBusy && model.store.logins.isEmpty)
     }
 
     @Test func webOriginsReadASchemeAHostAndAPort() throws {
