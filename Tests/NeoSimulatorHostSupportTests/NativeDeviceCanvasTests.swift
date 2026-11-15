@@ -117,20 +117,36 @@ struct NativeDeviceCanvasTests {
         }
     }
 
-    @Test func deviceKitDrawsTheDeviceAtTheAppsScaleBetweenItsPhysicalSizeAndItsRenderingSurface() {
+    @Test func deviceKitIsAskedForTheAppsScaleBetweenTheDevicesPhysicalSizeAndTheRenderingSurface() {
         let presentation = NativeCanvasPresentation()
         presentation.viewport = CGRect(x: -400, y: -500, width: 800, height: 1000)
         presentation.surfaceSize = CGSize(width: 2000, height: 2000)
         presentation.pointScale = 1.25
         presentation.zoom = 1.2
-        #expect(presentation.canvasZoom == 1.5)
+        #expect(presentation.preferredZoom == 1.5)
         // DeviceKit's controls beside the device keep their size below the device's physical size, so the app
         // reduces what DeviceKit drew at that size.
         presentation.magnification = 0.5
-        #expect(presentation.scale == 0.75 && presentation.canvasZoom == 1)
+        #expect(presentation.scale == 0.75 && presentation.preferredZoom == 1)
         // The device is 500 points high from the surface's center, which is 1000 from its edge.
         presentation.magnification = 2
-        #expect(presentation.scale == 3 && presentation.canvasZoom == 2)
+        #expect(presentation.scale == 3 && presentation.preferredZoom == 2)
+    }
+
+    @Test func pictureThatDeviceKitMovesToAnotherZoomHasTheZoomThatTheDevicesExtentShows() {
+        var picture = NativeCanvasPicture()
+        picture.ask(for: 2, from: CGSize(width: 300, height: 400))
+        #expect(picture.askedZoom == 2 && picture.zoom == 1 && picture.isMoving)
+        picture.moved(to: CGSize(width: 450, height: 600))
+        #expect(picture.zoom == 1.5)
+        // A device that folds meanwhile is as large as its larger side shows.
+        picture.moved(to: CGSize(width: 480, height: 720))
+        #expect(picture.zoom == 1.8)
+        picture.arrived()
+        #expect(picture.zoom == 2 && !picture.isMoving)
+        // A picture that is not moving keeps its zoom whatever the device's extent.
+        picture.moved(to: CGSize(width: 100, height: 100))
+        #expect(picture.zoom == 2)
     }
 
     /// The canvas frames the host at the scaled composition; Fit often shrinks a device below its natural size.
