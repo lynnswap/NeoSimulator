@@ -140,20 +140,72 @@ extension ManagerModelTests {
         await #expect(throws: LoginStore.Failure.missingLogin) { try await store.credentials(for: login.id) }
     }
 
-    private var premium: SavedLogin {
+    private func premium(userName: String = "premium@example.com", origins: [String]) -> SavedLogin {
         SavedLogin(
-            applicationIdentifier: "com.example.app", label: "Premium", userName: "premium@example.com",
-            origins: [WebOrigin("https://login.example.com")!])
+            applicationIdentifier: "com.example.app", label: "Premium", userName: userName,
+            origins: origins.map { WebOrigin($0)! })
     }
 
     /// A sign-in that looks often and does not wait long, for a device that answers at once.
-    private func signIn(on device: SignInFixture) -> WebAuthenticationSignIn {
+    private func signIn(
+        on device: SignInFixture, userName: String = "premium@example.com",
+        origins: [String] = ["https://login.example.com"]
+    ) -> WebAuthenticationSignIn {
         var pace = WebAuthenticationSignIn.Pace()
         pace.appearance = .milliseconds(100)
         pace.completion = .milliseconds(100)
         pace.interval = .milliseconds(5)
         pace.tapAgain = .milliseconds(20)
-        return WebAuthenticationSignIn(device: device, login: premium, password: "s3cret", pace: pace)
+        return WebAuthenticationSignIn(
+            device: device, login: premium(userName: userName, origins: origins), password: "s3cret", pace: pace)
+    }
+
+    @Test func aSignInGoesOnFromTheUserNamesPageToThePasswordsPageAtAnotherOfItsOrigins() async throws {
+        let device = SignInFixture()
+        device.front = SignInFixture.application("com.example.app")
+        device.page = SignInPageState(origin: "https://login.example.com", step: .userName, document: "1")
+        // The password's page is another document, on another host that the login lists. The sheet closes after it.
+        var pages = [SignInPageState(origin: "https://sso.example.org", step: .password, document: "2")]
+        device.onSubmit = { device.page = pages.isEmpty ? nil : pages.removeFirst() }
+        try await signIn(on: device, origins: ["https://login.example.com", "https://sso.example.org"]).run()
+        #expect(
+            device.scripts.filter { $0 != .state } == [
+                .signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com"),
+                .signIn(userName: "premium@example.com", password: "s3cret", origin: "https://sso.example.org"),
+            ])
+    }
+
+    @Test func aSignInStopsAfterTheUserNameWhereThePageThatFollowsIsNotItsOwn() async throws {
+        /// How a sign-in ends that starts on the user name's page, which `next` follows, and how many pages it filled.
+        func outcome(
+            userName: String = "premium@example.com", then next: SignInPageState?
+        ) async -> (failure: WebAuthenticationSignIn.Failure?, filled: Int) {
+            let device = SignInFixture()
+            device.front = SignInFixture.application("com.example.app")
+            device.page = SignInPageState(origin: "https://login.example.com", step: .userName, document: "1")
+            device.onSubmit = { device.page = next }
+            var failure: WebAuthenticationSignIn.Failure?
+            do { try await signIn(on: device, userName: userName).run() } catch {
+                failure = error as? WebAuthenticationSignIn.Failure
+            }
+            return (failure, device.scripts.count { if case .signIn = $0 { true } else { false } })
+        }
+        // The password's page is on a host that the login does not list: the password is not filled in there.
+        var ended = await outcome(then: SignInPageState(origin: "https://other.example", step: .password, document: "2"))
+        #expect(ended.failure == .unrecognizedPage(origin: "https://other.example") && ended.filled == 1)
+        // The user name's page loaded again.
+        ended = await outcome(then: SignInPageState(origin: "https://login.example.com", step: .userName, document: "2"))
+        #expect(ended.failure == .rejected && ended.filled == 1)
+        // The sheet closed after the user name, as where the site already knows the person.
+        ended = await outcome(then: nil)
+        #expect(ended.failure == nil && ended.filled == 1)
+        // A login without a user name has nothing for the page.
+        let device = SignInFixture()
+        device.front = SignInFixture.application("com.example.app")
+        device.page = SignInPageState(origin: "https://login.example.com", step: .userName, document: "1")
+        await #expect(throws: WebAuthenticationSignIn.Failure.unrecognizedPage(origin: "https://login.example.com")) {
+            try await signIn(on: device, userName: "").run()
+        }
     }
 
     @Test func aSignInAcceptsItsSitesConsentFillsThePageAtItsOriginAndDeclinesToSaveThePassword() async throws {
@@ -166,7 +218,7 @@ extension ManagerModelTests {
                 switch device.taps.count {
                 case 2:
                     device.front = SignInFixture.application("com.example.app")
-                    device.page = SignInPageState(origin: "https://login.example.com", hasPassword: true, document: "1")
+                    device.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
                 case 3:
                     // The sheet closes once its offer is answered.
                     device.offer = []
@@ -207,13 +259,13 @@ extension ManagerModelTests {
         #expect(
             await refused {
                 $0.front = SignInFixture.application("com.example.app")
-                $0.page = SignInPageState(origin: "https://other.example", hasPassword: true)
+                $0.page = SignInPageState(origin: "https://other.example", step: .password)
             } == .unrecognizedPage(origin: "https://other.example"))
         // A sheet that closed leaves its page listed.
         #expect(
             await refused {
                 $0.front = SignInFixture.application("com.example.app")
-                $0.page = SignInPageState(origin: "https://login.example.com", isVisible: false, hasPassword: true)
+                $0.page = SignInPageState(origin: "https://login.example.com", isVisible: false, step: .password)
             } == .noSheet)
     }
 
@@ -221,7 +273,7 @@ extension ManagerModelTests {
         func outcome(after submit: @escaping (SignInFixture) -> Void) async -> WebAuthenticationSignIn.Failure? {
             let device = SignInFixture()
             device.front = SignInFixture.application("com.example.app")
-            device.page = SignInPageState(origin: "https://login.example.com", hasPassword: true, document: "1")
+            device.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
             device.onSubmit = { submit(device) }
             var failure: WebAuthenticationSignIn.Failure?
             do { try await signIn(on: device).run() } catch { failure = error as? WebAuthenticationSignIn.Failure }
@@ -235,7 +287,7 @@ extension ManagerModelTests {
         // The tool that asked went away while the sheet was still open.
         let waiting = SignInFixture()
         waiting.front = SignInFixture.application("com.example.app")
-        waiting.page = SignInPageState(origin: "https://login.example.com", hasPassword: true, document: "1")
+        waiting.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
         let (submissions, submitted) = AsyncStream.makeStream(of: Void.self)
         waiting.onSubmit = { submitted.yield() }
         let abandoned = Task { try await signIn(on: waiting).run() }
@@ -246,7 +298,7 @@ extension ManagerModelTests {
 
         // The sheet went on to a page that is not the login's, such as one that asks for a code.
         #expect(
-            await outcome { $0.page = SignInPageState(origin: "https://codes.example", hasPassword: false) }
+            await outcome { $0.page = SignInPageState(origin: "https://codes.example", step: nil) }
                 == .unrecognizedPage(origin: "https://codes.example"))
     }
 
@@ -338,8 +390,10 @@ private final class SignInFixture: SignInDevice {
         try Task.checkCancellation()
         scripts.append(script)
         var state = try #require(self.page)
-        if case .signIn(_, _, let origin) = script, origin == state.origin, state.isVisible, state.hasPassword {
-            state.submitted = true
+        if case .signIn(let userName, _, let origin) = script, origin == state.origin, state.isVisible,
+            let step = state.step, step == .password || !userName.isEmpty
+        {
+            state.submitted = step
             onSubmit?()
         }
         return state
