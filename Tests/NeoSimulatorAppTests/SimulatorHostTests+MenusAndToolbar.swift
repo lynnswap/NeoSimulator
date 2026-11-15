@@ -614,20 +614,50 @@ extension SimulatorHostTests {
         let model = standaloneDeviceModel()
         let controller = try makeController(display, features: [DeviceCapabilities.standBy], model: model)
         defer { controller.invalidate() }
-        // The service's state reaches the menu while the guest answers nothing.
-        let worker = HeldDeviceWorker()
-        defer { worker.release() }
-        display.worker = worker
-        worker.hold()
+        let lockState = "com.apple.springboard.lockstate"
+        display.onSend = { display.notificationStates[lockState] = 1 }
         let title = { DeviceCommand.command(.toggleStandBy).stateTitle?(controller) }
+        // The service presents only over the lock screen, so an unlocked device is locked first.
         controller.perform(.toggleStandBy)
         try await wait { !controller.session.isBusy && title() == "Hide StandBy" }
         #expect(standBy.isPresented && model.showsStandBy == true)
+        #expect(display.events.map(\.input) == [.button(.lock), .button(.lock)] && display.events.map(\.state) == [.down, .up])
+
+        // The service's state reaches the menu while the guest answers nothing.
+        let worker = HeldDeviceWorker()
+        display.worker = worker
+        worker.hold()
         controller.perform(.toggleStandBy)
         try await wait { !controller.session.isBusy && title() == "Show StandBy" }
         #expect(!standBy.isPresented && model.showsStandBy == false)
+        worker.release()
+
+        // A locked device's lock button is left alone.
+        controller.perform(.toggleStandBy)
+        try await wait { !controller.session.isBusy && title() == "Hide StandBy" }
+        #expect(display.events.count == 2)
         // The notification that presents StandBy on other devices is left alone.
-        #expect(display.postedNotifications.isEmpty && display.notificationStates.isEmpty)
+        #expect(display.postedNotifications.isEmpty && display.notificationStates == [lockState: 1])
+    }
+
+    @Test func showStandByPresentsNothingWhenTheLockButtonsReleaseIsNotDelivered() async throws {
+        let display = TestDisplay()
+        let standBy = TestStandBy()
+        display.standBy = standBy
+        let controller = try makeController(display, features: [DeviceCapabilities.standBy])
+        defer { controller.invalidate() }
+        // The press locks the guest, and only its release fails.
+        display.onSend = { display.notificationStates["com.apple.springboard.lockstate"] = 1 }
+        display.undeliveredStates = [.up]
+        controller.perform(.toggleStandBy)
+        try await wait { display.events.count == 2 && !controller.session.isBusy }
+        #expect(!standBy.isPresented)
+
+        // The next attempt sends the release again instead of presenting with the button down.
+        display.undeliveredStates = []
+        controller.perform(.toggleStandBy)
+        try await wait { standBy.isPresented && !controller.session.isBusy }
+        #expect(display.events.map(\.state) == [.down, .up, .up])
     }
 
     @Test func debugMenuFollowsSimulatorAppOrderAndShortcuts() throws {

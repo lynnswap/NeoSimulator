@@ -969,7 +969,57 @@ package final class DeviceSession {
         guard let standBy = display.standBy else { return try await toggleState(of: Self.standBy) }
         // The service holds this state, so the model takes it without a reading of the guest.
         defer { if !isDisconnected { model.update(showsStandBy: standBy.isPresented) } }
-        if standBy.isPresented { try standBy.dismiss() } else { try await standBy.present() }
+        guard !standBy.isPresented else { return try standBy.dismiss() }
+        // A service presents StandBy only over the lock screen, which the notification of other devices brings up itself.
+        try await lock()
+        try await standBy.present()
+    }
+
+    /// The guest's lock, which is 1 while the device is locked.
+    private static let lockState = "com.apple.springboard.lockstate"
+    private static let lockLimit = Duration.seconds(5)
+
+    /// Presses the lock button of a device that is not locked, and returns once the lock button is up and the guest
+    /// reports its lock. Throws the first failure of the button's events.
+    ///
+    /// The button is down until the device has taken its release, and nothing here ends that wait but the release, its
+    /// failure, or the end of the session: a press given up on would still lock the device later. The guest then has
+    /// `lockLimit` to report the lock.
+    private func lock() async throws {
+        let button = HIDInput.button(.lock)
+        var failure: (any Error)?
+        let report = FirstFailure { failure = $0 }
+        var pressed = false
+        var deadline: ContinuousClock.Instant?
+        while true {
+            if let failure { throw failure }
+            if downInputs[button] == nil {
+                let presses = lastDownGeneration
+                let locked = try await isLocked()
+                // The read suspended, and a press meanwhile, such as the Lock command's, can have changed what it read.
+                guard downInputs[button] == nil, lastDownGeneration == presses else { continue }
+                if locked { return }
+                if !pressed {
+                    pressed = true
+                    press(button, report)
+                    continue
+                }
+                let limit = deadline ?? ContinuousClock.now + Self.lockLimit
+                deadline = limit
+                guard ContinuousClock.now < limit else {
+                    throw SimulatorError.operation("\(device.name) did not lock, so it cannot show StandBy.")
+                }
+            } else if pendingHolds[button] == nil {
+                // A press whose release the device did not take keeps the button down, whoever pressed it, so the
+                // release is sent again. One that is still on its way is left alone.
+                releaseHeldInput(button, report: report)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func isLocked() async throws -> Bool {
+        try await display.guestState(notifications: [Self.lockState], debugOptions: []).notifications[Self.lockState] == 1
     }
 
     /// Flips a guest notification's state between 0 and 1 and posts it, as one request.
