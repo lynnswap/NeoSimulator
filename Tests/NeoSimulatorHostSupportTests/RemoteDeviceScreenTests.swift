@@ -892,6 +892,42 @@ struct RemoteDeviceScreenTests {
         try await drawn.stop()
     }
 
+    /// DeviceKit's views take every key equivalent for the device, so the container of its device view runs the
+    /// app's enabled command for a key first.
+    @Test func theDeviceViewRunsTheAppsEnabledCommandsBeforeTheDevicesKeys() throws {
+        _ = NSApplication.shared
+        final class DeviceKeys: NSView {
+            var equivalents: [String] = []
+            override func performKeyEquivalent(with event: NSEvent) -> Bool {
+                equivalents.append(event.charactersIgnoringModifiers ?? "")
+                return true
+            }
+        }
+        final class Command: NSObject, NSMenuItemValidation {
+            var runs = 0
+            var isEnabled = true
+            @objc func run(_ sender: Any?) { runs += 1 }
+            func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { isEnabled }
+        }
+        let command = Command()
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Save Screen", action: #selector(Command.run(_:)), keyEquivalent: "s").target = command
+        let container = DeviceViewFittingView()
+        container.commandMenu = { menu }
+        let device = DeviceKeys()
+        container.addSubview(device)
+        func press(_ key: String) throws -> Bool {
+            container.performKeyEquivalent(with: try #require(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 1, windowNumber: 0, context: nil,
+                characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)))
+        }
+        #expect(try press("s") && command.runs == 1 && device.equivalents.isEmpty)
+        #expect(try press("j") && device.equivalents == ["j"])
+        // The menu alone would consume a disabled command's key.
+        command.isEnabled = false
+        #expect(try press("s") && command.runs == 1 && device.equivalents == ["j", "s"])
+    }
+
     @Test func primaryDisplayFramesExcludeEncodingPaddingBeforeAndAfterRotation() async throws {
         let gpu = try #require(MTLCreateSystemDefaultDevice())
         let layer = CAMetalLayer()
