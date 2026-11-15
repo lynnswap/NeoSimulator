@@ -23,6 +23,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/lynnswap/ABIBridge.git", exact: "0.20.4"),
         .package(url: "https://github.com/lynnswap/ObservationBridge.git", exact: "0.15.17"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
     ],
     targets: [
         .target(name: "NeoSimulatorNative", dependencies: [
@@ -79,6 +80,7 @@ let package = Package(
         ], swiftSettings: memberImportVisibility),
         .target(name: "NeoSimulatorApp", dependencies: [
             "NeoSimulatorSidebar", "NeoSimulatorDeviceDisplay", "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorHostSupport", "NeoSimulatorUI", "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
+            .product(name: "ArgumentParser", package: "swift-argument-parser"),
             .product(name: "ObservationBridge", package: "ObservationBridge"),
         ], resources: [.process("Resources")], swiftSettings: memberImportVisibility),
         .target(name: "NeoSimulatorService", dependencies: [
@@ -89,6 +91,7 @@ let package = Package(
             "NeoSimulatorApp", "NeoSimulatorSidebar", "NeoSimulatorDeviceDisplay", "NeoSimulatorInspector", "NeoSimulatorDeviceScreens", "NeoSimulatorCompactWindow", "NeoSimulatorManager", "NeoSimulatorService", "NeoSimulatorHostSupport", "NeoSimulatorUI",
             "NeoSimulatorPresentationAdapters", "NeoSimulatorKit", "NeoSimulatorDeviceIO",
             .product(name: "ABIBridge", package: "ABIBridge"),
+            .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], swiftSettings: [
             .enableUpcomingFeature("MemberImportVisibility"),
             .enableUpcomingFeature("InferIsolatedConformances"),

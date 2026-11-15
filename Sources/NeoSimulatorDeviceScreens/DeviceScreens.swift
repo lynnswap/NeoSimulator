@@ -268,6 +268,11 @@ package final class DeviceScreens {
         }
     }
 
+    /// The session of the simulator with a UDID, if its screen is open here.
+    package func simulatorSession(withUDID udid: String) -> DeviceSession? {
+        simulatorControllers.map(\.session).first { $0.device.identifier.caseInsensitiveCompare(udid) == .orderedSame }
+    }
+
     private var simulatorControllers: [DeviceWindowController] {
         allScreens.compactMap { screen in
             if case .simulator(let controller) = screen.controller { controller } else { nil }
