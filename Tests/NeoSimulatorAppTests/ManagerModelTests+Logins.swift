@@ -82,6 +82,25 @@ extension ManagerModelTests {
         #expect(store.logins.isEmpty && store.issue == nil)
     }
 
+    @Test func anEditDoesNotKeepThePasswordOfAnItemMovedToItsAccount() async throws {
+        let keychain = InMemoryLoginKeychain()
+        let store = LoginStore(keychain: keychain)
+        let login = try await store.save(
+            SavedLogin(applicationIdentifier: "com.example.app", label: "Premium", userName: "premium@example.com"),
+            password: "s3cret")
+        try await store.save(
+            SavedLogin(applicationIdentifier: "com.example.other", label: "Premium", userName: "other@example.com"),
+            password: "other")
+        let moved = keychain.items.withLock { items in
+            items["com.example.app Premium"] = items.removeValue(forKey: "com.example.other Premium")
+            return items["com.example.app Premium"]
+        }
+        await #expect(throws: LoginStore.Failure.missingLogin) {
+            try await store.save(login, password: nil, replacing: login.id)
+        }
+        #expect(keychain.data(for: "com.example.app Premium") == moved)
+    }
+
     @Test func thePaneFinishesOneKeychainOperationBeforeItStartsAnother() async throws {
         let model = LoginsSettingsModel(store: LoginStore(keychain: InMemoryLoginKeychain()))
         model.reload()

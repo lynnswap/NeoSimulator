@@ -116,14 +116,17 @@ private struct LoginRecord: Codable {
     }
 }
 
+/// What the item for `account` holds, or `nil` if the keychain has no login there. An item whose data names another
+/// login than its account does isn't one that this app saved, whatever moved it there.
+private func record(for account: String, in keychain: any LoginKeychain) throws -> LoginRecord? {
+    guard let data = try keychain.data(for: account),
+        let record = try? JSONDecoder().decode(LoginRecord.self, from: data), record.login.id.account == account
+    else { return nil }
+    return record
+}
+
 private func readLogins(from keychain: any LoginKeychain) throws -> [SavedLogin] {
-    try keychain.accounts().compactMap { account in
-        // An item whose data names another login than its account does isn't one that this app saved.
-        guard let data = try keychain.data(for: account),
-            let login = try? JSONDecoder().decode(LoginRecord.self, from: data).login, login.id.account == account
-        else { return nil }
-        return login
-    }
+    try keychain.accounts().compactMap { try record(for: $0, in: keychain)?.login }
 }
 
 private func write(
@@ -131,8 +134,8 @@ private func write(
 ) throws {
     var password = password.flatMap { $0.isEmpty ? nil : $0 }
     if let existing, password == nil {
-        guard let data = try keychain.data(for: existing) else { throw LoginStore.Failure.missingLogin }
-        password = try JSONDecoder().decode(LoginRecord.self, from: data).password
+        guard let record = try record(for: existing, in: keychain) else { throw LoginStore.Failure.missingLogin }
+        password = record.password
     }
     guard let password else { throw LoginStore.Failure.emptyPassword }
     let data = try JSONEncoder().encode(LoginRecord(login, password: password))
