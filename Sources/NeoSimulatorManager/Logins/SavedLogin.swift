@@ -1,6 +1,6 @@
 import Foundation
 
-/// A web origin where a login may be typed.
+/// A web origin where a login may be used.
 package struct WebOrigin: Codable, Hashable, Sendable {
     package struct Invalid: Error, LocalizedError {
         package let text: String
@@ -64,7 +64,7 @@ package struct SavedLogin: Equatable, Sendable, Identifiable {
     package var applicationIdentifier: String
     package var label: String
     package var userName: String
-    /// The origins where a web sign-in may type the login.
+    /// The origins where a web sign-in may use the login.
     package var origins: [WebOrigin]
     /// Whether a caller other than the person at the Mac may ask to sign in with the login.
     package var allowsAutomation: Bool
