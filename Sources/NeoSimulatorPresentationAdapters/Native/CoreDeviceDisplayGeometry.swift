@@ -624,6 +624,7 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
         }
         projection?.invalidate()
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+        keyboardModifierChange = nil
         modifierMonitor = window == nil ? nil : NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             self?.modifierChange(for: event) ?? event
         }
