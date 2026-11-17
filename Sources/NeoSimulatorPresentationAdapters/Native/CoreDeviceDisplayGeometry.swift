@@ -565,7 +565,6 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     package var projection: NativeCanvasProjection?
     private weak var hostingWindow: NSWindow?
     private var screenObserver: (any NSObjectProtocol)?
-    private var modifierMonitor: Any?
     /// The last modifier change for this view's window that named its key, which a keyboard sent.
     private var keyboardModifierChange: NSEvent?
     package override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
@@ -589,7 +588,19 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     }
     isolated deinit {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+    }
+    /// The modifier change to dispatch for `event`: the one that the canvas with the keyboard gives DeviceKit's views,
+    /// or `event` itself when no canvas has the keyboard.
+    ///
+    /// DeviceKit takes modifier changes in an event monitor of its own, so the application calls this before it
+    /// dispatches the event to any monitor.
+    package static func modifierChange(dispatching event: NSEvent) -> NSEvent {
+        var view = event.window?.firstResponder as? NSView
+        while let current = view {
+            if let canvas = current as? NativeCanvasHostingView { return canvas.modifierChange(for: event) }
+            view = current.superview
+        }
+        return event
     }
     /// The modifier change to give DeviceKit's views for `event`.
     ///
@@ -623,11 +634,7 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
             }
         }
         projection?.invalidate()
-        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
         keyboardModifierChange = nil
-        modifierMonitor = window == nil ? nil : NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.modifierChange(for: event) ?? event
-        }
         // DeviceKit unregisters the Pop canvas's input surfaces when it leaves a window. A retained SwiftUI graph
         // does not register them on return, so every new attachment needs fresh representable views.
         guard let window else {

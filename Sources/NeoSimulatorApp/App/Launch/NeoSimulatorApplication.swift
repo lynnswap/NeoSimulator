@@ -5,6 +5,14 @@ import NeoSimulatorHostSupport
 import NeoSimulatorKit
 import NeoSimulatorUI
 import NeoSimulatorManager
+import NeoSimulatorPresentationAdapters
+
+/// Gives a device's canvas each modifier change before the event monitors see it.
+private final class HostApplication: NSApplication {
+    override func sendEvent(_ event: NSEvent) {
+        super.sendEvent(event.type == .flagsChanged ? NativeCanvasHostingView.modifierChange(dispatching: event) : event)
+    }
+}
 
 /// Starts the NeoSimulator manager. Only the app's Xcode target calls this; it is not a supported API.
 @_spi(AppBootstrap) public enum NeoSimulatorApplication {
@@ -16,7 +24,7 @@ import NeoSimulatorManager
             NeoSimulatorCommand.main()
         }
 #endif
-        let app = NSApplication.shared
+        let app = HostApplication.shared
 #if DEBUG
         let environment = ProcessInfo.processInfo.environment
         if environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {

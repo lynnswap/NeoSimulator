@@ -91,17 +91,17 @@ struct NativeDeviceCanvasTests {
         // Another window's change stays that window's, so the canvas's release does not go there.
         let other = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         for press in [try change(0x37, .command), try change(0x38, [.command, .shift]), try change(0x3B, .control, in: other)] {
-            #expect(hosting.modifierChange(for: press) === press)
+            #expect(NativeCanvasHostingView.modifierChange(dispatching: press) === press)
         }
         // macOS took ⌘⇧5 and reports the keys' release as one change that names no key.
-        let release = hosting.modifierChange(for: try change(0, []))
+        let release = NativeCanvasHostingView.modifierChange(dispatching: try change(0, []))
         #expect(release.type == .flagsChanged && release.keyCode == 0x38 && release.window === window)
         #expect(release.modifierFlags.isDisjoint(with: modifiers))
 
         // A change for another responder is not the canvas's.
         #expect(window.makeFirstResponder(nil))
         let elsewhere = try change(0, [])
-        #expect(hosting.modifierChange(for: elsewhere) === elsewhere)
+        #expect(NativeCanvasHostingView.modifierChange(dispatching: elsewhere) === elsewhere)
     }
 
     @Test func projectedCanvasKeepsHiddenHoverControlsInsideItsHitArea() throws {
