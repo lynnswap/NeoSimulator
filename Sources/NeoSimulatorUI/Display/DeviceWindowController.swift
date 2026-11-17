@@ -96,6 +96,8 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
     private var touchPressureObserver: (any NSObjectProtocol)?
     private var touchIndicatorObserver: (any NSObjectProtocol)?
     private var keyboardSelectionObserver: (any NSObjectProtocol)?
+    /// Whether a keyboard-language sync for the input-source changes of the current main-actor turn is scheduled.
+    private var keyboardLanguageSyncIsScheduled = false
     private var audioRouteObserver: (any NSObjectProtocol)?
     /// Only the key window receives host keyboard input and input-source changes.
     private var isKey = false
@@ -987,10 +989,16 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         display.setTrackpadEnabled(isKey)
     }
 
-    /// Starts changes before returning to preserve input-source order. Failures are logged.
+    /// Syncs the language once for the changes AppKit posts together. Failures are logged.
     private func keyboardSelectionChanged() {
-        guard !closed, isKey || externalDisplayWindow?.isKey == true else { return }
-        Task.immediate { [session] in
+        // AppKit posts one input-source change for each text input context, all in the same turn, and every
+        // request makes the guest reload its keyboards, which delays the switch by several keystrokes.
+        guard !closed, isKey || externalDisplayWindow?.isKey == true, !keyboardLanguageSyncIsScheduled else { return }
+        keyboardLanguageSyncIsScheduled = true
+        Task { [weak self, session] in
+            guard let self else { return }
+            keyboardLanguageSyncIsScheduled = false
+            guard !closed else { return }
             do { try await session.syncKeyboardLanguage() } catch {
                 hostLog("Could not set the keyboard language of \(session.device.name): \(error.localizedDescription)")
             }
