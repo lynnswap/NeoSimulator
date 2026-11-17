@@ -1145,7 +1145,10 @@ extension SimulatorHostTests {
         defer { a.invalidate(); b.invalidate(); languageChanges.continuation.finish() }
         func changeInputSource(to new: String) {
             language = new
-            NotificationCenter.default.post(name: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil)
+            // AppKit posts the change once for each text input context; the guest gets one request.
+            for _ in 0..<2 {
+                NotificationCenter.default.post(name: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil)
+            }
         }
         changeInputSource(to: "en")
         #expect(first.keyboardLanguages.isEmpty && second.keyboardLanguages.isEmpty)
@@ -1165,8 +1168,9 @@ extension SimulatorHostTests {
         b.perform(.syncKeyboardLanguage)
         #expect(preferences.values[HostPreferences.enableKeyboardSync] as? Bool == false)
         #expect(sync.state?(a) == .off && sync.state?(b) == .off)
-        // Task.immediate returns at the disabled-sync guard before reaching the display await.
+        // The scheduled sync runs on the main actor ahead of this yield and returns at the disabled-sync guard.
         changeInputSource(to: "fr")
+        await Task.yield()
         #expect(second.keyboardLanguages == ["de"])
         b.perform(.syncKeyboardLanguage)
         #expect(second.keyboardLanguages == ["de"])
