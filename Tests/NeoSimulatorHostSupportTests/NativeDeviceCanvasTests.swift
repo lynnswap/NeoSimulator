@@ -82,18 +82,20 @@ struct NativeDeviceCanvasTests {
                               backing: .buffered, defer: false)
         window.contentView = hosting
         #expect(window.makeFirstResponder(input))
-        func change(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+        func change(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags, in window: NSWindow = window) throws -> NSEvent {
             try #require(NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags, timestamp: 1,
                 windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
                 isARepeat: false, keyCode: keyCode))
         }
         let modifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
-        for press in [try change(0x37, .command), try change(0x38, [.command, .shift])] {
+        // Another window's change stays that window's, so the canvas's release does not go there.
+        let other = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        for press in [try change(0x37, .command), try change(0x38, [.command, .shift]), try change(0x3B, .control, in: other)] {
             #expect(hosting.modifierChange(for: press) === press)
         }
         // macOS took ⌘⇧5 and reports the keys' release as one change that names no key.
         let release = hosting.modifierChange(for: try change(0, []))
-        #expect(release.type == .flagsChanged && release.keyCode == 0x38)
+        #expect(release.type == .flagsChanged && release.keyCode == 0x38 && release.window === window)
         #expect(release.modifierFlags.isDisjoint(with: modifiers))
 
         // A change for another responder is not the canvas's.

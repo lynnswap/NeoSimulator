@@ -566,7 +566,7 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     private weak var hostingWindow: NSWindow?
     private var screenObserver: (any NSObjectProtocol)?
     private var modifierMonitor: Any?
-    /// The last modifier change that named its key, which a keyboard sent.
+    /// The last modifier change for this view's window that named its key, which a keyboard sent.
     private var keyboardModifierChange: NSEvent?
     package override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
     package required init(rootView: AnyView) { content = rootView; super.init(rootView: rootView) }
@@ -598,11 +598,12 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     /// later tap as one with those modifiers until a keyboard's next modifier change. Such a change for those views
     /// becomes one from the keyboard whose modifiers changed last, which carries the same modifiers.
     package func modifierChange(for event: NSEvent) -> NSEvent {
+        guard let window, event.window === window else { return event }
         guard event.keyCode == 0 else {
             keyboardModifierChange = event
             return event
         }
-        guard let window, event.window === window, let responder = window.firstResponder as? NSView,
+        guard let responder = window.firstResponder as? NSView,
               responder.isDescendant(of: self), let change = keyboardModifierChange?.cgEvent?.copy() else { return event }
         change.flags = CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
         change.timestamp = CGEventTimestamp(event.timestamp * 1_000_000_000)
