@@ -565,6 +565,9 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     package var projection: NativeCanvasProjection?
     private weak var hostingWindow: NSWindow?
     private var screenObserver: (any NSObjectProtocol)?
+    private var modifierMonitor: Any?
+    /// The last modifier change for this view's window that named its key, which a keyboard sent.
+    private var keyboardModifierChange: NSEvent?
     package override var intrinsicContentSize: NSSize { contentSize?() ?? super.intrinsicContentSize }
     package required init(rootView: AnyView) { content = rootView; super.init(rootView: rootView) }
     package required init?(coder: NSCoder) { nil }
@@ -586,6 +589,25 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
     }
     isolated deinit {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+    }
+    /// The modifier change to give DeviceKit's views for `event`.
+    ///
+    /// macOS reports the modifiers released while a system shortcut such as ⌘⇧5 held the keyboard as one change that
+    /// names no key and comes from no keyboard. DeviceKit's views release nothing for it, so the device would take each
+    /// later tap as one with those modifiers until a keyboard's next modifier change. Such a change for those views
+    /// becomes one from the keyboard whose modifiers changed last, which carries the same modifiers.
+    package func modifierChange(for event: NSEvent) -> NSEvent {
+        guard let window, event.window === window else { return event }
+        guard event.keyCode == 0 else {
+            keyboardModifierChange = event
+            return event
+        }
+        guard let responder = window.firstResponder as? NSView,
+              responder.isDescendant(of: self), let change = keyboardModifierChange?.cgEvent?.copy() else { return event }
+        change.flags = CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+        change.timestamp = CGEventTimestamp(event.timestamp * 1_000_000_000)
+        return NSEvent(cgEvent: change) ?? event
     }
     package override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
@@ -601,6 +623,11 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
             }
         }
         projection?.invalidate()
+        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+        keyboardModifierChange = nil
+        modifierMonitor = window == nil ? nil : NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.modifierChange(for: event) ?? event
+        }
         // DeviceKit unregisters the Pop canvas's input surfaces when it leaves a window. A retained SwiftUI graph
         // does not register them on return, so every new attachment needs fresh representable views.
         guard let window else {

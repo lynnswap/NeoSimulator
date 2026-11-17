@@ -52,6 +52,37 @@ extension SimulatorHostTests {
         try await session.stop()
     }
 
+    @Test func remoteKeyboardReleasesTheModifiersThatAChangeNamingNoKeyNoLongerCarries() async throws {
+        _ = NSApplication.shared
+        let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)
+        let device = try #require(CoreDeviceInventoryDecoder.decode(data).first)
+        let transport = TestRemoteScreenTransport()
+        transport.inputCapabilities = [.keyboard]
+        let session = RemoteDeviceScreenSession(device: device) { _, _, _ in transport }
+        try await session.start()
+        let input = RemoteDeviceInputView(session: session)
+        input.isInputEnabled = true
+        var operations: [@MainActor () async throws -> Void] = []
+        input.enqueue = { operations.append($0) }
+        var held: Set<UInt16> = []
+        input.isKeyHeld = { held.contains($0) }
+        func change(_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags, timestamp: 0,
+                windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: keyCode))
+        }
+        held = [0x37]
+        input.flagsChanged(with: try change(0x37, .command))
+        held = [0x37, 0x38]
+        input.flagsChanged(with: try change(0x38, [.command, .shift]))
+        // macOS took ⌘⇧5 and reports the keys' release as one change that names neither.
+        held = []
+        input.flagsChanged(with: try change(0, []))
+        for operation in operations { try await operation() }
+        #expect(transport.keys.map(\.usage) == [0xE3, 0xE1, 0xE3, 0xE1])
+        #expect(transport.keys.map(\.state) == [.down, .down, .up, .up])
+        try await session.stop()
+    }
+
     @Test func remoteScreenForwardsScrollingWithoutLimitingItToTheTouchscreenEdges() async throws {
         _ = NSApplication.shared
         let data = Data(#"{"result":{"devices":[{"identifier":"fixture-command","properties":{"hardware":{"fidelity":"physical"},"state":{"name":"Fixture"}}}]}}"#.utf8)

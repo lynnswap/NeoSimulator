@@ -17,6 +17,15 @@ package final class RemoteDeviceInputView: NSView {
     /// The JIS 英数 and かな keys whose key-down arrived and whose key-up has not.
     private var pressedInputModeKeys: Set<UInt16> = []
     private static let inputModeKeyCodes: Set<UInt16> = [UInt16(kVK_JIS_Eisu), UInt16(kVK_JIS_Kana)]
+    /// The modifier keys whose presses the device has, by key code.
+    private var pressedModifiers: Set<UInt16> = []
+    /// Whether the Mac holds a key. A modifier change carries the modifiers held on both sides of the keyboard, so it
+    /// does not tell which of two like keys changed.
+    package var isKeyHeld: (UInt16) -> Bool = { CGEventSource.keyState(.combinedSessionState, key: $0) }
+    private static let modifierFlags: [UInt16: NSEvent.ModifierFlags] = Dictionary(uniqueKeysWithValues: [
+        (kVK_Command, NSEvent.ModifierFlags.command), (kVK_RightCommand, .command), (kVK_Shift, .shift), (kVK_RightShift, .shift),
+        (kVK_Option, .option), (kVK_RightOption, .option), (kVK_Control, .control), (kVK_RightControl, .control),
+    ].map { (UInt16($0.0), $0.1) })
     package override var acceptsFirstResponder: Bool { true }
     package override var isFlipped: Bool { true }
 
@@ -36,6 +45,7 @@ package final class RemoteDeviceInputView: NSView {
     package func releaseFocus() {
         resetMouseGestures()
         pressedInputModeKeys = []
+        pressedModifiers = []
         enqueue? { [session] in try await session.releaseInputs() }
     }
     package override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
@@ -43,6 +53,7 @@ package final class RemoteDeviceInputView: NSView {
     package func releaseModifiers(_ events: [NSEvent]) {
         for event in events {
             guard let usage = Self.keyUsage[event.keyCode] else { continue }
+            pressedModifiers.remove(event.keyCode)
             enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
         }
     }
@@ -64,15 +75,24 @@ package final class RemoteDeviceInputView: NSView {
         }
     }
     package override func flagsChanged(with event: NSEvent) {
-        guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
-        if event.keyCode == UInt16(kVK_CapsLock) {
+        guard isInputEnabled, session.inputCapabilities.contains(.keyboard) else { return }
+        if event.keyCode == UInt16(kVK_CapsLock), let usage = Self.keyUsage[event.keyCode] {
             enqueueInput(for: .keyboard) { [session] in
                 try await session.sendKey(usage, state: .down)
                 try await session.sendKey(usage, state: .up)
             }
-        } else {
-            let state: RemoteDeviceButtonState = CGEventSource.keyState(.combinedSessionState, key: event.keyCode) ? .down : .up
+        } else if Self.modifierFlags[event.keyCode] != nil, let usage = Self.keyUsage[event.keyCode] {
+            let state: RemoteDeviceButtonState = isKeyHeld(event.keyCode) ? .down : .up
+            if state == .down { pressedModifiers.insert(event.keyCode) } else { pressedModifiers.remove(event.keyCode) }
             enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: state) }
+        }
+        // macOS reports the modifiers released while a system shortcut such as ⌘⇧5 held the keyboard as one change that
+        // names no key. Without their releases the device would take each later tap as one with those modifiers.
+        for keyCode in pressedModifiers.sorted() {
+            guard let flag = Self.modifierFlags[keyCode], !event.modifierFlags.contains(flag),
+                  let usage = Self.keyUsage[keyCode] else { continue }
+            pressedModifiers.remove(keyCode)
+            enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
         }
     }
 
@@ -80,7 +100,7 @@ package final class RemoteDeviceInputView: NSView {
         for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
         mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
         if kinds.contains(.gesture) { interruptTrackpadGestures() }
-        if kinds.contains(.keyboard) { pressedInputModeKeys = [] }
+        if kinds.contains(.keyboard) { pressedInputModeKeys = []; pressedModifiers = [] }
     }
 
     package func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
