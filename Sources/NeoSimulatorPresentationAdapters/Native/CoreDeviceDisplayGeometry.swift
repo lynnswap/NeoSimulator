@@ -591,6 +591,20 @@ package final class NativeCanvasHostingView: NSHostingView<AnyView> {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
     }
+    /// The modifier change to dispatch for `event`: the one that the canvas with the keyboard gives DeviceKit's views,
+    /// or `event` itself when no canvas has the keyboard.
+    ///
+    /// DeviceKit takes modifier changes in an event monitor of its own, so NeoSimulator's application calls this before
+    /// it dispatches the event to any monitor. In an application that does not, the canvas's own monitor gives
+    /// DeviceKit the change only when it runs before DeviceKit's.
+    package static func modifierChange(dispatching event: NSEvent) -> NSEvent {
+        var view = event.window?.firstResponder as? NSView
+        while let current = view {
+            if let canvas = current as? NativeCanvasHostingView { return canvas.modifierChange(for: event) }
+            view = current.superview
+        }
+        return event
+    }
     /// The modifier change to give DeviceKit's views for `event`.
     ///
     /// macOS reports the modifiers released while a system shortcut such as ⌘⇧5 held the keyboard as one change that
