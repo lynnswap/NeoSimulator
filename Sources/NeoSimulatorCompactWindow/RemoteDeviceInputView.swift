@@ -14,6 +14,9 @@ package final class RemoteDeviceInputView: NSView {
     package var isInputEnabled = false {
         didSet { if oldValue && !isInputEnabled { releaseFocus() } }
     }
+    /// The JIS 英数 and かな keys whose key-down arrived and whose key-up has not.
+    private var pressedInputModeKeys: Set<UInt16> = []
+    private static let inputModeKeyCodes: Set<UInt16> = [UInt16(kVK_JIS_Eisu), UInt16(kVK_JIS_Kana)]
     package override var acceptsFirstResponder: Bool { true }
     package override var isFlipped: Bool { true }
 
@@ -32,6 +35,7 @@ package final class RemoteDeviceInputView: NSView {
     }
     package func releaseFocus() {
         resetMouseGestures()
+        pressedInputModeKeys = []
         enqueue? { [session] in try await session.releaseInputs() }
     }
     package override func resignFirstResponder() -> Bool { releaseFocus(); return super.resignFirstResponder() }
@@ -46,11 +50,18 @@ package final class RemoteDeviceInputView: NSView {
     package override func keyDown(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), !event.isARepeat,
               let usage = Self.keyUsage[event.keyCode] else { return }
+        if Self.inputModeKeyCodes.contains(event.keyCode) { pressedInputModeKeys.insert(event.keyCode) }
         enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .down) }
     }
     package override func keyUp(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
-        enqueueInput(for: .keyboard) { [session] in try await session.sendKey(usage, state: .up) }
+        // macOS's input method takes the key-downs of the JIS 英数 and かな keys to switch the Mac's input source, so
+        // only their key-ups arrive. The device switches its input mode on the press, as with a JIS hardware keyboard.
+        let pressesFirst = Self.inputModeKeyCodes.contains(event.keyCode) && pressedInputModeKeys.remove(event.keyCode) == nil
+        enqueueInput(for: .keyboard) { [session] in
+            if pressesFirst { try await session.sendKey(usage, state: .down) }
+            try await session.sendKey(usage, state: .up)
+        }
     }
     package override func flagsChanged(with event: NSEvent) {
         guard isInputEnabled, session.inputCapabilities.contains(.keyboard), let usage = Self.keyUsage[event.keyCode] else { return }
@@ -69,6 +80,7 @@ package final class RemoteDeviceInputView: NSView {
         for kind in kinds { capabilityGenerations[kind, default: 0] += 1 }
         mouseGestures = mouseGestures.filter { !kinds.contains($0.value.kind.capability) }
         if kinds.contains(.gesture) { interruptTrackpadGestures() }
+        if kinds.contains(.keyboard) { pressedInputModeKeys = [] }
     }
 
     package func enqueueInput(for kind: RemoteDeviceInputKind, _ operation: @escaping @MainActor () async throws -> Void) {
