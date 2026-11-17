@@ -1,5 +1,6 @@
 import ABIBridge
 import AppKit
+import Carbon.HIToolbox
 import NeoSimulatorDeviceIO
 import NeoSimulatorKit
 import os
@@ -86,6 +87,8 @@ package final class NativeDeviceKeyboard {
         guard !isStopped, [.keyDown, .keyUp, .flagsChanged].contains(event.type),
               event.type != .keyDown || !event.isARepeat else { return }
         let targets: [any NativeKeyboardService]
+        // A release sent to every keyboard is for whichever one holds the key, so no keyboard presses a key for it.
+        var releasesForEveryKeyboard = false
         // A keyboard that starts while no other one remains takes the modifiers the event carries. Otherwise the
         // remaining keyboards hold them, from their own modifier changes or the synchronization for focus.
         var startsAlone = false
@@ -110,6 +113,7 @@ package final class NativeDeviceKeyboard {
             } else if Self.releases(event) {
                 // A keyboard that does not hold the key or modifier sends nothing for it.
                 targets = allKeyboards
+                releasesForEveryKeyboard = true
             } else if let activeSender, let macKeyboard = try macKeyboard(activeSender) {
                 targets = [macKeyboard]
                 startsAlone = !hadMacKeyboards
@@ -125,6 +129,10 @@ package final class NativeDeviceKeyboard {
             enqueue { [weak self] in
                 do {
                     if let heldModifiers { try await keyboard.send(heldModifiers) }
+                    // The keyboard's keys are read after its earlier input has been translated.
+                    if !releasesForEveryKeyboard, let press = Self.consumedPress(before: event, on: keyboard) {
+                        try await keyboard.send(press)
+                    }
                     try await keyboard.send(event)
                 } catch { self?.onFailure(error) }
             }
@@ -272,6 +280,17 @@ package final class NativeDeviceKeyboard {
         NSEvent.keyEvent(with: .flagsChanged, location: event.locationInWindow, modifierFlags: flags,
             timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: "",
             charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0)
+    }
+
+    /// The press of a JIS 英数 or かな key that `event` releases without the keyboard holding it. macOS's input method
+    /// takes these keys' key-downs to switch the Mac's input source, so only the key-ups arrive. The guest switches its
+    /// input mode on the press, as it does with a JIS hardware keyboard.
+    private static func consumedPress(before event: NSEvent, on keyboard: any NativeKeyboardService) -> NSEvent? {
+        guard event.type == .keyUp, [UInt16(kVK_JIS_Eisu), UInt16(kVK_JIS_Kana)].contains(event.keyCode),
+              !keyboard.heldKeyCodes.contains(event.keyCode) else { return nil }
+        return NSEvent.keyEvent(with: .keyDown, location: event.locationInWindow, modifierFlags: event.modifierFlags,
+            timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: "",
+            charactersIgnoringModifiers: "", isARepeat: false, keyCode: event.keyCode)
     }
 
     /// A key-up for a held key. The observer takes the key from the key code alone, not from characters or modifiers.

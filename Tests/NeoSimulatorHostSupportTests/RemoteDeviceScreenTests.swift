@@ -2983,6 +2983,41 @@ struct RemoteDeviceScreenTests {
         #expect(failures.isEmpty)
     }
 
+    @Test func nativeKeyboardPressesTheJISInputModeKeysWhoseKeyDownsTheMacTook() async throws {
+        let runtime = ABIRuntime.shared
+        let bindings = try await NativeKeyboardBindings(runtime: runtime)
+        let report = try CoreDeviceHIDService.reportABI(runtime: runtime)
+        let data = try runtime.resolveAndWait(.swift(.type("Foundation.Data")))
+        let readData = try report.type.resolveAndWait(.swift(.getter("data", as: (() -> Data).self,
+            valueABIs: [report.type: report.abi, data: try .structure(named: data.name, fields: [.uint64, .uint64])],
+            receiverABI: report.abi)))
+        let translation = {
+            let translator = try bindings.makeTranslator()
+            return { (event: NSEvent) throws -> [Data] in try translator.reports(for: event).map { try unsafe readData.unsafeInvoke(on: $0.value) } }
+        }
+        let transport = KeyboardFixtureTransport()
+        transport.makeTranslation = translation
+        let keyboard = NativeDeviceKeyboard(transport: transport)
+        var events: [NSEvent] = []
+        func key(_ type: NSEvent.EventType, _ code: Int) throws -> NSEvent {
+            let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(code)))
+            events.append(event)
+            transport.senders[ObjectIdentifier(event)] = 0xA
+            return event
+        }
+        // The Mac's input method took the 英数 key's key-down; the かな key arrives whole, as without an input method.
+        let eisu = try key(.keyUp, kVK_JIS_Eisu)
+        let kana = [try key(.keyDown, kVK_JIS_Kana), try key(.keyUp, kVK_JIS_Kana)]
+        for event in [eisu] + kana { keyboard.handle(event) }
+        try await keyboard.removeServices()
+
+        let translate = try translation()
+        let press = try translate(try key(.keyDown, kVK_JIS_Eisu))
+        #expect(!press.isEmpty)
+        #expect(transport.keyboards.map(\.reports) == [press + (try translate(eisu)) + (try kana.flatMap { try translate($0) })])
+    }
+
     @Test func nativeKeyboardReleasesHeldKeysWhenTheLastDisplayLosesTheKeyboard() async throws {
         let runtime = ABIRuntime.shared
         let bindings = try await NativeKeyboardBindings(runtime: runtime)
