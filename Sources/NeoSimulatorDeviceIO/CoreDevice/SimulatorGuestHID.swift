@@ -195,7 +195,7 @@ package final class GuestHIDConnection {
 package struct GuestHIDCodec {
     /// The message types that CoreDevice sends the guest's touchscreen, button, and UniversalHID services.
     package enum MessageType: String {
-        case digitizerEvent = "IndigoDigitizerEvent", buttonEvent = "IndigoButtonEvent", request = "Request"
+        case digitizerEvent = "IndigoDigitizerEvent", request = "Request"
         case orientation = "OrientationRequest"
     }
 
@@ -208,7 +208,6 @@ package struct GuestHIDCodec {
     /// Encodes the payload of each message type with Mercury's encoder for the payload's type.
     private let encoders: [MessageType: (NativeSwiftValue) throws -> xpc_object_t]
     private let makeDigitizerEvent: (CGPoint, CGPoint?, RemoteDeviceTouchPhase, RemoteDeviceTouchEdge) throws -> NativeSwiftValue
-    private let makeButtonEvent: (UInt16, UInt16, RemoteDeviceButtonState) throws -> NativeSwiftValue
     private let requestType: NativeSwiftType
     private let readReportData: NativeSwiftMethod<() -> Data>
     private let readCreatedService: (xpc_object_t) throws -> NativeSwiftValue
@@ -230,15 +229,13 @@ package struct GuestHIDCodec {
         let edge = try await runtime.resolve(.swift(.type("CoreDevice.DigitizerEdge")))
         let target = try await runtime.resolve(.swift(.type("CoreDevice.DigitizerTarget")))
         let digitizer = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.IndigoDigitizerEvent")))
-        let buttonState = try await runtime.resolve(.swift(.type("CoreDevice.HIDButtonState")))
-        let button = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.IndigoButtonEvent")))
         let request = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.DDIUniversalHIDServicePayload.Request")))
         requestType = request
         orientationRequestType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.OrientationRequest")))
         orientationType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceOrientation")))
         rotationDirectionType = try await runtime.resolve(.swift(.type("CoreDevice.DeviceOrientationRotationDirection")))
         // CoreDevice passes these resilient values by address.
-        let abis = try Dictionary(uniqueKeysWithValues: [point, eventType, edge, target, digitizer, buttonState, button]
+        let abis = try Dictionary(uniqueKeysWithValues: [point, eventType, edge, target, digitizer]
             .map { ($0, try NativeType.opaque(named: $0.name)) })
         // CoreDevice's digitizer makes its points with the CGFloat overload, from the screen's unit coordinates unscaled.
         let makePoint = try await point.resolve(.swift(.initializer("init(x:y:)",
@@ -253,12 +250,6 @@ package struct GuestHIDCodec {
                 second.map { try unsafe makePoint.unsafeInvoke($0.x, $0.y) }, eventType.makeEnumCase(named: name),
                 edge.makeEnumCase(named: touchEdge.rawValue), target.makeEnumCase(named: "mainScreen"))
         }
-        let makeButton = try await button.resolve(.swift(.initializer("init(usagePage:usageCode:state:)",
-            as: ((UInt16, UInt16, NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
-        makeButtonEvent = { page, usage, state in
-            try unsafe makeButton.unsafeInvoke(page, usage, buttonState.makeEnumCase(named: state.rawValue))
-        }
-
         let report = try await runtime.prepare { try CoreDeviceHIDService.reportABI(runtime: $0) }
         let data = try await runtime.resolve(.swift(.type("Foundation.Data")))
         readReportData = try await report.type.resolve(.swift(.getter("data", as: (() -> Data).self,
@@ -268,7 +259,7 @@ package struct GuestHIDCodec {
         let encoderType = try await runtime.resolve(.swift(.type("Mercury.XPCObjectEncoder")))
         let makeEncoder = try await encoderType.resolve(.swift(.initializer("init()", as: (() -> NativeSwiftValue).self)))
         var encoders: [MessageType: (NativeSwiftValue) throws -> xpc_object_t] = [:]
-        let payloadTypes: [(MessageType, NativeSwiftType)] = [(.digitizerEvent, digitizer), (.buttonEvent, button),
+        let payloadTypes: [(MessageType, NativeSwiftType)] = [(.digitizerEvent, digitizer),
             (.request, request), (.orientation, orientationRequestType)]
         for (type, payloadType) in payloadTypes {
             let encode = try await encoderType.resolve(.swift(.method(
@@ -342,10 +333,6 @@ package struct GuestHIDCodec {
     package func digitizerEvent(at point: CGPoint, second: CGPoint?, phase: RemoteDeviceTouchPhase,
                         edge: RemoteDeviceTouchEdge) throws -> NativeSwiftValue {
         try makeDigitizerEvent(point, second, phase, edge)
-    }
-
-    package func buttonEvent(usagePage: UInt16, usage: UInt16, state: RemoteDeviceButtonState) throws -> NativeSwiftValue {
-        try makeButtonEvent(usagePage, usage, state)
     }
 
     /// The request that creates the service `descriptor`, a CoreDevice `HIDServiceDescriptor`, describes. It is the only
@@ -423,14 +410,5 @@ package final class GuestDeviceOrientation {
     private func send(_ request: NativeSwiftValue) async throws -> GuestOrientationReading {
         if connection.hasFailed { connection = try await guest.connection(to: Self.feature) }
         return try codec.orientation(from: await connection.request(.orientation, request, timeout: timeout))
-    }
-}
-
-extension GuestHIDConnection {
-    package func postButton(usagePage page: Int, usage: Int, state: RemoteDeviceButtonState) throws {
-        guard let usagePage = UInt16(exactly: page), let usageCode = UInt16(exactly: usage) else {
-            throw DeviceIOError.unavailable("guest-button-usage", "The guest's buttons take 16-bit usage pages and usages.")
-        }
-        try post(.buttonEvent, codec.buttonEvent(usagePage: usagePage, usage: usageCode, state: state))
     }
 }

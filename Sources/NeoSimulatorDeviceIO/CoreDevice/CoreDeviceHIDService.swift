@@ -109,6 +109,11 @@ package final class CoreDeviceHIDService {
         return try await descriptor(for: gesture, runtime: runtime)
     }
 
+    package static func mainScreenButtonsDescriptor(runtime: ABIRuntime) async throws -> NativeSwiftValue {
+        let serviceType = try await runtime.resolve(.swift(.type("CoreDeviceUtilities.HIDServiceType")))
+        return try await descriptor(for: serviceType.makeEnumCase(named: "mainScreenButtons"), runtime: runtime)
+    }
+
     private static func descriptor(for service: NativeSwiftValue, runtime: ABIRuntime) async throws -> NativeSwiftValue {
         let serviceType = service.type
         let descriptorType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceDescriptor")))
