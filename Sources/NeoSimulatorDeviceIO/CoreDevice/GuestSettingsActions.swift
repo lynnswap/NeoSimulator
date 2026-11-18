@@ -122,7 +122,17 @@ package final class GuestSettingsActions {
             let name = "CoreDeviceUtilities." + declaration
             let type = try await runtime.resolve(.swift(.type(name)))
             action = try await unsafe type.resolve(.swift(.staticGetter("identifier", as: (() -> String).self))).unsafeInvoke()
-            let location = try await unsafe type.resolve(.swift(.staticGetter("executionLocation", as: (() -> NativeSwiftValue).self))).unsafeInvoke()
+            // CoreDeviceUtilities 699.2 exports executionLocation on ActionDeclaration rather than on each
+            // declaration, so use the protocol member when the installed declaration has none.
+            let location: NativeSwiftValue
+            do {
+                location = try await unsafe type.resolve(.swift(.staticGetter("executionLocation",
+                    as: (() -> NativeSwiftValue).self))).unsafeInvoke()
+            } catch ABIResolutionError.declarationNotFound {
+                location = try await unsafe type.resolve(.swift(.staticGetter(
+                    "CoreDeviceUtilities.ActionDeclaration.executionLocation",
+                    as: (() -> NativeSwiftValue).self))).unsafeInvoke()
+            }
             guard let payload = try await location.copyEnumPayload(forCase: "remoteDevice"),
                   let feature = try payload.withCopy({ $0 as? String }) else {
                 throw DeviceIOError.unavailable("guest-settings-action", "The setting is not provided by a guest service.")
