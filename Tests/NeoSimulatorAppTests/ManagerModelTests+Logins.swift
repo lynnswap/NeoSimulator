@@ -409,15 +409,16 @@ extension ManagerModelTests {
         #expect(device.taps.last == CGPoint(x: 0.275, y: 0.68))
     }
 
-    @Test func aSignInReadsTheSheetThatTheConsentTapBroughtUpBeforeTheDeadlineEndsTheWait() async throws {
+    @Test func aSignInReadsTheSheetThatTheConsentTapBroughtUpAfterTheDeadline() async throws {
         let device = SignInFixture()
         device.front = SignInFixture.consentAlert(naming: "login.example.com")
         device.onTap = {
             switch device.taps.count {
-            case 2:
+            case 1:
+                // The tap that accepts the alert brings the sheet up.
                 device.front = SignInFixture.application("com.example.app")
                 device.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
-            case 3:
+            case 2:
                 device.offer = []
                 device.page = nil
             default: break
@@ -429,21 +430,38 @@ extension ManagerModelTests {
                 CGRect(x: 220, y: 520, width: 140, height: 48),
             ]
         }
-        // The deadline ends while the sheet that the tap showed is only one read away.
+        // The deadline has already ended when the tap lands, so the sheet is only one read away.
+        var pace = WebAuthenticationSignIn.Pace()
+        pace.appearance = .zero
+        pace.completion = .seconds(1)
+        pace.button = .seconds(1)
+        pace.interval = .milliseconds(1)
+        pace.tapAgain = .milliseconds(20)
+        try await WebAuthenticationSignIn(
+            device: device, login: premium(origins: ["https://login.example.com"]),
+            password: "s3cret", pace: pace
+        ).run()
+        #expect(device.taps.count == 2)
+        #expect(
+            device.scripts.filter { $0 != .state }
+                == [.signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com")])
+    }
+
+    @Test func aConsentAlertThatStaysUpEndsTheWaitInsteadOfTappingForever() async throws {
+        let device = SignInFixture()
+        device.front = SignInFixture.consentAlert(naming: "login.example.com")
         var pace = WebAuthenticationSignIn.Pace()
         pace.appearance = .milliseconds(1)
         pace.completion = .seconds(1)
         pace.button = .seconds(1)
         pace.interval = .milliseconds(1)
-        pace.tapAgain = .milliseconds(1)
-        try await WebAuthenticationSignIn(
-            device: device, login: premium(origins: ["https://login.example.com"]),
-            password: "s3cret", pace: pace
-        ).run()
-        #expect(device.taps.count == 3)
-        #expect(
-            device.scripts.filter { $0 != .state }
-                == [.signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com")])
+        pace.tapAgain = .zero
+        await #expect(throws: WebAuthenticationSignIn.Failure.noSheet) {
+            try await WebAuthenticationSignIn(
+                device: device, login: premium(origins: ["https://login.example.com"]),
+                password: "s3cret", pace: pace
+            ).run()
+        }
     }
 
     @Test func aSignInFillsNothingForAnotherAppAnotherSiteOrAPageThatIsOffTheScreen() async throws {
