@@ -11,7 +11,7 @@ package final class GuestScreenInput: NativeScreenInputTransport {
         case contacts(GuestContactInput)
     }
     private let digitizer: Digitizer
-    private let buttons: GuestHIDConnection
+    private let buttons: GuestButtonInput
     private let codec: GuestHIDCodec
     private var pressed = RemoteScreenPressedInputs()
 
@@ -21,7 +21,7 @@ package final class GuestScreenInput: NativeScreenInputTransport {
         } else {
             digitizer = .indigo(try await guest.connection(to: CoreDeviceScreenInput.features[.digitizer]!))
         }
-        buttons = try await guest.connection(to: CoreDeviceScreenInput.features[.button]!)
+        buttons = GuestButtonInput { guest }
         codec = guest.codec
     }
 
@@ -39,8 +39,9 @@ package final class GuestScreenInput: NativeScreenInputTransport {
                 throw DeviceIOError.unavailable("guest-contact-input", "This connection has no contact identity input.")
             }
             try await input.send(contacts)
-        case .button(let page, let usage, let state):
-            try buttons.postButton(usagePage: page, usage: usage, state: state)
+        case .button:
+            try await buttons.send(input)
+            return
         case .key, .pointer, .pointerButton, .trackpad, .pointerEvent:
             throw DeviceIOError.unavailable("remote-display-input", "The guest's screen input carries only touches and buttons.")
         }
@@ -60,16 +61,13 @@ package final class GuestScreenInput: NativeScreenInputTransport {
                 .map { NativeTouchContact(id: $0.key, point: $0.value, isTouching: false) }
             do { try await send(.contacts(releases)) } catch { failures.append(error.localizedDescription) }
         }
-        for button in pressed.buttons.sorted(by: { ($0.page, $0.usage) < ($1.page, $1.usage) }) {
-            do { try await send(.button(button.page, button.usage, .up)) } catch { failures.append(error.localizedDescription) }
-        }
         do {
             switch digitizer {
             case .indigo(let connection): try await connection.flush()
             case .contacts(let input): try await input.stop()
             }
         } catch { failures.append(error.localizedDescription) }
-        do { try await buttons.flush() } catch { failures.append(error.localizedDescription) }
+        do { try await buttons.stop() } catch { failures.append(error.localizedDescription) }
         if !failures.isEmpty { throw DeviceIOError.io("remote-input-release", failures.joined(separator: "\n")) }
     }
 }
@@ -122,13 +120,18 @@ private final class GuestContactInput {
     }
 }
 
-/// Sends button usages as CoreDevice-compatible Indigo events while DeviceKit owns touches.
+/// Sends button usages through the guest's UniversalHID service.
 /// Connects on the first press using only the booted guest, without delaying the screen.
 /// Reconnects after disconnection without replaying previous input.
 @MainActor
 package final class GuestButtonInput: NativeScreenInputTransport {
     private let prepare: @MainActor () async throws -> SimulatorGuestHID
-    private var connection: GuestHIDConnection?
+    private struct Connection {
+        let transport: GuestHIDConnection
+        let service: CoreDeviceHIDService
+        let reports: CoreDeviceButtonReports
+    }
+    private var connection: Connection?
     private var pressed = RemoteScreenPressedInputs()
 
     package init(prepare: @escaping @MainActor () async throws -> SimulatorGuestHID) {
@@ -139,14 +142,19 @@ package final class GuestButtonInput: NativeScreenInputTransport {
         guard case .button(let page, let usage, let state) = input else {
             throw DeviceIOError.unavailable("remote-display-input", "The guest's button input carries only buttons.")
         }
-        let connection: GuestHIDConnection
-        if let current = self.connection, !current.hasFailed {
-            connection = current
+        let connected: Connection
+        if let current = connection, !current.transport.hasFailed, !current.service.isRemoved {
+            connected = current
         } else {
-            connection = try await prepare().connection(to: CoreDeviceScreenInput.features[.button]!)
-            self.connection = connection
+            let guest = try await prepare()
+            let transport = try await guest.connection(to: CoreDeviceHIDService.universalHIDFeature)
+            let reports = try await CoreDeviceButtonReports(runtime: .shared)
+            let descriptor = try await CoreDeviceHIDService.mainScreenButtonsDescriptor(runtime: .shared)
+            connected = Connection(
+                transport: transport, service: try await transport.createService(descriptor), reports: reports)
+            connection = connected
         }
-        try connection.postButton(usagePage: page, usage: usage, state: state)
+        try connected.service.send(connected.reports.make(usagePage: page, usage: usage, state: state))
         pressed.record(input)
     }
 
@@ -157,7 +165,12 @@ package final class GuestButtonInput: NativeScreenInputTransport {
         for button in pressed.buttons.sorted(by: { ($0.page, $0.usage) < ($1.page, $1.usage) }) {
             do { try await send(.button(button.page, button.usage, .up)) } catch { failures.append(error.localizedDescription) }
         }
-        do { try await connection?.flush() } catch { failures.append(error.localizedDescription) }
+        do {
+            try await connection?.service.stop()
+            pressed = RemoteScreenPressedInputs()
+        } catch { failures.append(error.localizedDescription) }
+        do { try await connection?.transport.flush() } catch { failures.append(error.localizedDescription) }
+        if failures.isEmpty { connection = nil }
         if !failures.isEmpty { throw DeviceIOError.io("remote-input-release", failures.joined(separator: "\n")) }
     }
 }

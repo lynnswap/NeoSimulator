@@ -2207,21 +2207,23 @@ struct RemoteDeviceScreenTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func guestScreenInputSendsCoreDevicesIndigoEventsToEachGuestServiceAndReleasesWhatTheyHold() async throws {
+    func guestScreenInputSendsTouchesAndUniversalHIDButtonsAndReleasesWhatTheyHold() async throws {
         let runtime = ABIRuntime.shared
         let peers = GuestHIDPeerFixture()
         let codec = try await GuestHIDCodec(runtime: runtime)
         let input = try await NativeDeviceScreenInput.connect(guest: SimulatorGuestHID(codec: codec, connect: peers.connect))
         let digitizer = try #require(CoreDeviceScreenInput.features[.digitizer])
-        let button = try #require(CoreDeviceScreenInput.features[.button])
-        #expect(peers.lookUps == [digitizer, button])
+        let button = CoreDeviceScreenInput.universalHIDFeature
+        let wire = try UniversalHIDFixtureMessages(runtime: runtime)
+        peers.reply = { _, reply in try wire.create(reply, id: 7) }
+        #expect(peers.lookUps == [digitizer])
         var results: [String?] = []
         input.sendTouch(at: CGPoint(x: 0.25, y: 0.5), secondPoint: nil, phase: .began, edge: .left)
         input.sendTouch(at: CGPoint(x: 0.25, y: 0.4), secondPoint: CGPoint(x: 0.75, y: 0.6), phase: .moved, edge: .left)
         try input.sendButton(usagePage: 0x0c, usage: 0x40, state: .down) { results.append($0?.localizedDescription) }
         try await input.stop()
         let touches = await peers.messages(to: digitizer, count: 3)
-        let buttons = await peers.messages(to: button, count: 2)
+        let buttons = await peers.messages(to: button, count: 5)
         withExtendedLifetime(input) {}
 
         // Each service receives CoreDevice's events in order. Stopping ends the held touch where it last was and
@@ -2233,10 +2235,15 @@ struct RemoteDeviceScreenTests {
             events.touch(moved.0, moved.1, "position", edge: "left"),
             events.touch(moved.0, moved.1, "end", edge: "left"),
         ].map { try codec.message(.digitizerEvent, to: digitizer, payload: $0) }
-        let expectedButtons = try [events.button(0x0c, 0x40, "down"), events.button(0x0c, 0x40, "up")]
-            .map { try codec.message(.buttonEvent, to: button, payload: $0) }
+        let descriptor = try await CoreDeviceHIDService.mainScreenButtonsDescriptor(runtime: runtime)
+        let expectedButtons = try [
+            await wire.createService(descriptor),
+            wire.send(Data([0x81, 0x0c, 0, 0x40, 0, 1]), to: 7),
+            wire.send(Data([0x81, 0x0c, 0, 0x40, 0, 0]), to: 7),
+            wire.request("resetGestureState", service: 7), wire.request("removeService", service: 7)]
+            .map { try codec.message(.request, to: button, payload: $0) }
         #expect(touches.count == 3 && zip(touches, expectedTouches).allSatisfy { xpc_equal($0, $1) })
-        #expect(buttons.count == 2 && zip(buttons, expectedButtons).allSatisfy { xpc_equal($0, $1) })
+        #expect(buttons.count == 5 && zip(buttons, expectedButtons).allSatisfy { xpc_equal($0, $1) })
         #expect(results == [nil])
     }
 
@@ -2262,7 +2269,7 @@ struct RemoteDeviceScreenTests {
 
         let universalHID = CoreDeviceScreenInput.universalHIDFeature
         let received = await peers.messages(to: universalHID, count: 9)
-        #expect(peers.lookUps == [universalHID, CoreDeviceScreenInput.features[.button]!])
+        #expect(peers.lookUps == [universalHID])
         let idType = try await runtime.resolve(.swift(.type("CoreDevice.HIDServiceID")))
         let id = try await unsafe idType.resolve(.swift(.staticGetter("mainTouchscreen", as: (() -> NativeSwiftValue).self,
             valueABIs: [idType: try .opaque(named: idType.name)]))).unsafeInvoke()
@@ -2282,7 +2289,9 @@ struct RemoteDeviceScreenTests {
         let runtime = ABIRuntime.shared
         let peers = GuestHIDPeerFixture()
         let codec = try await GuestHIDCodec(runtime: runtime)
-        let button = try #require(CoreDeviceScreenInput.features[.button])
+        let button = CoreDeviceScreenInput.universalHIDFeature
+        let wire = try UniversalHIDFixtureMessages(runtime: runtime)
+        peers.reply = { _, reply in try wire.create(reply, id: 7) }
         var lookUpFailures = 1
         let input = GuestButtonInput {
             SimulatorGuestHID(codec: codec) { name in
@@ -2302,7 +2311,7 @@ struct RemoteDeviceScreenTests {
         #expect(peers.lookUps.isEmpty)
         try await input.send(.button(home.page, home.usage, .down))
         #expect(peers.lookUps == [button])
-        _ = await peers.messages(to: button, count: 1)
+        _ = await peers.messages(to: button, count: 2)
 
         // Once the guest ends the connection, a press connects again and sends only itself.
         peers.endConnections()
@@ -2315,12 +2324,17 @@ struct RemoteDeviceScreenTests {
         // Stopping releases what the guest holds and sends it before the connection goes.
         try await input.send(.button(lock.page, lock.usage, .down))
         try await input.stop()
-        let received = await peers.messages(to: button, count: 4)
-        let events = try IndigoFixtureEvents(runtime: runtime)
-        let expected = try [events.button(0x0c, 0x40, "down"), events.button(0x0c, 0x40, "up"),
-                            events.button(0x0c, 0x30, "down"), events.button(0x0c, 0x30, "up")]
-            .map { try codec.message(.buttonEvent, to: button, payload: $0) }
-        #expect(received.count == 4 && zip(received, expected).allSatisfy { xpc_equal($0, $1) })
+        let received = await peers.messages(to: button, count: 8)
+        let descriptor = try await CoreDeviceHIDService.mainScreenButtonsDescriptor(runtime: runtime)
+        let create = try await wire.createService(descriptor)
+        let expected = try [
+            create, wire.send(Data([0x81, 0x0c, 0, 0x40, 0, 1]), to: 7),
+            create, wire.send(Data([0x81, 0x0c, 0, 0x40, 0, 0]), to: 7),
+            wire.send(Data([0x81, 0x0c, 0, 0x30, 0, 1]), to: 7),
+            wire.send(Data([0x81, 0x0c, 0, 0x30, 0, 0]), to: 7),
+            wire.request("resetGestureState", service: 7), wire.request("removeService", service: 7)]
+            .map { try codec.message(.request, to: button, payload: $0) }
+        #expect(received.count == 8 && zip(received, expected).allSatisfy { xpc_equal($0, $1) })
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -3577,6 +3591,10 @@ private struct UniversalHIDFixtureMessages {
     /// The request that sends `report`, a report of CoreDevice's UniversalHID module, to the service `id`.
     func send(_ report: NativeSwiftValue, to id: UInt64) throws -> NativeSwiftValue {
         let data = try unsafe readData.unsafeInvoke(on: report)
+        return try send(data, to: id)
+    }
+
+    func send(_ data: Data, to id: UInt64) throws -> NativeSwiftValue {
         let serviceID = try unsafe makeServiceID.unsafeInvoke(id)
         return try requestType.makeEnumCaseAndWait(named: "send", associatedValues: data, serviceID)
     }
@@ -3588,35 +3606,28 @@ private struct UniversalHIDFixtureMessages {
     }
 }
 
-/// The Indigo events that CoreDevice's digitizer and button services send, made with CoreDeviceUtilities' initializers
+/// The Indigo events that CoreDevice's digitizer service sends, made with CoreDeviceUtilities' initializers
 /// from the names of their native cases.
 @MainActor
 private struct IndigoFixtureEvents {
     private let eventType: NativeSwiftType
     private let edge: NativeSwiftType
     private let target: NativeSwiftType
-    private let state: NativeSwiftType
     private let makePoint: NativeSwiftFunction<(CGFloat, CGFloat) -> NativeSwiftValue>
     private let makeTouch: NativeSwiftFunction<(NativeSwiftValue, NativeSwiftValue?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) -> NativeSwiftValue>
-    private let makeButton: NativeSwiftFunction<(UInt16, UInt16, NativeSwiftValue) -> NativeSwiftValue>
 
     init(runtime: ABIRuntime) throws {
         let point = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerPoint")))
         let touch = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.IndigoDigitizerEvent")))
-        let button = try runtime.resolveAndWait(.swift(.type("CoreDeviceUtilities.IndigoButtonEvent")))
         eventType = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEventType")))
         edge = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerEdge")))
         target = try runtime.resolveAndWait(.swift(.type("CoreDevice.DigitizerTarget")))
-        state = try runtime.resolveAndWait(.swift(.type("CoreDevice.HIDButtonState")))
-        let abis = try Dictionary(uniqueKeysWithValues: [point, touch, button, eventType, edge, target, state]
+        let abis = try Dictionary(uniqueKeysWithValues: [point, touch, eventType, edge, target]
             .map { ($0, try NativeType.opaque(named: $0.name)) })
         makePoint = try point.resolveAndWait(.swift(.initializer("init(x:y:)", as: ((CGFloat, CGFloat) -> NativeSwiftValue).self,
             valueABIs: abis)))
         makeTouch = try touch.resolveAndWait(.swift(.initializer("init(pointOne:pointTwo:eventType:edge:target:)",
-            as: ((NativeSwiftValue, NativeSwiftValue?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) -> NativeSwiftValue).self,
-            valueABIs: abis)))
-        makeButton = try button.resolveAndWait(.swift(.initializer("init(usagePage:usageCode:state:)",
-            as: ((UInt16, UInt16, NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
+            as: ((NativeSwiftValue, NativeSwiftValue?, NativeSwiftValue, NativeSwiftValue, NativeSwiftValue) -> NativeSwiftValue).self, valueABIs: abis)))
     }
 
     /// A touch on the integrated screen.
@@ -3624,10 +3635,6 @@ private struct IndigoFixtureEvents {
         try unsafe makeTouch.unsafeInvoke(makePoint.unsafeInvoke(point.x, point.y),
             second.map { try unsafe makePoint.unsafeInvoke($0.x, $0.y) }, eventType.makeEnumCase(named: type),
             edge.makeEnumCase(named: side), target.makeEnumCase(named: "mainScreen"))
-    }
-
-    func button(_ page: UInt16, _ usage: UInt16, _ buttonState: String) throws -> NativeSwiftValue {
-        try unsafe makeButton.unsafeInvoke(page, usage, state.makeEnumCase(named: buttonState))
     }
 }
 
