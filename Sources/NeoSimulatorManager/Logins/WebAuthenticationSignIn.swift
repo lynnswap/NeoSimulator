@@ -447,6 +447,9 @@ package struct WebAuthenticationSignIn {
                                 x: button.frame.midX / application.frame.width,
                                 y: button.frame.midY / application.frame.height))
                         acceptedConsent = .now
+                        // The tap can bring the sheet up; read the screen again before the deadline decides that
+                        // no sheet came.
+                        continue
                     }
                 } else if acceptedConsent == nil {
                     throw Failure.otherApplication(nil)

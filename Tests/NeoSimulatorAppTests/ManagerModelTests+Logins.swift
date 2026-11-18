@@ -149,15 +149,16 @@ extension ManagerModelTests {
             script: script ?? "", signInButton: signInButton)
     }
 
-    /// A sign-in that looks often and does not wait long, for a device that answers at once.
+    /// A sign-in that looks often, with deadlines that tolerate a loaded test runner. A device that answers at once
+    /// still finishes in tens of milliseconds.
     private func signIn(
         on device: SignInFixture, userName: String = "premium@example.com",
         origins: [String] = ["https://login.example.com"], script: String? = nil, signInButton: String = ""
     ) -> WebAuthenticationSignIn {
         var pace = WebAuthenticationSignIn.Pace()
-        pace.appearance = .milliseconds(100)
-        pace.completion = .milliseconds(100)
-        pace.button = .milliseconds(100)
+        pace.appearance = .seconds(1)
+        pace.completion = .seconds(1)
+        pace.button = .seconds(1)
         pace.interval = .milliseconds(5)
         pace.tapAgain = .milliseconds(20)
         return WebAuthenticationSignIn(
@@ -406,6 +407,43 @@ extension ManagerModelTests {
         // Of two choices side by side, the leading one declines.
         device = try await signedIn(offering: [CGRect(x: 40, y: 520, width: 140, height: 48), CGRect(x: 220, y: 520, width: 140, height: 48)])
         #expect(device.taps.last == CGPoint(x: 0.275, y: 0.68))
+    }
+
+    @Test func aSignInReadsTheSheetThatTheConsentTapBroughtUpBeforeTheDeadlineEndsTheWait() async throws {
+        let device = SignInFixture()
+        device.front = SignInFixture.consentAlert(naming: "login.example.com")
+        device.onTap = {
+            switch device.taps.count {
+            case 2:
+                device.front = SignInFixture.application("com.example.app")
+                device.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
+            case 3:
+                device.offer = []
+                device.page = nil
+            default: break
+            }
+        }
+        device.onSubmit = {
+            device.offer = [
+                CGRect(x: 40, y: 520, width: 140, height: 48),
+                CGRect(x: 220, y: 520, width: 140, height: 48),
+            ]
+        }
+        // The deadline ends while the sheet that the tap showed is only one read away.
+        var pace = WebAuthenticationSignIn.Pace()
+        pace.appearance = .milliseconds(1)
+        pace.completion = .seconds(1)
+        pace.button = .seconds(1)
+        pace.interval = .milliseconds(1)
+        pace.tapAgain = .milliseconds(1)
+        try await WebAuthenticationSignIn(
+            device: device, login: premium(origins: ["https://login.example.com"]),
+            password: "s3cret", pace: pace
+        ).run()
+        #expect(device.taps.count == 3)
+        #expect(
+            device.scripts.filter { $0 != .state }
+                == [.signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com")])
     }
 
     @Test func aSignInFillsNothingForAnotherAppAnotherSiteOrAPageThatIsOffTheScreen() async throws {
