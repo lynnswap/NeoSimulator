@@ -21,7 +21,9 @@ private final class HostApplication: NSApplication {
         // Started with one of the command-line tool's commands, the executable asks the NeoSimulator that is running
         // and exits. Other arguments, such as those that Xcode and AppKit pass, start the app.
         if let command = CommandLine.arguments.dropFirst().first, NeoSimulatorCommand.launchArguments.contains(command) {
+            // `main()` exits for a command that failed, and returns after one that succeeded.
             NeoSimulatorCommand.main()
+            NeoSimulatorCommand.exit()
         }
 #endif
         let app = HostApplication.shared
