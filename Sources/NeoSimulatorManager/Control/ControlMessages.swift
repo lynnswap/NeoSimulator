@@ -81,7 +81,7 @@ extension LoginStore {
             } catch let failure as WebAuthenticationSignIn.Failure {
                 let kind: SignInOutcome.Kind =
                     switch failure {
-                    case .otherApplication: .refused
+                    case .otherApplication, .otherAlert: .refused
                     case .noSheet, .unrecognizedPage: .unrecognized
                     case .rejected, .timedOut: .failed
                     }

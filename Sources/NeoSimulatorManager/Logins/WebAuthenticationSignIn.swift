@@ -245,6 +245,9 @@ package struct WebAuthenticationSignIn {
     package enum Failure: Error, LocalizedError, Equatable {
         /// Another app than the login's is in front. Nil for the Home Screen and other system screens.
         case otherApplication(String?)
+        /// The system shows an alert that the sign-in does not answer: it does not ask to sign in with a site of
+        /// the login's origins.
+        case otherAlert
         /// The app showed no form of its own and no web authentication sheet in time.
         case noSheet
         /// The sheet's page is not at one of the login's origins, or has no form that asks for a step of the sign-in
@@ -259,6 +262,10 @@ package struct WebAuthenticationSignIn {
             switch self {
             case .otherApplication(let identifier?): "The login’s app is not in front. \(identifier) is."
             case .otherApplication(nil): "The login’s app is not in front."
+            case .otherAlert:
+                "The system shows an alert that does not ask to sign in with one of the login’s origins. Answer the "
+                    + "alert, then choose the login again. If the alert asks to sign in with another site, adding "
+                    + "that site to the login’s Web Origins lets the sign-in answer it."
             case .noSheet:
                 "The app showed no sign-in form and no web sign-in sheet. Open the app’s sign-in screen, then choose "
                     + "the login."
@@ -276,6 +283,9 @@ package struct WebAuthenticationSignIn {
     package struct Pace: Sendable {
         /// For the sheet's sign-in page to show, from the start.
         package var appearance: Duration = .seconds(20)
+        /// For the login's app to come to the front, from when the system is in front. The system is in front for
+        /// a moment while an app opens, and after an alert of its own is answered.
+        package var front: Duration = .seconds(3)
         /// For the sheet to close after the form is submitted.
         package var completion: Duration = .seconds(20)
         /// For a form's button to be enabled after its fields are filled in.
@@ -400,6 +410,10 @@ package struct WebAuthenticationSignIn {
     private func signInScreen() async throws -> Screen {
         let deadline = ContinuousClock.now + pace.appearance
         var acceptedConsent: ContinuousClock.Instant?
+        /// Since when the system has been in front without the login's app in between.
+        var systemInFrontSince: ContinuousClock.Instant?
+        /// Whether the system was last read with an alert in front that the sign-in does not answer.
+        var showsOtherAlert = false
         var lastOrigin: String?
         var sawSheet = false
         var unreadable: (any Error)?
@@ -409,6 +423,8 @@ package struct WebAuthenticationSignIn {
         while true {
             if let application = try await device.frontmostApplication() {
                 if application.bundleIdentifier == login.applicationIdentifier {
+                    systemInFrontSince = nil
+                    showsOtherAlert = false
                     // A screen that is still coming up can have its password field before its button.
                     do {
                         let form = try NativeFormSignIn(
@@ -438,31 +454,47 @@ package struct WebAuthenticationSignIn {
                     }
                 } else if application.bundleIdentifier != Self.springBoard {
                     throw Failure.otherApplication(application.bundleIdentifier)
-                } else if let button = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host))),
-                    application.frame.width > 0, application.frame.height > 0
-                {
-                    // The alert was read just now, so the tap lands on it. One that is still coming up ignores the tap,
-                    // and is tapped again if it is still there after a pause.
-                    if acceptedConsent.map({ ContinuousClock.now - $0 >= pace.tapAgain }) ?? true {
-                        let expired = ContinuousClock.now >= deadline
-                        if expired, readAfterDeadline { break }
-                        try await device.tap(
-                            at: CGPoint(
-                                x: button.frame.midX / application.frame.width,
-                                y: button.frame.midY / application.frame.height))
-                        acceptedConsent = .now
-                        if expired { readAfterDeadline = true }
-                        // The tap can bring the sheet up; read the screen again before the deadline decides that
-                        // no sheet came.
-                        continue
+                } else {
+                    let consent = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host)))
+                    let showedOtherAlert = showsOtherAlert
+                    showsOtherAlert = consent == nil && Self.alert(in: application) != nil
+                    // An alert that someone answered leaves the system in front on its way to the app's sheet.
+                    if showedOtherAlert, !showsOtherAlert { systemInFrontSince = nil }
+                    let since = systemInFrontSince ?? .now
+                    systemInFrontSince = since
+                    if let button = consent {
+                        // The alert was read just now, so the tap lands on it. One that is still coming up ignores
+                        // the tap, and is tapped again if it is still there after a pause. One whose place on the
+                        // screen cannot be read is waited for.
+                        if application.frame.width > 0, application.frame.height > 0,
+                            acceptedConsent.map({ ContinuousClock.now - $0 >= pace.tapAgain }) ?? true
+                        {
+                            let expired = ContinuousClock.now >= deadline
+                            if expired, readAfterDeadline { break }
+                            try await device.tap(
+                                at: CGPoint(
+                                    x: button.frame.midX / application.frame.width,
+                                    y: button.frame.midY / application.frame.height))
+                            acceptedConsent = .now
+                            if expired { readAfterDeadline = true }
+                            // The tap can bring the sheet up; read the screen again before the deadline decides
+                            // that no sheet came.
+                            continue
+                        }
+                    } else if acceptedConsent == nil, ContinuousClock.now - since >= pace.front {
+                        // The system has stayed in front for longer than it does on the way to the app's sheet.
+                        throw showsOtherAlert ? Failure.otherAlert : Failure.otherApplication(nil)
                     }
-                } else if acceptedConsent == nil {
-                    throw Failure.otherApplication(nil)
+                    // After the alert is answered, by the sign-in or by someone else, the system stays in front
+                    // until the sheet is up.
                 }
-                // After the alert is answered, the system stays in front until the sheet is up.
             }
             guard ContinuousClock.now < deadline else { break }
             try await Task.sleep(for: pace.interval)
+        }
+        // The wait ended with the system in front, and not on the way from an alert that the sign-in answered.
+        if systemInFrontSince != nil, acceptedConsent == nil {
+            throw showsOtherAlert ? Failure.otherAlert : Failure.otherApplication(nil)
         }
         if let unrecognizedForm { throw unrecognizedForm }
         if sawSheet { throw Failure.unrecognizedPage(origin: lastOrigin) }
@@ -480,6 +512,16 @@ package struct WebAuthenticationSignIn {
     static func consentButton(
         in springBoard: SimulatorAccessibilityElement, hosts: Set<String>
     ) -> SimulatorAccessibilityElement? {
+        guard let alert = alert(in: springBoard),
+            let message = alert.texts.first(where: { text in hosts.contains { names($0, in: text) } })
+        else { return nil }
+        return isRightToLeft(message) ? alert.buttons.first : alert.buttons.last
+    }
+
+    /// The two buttons, from the left, and the texts of an alert with two choices, if `springBoard` shows one.
+    private static func alert(
+        in springBoard: SimulatorAccessibilityElement
+    ) -> (buttons: [SimulatorAccessibilityElement], texts: [String])? {
         var elements: [SimulatorAccessibilityElement] = []
         func collect(_ element: SimulatorAccessibilityElement) {
             elements.append(element)
@@ -487,10 +529,8 @@ package struct WebAuthenticationSignIn {
         }
         collect(springBoard)
         let buttons = elements.filter { $0.role == .button && !$0.frame.isEmpty }.sorted { $0.frame.minX < $1.frame.minX }
-        let labels = elements.filter { $0.role == .staticText }.compactMap(\.label)
-        guard buttons.count == 2, let message = labels.first(where: { label in hosts.contains { names($0, in: label) } })
-        else { return nil }
-        return isRightToLeft(message) ? buttons.first : buttons.last
+        let texts = elements.filter { $0.role == .staticText }.compactMap(\.label)
+        return buttons.count == 2 && !texts.isEmpty ? (buttons, texts) : nil
     }
 
     /// Whether `text` has `host` as a whole host name, not as a part of a longer one.

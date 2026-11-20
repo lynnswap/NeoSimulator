@@ -153,10 +153,12 @@ extension ManagerModelTests {
     /// still finishes in tens of milliseconds.
     private func signIn(
         on device: SignInFixture, userName: String = "premium@example.com",
-        origins: [String] = ["https://login.example.com"], script: String? = nil, signInButton: String = ""
+        origins: [String] = ["https://login.example.com"], script: String? = nil, signInButton: String = "",
+        front: Duration = .seconds(1)
     ) -> WebAuthenticationSignIn {
         var pace = WebAuthenticationSignIn.Pace()
         pace.appearance = .seconds(1)
+        pace.front = front
         pace.completion = .seconds(1)
         pace.button = .seconds(1)
         pace.interval = .milliseconds(5)
@@ -473,6 +475,50 @@ extension ManagerModelTests {
                 == [.signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com")])
     }
 
+    @Test func aSignInWaitsForItsAppWhileTheSystemIsInFrontForAMoment() async throws {
+        // Someone answered the consent alert just before the sign-in was asked, and the sheet is still coming up.
+        let device = SignInFixture()
+        device.front = SignInFixture.application("com.apple.springboard")
+        device.onFrontRead = {
+            guard device.frontReads == 3 else { return }
+            device.front = SignInFixture.application("com.example.app")
+            device.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
+        }
+        device.onSubmit = { device.page = nil }
+        try await signIn(on: device).run()
+        #expect(device.taps.isEmpty)
+        #expect(
+            device.scripts.filter { $0 != .state }
+                == [.signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com")])
+
+        // The same after the app was in front for longer than the system may be: the wait for the app starts when
+        // the system comes to the front.
+        let late = SignInFixture()
+        late.front = SignInFixture.application("com.example.app")
+        let start = ContinuousClock.now
+        var systemReads = 0
+        late.onFrontRead = {
+            guard ContinuousClock.now - start >= .milliseconds(600), late.page == nil else { return }
+            systemReads += 1
+            late.front = SignInFixture.application(systemReads < 3 ? "com.apple.springboard" : "com.example.app")
+            if systemReads == 3 {
+                late.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
+            }
+        }
+        late.onSubmit = {
+            late.onFrontRead = nil
+            late.page = nil
+        }
+        var pace = WebAuthenticationSignIn.Pace()
+        pace.appearance = .seconds(5)
+        pace.front = .milliseconds(500)
+        pace.interval = .milliseconds(5)
+        try await WebAuthenticationSignIn(
+            device: late, login: premium(origins: ["https://login.example.com"]), password: "s3cret", pace: pace
+        ).run()
+        #expect(systemReads == 3 && late.scripts.contains { $0 != .state })
+    }
+
     @Test func aConsentAlertThatStaysUpEndsTheWaitInsteadOfTappingForever() async throws {
         let device = SignInFixture()
         device.front = SignInFixture.consentAlert(naming: "login.example.com")
@@ -495,13 +541,19 @@ extension ManagerModelTests {
             let device = SignInFixture()
             arrange(device)
             var failure: WebAuthenticationSignIn.Failure?
-            do { try await signIn(on: device).run() } catch { failure = error as? WebAuthenticationSignIn.Failure }
+            do {
+                try await signIn(on: device, front: .milliseconds(20)).run()
+            } catch {
+                failure = error as? WebAuthenticationSignIn.Failure
+            }
             #expect(device.taps.isEmpty && device.scripts.allSatisfy { $0 == .state })
             return failure
         }
         #expect(await refused { $0.front = SignInFixture.application("com.example.other") } == .otherApplication("com.example.other"))
         // The alert asks for another site, whose name only contains the login's.
-        #expect(await refused { $0.front = SignInFixture.consentAlert(naming: "login.example.com.other.example") } == .otherApplication(nil))
+        #expect(await refused { $0.front = SignInFixture.consentAlert(naming: "login.example.com.other.example") } == .otherAlert)
+        // The Home Screen stays in front.
+        #expect(await refused { $0.front = SignInFixture.application("com.apple.springboard") } == .otherApplication(nil))
         #expect(
             await refused {
                 $0.front = SignInFixture.application("com.example.app")
@@ -623,7 +675,16 @@ private final class SignInFixture: SignInDevice {
             ])
     }
 
-    func frontmostApplication() async throws -> SimulatorAccessibilityElement? { front }
+    /// How many times the sign-in has asked what is in front.
+    private(set) var frontReads = 0
+    /// Runs when the sign-in asks what is in front, before it is answered.
+    var onFrontRead: (() -> Void)?
+
+    func frontmostApplication() async throws -> SimulatorAccessibilityElement? {
+        frontReads += 1
+        onFrontRead?()
+        return front
+    }
 
     /// The buttons of the sheet's offer to save the password, while it shows. They belong to the sheet's process.
     var offer: [CGRect] = []
