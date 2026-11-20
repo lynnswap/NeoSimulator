@@ -455,10 +455,13 @@ package struct WebAuthenticationSignIn {
                 } else if application.bundleIdentifier != Self.springBoard {
                     throw Failure.otherApplication(application.bundleIdentifier)
                 } else {
+                    let consent = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host)))
+                    let showedOtherAlert = showsOtherAlert
+                    showsOtherAlert = consent == nil && Self.alert(in: application) != nil
+                    // An alert that someone answered leaves the system in front on its way to the app's sheet.
+                    if showedOtherAlert, !showsOtherAlert { systemInFrontSince = nil }
                     let since = systemInFrontSince ?? .now
                     systemInFrontSince = since
-                    let consent = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host)))
-                    showsOtherAlert = consent == nil && Self.alert(in: application) != nil
                     if let button = consent {
                         // The alert was read just now, so the tap lands on it. One that is still coming up ignores
                         // the tap, and is tapped again if it is still there after a pause. One whose place on the
@@ -489,7 +492,10 @@ package struct WebAuthenticationSignIn {
             guard ContinuousClock.now < deadline else { break }
             try await Task.sleep(for: pace.interval)
         }
-        if showsOtherAlert { throw Failure.otherAlert }
+        // The wait ended with the system in front, and not on the way from an alert that the sign-in answered.
+        if systemInFrontSince != nil, acceptedConsent == nil {
+            throw showsOtherAlert ? Failure.otherAlert : Failure.otherApplication(nil)
+        }
         if let unrecognizedForm { throw unrecognizedForm }
         if sawSheet { throw Failure.unrecognizedPage(origin: lastOrigin) }
         // A page that could not be read may have been the sheet's, such as one that another client inspects.
