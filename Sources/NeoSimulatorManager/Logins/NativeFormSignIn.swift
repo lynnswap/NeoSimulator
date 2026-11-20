@@ -262,9 +262,11 @@ package struct NativeFormSignIn {
         @Sendable func shownField(among elements: [SimulatorAccessibilityElement]) -> Int? {
             Self.field(showing: password, at: pressed.passwordField, among: elements)
         }
-        /// Nil while the app's elements cannot be read.
+        /// Nil while the app's elements cannot be read. An app that is not on the screen answers without elements.
         func showsPassword() async -> Bool? {
-            guard let application = try? await device.application(ofProcess: processIdentifier) else { return nil }
+            guard let application = try? await device.application(ofProcess: processIdentifier),
+                !application.children.isEmpty
+            else { return nil }
             return shownField(among: Self.elements(of: application)) != nil
         }
         func perform(
@@ -282,13 +284,13 @@ package struct NativeFormSignIn {
             let shows = await showsPassword()
             if shows == false { return }
             if shows == true, !pressedAgain {
-                // The same button: the one with its identifier, or the one at its place among the buttons.
+                // The same button is the one at its place among the buttons, with the identifier that it had.
                 pressedAgain = await perform(.press) { elements, _ in
                     let buttons = Self.buttons(among: elements)
-                    if let identifier = pressed.identifier {
-                        return buttons.first { elements[$0].identifier == identifier }
-                    }
-                    return buttons.indices.contains(pressed.button) ? buttons[pressed.button] : nil
+                    guard buttons.indices.contains(pressed.button),
+                        elements[buttons[pressed.button]].identifier == pressed.identifier
+                    else { return nil }
+                    return buttons[pressed.button]
                 }
             }
             guard ContinuousClock.now < deadline else { break }
