@@ -1,0 +1,6 @@
+// Debug builds for macOS are signed ad hoc, so they build without a certificate.
+// Local.xcconfig, which Git ignores, replaces these settings with an identity of your own.
+CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*] = -
+DEVELOPMENT_TEAM[config=Debug] =
+
+#include? "Local.xcconfig"

@@ -1,8 +1,8 @@
 {
   "default-configuration": "Debug",
   "configurations": [
-    "Debug",
-    "Release",
+    { "name": "Debug", "file": "Configurations/Signing.xcconfig" },
+    { "name": "Release", "file": "Configurations/Signing.xcconfig" },
   ],
   "localizations": {
     "development": "en",
@@ -164,6 +164,12 @@
       "children": [
         { "path": "LicensesSettingsTests.swift", "target-membership": [ "NeoSimulatorLicenseTests/compile-sources" ] },
       ],
+    }, {
+      "kind": "group",
+      "path": "Configurations",
+      "children": [
+        { "path": "Signing.xcconfig" },
+      ],
     },
   ],
   "targets": [
@@ -246,13 +252,10 @@
       "build-settings": {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
         "CODE_SIGN_ENTITLEMENTS": "NeoSimulator/NeoSimulator.entitlements",
-        "CODE_SIGN_IDENTITY[config=Debug]": "Apple Development",
-        "CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*]": "-",
         "CODE_SIGN_IDENTITY[config=Release]": "Apple Development",
         "CODE_SIGN_STYLE": "Automatic",
         "COMBINE_HIDPI_IMAGES": "YES",
         "CURRENT_PROJECT_VERSION": "1",
-        "DEVELOPMENT_TEAM[config=Debug]": "",
         "DEVELOPMENT_TEAM[config=Release]": "58KPFKMJJW",
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
@@ -290,13 +293,10 @@
       ],
       "build-settings": {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-        "CODE_SIGN_IDENTITY[config=Debug]": "Apple Development",
-        "CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*]": "-",
         "CODE_SIGN_IDENTITY[config=Release]": "Apple Development",
         "CODE_SIGN_STYLE": "Automatic",
         "COMBINE_HIDPI_IMAGES": "YES",
         "CURRENT_PROJECT_VERSION": "1",
-        "DEVELOPMENT_TEAM[config=Debug]": "",
         "DEVELOPMENT_TEAM[config=Release]": "58KPFKMJJW",
         "GENERATE_INFOPLIST_FILE": "NO",
         "GENERATE_PKGINFO_FILE": "NO",
@@ -325,12 +325,9 @@
         "frameworks",
       ],
       "build-settings": {
-        "CODE_SIGN_IDENTITY[config=Debug]": "Apple Development",
-        "CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*]": "-",
         "CODE_SIGN_IDENTITY[config=Release]": "Apple Development",
         "CODE_SIGN_STYLE": "Automatic",
         "CURRENT_PROJECT_VERSION": "1",
-        "DEVELOPMENT_TEAM[config=Debug]": "",
         "DEVELOPMENT_TEAM[config=Release]": "58KPFKMJJW",
         "GENERATE_INFOPLIST_FILE": "NO",
         "INFOPLIST_FILE": "NeoSimulatorDeviceKitPlugin/Info.plist",

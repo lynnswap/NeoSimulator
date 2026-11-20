@@ -58,6 +58,14 @@ hash from your keychain, or set `CODE_SIGN_IDENTITY`:
 scripts/build-local.sh --signing-identity 'Developer ID Application: Your Name (TEAMID)'
 ```
 
+Debug builds, from Xcode or `xcodebuild`, are ad hoc signed as well. To sign them with your Apple Development
+certificate, create `App/Configurations/Local.xcconfig` with your team ID. Git ignores the file:
+
+```
+CODE_SIGN_IDENTITY[config=Debug][sdk=macosx*] = Apple Development
+DEVELOPMENT_TEAM[config=Debug] = TEAMID
+```
+
 ## Test
 
 Run the package, app-bundle, and release-script tests:

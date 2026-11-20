@@ -10,3 +10,6 @@ DerivedData/
 .swiftpm/xcode/xcshareddata/xcschemes/
 .netrc
 __pycache__/
+
+# A developer's own signing settings for Debug builds.
+App/Configurations/Local.xcconfig
