@@ -312,7 +312,9 @@ text field before it, presses the first button after the password field, and wai
 the form. It sets the fields and presses the button through the app's accessibility elements, without the keyboard.
 Where another button comes first, such as one that resets the password, name the button in the login's **Sign-In
 Button**: its label, or `#` and its accessibility identifier, as in `#signIn`. Where a screen has no button for the
-login to press, the message of the menu's command lists the screen's buttons as a login names them. Neo fills nothing on a screen with
+login to press, the message of the menu's command lists the screen's buttons as a login names them. Where the button
+that Neo pressed showed the password, as an eye button does, Neo presses it again to hide the password, empties the
+fields, and reports the buttons in the same way. Neo fills nothing on a screen with
 more than one password field. If the app still shows the form after 20 seconds, as under an alert that says the
 password is wrong, Neo empties the fields and reports the login as rejected. An app that takes the form off its
 screen while it checks the login looks signed in from then on.

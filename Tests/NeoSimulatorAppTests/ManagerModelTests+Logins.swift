@@ -242,14 +242,18 @@ extension ManagerModelTests {
             application.children = children
             return application
         }
+        /// Whether the form's password field shows what it holds, as after a press of a button that shows it.
+        var showsPassword = false
         /// The app's sign-in screen, where a button that does not sign in comes before the one that does. The app
         /// enables the button that signs in once the form has a password.
         func form(userName: String = "", password: String = "", enables: Bool = true) -> SimulatorAccessibilityElement {
             application([
                 element(.textField, "user", value: userName.isEmpty ? "Email" : userName, row: 0),
-                element(
-                    .textField, "password", value: password.isEmpty ? "Password" : String(repeating: "•", count: password.count),
-                    row: 1),
+                showsPassword
+                    ? element(.textField, "shown", value: password, row: 1)
+                    : element(
+                        .textField, "password",
+                        value: password.isEmpty ? "Password" : String(repeating: "•", count: password.count), row: 1),
                 element(.button, "forgot", label: "Forgot password?", row: 2),
                 element(.button, "signIn", label: "Sign In", isEnabled: enables && !password.isEmpty, row: 3),
             ])
@@ -275,7 +279,8 @@ extension ManagerModelTests {
 
         /// How a sign-in ends on the app's form, which shows `shown` once its button is pressed, and what it did.
         func signedIn(
-            button: String = "Sign In", enables: Bool = true, then shown: @escaping (SignInFixture) -> Void
+            as name: String = "premium@example.com", button: String = "Sign In", enables: Bool = true,
+            then shown: @escaping (SignInFixture) -> Void
         ) async -> (failure: (any Error)?, actions: [String]) {
             let device = SignInFixture()
             var (userName, password) = ("", "")
@@ -293,7 +298,7 @@ extension ManagerModelTests {
                 if device.front?.children.first?.identifier == "user" { device.front = moved }
             }
             var failure: (any Error)?
-            do { try await signIn(on: device, signInButton: button).run() } catch { failure = error }
+            do { try await signIn(on: device, userName: name, signInButton: button).run() } catch { failure = error }
             return (failure, device.actions)
         }
         let filled = ["set user to premium@example.com", "set password to s3cret"]
@@ -309,6 +314,27 @@ extension ManagerModelTests {
         }
         #expect(ended.failure as? NativeFormSignIn.Failure == .rejected)
         #expect(ended.actions == filled + ["press signIn", "set password to ", "set user to "])
+
+        // The first button after the password field shows the password, and hides it again at the next press. The
+        // sign-in has not signed in, and leaves the form as it found it.
+        func pressed(_ device: SignInFixture, hidesAgain: Bool) {
+            showsPassword = hidesAgain ? !showsPassword : true
+            let screen = form(userName: "premium@example.com", password: "s3cret")
+            (device.front, device.covered) = (screen, screen)
+        }
+        let showedPassword = NativeFormSignIn.Failure.showedPassword(buttons: ["#forgot", "#signIn"])
+        ended = await signedIn(button: "") { pressed($0, hidesAgain: true) }
+        #expect(ended.failure as? NativeFormSignIn.Failure == showedPassword)
+        #expect(ended.actions == filled + ["press forgot", "press forgot", "set password to ", "set user to "])
+        // A button that only shows the password leaves it in a field that is emptied by what it holds.
+        ended = await signedIn(button: "") { pressed($0, hidesAgain: false) }
+        #expect(ended.failure as? NativeFormSignIn.Failure == showedPassword)
+        #expect(ended.actions == filled + ["press forgot", "press forgot", "set shown to ", "set user to "])
+        showsPassword = false
+        // A user name that is the same text as the password is not a password that is shown.
+        ended = await signedIn(as: "s3cret") { _ in }
+        #expect(ended.failure as? NativeFormSignIn.Failure == .rejected)
+        #expect(ended.actions.suffix(3) == ["press signIn", "set password to ", "set user to "])
 
         // The app keeps its button disabled: a press would do nothing, so the button is not pressed.
         ended = await signedIn(enables: false) { _ in }

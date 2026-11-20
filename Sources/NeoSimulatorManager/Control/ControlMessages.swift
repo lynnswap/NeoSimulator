@@ -96,17 +96,20 @@ extension LoginStore {
             } catch let failure as NativeFormSignIn.Failure {
                 let kind: SignInOutcome.Kind =
                     switch failure {
-                    case .severalPasswordFields, .noButton, .buttonUnavailable: .unrecognized
+                    case .severalPasswordFields, .noButton, .buttonUnavailable, .showedPassword: .unrecognized
                     case .notFilled, .rejected, .timedOut: .failed
                     }
                 // The names of a screen's buttons are the app's words, which can repeat a user name. The person at
                 // the Mac sees them, and sets the login's button with them. The tool does not.
                 let reason =
-                    if case .noButton = failure {
+                    switch failure {
+                    case .noButton:
                         "The app’s sign-in form has no button that the login can press. Set the login’s Sign-In "
                             + "Button in NeoSimulator’s settings."
-                    } else {
-                        failure.localizedDescription
+                    case .showedPassword:
+                        "The button that the login pressed showed the password and did not sign in. Set the login’s "
+                            + "Sign-In Button in NeoSimulator’s settings."
+                    default: failure.localizedDescription
                     }
                 return .signIn(SignInOutcome(kind, reason: reason))
             } catch let failure as WebInspectorFailure {
