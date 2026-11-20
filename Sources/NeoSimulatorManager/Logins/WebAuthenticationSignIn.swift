@@ -412,6 +412,8 @@ package struct WebAuthenticationSignIn {
         var acceptedConsent: ContinuousClock.Instant?
         /// Since when the system has been in front without the login's app in between.
         var systemInFrontSince: ContinuousClock.Instant?
+        /// Whether the system was last read with an alert in front that the sign-in does not answer.
+        var showsOtherAlert = false
         var lastOrigin: String?
         var sawSheet = false
         var unreadable: (any Error)?
@@ -422,6 +424,7 @@ package struct WebAuthenticationSignIn {
             if let application = try await device.frontmostApplication() {
                 if application.bundleIdentifier == login.applicationIdentifier {
                     systemInFrontSince = nil
+                    showsOtherAlert = false
                     // A screen that is still coming up can have its password field before its button.
                     do {
                         let form = try NativeFormSignIn(
@@ -454,7 +457,9 @@ package struct WebAuthenticationSignIn {
                 } else {
                     let since = systemInFrontSince ?? .now
                     systemInFrontSince = since
-                    if let button = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host))) {
+                    let consent = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host)))
+                    showsOtherAlert = consent == nil && Self.alert(in: application) != nil
+                    if let button = consent {
                         // The alert was read just now, so the tap lands on it. One that is still coming up ignores
                         // the tap, and is tapped again if it is still there after a pause. One whose place on the
                         // screen cannot be read is waited for.
@@ -475,7 +480,7 @@ package struct WebAuthenticationSignIn {
                         }
                     } else if acceptedConsent == nil, ContinuousClock.now - since >= pace.front {
                         // The system has stayed in front for longer than it does on the way to the app's sheet.
-                        throw Self.alert(in: application) == nil ? Failure.otherApplication(nil) : Failure.otherAlert
+                        throw showsOtherAlert ? Failure.otherAlert : Failure.otherApplication(nil)
                     }
                     // After the alert is answered, by the sign-in or by someone else, the system stays in front
                     // until the sheet is up.
@@ -484,6 +489,7 @@ package struct WebAuthenticationSignIn {
             guard ContinuousClock.now < deadline else { break }
             try await Task.sleep(for: pace.interval)
         }
+        if showsOtherAlert { throw Failure.otherAlert }
         if let unrecognizedForm { throw unrecognizedForm }
         if sawSheet { throw Failure.unrecognizedPage(origin: lastOrigin) }
         // A page that could not be read may have been the sheet's, such as one that another client inspects.
