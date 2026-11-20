@@ -106,7 +106,7 @@ The published site combines the guide in `Documentation/NeoSimulator.docc` with
 the API reference for Kit and UI, whose catalogs are in their target directories.
 Keep installation in the README, app and SDK usage in the guide, API contracts in
 doc comments, contributor procedures in this file, and release procedures in
-`Documentation/Releasing.md`. Give each new public declaration in Kit or UI a doc
+[Documentation/Releasing.md](Documentation/Releasing.md). Give each new public declaration in Kit or UI a doc
 comment, and add each new public type to its
 module catalog's topics.
 
