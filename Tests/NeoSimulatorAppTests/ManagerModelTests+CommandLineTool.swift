@@ -52,6 +52,7 @@ extension ManagerModelTests {
         }
         #expect(await kind(SignInRefusal("The simulator’s screen is not open.")) == .refused)
         #expect(await kind(WebAuthenticationSignIn.Failure.otherApplication("com.example.c")) == .refused)
+        #expect(await kind(WebAuthenticationSignIn.Failure.otherAlert) == .refused)
         #expect(await kind(WebAuthenticationSignIn.Failure.unrecognizedPage(origin: "https://other.example")) == .unrecognized)
         #expect(await kind(WebAuthenticationSignIn.Failure.rejected) == .failed)
         #expect(await kind(NativeFormSignIn.Failure.noButton(named: nil, buttons: [])) == .unrecognized)

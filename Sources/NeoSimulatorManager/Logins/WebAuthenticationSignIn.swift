@@ -245,6 +245,9 @@ package struct WebAuthenticationSignIn {
     package enum Failure: Error, LocalizedError, Equatable {
         /// Another app than the login's is in front. Nil for the Home Screen and other system screens.
         case otherApplication(String?)
+        /// The system shows an alert that the sign-in does not answer: it does not ask to sign in with a site of
+        /// the login's origins.
+        case otherAlert
         /// The app showed no form of its own and no web authentication sheet in time.
         case noSheet
         /// The sheet's page is not at one of the login's origins, or has no form that asks for a step of the sign-in
@@ -259,6 +262,10 @@ package struct WebAuthenticationSignIn {
             switch self {
             case .otherApplication(let identifier?): "The login’s app is not in front. \(identifier) is."
             case .otherApplication(nil): "The login’s app is not in front."
+            case .otherAlert:
+                "The system shows an alert that does not ask to sign in with one of the login’s origins. Answer the "
+                    + "alert, then choose the login again. If the alert asks to sign in with another site, adding "
+                    + "that site to the login’s Web Origins lets the sign-in answer it."
             case .noSheet:
                 "The app showed no sign-in form and no web sign-in sheet. Open the app’s sign-in screen, then choose "
                     + "the login."
@@ -276,6 +283,9 @@ package struct WebAuthenticationSignIn {
     package struct Pace: Sendable {
         /// For the sheet's sign-in page to show, from the start.
         package var appearance: Duration = .seconds(20)
+        /// For the login's app to come to the front, from the start, while the system is in front. The system is
+        /// in front for a moment while an app opens, and after an alert of its own is answered.
+        package var front: Duration = .seconds(3)
         /// For the sheet to close after the form is submitted.
         package var completion: Duration = .seconds(20)
         /// For a form's button to be enabled after its fields are filled in.
@@ -398,7 +408,8 @@ package struct WebAuthenticationSignIn {
     /// app's sign-in screen. For a sheet, it accepts the system's consent alert on the way, and returns the page once
     /// it is at one of the login's origins and asks for a step of the sign-in.
     private func signInScreen() async throws -> Screen {
-        let deadline = ContinuousClock.now + pace.appearance
+        let start = ContinuousClock.now
+        let deadline = start + pace.appearance
         var acceptedConsent: ContinuousClock.Instant?
         var lastOrigin: String?
         var sawSheet = false
@@ -456,10 +467,12 @@ package struct WebAuthenticationSignIn {
                         // no sheet came.
                         continue
                     }
-                } else if acceptedConsent == nil {
-                    throw Failure.otherApplication(nil)
+                } else if acceptedConsent == nil, ContinuousClock.now - start >= pace.front {
+                    // The system has stayed in front for longer than it does on the way to the app's sheet.
+                    throw Self.alert(in: application) == nil ? Failure.otherApplication(nil) : Failure.otherAlert
                 }
-                // After the alert is answered, the system stays in front until the sheet is up.
+                // After the alert is answered, by the sign-in or by someone else just before it, the system stays in
+                // front until the sheet is up.
             }
             guard ContinuousClock.now < deadline else { break }
             try await Task.sleep(for: pace.interval)
@@ -480,6 +493,16 @@ package struct WebAuthenticationSignIn {
     static func consentButton(
         in springBoard: SimulatorAccessibilityElement, hosts: Set<String>
     ) -> SimulatorAccessibilityElement? {
+        guard let alert = alert(in: springBoard),
+            let message = alert.texts.first(where: { text in hosts.contains { names($0, in: text) } })
+        else { return nil }
+        return isRightToLeft(message) ? alert.buttons.first : alert.buttons.last
+    }
+
+    /// The two buttons, from the left, and the texts of an alert with two choices, if `springBoard` shows one.
+    private static func alert(
+        in springBoard: SimulatorAccessibilityElement
+    ) -> (buttons: [SimulatorAccessibilityElement], texts: [String])? {
         var elements: [SimulatorAccessibilityElement] = []
         func collect(_ element: SimulatorAccessibilityElement) {
             elements.append(element)
@@ -487,10 +510,8 @@ package struct WebAuthenticationSignIn {
         }
         collect(springBoard)
         let buttons = elements.filter { $0.role == .button && !$0.frame.isEmpty }.sorted { $0.frame.minX < $1.frame.minX }
-        let labels = elements.filter { $0.role == .staticText }.compactMap(\.label)
-        guard buttons.count == 2, let message = labels.first(where: { label in hosts.contains { names($0, in: label) } })
-        else { return nil }
-        return isRightToLeft(message) ? buttons.first : buttons.last
+        let texts = elements.filter { $0.role == .staticText }.compactMap(\.label)
+        return buttons.count == 2 && !texts.isEmpty ? (buttons, texts) : nil
     }
 
     /// Whether `text` has `host` as a whole host name, not as a part of a longer one.

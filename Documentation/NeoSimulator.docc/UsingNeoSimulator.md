@@ -318,7 +318,10 @@ password is wrong, Neo empties the fields and reports the login as rejected. An 
 screen while it checks the login looks signed in from then on.
 
 For a web sign-in sheet, Neo answers the system's question for the login's site, fills the user name and password
-fields that the page's form declares, submits the form, and waits for the sheet to close. Where a site asks for the user name first,
+fields that the page's form declares, submits the form, and waits for the sheet to close. The system's question names
+the site that the sign-in starts at. Where that site is not one of the login's origins, Neo leaves the alert and says
+so: answer the alert yourself and choose the login again, or add the site to the login's origins, where the login may
+then be filled in as well. Where a site asks for the user name first,
 Neo goes on to the page that asks for the password, which can be on another of the login's origins. It fills nothing
 for another app, on an origin that the login does not list, or on a page that has no form that asks for the user name
 or the password with a button to submit it.
