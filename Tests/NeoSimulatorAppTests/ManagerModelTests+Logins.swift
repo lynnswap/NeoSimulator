@@ -464,6 +464,33 @@ extension ManagerModelTests {
         #expect(
             device.scripts.filter { $0 != .state }
                 == [.signIn(userName: "premium@example.com", password: "s3cret", origin: "https://login.example.com")])
+
+        // The same after the app was in front for longer than the system may be: the wait for the app starts when
+        // the system comes to the front.
+        let late = SignInFixture()
+        late.front = SignInFixture.application("com.example.app")
+        let start = ContinuousClock.now
+        var systemReads = 0
+        late.onFrontRead = {
+            guard ContinuousClock.now - start >= .milliseconds(600), late.page == nil else { return }
+            systemReads += 1
+            late.front = SignInFixture.application(systemReads < 3 ? "com.apple.springboard" : "com.example.app")
+            if systemReads == 3 {
+                late.page = SignInPageState(origin: "https://login.example.com", step: .password, document: "1")
+            }
+        }
+        late.onSubmit = {
+            late.onFrontRead = nil
+            late.page = nil
+        }
+        var pace = WebAuthenticationSignIn.Pace()
+        pace.appearance = .seconds(5)
+        pace.front = .milliseconds(500)
+        pace.interval = .milliseconds(5)
+        try await WebAuthenticationSignIn(
+            device: late, login: premium(origins: ["https://login.example.com"]), password: "s3cret", pace: pace
+        ).run()
+        #expect(systemReads == 3 && late.scripts.contains { $0 != .state })
     }
 
     @Test func aConsentAlertThatStaysUpEndsTheWaitInsteadOfTappingForever() async throws {

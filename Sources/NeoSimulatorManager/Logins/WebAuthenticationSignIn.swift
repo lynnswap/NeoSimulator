@@ -283,8 +283,8 @@ package struct WebAuthenticationSignIn {
     package struct Pace: Sendable {
         /// For the sheet's sign-in page to show, from the start.
         package var appearance: Duration = .seconds(20)
-        /// For the login's app to come to the front, from the start, while the system is in front. The system is
-        /// in front for a moment while an app opens, and after an alert of its own is answered.
+        /// For the login's app to come to the front, from when the system is in front. The system is in front for
+        /// a moment while an app opens, and after an alert of its own is answered.
         package var front: Duration = .seconds(3)
         /// For the sheet to close after the form is submitted.
         package var completion: Duration = .seconds(20)
@@ -408,9 +408,10 @@ package struct WebAuthenticationSignIn {
     /// app's sign-in screen. For a sheet, it accepts the system's consent alert on the way, and returns the page once
     /// it is at one of the login's origins and asks for a step of the sign-in.
     private func signInScreen() async throws -> Screen {
-        let start = ContinuousClock.now
-        let deadline = start + pace.appearance
+        let deadline = ContinuousClock.now + pace.appearance
         var acceptedConsent: ContinuousClock.Instant?
+        /// Since when the system has been in front without the login's app in between.
+        var systemInFrontSince: ContinuousClock.Instant?
         var lastOrigin: String?
         var sawSheet = false
         var unreadable: (any Error)?
@@ -420,6 +421,7 @@ package struct WebAuthenticationSignIn {
         while true {
             if let application = try await device.frontmostApplication() {
                 if application.bundleIdentifier == login.applicationIdentifier {
+                    systemInFrontSince = nil
                     // A screen that is still coming up can have its password field before its button.
                     do {
                         let form = try NativeFormSignIn(
@@ -449,30 +451,35 @@ package struct WebAuthenticationSignIn {
                     }
                 } else if application.bundleIdentifier != Self.springBoard {
                     throw Failure.otherApplication(application.bundleIdentifier)
-                } else if let button = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host))),
-                    application.frame.width > 0, application.frame.height > 0
-                {
-                    // The alert was read just now, so the tap lands on it. One that is still coming up ignores the tap,
-                    // and is tapped again if it is still there after a pause.
-                    if acceptedConsent.map({ ContinuousClock.now - $0 >= pace.tapAgain }) ?? true {
-                        let expired = ContinuousClock.now >= deadline
-                        if expired, readAfterDeadline { break }
-                        try await device.tap(
-                            at: CGPoint(
-                                x: button.frame.midX / application.frame.width,
-                                y: button.frame.midY / application.frame.height))
-                        acceptedConsent = .now
-                        if expired { readAfterDeadline = true }
-                        // The tap can bring the sheet up; read the screen again before the deadline decides that
-                        // no sheet came.
-                        continue
+                } else {
+                    let since = systemInFrontSince ?? .now
+                    systemInFrontSince = since
+                    if let button = Self.consentButton(in: application, hosts: Set(login.origins.map(\.host))) {
+                        // The alert was read just now, so the tap lands on it. One that is still coming up ignores
+                        // the tap, and is tapped again if it is still there after a pause. One whose place on the
+                        // screen cannot be read is waited for.
+                        if application.frame.width > 0, application.frame.height > 0,
+                            acceptedConsent.map({ ContinuousClock.now - $0 >= pace.tapAgain }) ?? true
+                        {
+                            let expired = ContinuousClock.now >= deadline
+                            if expired, readAfterDeadline { break }
+                            try await device.tap(
+                                at: CGPoint(
+                                    x: button.frame.midX / application.frame.width,
+                                    y: button.frame.midY / application.frame.height))
+                            acceptedConsent = .now
+                            if expired { readAfterDeadline = true }
+                            // The tap can bring the sheet up; read the screen again before the deadline decides
+                            // that no sheet came.
+                            continue
+                        }
+                    } else if acceptedConsent == nil, ContinuousClock.now - since >= pace.front {
+                        // The system has stayed in front for longer than it does on the way to the app's sheet.
+                        throw Self.alert(in: application) == nil ? Failure.otherApplication(nil) : Failure.otherAlert
                     }
-                } else if acceptedConsent == nil, ContinuousClock.now - start >= pace.front {
-                    // The system has stayed in front for longer than it does on the way to the app's sheet.
-                    throw Self.alert(in: application) == nil ? Failure.otherApplication(nil) : Failure.otherAlert
+                    // After the alert is answered, by the sign-in or by someone else, the system stays in front
+                    // until the sheet is up.
                 }
-                // After the alert is answered, by the sign-in or by someone else just before it, the system stays in
-                // front until the sheet is up.
             }
             guard ContinuousClock.now < deadline else { break }
             try await Task.sleep(for: pace.interval)
