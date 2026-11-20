@@ -33,6 +33,9 @@ package struct NativeFormSignIn {
         case notFilled
         /// The form's button was gone or disabled for as long as the sign-in waited to press it.
         case buttonUnavailable
+        /// The button that the sign-in pressed showed the password, which a field then held in the open, and did not
+        /// submit the form. `buttons` are the screen's buttons as for `noButton`.
+        case showedPassword(buttons: [String])
         /// The app still showed the form when the wait ended.
         case rejected
         /// The app showed nothing that the sign-in could read when the wait ended.
@@ -51,6 +54,9 @@ package struct NativeFormSignIn {
             case .notFilled: "The app’s sign-in form did not take the login."
             case .buttonUnavailable:
                 "The app’s sign-in button was gone or disabled after the login was filled in."
+            case .showedPassword(let buttons):
+                "The button that the login pressed showed the password and did not sign in. Set the login’s Sign-In "
+                    + "Button to the button that signs in. " + Self.listing(buttons)
             case .rejected: "The app still shows its sign-in form. It may have rejected the login."
             case .timedOut: "The sign-in did not finish in time."
             }
@@ -69,6 +75,8 @@ package struct NativeFormSignIn {
     private let fillsUserName: Bool
     /// The process of the login's app, whose elements the sign-in reads and changes.
     private let processIdentifier: Int32
+    /// The screen's buttons as a login names them, read before anything is filled in.
+    private let buttons: [String]
 
     /// A sign-in to the form that `application` shows, or nil if `application` is not the login's app or shows no
     /// password field, as while the app shows a web sign-in sheet. Throws a ``Failure`` for a screen with a password
@@ -79,8 +87,9 @@ package struct NativeFormSignIn {
         device: any SignInDevice, login: SavedLogin, password: String, in application: SimulatorAccessibilityElement,
         pace: WebAuthenticationSignIn.Pace = WebAuthenticationSignIn.Pace()
     ) throws {
+        let elements = Self.elements(of: application)
         guard application.bundleIdentifier == login.applicationIdentifier,
-            let form = try Self.form(among: Self.elements(of: application), button: login.signInButton)
+            let form = try Self.form(among: elements, button: login.signInButton)
         else { return nil }
         self.device = device
         self.login = login
@@ -88,6 +97,7 @@ package struct NativeFormSignIn {
         self.pace = pace
         fillsUserName = form.userName != nil && !login.userName.isEmpty
         processIdentifier = application.processIdentifier
+        buttons = Self.buttonNames(among: elements)
     }
 
     /// An element and those under it in the order that they are read in, each without its children.
@@ -122,6 +132,22 @@ package struct NativeFormSignIn {
         shown(among: elements).last { $0 < password && elements[$0].role == .textField }
     }
 
+    private nonisolated static func textFields(among elements: [SimulatorAccessibilityElement]) -> [Int] {
+        shown(among: elements).filter { elements[$0].role == .textField }
+    }
+
+    /// The form's password field where a press left it showing what it holds: the text field at the password
+    /// field's place among the app's text fields, if it holds `password` in the open. Another field can hold the
+    /// same text, as a user name that is its own password does.
+    private nonisolated static func field(
+        showing password: String, at place: Int, among elements: [SimulatorAccessibilityElement]
+    ) -> Int? {
+        let textFields = textFields(among: elements)
+        guard textFields.indices.contains(place) else { return nil }
+        let field = textFields[place]
+        return !elements[field].isSecureTextField && elements[field].value == password ? field : nil
+    }
+
     /// The fields of the sign-in form among an app's elements, or nil if they have no password field.
     ///
     /// The password field is the screen's one text field that hides what it holds. The user name field is the text
@@ -143,45 +169,69 @@ package struct NativeFormSignIn {
         among elements: [SimulatorAccessibilityElement], button name: String
     ) throws -> Form? {
         guard let (userName, password) = try fields(among: elements) else { return nil }
-        let buttons = shown(among: elements).filter { elements[$0].role == .button }
-        let button: Int?
-        if name.isEmpty {
-            button = buttons.first { $0 > password }
-        } else {
-            let named = buttons.filter {
-                name.hasPrefix("#") ? elements[$0].identifier == String(name.dropFirst()) : elements[$0].label == name
-            }
-            button = named.count == 1 ? named[0] : nil
-        }
-        guard let button else {
-            // An identifier names a button whatever language its label is in.
-            let names = buttons.compactMap { index in
-                elements[index].identifier.map { "#" + $0 } ?? elements[index].label
-            }
-            throw Failure.noButton(named: name.isEmpty ? nil : name, buttons: names)
+        guard let button = button(named: name, after: password, among: elements) else {
+            throw Failure.noButton(named: name.isEmpty ? nil : name, buttons: buttonNames(among: elements))
         }
         return Form(userName: userName, password: password, button: button)
     }
 
+    private nonisolated static func buttons(among elements: [SimulatorAccessibilityElement]) -> [Int] {
+        shown(among: elements).filter { elements[$0].role == .button }
+    }
+
+    /// The button of a form whose password field is at `password`: the one that `name` names, or for no name the
+    /// first after the field.
+    private nonisolated static func button(
+        named name: String, after password: Int, among elements: [SimulatorAccessibilityElement]
+    ) -> Int? {
+        let buttons = buttons(among: elements)
+        guard !name.isEmpty else { return buttons.first { $0 > password } }
+        let named = buttons.filter {
+            name.hasPrefix("#") ? elements[$0].identifier == String(name.dropFirst()) : elements[$0].label == name
+        }
+        return named.count == 1 ? named[0] : nil
+    }
+
+    /// The screen's buttons as a login names them. An identifier names a button whatever language its label is in.
+    private nonisolated static func buttonNames(among elements: [SimulatorAccessibilityElement]) -> [String] {
+        buttons(among: elements).compactMap { index in
+            elements[index].identifier.map { "#" + $0 } ?? elements[index].label
+        }
+    }
+
     package func run() async throws {
+        var pressed: Press?
         do {
             if fillsUserName { try await perform(.setValue(login.userName), on: .userName) }
             try await perform(.setValue(password), on: .password)
             try await checkFilled()
-            try await pressButton()
-            try await waitForFormToGo()
+            let button = try await pressButton()
+            pressed = button
+            try await waitForFormToGo(after: button)
         } catch {
             // What the sign-in put into the form does not stay there. The clearing has a task of its own: a sign-in
             // that was cancelled, as by a tool that went away, changes no more elements in its own.
-            await Task { await clear() }.value
+            await Task { [pressed] in await clear(after: pressed) }.value
             throw error
         }
+    }
+
+    /// The button that the sign-in pressed, and the form's password field, by where each was among the app's
+    /// elements of its kind before the press. A press that shows the password changes what the field reads as, and
+    /// can change the button's label.
+    private struct Press: Sendable {
+        var identifier: String?
+        /// Where the button was among the app's buttons.
+        var button: Int
+        /// Where the password field was among the app's text fields.
+        var passwordField: Int
     }
 
     /// Empties what the sign-in filled in. The screen can have changed since, as to one that asks for the password
     /// twice, so each password field of the app is emptied, whatever it reads as, and the text field before them if
     /// the sign-in set it.
-    private func clear() async {
+    private func clear(after pressed: Press?) async {
+        if let pressed { await takeBackShownPassword(after: pressed) }
         let processIdentifier = processIdentifier
         func empty(_ choose: @escaping @Sendable ([SimulatorAccessibilityElement]) -> Int?) async -> Bool {
             (try? await device.perform(.setValue(""), inProcess: processIdentifier, on: choose)) != nil
@@ -202,17 +252,73 @@ package struct NativeFormSignIn {
         }
     }
 
+    /// Undoes a press that showed the password, so that the fields are emptied as those of a form that hides it.
+    ///
+    /// A button that switches between showing and hiding hides the password when it is pressed again. The form is
+    /// then as the sign-in found it, also for the next sign-in, which looks for a field that hides what it holds.
+    /// Where the button does not hide the password, the field that shows it is emptied here.
+    private func takeBackShownPassword(after pressed: Press) async {
+        let (processIdentifier, password) = (processIdentifier, password)
+        @Sendable func shownField(among elements: [SimulatorAccessibilityElement]) -> Int? {
+            Self.field(showing: password, at: pressed.passwordField, among: elements)
+        }
+        /// Nil while the app's elements cannot be read. An app that is not on the screen answers without elements.
+        func showsPassword() async -> Bool? {
+            guard let application = try? await device.application(ofProcess: processIdentifier),
+                !application.children.isEmpty
+            else { return nil }
+            return shownField(among: Self.elements(of: application)) != nil
+        }
+        func perform(
+            _ action: SimulatorAccessibilityAction,
+            on choose: @escaping @Sendable ([SimulatorAccessibilityElement], Int) -> Int?
+        ) async -> Bool {
+            let done: Void? = try? await device.perform(action, inProcess: processIdentifier) { elements in
+                shownField(among: elements).flatMap { choose(elements, $0) }
+            }
+            return done != nil
+        }
+        let deadline = ContinuousClock.now + pace.button
+        var pressedAgain = false
+        while true {
+            let shows = await showsPassword()
+            if shows == false { return }
+            if shows == true, !pressedAgain {
+                // The same button is the one at its place among the buttons, with the identifier that it had.
+                pressedAgain = await perform(.press) { elements, _ in
+                    let buttons = Self.buttons(among: elements)
+                    guard buttons.indices.contains(pressed.button),
+                        elements[buttons[pressed.button]].identifier == pressed.identifier
+                    else { return nil }
+                    return buttons[pressed.button]
+                }
+            }
+            guard ContinuousClock.now < deadline else { break }
+            try? await Task.sleep(for: pace.interval)
+        }
+        guard await perform(.setValue(""), on: { _, field in field }), fillsUserName else { return }
+        _ = try? await device.perform(.setValue(""), inProcess: processIdentifier) { elements in
+            let textFields = Self.textFields(among: elements)
+            guard textFields.indices.contains(pressed.passwordField) else { return nil }
+            return Self.userNameField(before: textFields[pressed.passwordField], among: elements)
+        }
+    }
+
     /// Presses the form's button once the app has it enabled. An app can keep the button disabled, or take it away,
     /// until it has looked at the fields, and a disabled button answers a press and does nothing.
-    private func pressButton() async throws {
+    private func pressButton() async throws -> Press {
         let deadline = ContinuousClock.now + pace.button
         while true {
             if let application = try await device.application(ofProcess: processIdentifier) {
                 let elements = Self.elements(of: application)
                 if let form = try? Self.form(among: elements, button: login.signInButton),
-                    elements[form.button].isEnabled
+                    elements[form.button].isEnabled,
+                    let button = Self.buttons(among: elements).firstIndex(of: form.button),
+                    let passwordField = Self.textFields(among: elements).firstIndex(of: form.password)
                 {
-                    return try await perform(.press, on: .button)
+                    try await perform(.press, on: .button)
+                    return Press(
+                        identifier: elements[form.button].identifier, button: button, passwordField: passwordField)
                 }
             }
             guard ContinuousClock.now < deadline else { throw Failure.buttonUnavailable }
@@ -260,14 +366,19 @@ package struct NativeFormSignIn {
 
     /// Waits until the app's elements no longer have a password field. The app's own elements answer while an alert of
     /// the app or of the system covers the form, so an alert that says why the login was not taken does not look like
-    /// a form that is gone.
-    private func waitForFormToGo() async throws {
+    /// a form that is gone. Nor does a field that shows the password after the press: the button showed what the
+    /// password field holds, and the form is still there.
+    private func waitForFormToGo(after pressed: Press) async throws {
         let deadline = ContinuousClock.now + pace.completion
         var showsForm = false
         while true {
             // An app that is not on the screen answers without elements, and may still show the form.
             if let application = try await device.application(ofProcess: processIdentifier), !application.children.isEmpty {
-                showsForm = !Self.passwordFields(among: Self.elements(of: application)).isEmpty
+                let elements = Self.elements(of: application)
+                guard Self.field(showing: password, at: pressed.passwordField, among: elements) == nil else {
+                    throw Failure.showedPassword(buttons: buttons)
+                }
+                showsForm = !Self.passwordFields(among: elements).isEmpty
                 if !showsForm { return }
             }
             guard ContinuousClock.now < deadline else { break }
