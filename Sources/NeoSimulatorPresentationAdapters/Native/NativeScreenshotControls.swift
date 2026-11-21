@@ -220,14 +220,24 @@ package final class NativeScreenshotSaves {
         _ = withObservationTracking {
             try? bannerIsVisible()
         } onChange: { [weak self] in
-            let capture = Self.lifetime
+            // DeviceKit publishes its camera results on the main thread. Re-arm before returning
+            // to the writer so two presses can publish in the same main-actor turn.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.observeNextPublication() }
+            } else {
+                Task { @MainActor [weak self] in self?.observeNextPublication() }
+            }
+            guard let capture = Self.lifetime else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                observingBanner = false
-                if let capture, capture.device == device, (try? bannerIsVisible()) == true { capture.pixels.finish() }
-                if Self.pending.values.contains(where: { $0.owner === self }) { observePixels() }
+                guard let self, capture.device == device, (try? bannerIsVisible()) == true else { return }
+                capture.pixels.finish()
             }
         }
+    }
+
+    private func observeNextPublication() {
+        observingBanner = false
+        if Self.pending.values.contains(where: { $0.owner === self }) { observePixels() }
     }
 
     package func take(_ trigger: () -> Void) {
