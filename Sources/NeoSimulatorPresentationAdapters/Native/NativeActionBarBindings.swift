@@ -49,7 +49,11 @@ struct NativeActionBarBindings {
 
     @MainActor func providers(in plugins: NativeSwiftValue) throws -> [Any] {
         let owner = try unsafe providers.unsafeInvoke(on: plugins)
-        return try owner.withCopy { raw in
+        return try Self.elements(of: owner)
+    }
+
+    @MainActor static func elements(of owner: NativeSwiftValue) throws -> [Any] {
+        try owner.withCopy { raw in
             guard let sequence = raw as? any Sequence else {
                 throw RemoteScreenError.unavailable(
                     "native-action-providers", "DeviceKit’s action providers are unavailable.")
@@ -92,7 +96,7 @@ struct NativeActionBarBindings {
         }
     }
 
-    @MainActor private static func bridge<Value>(_ value: Value, runtime: ABIRuntime) async throws -> NativeSwiftValue {
+    @MainActor static func bridge<Value>(_ value: Value, runtime: ABIRuntime) async throws -> NativeSwiftValue {
         let array = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type(Value.self)])))
         let read = try await array.resolve(
             .swift(

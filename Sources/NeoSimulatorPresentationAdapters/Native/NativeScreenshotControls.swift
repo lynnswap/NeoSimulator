@@ -1,5 +1,6 @@
 import ABIBridge
 import Foundation
+import NeoSimulatorDeviceIO
 import Observation
 import SwiftShims
 import SwiftUI
@@ -21,11 +22,13 @@ package struct NativeScreenshotControls {
         }
     }
 
-    package let button: AnyView
+    private let button: AnyView
+    private let identifierType: NativeSwiftType
+    package let saves: NativeScreenshotSaves
     package let banner: AnyView
 
     package static func load(
-        for target: Target, windowID: UUID, onError: @escaping @MainActor @Sendable (any Error) -> Void
+        for device: UUID, windowID: UUID, onError: @escaping @MainActor @Sendable (any Error) -> Void
     )
         async throws -> Self?
     {
@@ -41,7 +44,12 @@ package struct NativeScreenshotControls {
             .map { Item(value: $0) }
         }
         guard let primary else { return nil }
-        let read = try await bindings.controls(of: primary.value, for: target.device, onError: onError)
+        guard let saves = try await NativeScreenshotSaves.connect(plugins: plugins, device: device, windowID: windowID)
+        else { return nil }
+        let read = try await bindings.controls(of: primary.value, for: device) { error in
+            saves.failed()
+            onError(error)
+        }
         let item = try await firstAvailable {
             try read().first { try bindings.name(of: $0) == "com.apple.devicekit.actionbar.control.screenshot" }.map {
                 Item(value: $0)
@@ -56,10 +64,12 @@ package struct NativeScreenshotControls {
         let key = try await environment.resolve(
             .swift(.writableKeyPath("(extension in DeviceKit):SwiftUI.EnvironmentValues.windowID", valueType: uuid)))
         guard let path = try key.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, UUID> }) else { return nil }
-        let fields = OverlayFields(deviceIdentifier: target.device, _windowID: Environment(path))
+        let fields = OverlayFields(deviceIdentifier: device, _windowID: Environment(path))
         guard let banner = fields.view(as: overlayType) else { return nil }
-        guard let camera = try await camera(button, showing: target.display, runtime: runtime) else { return nil }
-        return Self(button: camera, banner: AnyView(banner.environment(path, windowID)))
+        let identifier = try await runtime.resolve(.swift(.type("DeviceKit.DisplayIdentifier")))
+        return Self(
+            button: button, identifierType: identifier, saves: saves,
+            banner: AnyView(banner.environment(path, windowID)))
     }
 
     private static func firstAvailable<Value: Sendable>(_ read: @escaping @MainActor @Sendable () throws -> Value?)
@@ -71,23 +81,20 @@ package struct NativeScreenshotControls {
 
     /// The action bar passes the displays shown by the canvas through this environment key.
     /// A Resize App display has a unique ID, while a simulator framebuffer has a numeric ID.
-    private static func camera(_ button: AnyView, showing display: Target.Display, runtime: ABIRuntime) async throws
-        -> AnyView?
-    {
+    package func camera(showing display: Target.Display) throws -> AnyView? {
         guard display != .automatic else { return button }
         // The camera already stores DeviceKit's writable environment key path. It has no exported getter.
         let path = Mirror(reflecting: button).descendant(
             "storage", "view", "_visibleDisplayIdentifiers", "content", "keyPath")
-        func identifier<Value>(_ name: String, _ value: Value) async throws -> [Any] {
-            let type = try await runtime.resolve(.swift(.type("DeviceKit.DisplayIdentifier")))
-            let wrapped = try await type.makeEnumCase(named: name, associatedValues: value)
+        func identifier<Value>(_ name: String, _ value: Value) throws -> [Any] {
+            let wrapped = try identifierType.makeEnumCaseAndWait(named: name, associatedValues: value)
             return try wrapped.withCopy { [$0] }
         }
         let identifiers: [Any]
         switch display {
         case .visible(let displays): identifiers = displays.map(\.base)
-        case .displayID(let id): identifiers = try await identifier("displayID", id)
-        case .uniqueID(let id): identifiers = try await identifier("uniqueID", id)
+        case .displayID(let id): identifiers = try identifier("displayID", id)
+        case .uniqueID(let id): identifiers = try identifier("uniqueID", id)
         case .automatic: return button
         }
         func configure<ID>(_ first: ID) -> AnyView? {
@@ -134,3 +141,95 @@ private func fieldType(_ type: Any.Type, _ index: Int, _ metadata: UnsafeMutable
     -> Any.Type
 @_silgen_name("swift_reflectionMirror_recursiveChildOffset")
 private func fieldOffset(_ type: Any.Type, _ index: Int) -> Int
+
+/// DeviceKit places the file when its saved-capture banner ends. Keep the app alive for that handoff,
+/// including the interval between pressing the camera and the banner appearing.
+@MainActor
+package final class NativeScreenshotSaves {
+    private let visible: @MainActor () throws -> Bool
+    private let device: UUID
+    private var saving: Task<Void, Never>?
+    private static var pending: [ObjectIdentifier: NativeScreenshotSaves] = [:]
+
+    init(device: UUID, visible: @escaping @MainActor () throws -> Bool) {
+        self.device = device
+        self.visible = visible
+    }
+
+    fileprivate static func connect(plugins: NativeSwiftValue, device: UUID, windowID: UUID) async throws
+        -> NativeScreenshotSaves?
+    {
+        let runtime = ABIRuntime.shared
+        let read = try await plugins.type.resolve(.swift(.getter("bannerProviders", as: (() -> NativeSwiftValue).self)))
+        let providers = try NativeActionBarBindings.elements(of: unsafe read.unsafeInvoke(on: plugins))
+        guard
+            let saved = providers.first(where: {
+                String(reflecting: type(of: $0)) == "DeviceKit.ScreenCaptureSavedBanner"
+            })
+        else { return nil }
+        func copy<V>(_ value: V) async throws -> NativeSwiftValue {
+            try await NativeActionBarBindings.bridge(value, runtime: runtime)
+        }
+        let provider = try await _openExistential(saved, do: copy).copyUnderlyingValue()
+        let context = try await runtime.resolve(.swift(.type("DeviceKit.BannerProviderContext")))
+        let abi = [context: try NativeType.opaque(named: context.name)]
+        let make = try await context.resolve(
+            .swift(
+                .initializer("init(deviceID:windowID:)", as: ((UUID, UUID) -> NativeSwiftValue).self, valueABIs: abi)))
+        let value = try unsafe make.unsafeInvoke(device, windowID)
+        let shown = try await provider.type.resolve(
+            .swift(
+                .method(
+                    "DeviceKit.BannerProvider.isVisible(in:)", as: ((NativeSwiftValue) -> Bool).self, valueABIs: abi)))
+        return NativeScreenshotSaves(device: device) { try unsafe shown.unsafeInvoke(on: provider, value) }
+    }
+
+    package func take(_ trigger: () -> Void) {
+        saving?.cancel()
+        Self.pending[ObjectIdentifier(self)] = self
+        let hadBanner = (try? visible()) == true
+        saving = Task.immediate { [self] in
+            var appeared = false
+            var initial = true
+            do {
+                for try await shown in Observations(visible) {
+                    // A previous screenshot may still be visible when the next camera action starts.
+                    defer { initial = false }
+                    if initial && hadBanner { continue }
+                    if shown { appeared = true } else if appeared { break }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)")
+                }
+            }
+            if !Task.isCancelled { finished() }
+        }
+        trigger()
+    }
+
+    fileprivate func failed() {
+        // An earlier capture can still have its banner when a second one fails.
+        if (try? visible()) != true { finished() }
+    }
+
+    private func finished() {
+        saving?.cancel()
+        saving = nil
+        Self.pending.removeValue(forKey: ObjectIdentifier(self))
+    }
+
+    private static var recovery: String {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "com.apple.dt.Devices.ScreenCaptures")
+        return "Check \(folder.path) for pending DeviceKit captures."
+    }
+
+    package static func finish(before deadline: ContinuousClock.Instant) async -> String? {
+        while let capture = pending.values.first {
+            if let task = capture.saving, !(await task.ends(before: deadline)) {
+                return "DeviceKit did not finish saving a screenshot of \(capture.device). \(recovery)"
+            }
+        }
+        return nil
+    }
+}

@@ -9,6 +9,7 @@ import ImageIO
 @testable import NeoSimulatorPresentationAdapters
 @testable import NeoSimulatorService
 @testable import NeoSimulatorUI
+import Observation
 import QuartzCore
 import Synchronization
 import Testing
@@ -17,8 +18,31 @@ private extension SimulatorScreenHost {
     var captureOwner: UUID { (presenter as! DeviceWindowPresenter).captureOwner }
 }
 
+@Observable @MainActor private final class SavedBanner { var visible = true }
+
 @Suite @MainActor
 struct CaptureAndImportTests {
+
+    @Test func quittingWaitsForTheNewDeviceKitCaptureWhenThePreviousBannerDisappears() async throws {
+        let banner = SavedBanner()
+        let device = UUID()
+        let reads = AsyncStream<Bool>.makeStream()
+        let saves = NativeScreenshotSaves(device: device) {
+            reads.continuation.yield(banner.visible)
+            return banner.visible
+        }
+        defer { reads.continuation.finish() }
+        var events = reads.stream.makeAsyncIterator()
+        saves.take {}
+        banner.visible = false
+        while let shown = await events.next(), shown {}
+        #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
+        banner.visible = true
+        while let shown = await events.next(), !shown {}
+        banner.visible = false
+        #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
+    }
+
     @Test func earlyStopWaitsForTheFirstFrameAcknowledgement() async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

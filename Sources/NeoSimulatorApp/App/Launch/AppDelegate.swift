@@ -2,6 +2,7 @@ import AppKit
 import NeoSimulatorDeviceIO
 import NeoSimulatorHostSupport
 import NeoSimulatorKit
+import NeoSimulatorPresentationAdapters
 import NeoSimulatorUI
 import ObservationBridge
 import SwiftUI
@@ -321,6 +322,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var relaunchProcess: Process?
             do {
                 mainWindow?.stopInspectorReads()
+                if let issue = await NativeScreenshotSaves.finish(before: .now + timeout) {
+                    TerminationAccount.shared.note(issue)
+                }
                 try await preparation.value
                 try await mainWindow?.finishInspectorPreviews()
                 observationRetryTask?.cancel()

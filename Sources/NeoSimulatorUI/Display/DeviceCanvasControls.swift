@@ -15,6 +15,7 @@ package final class DeviceCanvasControls: NSView {
     private let screenshotBanner = NSHostingView(rootView: AnyView(EmptyView()))
     private let screenshotWindowID = UUID()
     private var screenshotDevice: NativeScreenshotControls.Target?
+    private var nativeScreenshot: NativeScreenshotControls?
     private var loadingScreenshot: Task<Void, Never>?
     private var modifierMonitor: Any?
     private var artworkXcodeURL: URL?
@@ -56,22 +57,38 @@ package final class DeviceCanvasControls: NSView {
         _ device: NativeScreenshotControls.Target?, onError: @escaping @MainActor @Sendable (any Error) -> Void
     ) {
         guard screenshotDevice != device else { return }
+        let previous = screenshotDevice
         screenshotDevice = device
+        if device?.device == previous?.device {
+            updateScreenshotButton()
+            return
+        }
         loadingScreenshot?.cancel()
+        nativeScreenshot = nil
         content.screenshot = nil
+        content.saves = nil
         screenshotBanner.rootView = AnyView(EmptyView())
         guard let device else { return }
         loadingScreenshot = Task { [weak self, screenshotWindowID] in
             do {
                 let controls = try await NativeScreenshotControls.load(
-                    for: device, windowID: screenshotWindowID, onError: onError)
+                    for: device.device, windowID: screenshotWindowID, onError: onError)
                 guard let self, !Task.isCancelled, let controls else { return }
-                self.content.screenshot = controls.button
+                self.nativeScreenshot = controls
+                self.content.saves = controls.saves
                 self.screenshotBanner.rootView = controls.banner
+                self.updateScreenshotButton()
                 self.render()
             } catch {
                 if !Task.isCancelled { hostLog(error.localizedDescription) }
             }
+        }
+    }
+
+    private func updateScreenshotButton() {
+        guard let target = screenshotDevice, let nativeScreenshot else { return }
+        do { content.screenshot = try nativeScreenshot.camera(showing: target.display) } catch {
+            content.screenshot = nil; hostLog(error.localizedDescription)
         }
     }
 
@@ -203,6 +220,7 @@ private final class CanvasControlsHostingView: NSHostingView<CanvasBottomContent
 
 private struct CanvasBottomContent: View {
     var screenshot: AnyView?
+    var saves: NativeScreenshotSaves?
     let takeScreenshot = PassthroughSubject<Void, Never>()
     var pairedDeviceName: String?
     var actions: [CanvasAction] = []
@@ -261,9 +279,12 @@ private struct CanvasBottomContent: View {
     }
 
     @ViewBuilder private func button(_ action: CanvasAction) -> some View {
-        if action.id == "capture", let screenshot {
+        if action.id == "capture", let screenshot, let saves {
             screenshot
-                .buttonStyle(ScreenshotButtonStyle(request: takeScreenshot))
+                .buttonStyle(ScreenshotButtonStyle(request: takeScreenshot, saves: saves))
+                .accessibilityRepresentation {
+                    Button("Screenshot") { onAction(action.id) }
+                }
                 .disabled(!action.enabled)
                 .accessibilityIdentifier(action.id)
         } else if action.id == "record", let recordingStartDate {
@@ -304,10 +325,15 @@ private struct CanvasBottomContent: View {
 /// The menu and the camera press the same DeviceKit button for this screen.
 private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
     let request: PassthroughSubject<Void, Never>
+    let saves: NativeScreenshotSaves
     func makeBody(configuration: Configuration) -> some View {
-        Button(configuration)
+        Button {
+            saves.take(configuration.trigger)
+        } label: {
+            configuration.label
+        }
             .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
-            .onReceive(request) { configuration.trigger() }
+        .onReceive(request) { saves.take(configuration.trigger) }
     }
 }
 
