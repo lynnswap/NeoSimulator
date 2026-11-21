@@ -1,0 +1,136 @@
+import ABIBridge
+import Foundation
+import Observation
+import SwiftShims
+import SwiftUI
+
+/// The camera and the overlay that Device Hub installs above its action bar. DeviceKit owns the capture,
+/// its pending file, the banner's layout, and its Finder, sharing and dismissal actions.
+@MainActor
+package struct NativeScreenshotControls {
+    package struct Target: Equatable {
+        package enum Display: Equatable {
+            case automatic, displayID(UInt32), uniqueID(String), visible([AnyHashable])
+        }
+        package let device: UUID
+        package let display: Display
+
+        package init(device: UUID, display: Display = .automatic) {
+            self.device = device
+            self.display = display
+        }
+    }
+
+    package let button: AnyView
+    package let banner: AnyView
+
+    package static func load(
+        for target: Target, windowID: UUID, onError: @escaping @MainActor @Sendable (any Error) -> Void
+    )
+        async throws -> Self?
+    {
+        let runtime = ABIRuntime.shared
+        let bindings = try await runtime.prepare { try await NativeActionBarBindings(runtime: $0) }
+        let plugins = try unsafe bindings.shared.unsafeInvoke()
+        // The manager starts loading its plugins on first access. The first list can still be empty.
+        @MainActor struct Item<Value> { let value: Value }
+        let primary: Item<Any>? = try await firstAvailable {
+            try bindings.providers(in: plugins).first {
+                String(reflecting: type(of: $0)) == "DeviceKit.PrimaryControlsProvider"
+            }
+            .map { Item(value: $0) }
+        }
+        guard let primary else { return nil }
+        let read = try await bindings.controls(of: primary.value, for: target.device, onError: onError)
+        let item = try await firstAvailable {
+            try read().first { try bindings.name(of: $0) == "com.apple.devicekit.actionbar.control.screenshot" }.map {
+                Item(value: $0)
+            }
+        }
+        guard let item, let overlayType = _typeByName("9DeviceKit20OverlayBannerContentV") as? any View.Type else {
+            return nil
+        }
+        let button = try bindings.view(of: item.value)
+        let environment = try await runtime.resolve(.swift(.type("SwiftUI.EnvironmentValues")))
+        let uuid = try await runtime.resolve(.swift(.type("Foundation.UUID")))
+        let key = try await environment.resolve(
+            .swift(.writableKeyPath("(extension in DeviceKit):SwiftUI.EnvironmentValues.windowID", valueType: uuid)))
+        guard let path = try key.withCopy({ $0 as? WritableKeyPath<EnvironmentValues, UUID> }) else { return nil }
+        let fields = OverlayFields(deviceIdentifier: target.device, _windowID: Environment(path))
+        guard let banner = fields.view(as: overlayType) else { return nil }
+        guard let camera = try await camera(button, showing: target.display, runtime: runtime) else { return nil }
+        return Self(button: camera, banner: AnyView(banner.environment(path, windowID)))
+    }
+
+    private static func firstAvailable<Value: Sendable>(_ read: @escaping @MainActor @Sendable () throws -> Value?)
+        async throws -> Value?
+    {
+        for try await case let value? in Observations(read) { return value }
+        return nil
+    }
+
+    /// The action bar passes the displays shown by the canvas through this environment key.
+    /// A Resize App display has a unique ID, while a simulator framebuffer has a numeric ID.
+    private static func camera(_ button: AnyView, showing display: Target.Display, runtime: ABIRuntime) async throws
+        -> AnyView?
+    {
+        guard display != .automatic else { return button }
+        // The camera already stores DeviceKit's writable environment key path. It has no exported getter.
+        let path = Mirror(reflecting: button).descendant(
+            "storage", "view", "_visibleDisplayIdentifiers", "content", "keyPath")
+        func identifier<Value>(_ name: String, _ value: Value) async throws -> [Any] {
+            let type = try await runtime.resolve(.swift(.type("DeviceKit.DisplayIdentifier")))
+            let wrapped = try await type.makeEnumCase(named: name, associatedValues: value)
+            return try wrapped.withCopy { [$0] }
+        }
+        let identifiers: [Any]
+        switch display {
+        case .visible(let displays): identifiers = displays.map(\.base)
+        case .displayID(let id): identifiers = try await identifier("displayID", id)
+        case .uniqueID(let id): identifiers = try await identifier("uniqueID", id)
+        case .automatic: return button
+        }
+        func configure<ID>(_ first: ID) -> AnyView? {
+            guard let key = path as? WritableKeyPath<EnvironmentValues, [ID]>, let values = identifiers as? [ID] else {
+                return nil
+            }
+            return AnyView(button.environment(key, values))
+        }
+        guard let first = identifiers.first else { return button }
+        return _openExistential(first, do: configure)
+    }
+
+    /// OverlayBannerContent has no exported initializer. Match its complete reflected storage before passing
+    /// the initialized fields to its own SwiftUI.View witness. SwiftUI and DeviceKit perform all layout.
+    private struct OverlayFields {
+        let deviceIdentifier: UUID
+        let _windowID: Environment<UUID>
+
+        func view<V: View>(as type: V.Type) -> AnyView? {
+            guard fieldCount(type) == 2, MemoryLayout<V>.size == MemoryLayout<Self>.size,
+                MemoryLayout<V>.alignment == MemoryLayout<Self>.alignment
+            else { return nil }
+            for (index, expected) in Mirror(reflecting: self).children.enumerated() {
+                var field = _FieldReflectionMetadata()
+                let actual = fieldType(type, index, &field)
+                defer { field.freeFunc?(field.name) }
+                let offset =
+                    index == 0
+                    ? MemoryLayout<Self>.offset(of: \.deviceIdentifier) : MemoryLayout<Self>.offset(of: \._windowID)
+                guard actual == Swift.type(of: expected.value), let name = field.name,
+                    String(cString: name) == expected.label,
+                    fieldOffset(type, index) == offset
+                else { return nil }
+            }
+            return AnyView(unsafeBitCast(self, to: V.self))
+        }
+    }
+}
+
+@_silgen_name("swift_reflectionMirror_recursiveCount")
+private func fieldCount(_ type: Any.Type) -> Int
+@_silgen_name("swift_reflectionMirror_recursiveChildMetadata")
+private func fieldType(_ type: Any.Type, _ index: Int, _ metadata: UnsafeMutablePointer<_FieldReflectionMetadata>)
+    -> Any.Type
+@_silgen_name("swift_reflectionMirror_recursiveChildOffset")
+private func fieldOffset(_ type: Any.Type, _ index: Int) -> Int

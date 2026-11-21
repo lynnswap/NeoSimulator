@@ -1085,6 +1085,7 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
     /// File ▸ Save Screen: captures the screen without asking and shows its
     /// thumbnail, which saves it to the screenshot folder when dismissed.
     package func saveScreen() {
+        if canvasControls?.takeNativeScreenshot() == true { return }
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
         let report = reportCapture
@@ -1911,6 +1912,7 @@ final class DeviceContentView: NSView, DisplayContentView {
             if let canvasControls, canvasControls.superview == nil {
                 attachCanvasControls()
             }
+            canvasControls?.installScreenshotBanner(in: self, above: viewport.bottomAnchor)
             needsUpdateConstraints = true
             needsLayout = true
         }

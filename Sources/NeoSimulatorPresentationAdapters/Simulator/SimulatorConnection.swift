@@ -18,6 +18,7 @@ package final class SimulatorConnection: SimulatorDisplay {
     private var nativeScale: CGFloat = 1
     package var usesNativeCanvas: Bool { nativeCanvas != nil }
     package var nativePoseControls: NativeDevicePoseControls? { nativeCanvas?.poseControls }
+    package var visibleDisplays: [AnyHashable] { nativeCanvas?.visibleDisplays ?? [] }
     private let device: SimulatorDevice
     private let buttonTarget: UInt32
     private let connectedDisplayID: UInt32

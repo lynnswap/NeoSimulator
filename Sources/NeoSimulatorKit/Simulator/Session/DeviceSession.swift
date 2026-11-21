@@ -399,6 +399,7 @@ package final class DeviceSession {
     package var appResizeMinimumSize: CGSize? { appResizeGeometry?.minimumSize }
     /// The corner radius the guest draws the resizing app's scene with, while one is resizing.
     package var appResizeCornerRadius: CGFloat? { appResizeGeometry?.cornerRadius }
+    package var resizedDisplayUniqueID: String? { isResizingApp ? resizeLease?.displayUniqueID : nil }
     package private(set) var isResizingApp = false
     package var canResizeApp: Bool {
         canPerformToolOperation && recording == nil && recordingStart == nil && supportsAppResize

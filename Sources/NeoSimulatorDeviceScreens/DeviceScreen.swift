@@ -66,15 +66,51 @@ package final class DeviceScreen {
     private func updateCanvasControls() {
         let posture = model.devicePostures[id]
         let enabled = canControlDevice && !model.managingDeviceIDs.contains(id)
+        let inventory = model.inventory.first { $0.id == id }
+        canvasControls.setScreenshotDevice(screenshotTarget(for: inventory)) { [weak screens] error in
+            screens?.onError?(error)
+        }
         canvasControls.xcodeURL = screens?.displayXcodeURL
-        let available = model.inventory.first { $0.id == id }
-            .map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
+        let available = inventory.map { DevicePostureModel.canInspect(capabilities: $0.capabilities) } ?? false
         canvasControls.update(supports: { action in
             action == "rotate" && posture?.isSupported == true ? false : supports(action)
         }, isEnabled: isEnabled, recordingTitle: recordingTitle,
                               recordingStartDate: recordingStartDate, nativePoses: nativePoseControls,
                               nativePosesEnabled: enabled, posture: posture, postureEnabled: enabled, postureAvailable: available,
                               pairedDeviceName: model.activePairedDevice(for: id)?.name)
+    }
+
+    private func screenshotTarget(for inventory: InventoryDevice?) -> NativeScreenshotControls.Target? {
+        guard canControlDevice else { return nil }
+        let record: CoreDeviceDevice
+        let display: NativeScreenshotControls.Target.Display
+        switch (observedController, inventory) {
+        case (.simulator(let controller), .simulator(let simulator)):
+            guard let device = simulator.coreDevice else { return nil }
+            record = device
+            if let resized = controller.session.resizedDisplayUniqueID {
+                display = .uniqueID(resized)
+            } else if !controller.display.visibleDisplays.isEmpty {
+                display = .visible(controller.display.visibleDisplays)
+            } else {
+                do {
+                    display = try controller.session.display.captureDisplayID.map { .displayID($0) } ?? .automatic
+                } catch { return nil }
+            }
+        case (.remote(let controller), .remote(let device)):
+            guard !controller.hasUnsavedScreenshot else { return nil }
+            record = device
+            if let resized = controller.session.resizedDisplayUniqueID {
+                display = .uniqueID(resized)
+            } else if !controller.session.visibleDisplays.isEmpty {
+                display = .visible(controller.session.visibleDisplays)
+            } else {
+                display = .automatic
+            }
+        default: return nil
+        }
+        guard let uuid = UUID(uuidString: record.identifier) else { return nil }
+        return .init(device: uuid, display: display)
     }
 
     /// The controller, read together with the changes it reports outside Observation.

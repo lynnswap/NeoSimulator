@@ -31,6 +31,7 @@ package protocol SimulatorDisplay: DeviceSessionDisplay {
     var framebufferFrame: NSRect { get }
     var usesNativeCanvas: Bool { get }
     var nativePoseControls: NativeDevicePoseControls? { get }
+    var visibleDisplays: [AnyHashable] { get }
     /// The input digitizer, or the loaded plugin's overlay.
     var inputView: NSView { get }
     /// Loaded device-profile plugin, or nil until available. Throws if unusable,
@@ -98,6 +99,7 @@ extension SimulatorDisplay {
     package var framebufferFrame: NSRect { view.bounds }
     package var usesNativeCanvas: Bool { false }
     package var nativePoseControls: NativeDevicePoseControls? { nil }
+    package var visibleDisplays: [AnyHashable] { [] }
     package func setCanvasMagnification(_ magnification: CGFloat?) {}
     package var canvasOutset: CGFloat { 0 }
 }

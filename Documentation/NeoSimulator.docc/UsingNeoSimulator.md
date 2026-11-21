@@ -236,21 +236,29 @@ or stopping Resize App. Captures made while resizing use the app's display.
 
 ## Save screens and recordings
 
+### Screenshots
+
+Click the camera below a connected screen, or choose **File → Save Screenshot…**.
+When DeviceKit offers screenshot capture, its **Screenshot Saved** banner appears
+above the controls in the main or compact window. Click **Show in Finder** to
+locate the PNG. Control-click the banner for more actions. DeviceKit names the
+file `Screenshot <device> <date> at <time>.png` and uses its capture location,
+which defaults to Desktop.
+
 ### Simulator captures
 
 | Operation | Shortcut | Result |
 | --- | --- | --- |
-| File → Save Screen | — | PNG screenshot |
+| File → Save Screenshot… | — | PNG screenshot |
 | File → Record Screen | Command-R | Start a recording immediately |
 | File → Stop Recording | — | Finish the movie |
 | Edit → Copy Screen | Control-Command-C | Unmasked PNG on the Mac pasteboard |
 
 The camera becomes a stop button while recording. Hold Option for **Save
 Screen…** or **Record Screen…** to choose a destination and device-mask option.
-Save Screen… remembers its folder and mask choice; ordinary captures use the
-saved mask choice.
+Save Screen… remembers its folder and mask choice for Simulator.app-style captures.
 
-Captures appear as floating thumbnails and save when dismissed. Screenshots use
+Recordings and screenshots taken without DeviceKit use floating thumbnails and save when dismissed. These screenshots use
 the configured folder (initially the macOS screenshot location or Desktop);
 recordings use Desktop. Thumbnails last five seconds for screenshots or the
 movie's duration for recordings. Hover to keep one open, drag to export, or
@@ -262,8 +270,8 @@ so on. If saving fails, the error includes the file's location for recovery.
 
 ### Physical-device and VM captures
 
-With a physical-device or VM screen active, **File → Save Screenshot…**
-(Command-S) saves its remote pixels as PNG. New captures require a connection
+When DeviceKit does not offer its camera, **File → Save Screenshot…**
+opens a panel to save the physical device’s or VM’s remote pixels as PNG. New captures require a connection
 that can supply them.
 
 If saving a screenshot fails, **Save Screenshot…** retries with the same captured

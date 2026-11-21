@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import NeoSimulatorKit
 import NeoSimulatorPresentationAdapters
 import SwiftUI
@@ -11,6 +12,10 @@ package final class DeviceCanvasControls: NSView {
     package var xcodeURL: URL?
     private let host = CanvasControlsHostingView(rootView: CanvasBottomContent())
     private var content = CanvasBottomContent()
+    private let screenshotBanner = NSHostingView(rootView: AnyView(EmptyView()))
+    private let screenshotWindowID = UUID()
+    private var screenshotDevice: NativeScreenshotControls.Target?
+    private var loadingScreenshot: Task<Void, Never>?
     private var modifierMonitor: Any?
     private var artworkXcodeURL: URL?
     private var artworkTask: Task<Void, Never>?
@@ -35,11 +40,53 @@ package final class DeviceCanvasControls: NSView {
         }
     }
 
+    package func installScreenshotBanner(in canvas: NSView, above bottom: NSLayoutYAxisAnchor) {
+        screenshotBanner.removeFromSuperview()
+        screenshotBanner.sizingOptions = [.intrinsicContentSize]
+        screenshotBanner.translatesAutoresizingMaskIntoConstraints = false
+        canvas.addSubview(screenshotBanner)
+        NSLayoutConstraint.activate([
+            screenshotBanner.centerXAnchor.constraint(equalTo: canvas.centerXAnchor),
+            screenshotBanner.leadingAnchor.constraint(greaterThanOrEqualTo: canvas.leadingAnchor),
+            screenshotBanner.bottomAnchor.constraint(equalTo: bottom),
+        ])
+    }
+
+    package func setScreenshotDevice(
+        _ device: NativeScreenshotControls.Target?, onError: @escaping @MainActor @Sendable (any Error) -> Void
+    ) {
+        guard screenshotDevice != device else { return }
+        screenshotDevice = device
+        loadingScreenshot?.cancel()
+        content.screenshot = nil
+        screenshotBanner.rootView = AnyView(EmptyView())
+        guard let device else { return }
+        loadingScreenshot = Task { [weak self, screenshotWindowID] in
+            do {
+                let controls = try await NativeScreenshotControls.load(
+                    for: device, windowID: screenshotWindowID, onError: onError)
+                guard let self, !Task.isCancelled, let controls else { return }
+                self.content.screenshot = controls.button
+                self.screenshotBanner.rootView = controls.banner
+                self.render()
+            } catch {
+                if !Task.isCancelled { hostLog(error.localizedDescription) }
+            }
+        }
+    }
+
+    package func takeNativeScreenshot() -> Bool {
+        guard content.screenshot != nil, window != nil, !isHiddenOrHasHiddenAncestor else { return false }
+        content.takeScreenshot.send()
+        return true
+    }
+
     package required init?(coder: NSCoder) { nil }
 
     isolated deinit {
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
         artworkTask?.cancel()
+        loadingScreenshot?.cancel()
     }
 
     package func update(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
@@ -155,6 +202,8 @@ private final class CanvasControlsHostingView: NSHostingView<CanvasBottomContent
 }
 
 private struct CanvasBottomContent: View {
+    var screenshot: AnyView?
+    let takeScreenshot = PassthroughSubject<Void, Never>()
     var pairedDeviceName: String?
     var actions: [CanvasAction] = []
     var postures: [CanvasAction] = []
@@ -212,7 +261,12 @@ private struct CanvasBottomContent: View {
     }
 
     @ViewBuilder private func button(_ action: CanvasAction) -> some View {
-        if action.id == "record", let recordingStartDate {
+        if action.id == "capture", let screenshot {
+            screenshot
+                .buttonStyle(ScreenshotButtonStyle(request: takeScreenshot))
+                .disabled(!action.enabled)
+                .accessibilityIdentifier(action.id)
+        } else if action.id == "record", let recordingStartDate {
             HStack(spacing: 12) {
                 Text(recordingStartDate, style: .timer).monospacedDigit().fixedSize()
                     .accessibilityLabel("Recording Time")
@@ -244,6 +298,16 @@ private struct CanvasBottomContent: View {
         .help(action.help ?? action.title)
         .accessibilityLabel(action.title)
         .accessibilityIdentifier(action.id)
+    }
+}
+
+/// The menu and the camera press the same DeviceKit button for this screen.
+private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
+    let request: PassthroughSubject<Void, Never>
+    func makeBody(configuration: Configuration) -> some View {
+        Button(configuration)
+            .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
+            .onReceive(request) { configuration.trigger() }
     }
 }
 
