@@ -30,7 +30,8 @@ struct CaptureAndImportTests {
     @Test func quittingWaitsForTheNewDeviceKitCaptureWhenThePreviousBannerDisappears() async throws {
         let banner = SavedBanner()
         let device = UUID()
-        let saves = NativeScreenshotSaves(device: device, thumbnail: { banner.image }, visible: { banner.visible })
+        let saves = NativeScreenshotSaves(
+            device: device, onError: { Issue.record($0) }, thumbnail: { banner.image }, visible: { banner.visible })
         saves.take {}
         banner.visible = false
         banner.image = nil
@@ -45,6 +46,19 @@ struct CaptureAndImportTests {
         #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
         banner.visible = false
         #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
+
+        var errors: [any Error] = []
+        var attempts = 0
+        let silent = NativeScreenshotSaves(
+            device: device, acquisitionLimit: .milliseconds(30),
+            onError: { errors.append($0) }, thumbnail: { nil }, visible: { false })
+        silent.take { attempts += 1 }
+        silent.take {
+            attempts += 1; silent.failed()
+        }
+        #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
+        #expect(attempts == 2)
+        #expect(errors.count == 1)
     }
 
     @Test func earlyStopWaitsForTheFirstFrameAcknowledgement() async throws {

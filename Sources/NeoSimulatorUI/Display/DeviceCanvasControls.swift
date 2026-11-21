@@ -59,6 +59,7 @@ package final class DeviceCanvasControls: NSView {
         guard screenshotDevice != device else { return }
         let previous = screenshotDevice
         screenshotDevice = device
+        content.takeScreenshot = PassthroughSubject()
         if device?.device == previous?.device {
             updateScreenshotButton()
             return
@@ -98,8 +99,13 @@ package final class DeviceCanvasControls: NSView {
 
     package func takeNativeScreenshot() -> Bool {
         guard content.screenshot != nil, window != nil, !isHiddenOrHasHiddenAncestor else { return false }
-        content.takeScreenshot.send()
-        return true
+        var accepted = false
+        content.takeScreenshot.send {
+            guard !accepted else { return false }
+            accepted = true
+            return true
+        }
+        return accepted
     }
 
     package required init?(coder: NSCoder) { nil }
@@ -225,7 +231,7 @@ private final class CanvasControlsHostingView: NSHostingView<CanvasBottomContent
 private struct CanvasBottomContent: View {
     var screenshot: AnyView?
     var saves: NativeScreenshotSaves?
-    let takeScreenshot = PassthroughSubject<Void, Never>()
+    var takeScreenshot = PassthroughSubject<@MainActor () -> Bool, Never>()
     var pairedDeviceName: String?
     var actions: [CanvasAction] = []
     var postures: [CanvasAction] = []
@@ -328,7 +334,7 @@ private struct CanvasBottomContent: View {
 
 /// The menu and the camera press the same DeviceKit button for this screen.
 private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
-    let request: PassthroughSubject<Void, Never>
+    let request: PassthroughSubject<@MainActor () -> Bool, Never>
     let saves: NativeScreenshotSaves
     func makeBody(configuration: Configuration) -> some View {
         Button {
@@ -336,8 +342,10 @@ private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
         } label: {
             configuration.label
         }
-            .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
-        .onReceive(request) { saves.take { configuration.trigger() } }
+        .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
+        .onReceive(request) { accept in
+            if accept() { saves.take { configuration.trigger() } }
+        }
     }
 }
 

@@ -44,7 +44,9 @@ package struct NativeScreenshotControls {
             .map { Item(value: $0) }
         }
         guard let primary else { return nil }
-        guard let saves = try await NativeScreenshotSaves.connect(plugins: plugins, device: device, windowID: windowID)
+        guard
+            let saves = try await NativeScreenshotSaves.connect(
+                plugins: plugins, device: device, windowID: windowID, onError: onError)
         else { return nil }
         let read = try await bindings.controls(of: primary.value, for: device) { error in
             saves.failed()
@@ -149,21 +151,29 @@ package final class NativeScreenshotSaves {
     private let thumbnail: @MainActor () throws -> Image?
     private let visible: @MainActor () throws -> Bool
     private let device: UUID
+    private let acquisitionLimit: Duration
+    private let onError: @MainActor (any Error) -> Void
     private var failures = 0
     @ObservationIgnored private var acquisition: Task<Void, Never>?
     @ObservationIgnored private var saving: Task<Void, Never>?
     private static var pending: [UUID: NativeScreenshotSaves] = [:]
 
     init(
-        device: UUID, thumbnail: @escaping @MainActor () throws -> Image?,
+        device: UUID, acquisitionLimit: Duration = DeviceOperationLimit.bridge,
+        onError: @escaping @MainActor (any Error) -> Void, thumbnail: @escaping @MainActor () throws -> Image?,
         visible: @escaping @MainActor () throws -> Bool
     ) {
         self.device = device
+        self.acquisitionLimit = acquisitionLimit
+        self.onError = onError
         self.thumbnail = thumbnail
         self.visible = visible
     }
 
-    fileprivate static func connect(plugins: NativeSwiftValue, device: UUID, windowID: UUID) async throws
+    fileprivate static func connect(
+        plugins: NativeSwiftValue, device: UUID, windowID: UUID,
+        onError: @escaping @MainActor (any Error) -> Void
+    ) async throws
         -> NativeScreenshotSaves?
     {
         let runtime = ABIRuntime.shared
@@ -193,7 +203,7 @@ package final class NativeScreenshotSaves {
                 .method(
                     "DeviceKit.BannerProvider.icon(in:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self,
                     valueABIs: abi)))
-        return NativeScreenshotSaves(device: device) {
+        return NativeScreenshotSaves(device: device, onError: onError) {
             let view = try unsafe icon.unsafeInvoke(on: provider, value)
             return try view.withCopy { icon in
                 // Its optional icon wraps the captured Image in SwiftUI view modifiers. The banner can
@@ -220,14 +230,23 @@ package final class NativeScreenshotSaves {
         let previous = acquisition
         let capture = Task.immediate { [self] in
             if let previous { await previous.value }
-            do {
-                let old = try? thumbnail()
-                let before = failures
-                trigger()
-                for try await (image, failed) in Observations({ (try self.thumbnail(), self.failures != before) }) {
-                    if failed || image != nil && image != old { break }
-                }
-            } catch { TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)") }
+            let old = try? thumbnail()
+            let before = failures
+            trigger()
+            let response = Task.immediate {
+                do {
+                    for try await (image, failed) in Observations({ (try self.thumbnail(), self.failures != before) }) {
+                        if failed || image != nil && image != old { return }
+                    }
+                } catch { if !Task.isCancelled { self.onError(error) } }
+            }
+            if !(await response.ends(before: .now + acquisitionLimit)) {
+                response.cancel()
+                onError(
+                    RemoteScreenError.unavailable(
+                        "native-capture-timeout",
+                        "DeviceKit did not confirm the screenshot. " + Self.recovery))
+            }
         }
         acquisition = capture
         saving?.cancel()

@@ -1083,8 +1083,8 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         !session.isResizingApp && session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
     }
 
-    /// File ▸ Save Screen: captures the screen without asking and shows its
-    /// thumbnail, which saves it to the screenshot folder when dismissed.
+    /// The standard camera uses DeviceKit when available. The Simulator.app-style camera
+    /// keeps its thumbnail until it saves to the configured screenshot folder.
     package func saveScreen() {
         if canvasControls?.takeNativeScreenshot() == true { return }
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
