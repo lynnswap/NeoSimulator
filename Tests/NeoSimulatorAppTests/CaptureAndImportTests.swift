@@ -11,7 +11,6 @@ import ImageIO
 @testable import NeoSimulatorUI
 import Observation
 import QuartzCore
-import SwiftUI
 import Synchronization
 import Testing
 
@@ -19,50 +18,25 @@ private extension SimulatorScreenHost {
     var captureOwner: UUID { (presenter as! DeviceWindowPresenter).captureOwner }
 }
 
-@Observable @MainActor private final class SavedBanner {
-    var image: Image? = Image(systemName: "1.circle")
-}
-
 @Suite @MainActor
 struct CaptureAndImportTests {
 
-    @Test func quittingWaitsForTheNewDeviceKitCaptureWhenThePreviousBannerDisappears() async throws {
-        let banner = SavedBanner()
+    @Test func quittingWaitsForEachDeviceKitCameraActionToHandOffItsFile() async throws {
         let device = UUID()
-        let saves = NativeScreenshotSaves(
-            device: device, onError: { Issue.record($0) }, thumbnail: { banner.image })
-        saves.take {}
-        banner.image = nil
-        #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
-        banner.image = Image(systemName: "2.circle")
-        await NativeScreenshotSaves.acquiring(on: device)?.value
-
-        // A second press fails while the first successful capture still needs its handoff.
-        saves.take { saves.failed() }
-        await NativeScreenshotSaves.acquiring(on: device)?.value
-        #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
-        banner.image = nil
-        #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
-
-        var errors: [any Error] = []
-        var attempts = 0
-        let silent = NativeScreenshotSaves(
-            device: device, acquisitionLimit: .milliseconds(30),
-            onError: { errors.append($0) }, thumbnail: { nil })
-        silent.take { attempts += 1 }
-        silent.take { attempts += 1 }
-        #expect(attempts == 2)
-        #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
-        #expect(!silent.canTake)
-        #expect(errors.count == 1)
-
-        let reopened = NativeScreenshotSaves(device: device, onError: { Issue.record($0) }, thumbnail: { banner.image })
-        reopened.take {}
-        silent.failed()
-        #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
-        banner.image = Image(systemName: "3.circle")
-        await NativeScreenshotSaves.acquiring(on: device)?.value
-        banner.image = nil
+        let camera = NativeScreenshotSaves(device: device, onError: { Issue.record($0) })
+        let first = AsyncStream<Void>.makeStream(), second = AsyncStream<Void>.makeStream()
+        var dispatched = 0
+        camera.take {
+            dispatched += 1; Task { for await _ in first.stream {} }
+        }
+        camera.take {
+            dispatched += 1; Task { for await _ in second.stream {} }
+        }
+        #expect(dispatched == 2)
+        second.continuation.finish()
+        #expect(
+            await NativeScreenshotSaves.finish(before: .now + .milliseconds(30))?.contains(device.uuidString) == true)
+        first.continuation.finish()
         #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
     }
 

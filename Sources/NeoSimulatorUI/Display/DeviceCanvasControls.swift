@@ -97,7 +97,7 @@ package final class DeviceCanvasControls: NSView {
     }
 
     package func takeNativeScreenshot() -> Bool {
-        guard content.screenshot != nil, content.saves?.canTake == true, window != nil, !isHiddenOrHasHiddenAncestor
+        guard content.screenshot != nil, window != nil, !isHiddenOrHasHiddenAncestor
         else { return false }
         return content.takeScreenshot.perform()
     }
@@ -286,7 +286,7 @@ private struct CanvasBottomContent: View {
         if action.id == "capture", let screenshot, let saves {
             screenshot
                 .buttonStyle(
-                    ScreenshotButtonStyle(request: takeScreenshot, saves: saves, fallback: { onAction(action.id) })
+                    ScreenshotButtonStyle(request: takeScreenshot, saves: saves)
                 )
                 .accessibilityRepresentation { Button("Screenshot") { onAction(action.id) } }
                 .disabled(!action.enabled)
@@ -356,12 +356,9 @@ private struct MountedScreenshotCommand: NSViewRepresentable {
 private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
     let request: ScreenshotCommand
     let saves: NativeScreenshotSaves
-    let fallback: @MainActor () -> Void
 
     func makeBody(configuration: Configuration) -> some View {
-        let press = {
-            if saves.canTake { saves.take(configuration.trigger) } else { fallback() }
-        }
+        let press = { saves.take(configuration.trigger) }
         return Button(action: press) { configuration.label }
             .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
             .background { MountedScreenshotCommand(command: request, press: press) }

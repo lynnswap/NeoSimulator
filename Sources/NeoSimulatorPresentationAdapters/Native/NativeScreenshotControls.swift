@@ -44,14 +44,8 @@ package struct NativeScreenshotControls {
             .map { Item(value: $0) }
         }
         guard let primary else { return nil }
-        guard
-            let saves = try await NativeScreenshotSaves.connect(
-                plugins: plugins, device: device, windowID: windowID, onError: onError)
-        else { return nil }
-        let read = try await bindings.controls(of: primary.value, for: device) { error in
-            saves.failed()
-            onError(error)
-        }
+        let saves = NativeScreenshotSaves(device: device, onError: onError)
+        let read = try await bindings.controls(of: primary.value, for: device, onError: onError)
         let item = try await firstAvailable {
             try read().first { try bindings.name(of: $0) == "com.apple.devicekit.actionbar.control.screenshot" }.map {
                 Item(value: $0)
@@ -144,177 +138,62 @@ private func fieldType(_ type: Any.Type, _ index: Int, _ metadata: UnsafeMutable
 @_silgen_name("swift_reflectionMirror_recursiveChildOffset")
 private func fieldOffset(_ type: Any.Type, _ index: Int) -> Int
 
-/// DeviceKit places the file when its saved-capture banner ends. Keep the app alive for that handoff,
-/// including the interval between pressing the camera and the banner appearing.
-@MainActor @Observable
+/// DeviceKit's camera starts child tasks for the capture and the saved banner's file handoff.
+/// Its tasks inherit this per-press lifetime, including when another capture replaces the banner.
+@MainActor
 package final class NativeScreenshotSaves {
-    private let thumbnail: @MainActor () throws -> Image?
-    private let device: UUID
-    private let acquisitionLimit: Duration
-    private let onError: @MainActor (any Error) -> Void
-    private var outstanding = 0
-    package private(set) var canTake = true
-    @TaskLocal private static var requestID: UUID?
-    @ObservationIgnored private var requests: [UUID: NativeScreenshotSaves] = [:]
-    @ObservationIgnored private var timeout: Task<Void, Never>?
-    @ObservationIgnored private var acquisition: Task<Void, Never>?
-    @ObservationIgnored private var saving: Task<Void, Never>?
-    private static var pending: [UUID: NativeScreenshotSaves] = [:]
-
-    init(
-        device: UUID, acquisitionLimit: Duration = DeviceOperationLimit.bridge,
-        onError: @escaping @MainActor (any Error) -> Void, thumbnail: @escaping @MainActor () throws -> Image?
-    ) {
-        self.device = device
-        self.acquisitionLimit = acquisitionLimit
-        self.onError = onError
-        self.thumbnail = thumbnail
+    private final class Lifetime: Sendable {
+        let completion: AsyncStream<Void>.Continuation
+        init(_ completion: AsyncStream<Void>.Continuation) { self.completion = completion }
+        deinit { completion.finish() }
     }
 
-    fileprivate static func connect(
-        plugins: NativeSwiftValue, device: UUID, windowID: UUID,
-        onError: @escaping @MainActor (any Error) -> Void
-    ) async throws
-        -> NativeScreenshotSaves?
-    {
-        let runtime = ABIRuntime.shared
-        let read = try await plugins.type.resolve(.swift(.getter("bannerProviders", as: (() -> NativeSwiftValue).self)))
-        let providers = try NativeActionBarBindings.elements(of: unsafe read.unsafeInvoke(on: plugins))
-        guard
-            let saved = providers.first(where: {
-                String(reflecting: type(of: $0)) == "DeviceKit.ScreenCaptureSavedBanner"
-            })
-        else { return nil }
-        func copy<V>(_ value: V) async throws -> NativeSwiftValue {
-            try await NativeActionBarBindings.bridge(value, runtime: runtime)
-        }
-        let provider = try await _openExistential(saved, do: copy).copyUnderlyingValue()
-        let context = try await runtime.resolve(.swift(.type("DeviceKit.BannerProviderContext")))
-        let abi = [context: try NativeType.opaque(named: context.name)]
-        let make = try await context.resolve(
-            .swift(
-                .initializer("init(deviceID:windowID:)", as: ((UUID, UUID) -> NativeSwiftValue).self, valueABIs: abi)))
-        let value = try unsafe make.unsafeInvoke(device, windowID)
-        let icon = try await provider.type.resolve(
-            .swift(
-                .method(
-                    "DeviceKit.BannerProvider.icon(in:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self,
-                    valueABIs: abi)))
-        return NativeScreenshotSaves(device: device, onError: onError) {
-            let view = try unsafe icon.unsafeInvoke(on: provider, value)
-            return try view.withCopy { icon in
-                // Its optional icon wraps the captured Image in SwiftUI view modifiers. The banner can
-                // stay visible when DeviceKit replaces one capture with another.
-                guard var wrapped = Mirror(reflecting: icon).descendant("some") else { return nil }
-                while true {
-                    if let image = wrapped as? Image { return image }
-                    guard let content = Mirror(reflecting: wrapped).descendant("content") else {
-                        throw RemoteScreenError.unavailable(
-                            "native-capture-thumbnail", "DeviceKit did not provide the captured thumbnail.")
-                    }
-                    wrapped = content
-                }
-            }
-        }
+    @TaskLocal private static var lifetime: Lifetime?
+    private struct Pending {
+        let owner: NativeScreenshotSaves
+        let task: Task<Void, Never>
+    }
+    private static var pending: [UUID: Pending] = [:]
+    private let device: UUID
+    private let onError: @MainActor (any Error) -> Void
+
+    init(device: UUID, onError: @escaping @MainActor (any Error) -> Void) {
+        self.device = device
+        self.onError = onError
     }
 
     package func take(_ trigger: () -> Void) {
-        let owner = Self.pending[device] ?? self
-        Self.pending[device] = owner
-        let request = UUID()
-        owner.requests[request] = self
-        owner.outstanding += 1
-        if owner.acquisition == nil { owner.observeAcquisition() }
-        owner.armTimeout()
-        // A press captures the display that is on screen now, even if the view is removed next.
-        Self.$requestID.withValue(request, operation: trigger)
-        owner.waitForHandoff()
-    }
-
-    private func observeAcquisition() {
-        let baseline = try? thumbnail()
-        acquisition = Task { [self] in
-            var previous = baseline
-            do {
-                let frames = Observations {
-                    _ = self.outstanding
-                    return try self.thumbnail()
-                }
-                for try await image in frames {
-                    guard outstanding > 0 else { break }
-                    if image != nil && image != previous {
-                        outstanding -= 1
-                        if outstanding == 0 { break }
-                    }
-                    previous = image
-                }
-            } catch { onError(error) }
-            timeout?.cancel()
-            timeout = nil
-            acquisition = nil
-            requests.removeAll()
-            outstanding = 0
+        let id = UUID()
+        let (work, completion) = AsyncStream<Void>.makeStream()
+        let task = Task {
+            for await _ in work {}
+            Self.pending.removeValue(forKey: id)
         }
+        Self.pending[id] = Pending(owner: self, task: task)
+        Self.$lifetime.withValue(Lifetime(completion), operation: trigger)
     }
 
-    private func armTimeout() {
-        timeout?.cancel()
-        timeout = Task { [self] in
-            do { try await Task.sleep(for: acquisitionLimit) } catch { return }
-            guard outstanding > 0 else { return }
-            // This control can still receive a late reply. A new connection supplies a fresh camera.
-            for source in requests.values { source.canTake = false }
-            let error = RemoteScreenError.unavailable(
-                "native-capture-timeout",
-                "DeviceKit did not confirm all requested screenshots. " + Self.recovery)
-            outstanding = 0
-            onError(error)
-        }
-    }
-
-    private func waitForHandoff() {
-        saving?.cancel()
-        let copying = acquisition
-        saving = Task { [self] in
-            await copying?.value
-            guard !Task.isCancelled else { return }
-            do {
-                // DeviceKit hides the banner before moving the file and removes its icon after handoff.
-                for try await image in Observations(thumbnail) { if image == nil { break } }
-            } catch { TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)") }
-            if !Task.isCancelled {
-                saving = nil
-                Self.pending.removeValue(forKey: device)
+    /// Keeps the display alive for the presses accepted before a disconnect or display change.
+    package static func acquiring(on device: UUID) -> Task<Void, Never>? {
+        let captures = pending.values.filter { $0.owner.device == device }
+        guard !captures.isEmpty else { return nil }
+        return Task {
+            let deadline = ContinuousClock.now + DeviceOperationLimit.bridge
+            for capture in captures where !(await capture.task.ends(before: deadline)) {
+                capture.owner.onError(RemoteScreenError.unavailable("native-capture-timeout", capture.owner.recovery))
+                return
             }
         }
     }
 
-    func failed() {
-        guard let owner = Self.pending[device], owner.outstanding > 0 else { return }
-        if let request = Self.requestID {
-            guard owner.requests.removeValue(forKey: request) != nil else { return }
-        } else {
-            // Some providers can report outside the calling task. Only a still-responsive source
-            // with an outstanding request can acknowledge it.
-            guard canTake, let request = owner.requests.first(where: { $0.value === self })?.key else { return }
-            owner.requests.removeValue(forKey: request)
-        }
-        owner.outstanding -= 1
-    }
-
-    /// DeviceKit has copied the display pixels by the time it publishes the new thumbnail.
-    package static func acquiring(on device: UUID) -> Task<Void, Never>? { pending[device]?.acquisition }
-
-    private static var recovery: String {
+    private var recovery: String {
         let folder = FileManager.default.temporaryDirectory.appending(path: "com.apple.dt.Devices.ScreenCaptures")
-        return "Check \(folder.path) for pending DeviceKit captures."
+        return "DeviceKit did not finish saving a screenshot of \(device). Check \(folder.path) for pending captures."
     }
 
     package static func finish(before deadline: ContinuousClock.Instant) async -> String? {
         while let capture = pending.values.first {
-            if let task = capture.saving, !(await task.ends(before: deadline)) {
-                return "DeviceKit did not finish saving a screenshot of \(capture.device). \(recovery)"
-            }
+            if !(await capture.task.ends(before: deadline)) { return capture.owner.recovery }
         }
         return nil
     }

@@ -302,11 +302,14 @@ extension SimulatorHostTests {
         #expect(!session.isResizingApp)
         #expect(transport.lease.invalidations == 0)
         #expect(!session.canResizeApp)
-        copying.continuation.finish()
-        try await wait { transport.lease.invalidations == 1 }
-        #expect(session.canResizeApp)
         #expect(app.disconnectCount == 1)
         #expect(primary.disconnectCount == 0)
+        let stopping = Task { try await session.stop() }
+        try await wait { primary.disconnectCount == 1 }
+        #expect(!(await stopping.ends(before: .now + .milliseconds(30))))
+        copying.continuation.finish()
+        try await stopping.value
+        #expect(transport.lease.invalidations == 1)
     }
 
     @Test func appResizeInvalidatesAnAssertionReturnedAfterStopAndCleansUpFailedDisplayConnection() async throws {

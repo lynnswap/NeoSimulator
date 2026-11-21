@@ -2157,7 +2157,10 @@ package final class DeviceSession {
     package func openURL(_ url: URL) async throws { try await tools.openURL(url) }
 
     package func shutDown() async throws {
+        let capture = pendingAppDisplayCapture?()
         isConnected = false
+        await capture?.value
+        await releasingResizeLease?.value
         try await tools.shutdown()
     }
 
@@ -2202,7 +2205,10 @@ package final class DeviceSession {
     /// Disconnects, then joins native input removal and the tool operation's cleanup. A tool that outlives the stop
     /// grace remains owned and is reported; the next stop joins it again.
     package func stop() async throws {
+        let capture = pendingAppDisplayCapture?()
         disconnect()
+        await capture?.value
+        await releasingResizeLease?.value
         let finishingOperation = operation
         let removal = inputRemoval ?? removeInput()
         inputRemoval = removal
