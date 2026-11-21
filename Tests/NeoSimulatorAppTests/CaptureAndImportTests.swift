@@ -582,10 +582,31 @@ struct CaptureAndImportTests {
         let thinned = try await export(frameRate: 5)
         #expect(thinned.count == 6)
         #expect(thinned.delays.first == 0.2)
+
+        try FileManager.default.removeItem(at: movie)
+        try await writeMovie(to: movie, frames: 15, frameRate: 15)
+        let smooth = try await export(frameRate: 15)
+        #expect(smooth.count == 15)
+        let smoothHundredths = smooth.delays.map { Int(($0 * 100).rounded()) }
+        #expect(smoothHundredths.reduce(0, +) == 100)
+
+        try FileManager.default.removeItem(at: movie)
+        try await writeMovie(to: movie, frames: 60, frameRate: 60)
+        let fast = try await export(frameRate: 60)
+        let fastHundredths = fast.delays.map { Int(($0 * 100).rounded()) }
+        #expect(fastHundredths.allSatisfy { $0 >= 2 })
+        #expect(fastHundredths.reduce(0, +) == 100)
+
+        try FileManager.default.removeItem(at: movie)
+        try await writeMovie(to: movie, frames: 2, frameRate: 1, end: CMTime(value: 101, timescale: 100))
+        let shortEnding = try await export(frameRate: 1)
+        #expect(shortEnding.delays == [0.99, 0.02])
     }
 
     /// Writes black BT.709 frames to an H.264 QuickTime movie.
-    fileprivate func writeMovie(to url: URL, frames: Int = 3) async throws {
+    fileprivate func writeMovie(to url: URL, frames: Int = 3, frameRate: CMTimeScale = 10, end: CMTime? = nil)
+        async throws
+    {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64,
@@ -613,8 +634,12 @@ struct CaptureAndImportTests {
                 }
             }
             while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(10)) }
-            #expect(adaptor.append(try #require(buffer), withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 10)))
+            #expect(
+                adaptor.append(
+                    try #require(buffer), withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: frameRate))
+            )
         }
+        if let end { writer.endSession(atSourceTime: end) }
         input.markAsFinished()
         await writer.finishWriting()
         #expect(writer.status == .completed)
