@@ -23,6 +23,35 @@ import XPC
 @testable import NeoSimulatorDeviceScreens
 
 extension SimulatorHostTests {
+    @Test func managerDeviceMenuFollowsScreenVisibilityWhileTheRendererKeepsTheDevice() async throws {
+        let controller = try makeController(TestDisplay())
+        defer { controller.invalidate() }
+        let device = SimulatorHostDevice(
+            presenting: controller.session.device, ownerXcodeURL: URL(filePath: "/Fixture/Xcode.app"))
+        let model = SimulatorManagerModel(source: ManagerModelSource(devices: [.simulator(device)]))
+        model.registry.stopReading()
+        await model.refresh()
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses)
+        app.model = model
+        app.screens.attach(controller, as: device.inventoryID)
+        let dock = try #require(app.applicationDockMenu(NSApp))
+        let menu = try #require(dock.items.first?.submenu as? SimulatorDevicesMenu)
+        func mark() throws -> NSControl.StateValue {
+            menu.menuNeedsUpdate(menu)
+            return try #require(menu.items.first { !$0.isAlternate }).state
+        }
+        controller.showCompactWindow()
+        #expect(try mark() == .on)
+        app.applicationWillHide(Notification(name: NSApplication.willHideNotification))
+        controller.window?.orderOut(nil)
+        #expect(try mark() == .on)
+        app.applicationDidUnhide(Notification(name: NSApplication.didUnhideNotification))
+        controller.detachPresentation()
+        app.screens.prepareCompactWindow(for: .simulator(device))
+        defer { app.screens.compactWindow(for: device.inventoryID)?.close() }
+        #expect(try mark() == .mixed)
+    }
+
     @Test func nativeToolbarPreservesDeviceCommandsAndBusyState() async throws {
         let display = TestDisplay()
         let controller = try makeController(display)

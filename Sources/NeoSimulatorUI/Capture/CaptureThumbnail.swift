@@ -1097,13 +1097,15 @@ package enum AnimatedGIF {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw SimulatorError.operation("The recording contains no video track")
         }
-        let duration = try await track.load(.timeRange).duration.seconds
+        let end = try await track.load(.timeRange).end
         // Reading and encoding every frame blocks for as long as the movie takes. Only that work uses the track from here.
         nonisolated(unsafe) let videoTrack = track
-        try await lane.run { try encode(asset, track: videoTrack, duration: duration, to: gif, options: options) }
+        try await lane.run { try encode(asset, track: videoTrack, end: end, to: gif, options: options) }
     }
 
-    private static func encode(_ asset: AVURLAsset, track: AVAssetTrack, duration: Double, to gif: URL, options: Options) throws {
+    private static func encode(_ asset: AVURLAsset, track: AVAssetTrack, end: CMTime, to gif: URL, options: Options)
+        throws
+    {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -1123,27 +1125,36 @@ package enum AnimatedGIF {
         // Dither in the source color space; linear working space roughens dark areas.
         var context: CIContext?
         let interval = 1 / options.maximumFrameRate
-        var held: (image: CGImage, time: CMTime)?
-        // GIF delays round up to hundredths. The tolerance suppresses floating-point noise.
-        func add(_ image: CGImage, delay: Double) {
+        var held: (image: CGImage, time: CMTime, startHundredths: Int64)?
+        // Quantize frame boundaries on the movie timeline. Rounding individual delays accumulates drift.
+        func hundredths(_ time: CMTime) -> Int64 {
+            CMTimeConvertScale(time, timescale: 100, method: .roundHalfAwayFromZero).value
+        }
+        let endHundredths = hundredths(end)
+        func add(_ image: CGImage, delay: Int64) {
             CGImageDestinationAddImage(destination, image, [
-                kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFUnclampedDelayTime: (delay * 100 - 1e-6).rounded(.up) / 100],
+                    kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFUnclampedDelayTime: Double(delay) / 100]
             ] as CFDictionary)
         }
         while let sample = output.copyNextSampleBuffer() {
             guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
             let time = CMSampleBufferGetOutputPresentationTimeStamp(sample)
+            var boundary = hundredths(time)
             if let current = held {
                 let elapsed = CMTimeSubtract(time, current.time).seconds
-                guard elapsed + 0.001 >= interval else { continue }
-                add(current.image, delay: elapsed)
+                boundary = min(boundary, endHundredths - 2)
+                let delay = boundary - current.startHundredths
+                // Browsers display a one-hundredth delay for a tenth of a second. Keep this frame
+                // on screen until the next frame can play, reserving two hundredths for the ending.
+                guard elapsed + 0.001 >= interval, delay >= 2 else { continue }
+                add(current.image, delay: delay)
             }
             let image = CIImage(cvPixelBuffer: buffer)
             let renderer = context ?? CIContext(options: image.colorSpace.map { [.workingColorSpace: $0] } ?? [:])
             context = renderer
-            held = (try frame(image, options: options, context: renderer), time)
+            held = (try frame(image, options: options, context: renderer), time, boundary)
         }
-        if let last = held { add(last.image, delay: max(duration - last.time.seconds, interval)) }
+        if let last = held { add(last.image, delay: max(2, endHundredths - last.startHundredths)) }
         if reader.status == .failed { throw reader.error ?? SimulatorError.operation("The recording could not be read") }
         guard CGImageDestinationFinalize(destination) else {
             throw SimulatorError.operation("Could not write \(gif.lastPathComponent)")
