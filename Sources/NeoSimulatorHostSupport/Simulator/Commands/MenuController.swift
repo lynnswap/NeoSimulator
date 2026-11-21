@@ -39,7 +39,7 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
     }
 
     package func install() {
-        let main = NSMenu()
+        let main = DeviceCommandMainMenu()
         let app = menu("NeoSimulator", in: main)
         item("About NeoSimulator", action: #selector(NSApplication.orderFrontNeoSimulatorAboutPanel(_:)), in: app, target: NSApp)
         app.addItem(.separator())
@@ -106,11 +106,12 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
 
     /// Adds simulator controls without replacing the manager's app and browser menus, and returns the Device menu.
     @discardableResult
-    package func addDeviceMenus(to main: NSMenu, managementMenu: NSMenu? = nil) -> NSMenu {
+    package func addDeviceMenus(to main: DeviceCommandMainMenu, managementMenu: NSMenu? = nil) -> NSMenu {
         let device = menu("Device", in: main)
         if let managementMenu {
             let item = NSMenuItem(title: "Manage Selected Devices", action: nil, keyEquivalent: "")
             item.submenu = managementMenu
+            main.dynamicShortcutMenus.append(managementMenu)
             device.addItem(item)
             device.addItem(.separator())
         }
@@ -176,8 +177,10 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
         commands([.triggerCloudSync], in: features)
         features.addItem(.separator())
         let location = NSMenuItem(title: "Location", action: nil, keyEquivalent: "")
-        location.submenu = NSMenu(title: "Location")
-        location.submenu?.delegate = locationMenu
+        let choices = NSMenu(title: "Location")
+        choices.delegate = locationMenu
+        location.submenu = choices
+        main.dynamicShortcutMenus.append(choices)
         features.addItem(location)
 
         let debug = menu("Debug", in: main)

@@ -158,7 +158,7 @@ package final class DeviceViewFittingView: NSView {
     /// menu alone would consume it: a simulator's Home command is disabled for a physical device, whose own
     /// keyboard shortcut the same key is.
     package override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if let menu = commandMenu(), menu.hasEnabledCommand(for: event), menu.performKeyEquivalent(with: event) {
+        if let menu = commandMenu(), menu.performEnabledKeyEquivalent(with: event) {
             return true
         }
         return super.performKeyEquivalent(with: event)
@@ -188,18 +188,43 @@ package final class DeviceViewFittingView: NSView {
     }
 }
 
-/// A menu whose commands depend on the current device and must be populated before DeviceKit takes the key.
+/// Refreshes commands for the selected device before the app matches their shortcuts.
 @MainActor package protocol DeviceKeyEquivalentMenuDelegate: NSMenuDelegate {
     func prepare(_ menu: NSMenu, forKeyEquivalent event: NSEvent)
 }
 
+/// AppKit can match a shortcut against the last contents of a submenu without asking its delegate to update it.
+@MainActor package final class DeviceCommandMainMenu: NSMenu {
+    package var dynamicShortcutMenus: [NSMenu] = []
+
+    package override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // AppKit dispatches the key on the main thread. The event stays there for this synchronous override.
+        nonisolated(unsafe) let menu = self
+        nonisolated(unsafe) let input = event
+        return MainActor.assumeIsolated { menu.dispatch(input, requiresEnabledCommand: false) }
+    }
+
+    fileprivate func dispatch(_ event: NSEvent, requiresEnabledCommand: Bool) -> Bool {
+        for menu in dynamicShortcutMenus {
+            (menu.delegate as? any DeviceKeyEquivalentMenuDelegate)?.prepare(menu, forKeyEquivalent: event)
+        }
+        if requiresEnabledCommand && !hasEnabledCommand(for: event) { return false }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 extension NSMenu {
+    @MainActor fileprivate func performEnabledKeyEquivalent(with event: NSEvent) -> Bool {
+        if let menu = self as? DeviceCommandMainMenu { return menu.dispatch(event, requiresEnabledCommand: true) }
+        return hasEnabledCommand(for: event) && performKeyEquivalent(with: event)
+    }
+
     @MainActor fileprivate func hasEnabledCommand(for event: NSEvent) -> Bool {
-        (delegate as? any DeviceKeyEquivalentMenuDelegate)?.prepare(self, forKeyEquivalent: event)
         update()
         return items.contains { item in
             if let submenu = item.submenu { return submenu.hasEnabledCommand(for: event) }
-            return item.isEnabled && !item.isHidden && event.matchesMenuKey(item.keyEquivalent, modifiers: item.keyEquivalentModifierMask)
+            return item.isEnabled && !item.isHidden
+                && event.matchesMenuKey(item.keyEquivalent, modifiers: item.keyEquivalentModifierMask)
         }
     }
 }

@@ -66,6 +66,14 @@ extension SimulatorHostTests {
         let rendererFile = try #require(NSApp.mainMenu?.item(withTitle: "File")?.submenu)
         let rendererCapture = try #require(rendererFile.item(withTitle: "Save Screen"))
         #expect(rendererCapture.keyEquivalent == "s" && rendererCapture.keyEquivalentModifierMask == .option)
+        let eye = try #require(shortcuts.commands.first { $0.title == "Matching Eye" })
+        #expect(eye.standard.key.isEmpty)
+        let customEye = MenuShortcut(key: "m", modifiers: [.option, .command])
+        shortcuts.assign(customEye, to: eye)
+        renderer.updateKeyEquivalents(for: DeviceCapabilities(family: .vision, runtimeVersion: 0x1b_00_00,
+            supportsFeature: { $0 == DeviceCapabilities.opticID }))
+        let optic = NSApp.mainMenu?.item(withTitle: "Features")?.submenu?.item(withTitle: "Optic ID")?.submenu
+        #expect(optic?.item(withTitle: "Matching Eye")?.keyEquivalent == "m")
         shortcuts.restoreDefaults()
         #expect(
             rendererCapture.keyEquivalentModifierMask == .command && screenshot.keyEquivalentModifierMask == .command)
@@ -109,7 +117,7 @@ extension SimulatorHostTests {
         #expect(deleteBinding == MenuShortcut(key: "\u{8}", modifiers: .command))
     }
 
-    @Test func deviceCanvasResolvesSelectedDeviceShortcutsBeforeOpeningTheMenu() throws {
+    @Test func shortcutsUseTheCurrentDeviceBeforeOpeningTheMenu() throws {
         _ = NSApplication.shared
         let domain = "NeoSimulator.DeviceMenuShortcut.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
@@ -118,7 +126,9 @@ extension SimulatorHostTests {
             var runs = 0
             @objc func stopSharing(_ sender: Any?) { runs += 1 }
         }
-        let target = Target()
+        let first = Target()
+        let second = Target()
+        var target = first
         let shortcuts = MenuShortcuts(defaults: defaults)
         let selected = SelectedDeviceMenu(shortcuts: shortcuts) {
             let menu = NSMenu()
@@ -133,9 +143,14 @@ extension SimulatorHostTests {
                 timestamp: 1, windowNumber: 0, context: nil, characters: "ß", charactersIgnoringModifiers: "s",
                 isARepeat: false, keyCode: 1))
         shortcuts.assign(try #require(MenuShortcut(event: event)), to: command)
+        let main = DeviceCommandMainMenu()
+        let menus = MenuController(application: nil, shortcuts: shortcuts)
+        menus.addDeviceMenus(to: main, managementMenu: selected)
         let container = DeviceViewFittingView()
-        container.commandMenu = { selected }
-        #expect(container.performKeyEquivalent(with: event) && target.runs == 1)
+        container.commandMenu = { main }
+        #expect(container.performKeyEquivalent(with: event) && first.runs == 1)
+        target = second
+        #expect(main.performKeyEquivalent(with: event) && second.runs == 1 && first.runs == 1)
     }
 
     @Test func managerDeviceMenuFollowsScreenVisibilityWhileTheRendererKeepsTheDevice() async throws {

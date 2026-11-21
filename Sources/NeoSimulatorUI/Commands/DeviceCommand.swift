@@ -405,7 +405,8 @@ package struct DeviceCommand {
     /// Optic ID has no shortcut on Vision Pro, matching Simulator.app.
     private static func biometric(_ id: ID, title: String, _ biometric: DeviceSession.Biometric,
                                   matching: Bool) -> DeviceCommand {
-        DeviceCommand(id: id, title: title, key: matching ? "m" : "n", modifiers: [.command, .option],
+        let key = biometric == .opticID ? "" : (matching ? "m" : "n")
+        return DeviceCommand(id: id, title: title, key: key, modifiers: [.command, .option],
                       hasKey: { capabilities in
                           let faceID = capabilities?.supportsFeature(DeviceCapabilities.faceID) ?? false
                           return biometric == .touchID ? !faceID : faceID
