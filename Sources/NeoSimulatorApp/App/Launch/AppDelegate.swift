@@ -60,15 +60,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeStateObservation: DeviceActiveStateObservation?
     private var quitKeepingDevicesRunning: Bool?
     private var restartsAfterQuitting = false
+    private let shortcuts: MenuShortcuts
     private lazy var simulatorMenus = MenuController(application: nil,
-        gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init), pasteboardSync: screens.pasteboardSync)
+        gpuPolicy: UserDefaults(suiteName: GPUPolicy.suiteName).map(GPUPolicy.init),
+        pasteboardSync: screens.pasteboardSync, shortcuts: shortcuts)
 
     private let makeLicenses: () -> NSViewController
     private let splitViewAutosaveName: NSSplitView.AutosaveName?
 
-    init(makeLicenses: @escaping () -> NSViewController,
-         hostPreferenceAccess: HostPreferenceAccess = HostPreferenceAccess(),
-         splitViewAutosaveName: NSSplitView.AutosaveName? = nil) {
+    init(
+        makeLicenses: @escaping () -> NSViewController,
+        shortcuts: MenuShortcuts = MenuShortcuts(),
+        hostPreferenceAccess: HostPreferenceAccess = HostPreferenceAccess(),
+        splitViewAutosaveName: NSSplitView.AutosaveName? = nil
+    ) {
+        self.shortcuts = shortcuts
         self.makeLicenses = makeLicenses
         self.hostPreferenceAccess = hostPreferenceAccess
         self.splitViewAutosaveName = splitViewAutosaveName
@@ -485,7 +491,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 makeSimulator: { [weak self] in
                     guard let self else { throw CancellationError() }
                     return try await self.makeNewSimulatorModel(pairingWith: nil)
-                }, preferences: preferences, reportFailure: { [weak self] error in self?.present(error) })
+                }, preferences: preferences, shortcuts: shortcuts,
+                reportFailure: { [weak self] error in self?.present(error) })
             #if DEBUG
             settingsWindow?.settings.resetOnboarding = { [weak self] in self?.resetOnboarding() }
             #endif
@@ -666,18 +673,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         simulatorMenus.addCloseWindowCommands(to: file)
         file.addItem(.separator())
         addItem(
-            "Save Service Profile", action: #selector(ManagerWindowController.saveServiceProfile(_:)), key: "s",
+            "Save Service Profile", action: #selector(ManagerWindowController.saveServiceProfile(_:)),
             to: file
         ).target = nil
-        addItem("Save Screenshot…", action: #selector(RemoteDeviceWindowController.saveScreenshot(_:)), to: file)
-            .target = nil
+        func addCaptureCommand(_ id: DeviceCommand.ID, action: Selector, title: String? = nil) {
+            let command = DeviceCommand.command(id)
+            let item = addItem(title ?? command.title, action: action, key: command.key, to: file)
+            item.identifier = .init(id.rawValue)
+            item.keyEquivalentModifierMask = command.modifiers
+            item.isAlternate = command.isAlternate
+            item.target = nil
+        }
+        addCaptureCommand(
+            .saveScreen, action: #selector(RemoteDeviceWindowController.saveScreenshot(_:)), title: "Save Screenshot…")
         simulatorMenus.addScreenshotDestinationCommand(to: file)
-        addItem("Record Screen", action: #selector(RemoteDeviceWindowController.recordScreen(_:)), key: "r", to: file).target = nil
-        let recordTo = addItem("Record Screen…", action: #selector(RemoteDeviceWindowController.recordScreenTo(_:)), key: "r", to: file)
-        recordTo.target = nil
-        recordTo.keyEquivalentModifierMask = [.command, .option]
-        recordTo.isAlternate = true
-        addItem("Stop Recording", action: #selector(RemoteDeviceWindowController.stopScreenRecording(_:)), to: file).target = nil
+        addCaptureCommand(.recordScreen, action: #selector(RemoteDeviceWindowController.recordScreen(_:)))
+        addCaptureCommand(.recordScreenAs, action: #selector(RemoteDeviceWindowController.recordScreenTo(_:)))
+        addCaptureCommand(.stopRecording, action: #selector(RemoteDeviceWindowController.stopScreenRecording(_:)))
         addItem("Save Recording…", action: #selector(RemoteDeviceWindowController.saveScreenRecording(_:)), to: file).target = nil
         file.addItem(.separator())
         addItem("Discard Screenshot…", action: #selector(RemoteDeviceWindowController.discardScreenshot(_:)), to: file).target = nil
@@ -694,9 +706,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (title, selector, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             addItem(title, action: Selector(selector), key: key, to: edit).target = nil
         }
-        let device = simulatorMenus.addDeviceMenus(to: main, managementMenu: SelectedDeviceMenu { [weak self] in
-            self?.mainWindow?.menuForSelectedDevices()
-        })
+        let device = simulatorMenus.addDeviceMenus(
+            to: main,
+            managementMenu: SelectedDeviceMenu(shortcuts: shortcuts) { [weak self] in
+                self?.mainWindow?.menuForSelectedDevices()
+            })
         // A remote screen and its frame can cover the canvas, whose context menu also offers this command.
         device.insertItem(NSMenuItem(title: "Choose Screen Source…",
             action: #selector(RemoteDeviceWindowController.chooseCaptureSource(_:)), keyEquivalent: ""), at: 1)
@@ -709,7 +723,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         device.addItem(signIn)
         #endif
         let view = addSubmenu("View", to: main)
-        addItem("Show Devices", action: #selector(showDevices(_:)), to: view)
+        addItem("Show Devices", action: #selector(showDevices(_:)), to: view).identifier = .init("showDevices")
         simulatorMenus.addScreenCommands(file: file, edit: edit, view: view)
         let window = addSubmenu("Window", to: main)
         addItem("Minimize", action: #selector(NSWindow.performMiniaturize(_:)), key: "m", to: window).target = nil
@@ -718,8 +732,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addItem("Merge All Windows", action: #selector(NSWindow.mergeAllWindows(_:)), to: window).target = nil
         window.addItem(.separator())
         addItem("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), to: window, target: NSApp)
+        let help = simulatorMenus.addHelpMenu(to: main)
+        shortcuts.register(main)
         NSApp.windowsMenu = window
         NSApp.mainMenu = main
+        NSApp.helpMenu = help
     }
 
     private func addDevicesMenu(_ title: String, to menu: NSMenu) {

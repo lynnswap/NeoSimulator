@@ -344,7 +344,7 @@ extension ManagerModelTests {
         let settings = SettingsWindowController(makeLicenses: SettingsPreview.licenses, model: manager, restart: {},
             makeSimulator: { throw SimulatorError.operation("Unused") },
             preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
-            reportFailure: { _ in Issue.record("Unexpected failure") })
+            shortcuts: MenuShortcuts(defaults: defaults), reportFailure: { _ in Issue.record("Unexpected failure") })
         defer { settings.window?.close() }
         let model = BackgroundServicesInspectorModel(manager: manager, showProfileSettings: {
             settings.settings.selectServiceProfile($0)

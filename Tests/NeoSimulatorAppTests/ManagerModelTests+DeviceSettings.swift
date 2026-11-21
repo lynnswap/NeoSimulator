@@ -85,8 +85,10 @@ extension ManagerModelTests {
                 supportedDeviceTypes: ["ios": ["phone"]], canPair: { _, _, _, _ in false }),
                 create: { name, type, runtime in created = [name, type, runtime]; return "created" },
                 pair: { _, _ in Issue.record("Unexpected pairing") })
-        }, preferences: preferences, reportFailure: { _ in Issue.record("Unexpected failure") })
+            }, preferences: preferences, shortcuts: MenuShortcuts(defaults: defaults),
+            reportFailure: { _ in Issue.record("Unexpected failure") })
         let controller = windowController.settings
+        #expect(controller.tabViewItems.contains { $0.viewController is KeyboardShortcutsSettingsViewController })
         #if DEBUG
         #expect(controller.tabViewItems.contains { $0.viewController === controller.debug })
         var resets = 0
@@ -166,7 +168,7 @@ extension ManagerModelTests {
         let controller = SettingsWindowController(makeLicenses: SettingsPreview.licenses, model: model, restart: {},
             makeSimulator: { throw SimulatorError.operation("Unused") },
             preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
-            reportFailure: { _ in Issue.record("Unexpected failure") })
+            shortcuts: MenuShortcuts(defaults: defaults), reportFailure: { _ in Issue.record("Unexpected failure") })
         let window = try #require(controller.window)
         defer { window.close() }
         #expect(controller.settings.serviceProfiles.model.selectedProfileID == ServiceProfile.allServicesID)
@@ -212,7 +214,7 @@ extension ManagerModelTests {
         }
         let controller = SettingsViewController(makeLicenses: SettingsPreview.licenses, model: model, restart: {}, makeSimulator: { makeForm() },
                                                 preferences: SimulatorPreferences(defaults: defaults, creationDefaults: defaults),
-                                                reportFailure: { _ in Issue.record("Unexpected failure") })
+            shortcuts: MenuShortcuts(defaults: defaults), reportFailure: { _ in Issue.record("Unexpected failure") })
         _ = controller.view
         controller.selectedTabViewItemIndex = 1
         await controller.simulatorLoading?.value

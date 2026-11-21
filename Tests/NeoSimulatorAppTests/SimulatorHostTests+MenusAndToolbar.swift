@@ -23,6 +23,121 @@ import XPC
 @testable import NeoSimulatorDeviceScreens
 
 extension SimulatorHostTests {
+    @Test func editedMenuShortcutsApplyToBothHostsAndRestoreTheirDefaults() throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.MenuShortcuts.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let previous = (NSApp.mainMenu, NSApp.windowsMenu, NSApp.servicesMenu, NSApp.helpMenu)
+        defer {
+            NSApp.mainMenu = previous.0
+            NSApp.windowsMenu = previous.1
+            NSApp.servicesMenu = previous.2
+            NSApp.helpMenu = previous.3
+        }
+        let shortcuts = MenuShortcuts(defaults: defaults)
+        let app = AppDelegate(makeLicenses: SettingsPreview.licenses, shortcuts: shortcuts)
+        app.installMenu()
+        let file = try #require(NSApp.mainMenu?.item(withTitle: "File")?.submenu)
+        let screenshot = try #require(file.item(withTitle: "Save Screenshot…"))
+        let record = try #require(file.item(withTitle: "Record Screen"))
+        let command = try #require(shortcuts.commands.first { $0.title == "Record Screen" })
+        let snapshot = try #require(shortcuts.commands.first { $0.title == "Save Screenshot…" })
+        #expect(shortcuts.commands.contains { $0.menu == "Device › Manage Selected Devices" && $0.title == "Rename…" })
+        let event = try #require(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .option,
+                timestamp: 0, windowNumber: 0, context: nil, characters: "ß", charactersIgnoringModifiers: "s",
+                isARepeat: false, keyCode: 1))
+        let optionS = try #require(MenuShortcut(event: event))
+        #expect(
+            shortcuts.conflicts(for: MenuShortcut(key: "?", modifiers: .command), with: command).map(\.title) == [
+                "NeoSimulator Help"
+            ])
+        shortcuts.assign(optionS, to: command)
+        #expect(record.keyEquivalent == "s" && record.keyEquivalentModifierMask == .option)
+        #expect(shortcuts.conflicts(for: optionS, with: snapshot).map(\.id) == [command.id])
+        shortcuts.assign(optionS, to: snapshot)
+        #expect(record.keyEquivalent.isEmpty && screenshot.keyEquivalentModifierMask == .option)
+
+        let rendererShortcuts = MenuShortcuts(defaults: defaults)
+        let renderer = MenuController(application: nil, shortcuts: rendererShortcuts)
+        renderer.install()
+        let rendererFile = try #require(NSApp.mainMenu?.item(withTitle: "File")?.submenu)
+        let rendererCapture = try #require(rendererFile.item(withTitle: "Save Screen"))
+        #expect(rendererCapture.keyEquivalent == "s" && rendererCapture.keyEquivalentModifierMask == .option)
+        shortcuts.restoreDefaults()
+        #expect(
+            rendererCapture.keyEquivalentModifierMask == .command && screenshot.keyEquivalentModifierMask == .command)
+        #expect(record.keyEquivalent == "r" && record.keyEquivalentModifierMask == .command)
+    }
+
+    @Test func recordingShiftedKeysRecognizesBothMenuSpellingsOnTheActiveLayout() throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.ShiftedShortcuts.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let shortcuts = MenuShortcuts(defaults: defaults)
+        let events = (0..<128).lazy.compactMap { code -> NSEvent? in
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: UInt16(code), keyDown: true) else {
+                return nil
+            }
+            event.flags = [.maskCommand, .maskShift]
+            return NSEvent(cgEvent: event)
+        }
+        let stroke = try #require(
+            events.first { event in
+                guard event.type == .keyDown, let base = event.characters(byApplyingModifiers: []),
+                    let shifted = event.charactersIgnoringModifiers
+                else { return false }
+                return base.count == 1 && shifted.count == 1 && base != shifted && base.uppercased() == base
+                    && shifted.lowercased() == shifted && event.specialKey == nil
+            })
+        let menu = NSMenu()
+        let symbol = try #require(stroke.charactersIgnoringModifiers)
+        let action = #selector(NSApplication.hide(_:))
+        menu.addItem(withTitle: "Existing", action: action, keyEquivalent: symbol)
+        menu.addItem(withTitle: "New", action: action, keyEquivalent: "")
+        shortcuts.register(menu)
+        let edited = try #require(shortcuts.commands.last)
+        let binding = try #require(MenuShortcut(event: stroke))
+        #expect(shortcuts.conflicts(for: binding, with: edited).map(\.title) == ["Existing"])
+
+        let backspace = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: true))
+        backspace.flags = .maskCommand
+        let binding = try #require(NSEvent(cgEvent: backspace).flatMap(MenuShortcut.init(event:)))
+        #expect(binding == MenuShortcut(key: "\u{8}", modifiers: .command))
+    }
+
+    @Test func deviceCanvasResolvesSelectedDeviceShortcutsBeforeOpeningTheMenu() throws {
+        _ = NSApplication.shared
+        let domain = "NeoSimulator.DeviceMenuShortcut.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        final class Target: NSObject {
+            var runs = 0
+            @objc func stopSharing(_ sender: Any?) { runs += 1 }
+        }
+        let target = Target()
+        let shortcuts = MenuShortcuts(defaults: defaults)
+        let selected = SelectedDeviceMenu(shortcuts: shortcuts) {
+            let menu = NSMenu()
+            menu.addItem(withTitle: "Stop Screen Sharing", action: #selector(Target.stopSharing(_:)), keyEquivalent: "")
+                .target = target
+            return menu
+        }
+        let command = try #require(shortcuts.commands.first { $0.title == "Stop Screen Sharing" })
+        let event = try #require(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .option,
+                timestamp: 1, windowNumber: 0, context: nil, characters: "ß", charactersIgnoringModifiers: "s",
+                isARepeat: false, keyCode: 1))
+        shortcuts.assign(try #require(MenuShortcut(event: event)), to: command)
+        let container = DeviceViewFittingView()
+        container.commandMenu = { selected }
+        #expect(container.performKeyEquivalent(with: event) && target.runs == 1)
+    }
+
     @Test func managerDeviceMenuFollowsScreenVisibilityWhileTheRendererKeepsTheDevice() async throws {
         let controller = try makeController(TestDisplay())
         defer { controller.invalidate() }

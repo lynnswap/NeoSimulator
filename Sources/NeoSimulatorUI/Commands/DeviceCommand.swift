@@ -121,7 +121,7 @@ package struct DeviceCommand {
                       state: { $0.session.isResizingApp || $0.session.isStartingAppResize ? .on : .off }) { $0.toggleAppResize() },
         // File: Save Screen becomes Record Screen with Option, or Stop Recording while recording.
             DeviceCommand(
-                id: .saveScreen, title: "Save Screen",
+                id: .saveScreen, title: "Save Screen", key: "s",
                       toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32,
                                        optionAlternate: .init(id: .recordScreen, symbol: "record.circle",
                                                               imageDescription: "Start Recording", toolTip: "Record Screen"),

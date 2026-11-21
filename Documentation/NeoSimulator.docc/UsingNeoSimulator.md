@@ -249,7 +249,7 @@ which defaults to Desktop.
 
 | Operation | Shortcut | Result |
 | --- | --- | --- |
-| File → Save Screenshot… | — | PNG screenshot |
+| File → Save Screenshot… | Command-S | PNG screenshot |
 | File → Record Screen | Command-R | Start a recording immediately |
 | File → Stop Recording | — | Finish the movie |
 | Edit → Copy Screen | Control-Command-C | Unmasked PNG on the Mac pasteboard |
@@ -470,7 +470,7 @@ when using either built-in preset. A simulator's observed state alone cannot
 overwrite a shared profile.
 Save and Revert appear beside the filter only while changes remain. Returning a
 switch to the selected profile removes its override. **File → Save Service
-Profile** (Command-S) saves the changes while the Background Services pane shows.
+Profile** saves the changes while the Background Services pane shows.
 Startup-profile selections and overrides survive simulator erases.
 
 Editing a profile in Settings or saving changes from the inspector applies it

@@ -926,9 +926,19 @@ struct RemoteDeviceScreenTests {
         #expect(try press("j") && device.equivalents == ["j"])
         // Shift types the character of a command whose own modifiers leave Shift out.
         #expect(try press("?", [.command, .shift]) && command.runs == 2 && device.equivalents == ["j"])
+        let arrow = menu.addItem(withTitle: "Previous", action: #selector(Command.run(_:)), keyEquivalent: "\u{f702}")
+        arrow.target = command
+        arrow.keyEquivalentModifierMask = [.command, .shift]
+        let left = try #require(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+                timestamp: 1, windowNumber: 0, context: nil, characters: "\u{f702}",
+                charactersIgnoringModifiers: "\u{f702}",
+                isARepeat: false, keyCode: 123))
+        #expect(container.performKeyEquivalent(with: left) && command.runs == 3)
         // The menu alone would consume a disabled command's key.
         command.isEnabled = false
-        #expect(try press("s") && command.runs == 2 && device.equivalents == ["j", "s"])
+        #expect(try press("s") && command.runs == 3 && device.equivalents == ["j", "s"])
     }
 
     @Test func primaryDisplayFramesExcludeEncodingPaddingBeforeAndAfterRotation() async throws {

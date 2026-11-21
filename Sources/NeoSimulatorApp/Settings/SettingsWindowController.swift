@@ -6,10 +6,14 @@ import NeoSimulatorManager
 @MainActor
 final class SettingsWindowController: NSWindowController {
     let settings: SettingsViewController
-    init(makeLicenses: () -> NSViewController, model: SimulatorManagerModel, restart: @escaping () -> Void, makeSimulator: @escaping () async throws -> NewSimulatorModel,
-         preferences: SimulatorPreferences, reportFailure: @escaping (Error) -> Void) {
-        let content = SettingsViewController(makeLicenses: makeLicenses, model: model, restart: restart, makeSimulator: makeSimulator,
-                                             preferences: preferences, reportFailure: reportFailure)
+    init(
+        makeLicenses: () -> NSViewController, model: SimulatorManagerModel, restart: @escaping () -> Void,
+        makeSimulator: @escaping () async throws -> NewSimulatorModel,
+        preferences: SimulatorPreferences, shortcuts: MenuShortcuts, reportFailure: @escaping (Error) -> Void
+    ) {
+        let content = SettingsViewController(
+            makeLicenses: makeLicenses, model: model, restart: restart, makeSimulator: makeSimulator,
+            preferences: preferences, shortcuts: shortcuts, reportFailure: reportFailure)
         settings = content
         let window = NSWindow(contentViewController: content)
         window.styleMask = [.titled, .closable]

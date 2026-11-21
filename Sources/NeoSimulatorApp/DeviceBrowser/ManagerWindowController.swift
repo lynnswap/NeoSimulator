@@ -362,8 +362,9 @@ final class ManagerWindowController: NSWindowController, NSToolbarDelegate, NSTo
 
     private func updateLiveScreenToolbar() {
         updateLiveScreenToolbarItems()
-        guard let screen = deviceScreenViewController.liveScreen else { return }
-        menus.updateKeyEquivalents(for: screen.simulatorCapabilities)
+        if window?.isKeyWindow == true {
+            menus.updateKeyEquivalents(for: deviceScreenViewController.liveScreen?.simulatorCapabilities)
+        }
     }
 
     private func openCompactScreen(for device: InventoryDevice) {

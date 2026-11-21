@@ -13,17 +13,21 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
     /// Edit ▸ Automatically Sync Pasteboard, or nil when it is unavailable.
     private let pasteboardSync: PasteboardSync?
     private let openSimulator: OpenSimulatorMenu
-    private let locationMenu = LocationMenu()
+    private let locationMenu: LocationMenu
     private let audioMenus = [AudioRouteMenu(scope: .input), AudioRouteMenu(scope: .output)]
     private var ioMenu: NSMenu?
-    /// Items whose shortcut depends on the key device.
-    private var keyedItems: [NSMenuItem] = []
+    private let shortcuts: MenuShortcuts
     private var keyWindowObserver: (any NSObjectProtocol)?
     package var toggleTestingDevices: (() -> Void)?
     package var toggleDeviceBezels: (() -> Void)?
     private var activeWindow: DeviceWindowController? { DeviceWindowController.keyDeviceWindow }
 
-    package init(application: HostApplication?, gpuPolicy: GPUPolicy? = nil, pasteboardSync: PasteboardSync? = nil) {
+    package init(
+        application: HostApplication?, gpuPolicy: GPUPolicy? = nil, pasteboardSync: PasteboardSync? = nil,
+        shortcuts: MenuShortcuts = MenuShortcuts()
+    ) {
+        self.shortcuts = shortcuts
+        locationMenu = LocationMenu(shortcuts: shortcuts)
         self.application = application
         self.gpuPolicy = gpuPolicy
         self.pasteboardSync = pasteboardSync
@@ -89,12 +93,11 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
         item("Minimize", action: #selector(minimizeWindow(_:)), key: "m", in: window)
         addPresentationCommands(to: window)
         window.addItem(.separator())
-        item("Simulators", action: #selector(showBrowser(_:)), in: window)
+        item("Simulators", action: #selector(showBrowser(_:)), in: window).identifier = .init("showDevices")
         item("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), in: window, target: NSApp)
 
-        let help = menu("Help", in: main)
-        item("NeoSimulator Help", action: #selector(showHelp(_:)), key: "?", in: help)
-
+        let help = addHelpMenu(to: main)
+        shortcuts.register(main)
         NSApp.mainMenu = main
         NSApp.windowsMenu = window
         NSApp.helpMenu = help
@@ -193,6 +196,12 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
         return device
     }
 
+    package func addHelpMenu(to main: NSMenu) -> NSMenu {
+        let help = menu("Help", in: main)
+        item("NeoSimulator Help", action: #selector(showHelp(_:)), key: "?", in: help)
+        return help
+    }
+
     package func addScreenCommands(file: NSMenu, edit: NSMenu, view: NSMenu) {
         file.addItem(.separator())
         addGPUSelection(to: file)
@@ -228,8 +237,11 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
     }
 
     private func addPresentationCommands(to menu: NSMenu) {
-        item("Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: menu)
-        item("Show Device Bezels", action: #selector(toggleShowDeviceBezels(_:)), in: menu)
+        item(
+            "Enter Full Screen", action: #selector(fullScreen(_:)), key: "f", modifiers: [.command, .control], in: menu
+        ).identifier = .init("fullScreen")
+        item("Show Device Bezels", action: #selector(toggleShowDeviceBezels(_:)), in: menu).identifier = .init(
+            "showDeviceBezels")
         commands([.appleTVRemote, .stayOnTop], in: menu)
         menu.addItem(.separator())
         commands([.physicalSize, .pointAccurate, .pixelAccurate, .fitScreen], in: menu)
@@ -247,11 +259,7 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
     /// Assigns shared shortcuts to the key device. Hidden items must lose their shortcuts
     /// because AppKit still matches them.
     package func updateKeyEquivalents(for capabilities: DeviceCapabilities?) {
-        for item in keyedItems {
-            guard let raw = item.representedObject as? String, let id = DeviceCommand.ID(rawValue: raw) else { continue }
-            let command = DeviceCommand.command(id)
-            item.keyEquivalent = command.hasKey?(capabilities) == false ? "" : command.key
-        }
+        shortcuts.update(for: capabilities)
     }
 
     private func menu(_ title: String, in parent: NSMenu) -> NSMenu {
@@ -281,7 +289,6 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
                             modifiers: command.modifiers, in: menu)
             item.representedObject = id.rawValue
             item.isAlternate = command.isAlternate
-            if command.hasKey != nil { keyedItems.append(item) }
         }
     }
 
@@ -447,7 +454,20 @@ package final class OpenSimulatorMenu: NSObject, NSMenuDelegate {
 
 /// Rebuilds locations from the key device's own runtime when opened.
 @MainActor
-package final class LocationMenu: NSObject, NSMenuDelegate {
+package final class LocationMenu: NSObject, DeviceKeyEquivalentMenuDelegate {
+    private static let path = ["Features", "Location"]
+    private static let fixedChoices = [("None", LocationSelection.none), ("Custom Location…", .custom)]
+    private let shortcuts: MenuShortcuts
+
+    package init(shortcuts: MenuShortcuts) {
+        self.shortcuts = shortcuts
+        shortcuts.register(titles: Self.fixedChoices.map { $0.0 }, path: Self.path)
+    }
+
+    package func prepare(_ menu: NSMenu, forKeyEquivalent event: NSEvent) {
+        if shortcuts.hasShortcut(for: event, in: Self.path) { menuNeedsUpdate(menu) }
+    }
+
     package func menuNeedsUpdate(_ menu: NSMenu) {
         update(menu, for: DeviceWindowController.keyDeviceWindow)
     }
@@ -456,7 +476,8 @@ package final class LocationMenu: NSObject, NSMenuDelegate {
     /// while its device is connected and booted.
     package func update(_ menu: NSMenu, for window: DeviceWindowController?) {
         let session = window?.session
-        let choices = [("None", LocationSelection.none), ("Custom Location…", .custom)]
+        let choices =
+            Self.fixedChoices
             + (session?.locationScenarios ?? []).map { ($0.localizedName, .scenario($0.name)) }
         menu.autoenablesItems = false
         menu.items = choices.map { title, selection in
@@ -467,6 +488,7 @@ package final class LocationMenu: NSObject, NSMenuDelegate {
             item.isEnabled = session?.canPerformCommands == true
             return item
         }
+        shortcuts.register(menu, path: Self.path, declaredOnly: true)
     }
 
     @objc private func select(_ sender: NSMenuItem) {
@@ -550,8 +572,16 @@ package final class EditMenu: NSMenu {
             }
             return false
         }
-        // Copy Screen's Control-Command-C is not an editing shortcut.
-        return (!deviceHasFocus || event.modifierFlags.contains(.control)) && super.performKeyEquivalent(with: event)
+        if deviceHasFocus {
+            let editing = ["undo:", "redo:", "cut:", "copy:", "paste:", "selectAll:"]
+            if items.contains(where: { item in
+                item.action.map { editing.contains(NSStringFromSelector($0)) } == true
+                    && event.matchesMenuKey(item.keyEquivalent, modifiers: item.keyEquivalentModifierMask)
+            }) {
+                return false
+            }
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 

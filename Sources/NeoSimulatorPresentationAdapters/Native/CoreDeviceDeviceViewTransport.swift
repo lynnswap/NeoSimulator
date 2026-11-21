@@ -188,25 +188,47 @@ package final class DeviceViewFittingView: NSView {
     }
 }
 
+/// A menu whose commands depend on the current device and must be populated before DeviceKit takes the key.
+@MainActor package protocol DeviceKeyEquivalentMenuDelegate: NSMenuDelegate {
+    func prepare(_ menu: NSMenu, forKeyEquivalent event: NSEvent)
+}
+
 extension NSMenu {
-    /// Whether the menu or one of its submenus has an enabled, visible item whose key equivalent is the event's.
-    ///
-    /// The comparison follows AppKit's: an item whose modifiers include Shift, or whose key is an uppercase letter,
-    /// names the key without Shift; any other item names the character that the keys type, with or without Shift.
     @MainActor fileprivate func hasEnabledCommand(for event: NSEvent) -> Bool {
-        let modifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
-        let pressed = event.modifierFlags.intersection(modifiers)
+        (delegate as? any DeviceKeyEquivalentMenuDelegate)?.prepare(self, forKeyEquivalent: event)
         update()
         return items.contains { item in
             if let submenu = item.submenu { return submenu.hasEnabledCommand(for: event) }
-            let key = item.keyEquivalent
-            guard !key.isEmpty, item.isEnabled, !item.isHidden else { return false }
-            var required = item.keyEquivalentModifierMask.intersection(modifiers)
-            if key != key.lowercased() { required.insert(.shift) }
-            if required.contains(.shift) {
-                return required == pressed && event.characters(byApplyingModifiers: [])?.lowercased() == key.lowercased()
-            }
-            return required == pressed.subtracting(.shift) && event.charactersIgnoringModifiers == key
+            return item.isEnabled && !item.isHidden && event.matchesMenuKey(item.keyEquivalent, modifiers: item.keyEquivalentModifierMask)
         }
+    }
+}
+
+extension NSEvent {
+    /// AppKit's menu representation differs from the event's characters for the two Delete keys.
+    private var menuCharacters: String? {
+        switch charactersIgnoringModifiers {
+        case "\u{7f}": "\u{8}"
+        case "\u{f728}": "\u{7f}"
+        default: charactersIgnoringModifiers
+        }
+    }
+
+    package var unshiftedMenuKey: String? {
+        if specialKey != nil || !modifierFlags.contains(.shift) { return menuCharacters }
+        return characters(byApplyingModifiers: []) ?? menuCharacters
+    }
+
+    package func matchesMenuKey(_ key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard !key.isEmpty else { return false }
+        let mask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let pressed = modifierFlags.intersection(mask)
+        var required = modifiers.intersection(mask)
+        if key != key.lowercased() { required.insert(.shift) }
+        if required.contains(.shift) {
+            return required == pressed && unshiftedMenuKey?.lowercased() == key.lowercased()
+        }
+        if pressed.contains(.shift), specialKey != nil { return false }
+        return required == pressed.subtracting(.shift) && menuCharacters == key
     }
 }

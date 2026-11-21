@@ -58,10 +58,18 @@ do not select another host.
 ## App preferences
 
 **NeoSimulator → Settings…** (Command-,) contains General, Devices, Capture,
-Service Profiles, and Licenses settings; Debug builds also show Logins and Debug.
+Service Profiles, Keyboard Shortcuts, and Licenses settings. Debug builds also show Logins and Debug.
 General controls the preferred display host, UI framework installation, keeping devices running when closing or
 quitting, and touch indicators. Capture controls the
 device mask, GIF image size, and the file-size versus animation-smoothness choice.
+
+In **Keyboard Shortcuts**, filter by command name, menu, or shortcut. Double-click a
+command and press the keys you want to use. If another command uses those keys,
+**Reassign** moves the shortcut to the selected command. **Clear** removes its
+shortcut, **Use Default** restores its standard shortcut, and **Save** applies the
+edit. **Restore Defaults…** resets all menu shortcuts. Commands for the selected
+device are listed even when that device is disconnected.
+
 Saved logins are in Debug builds only for now.
 Logins saves an app's user name and password in your login keychain, under the app's bundle identifier and a
 label, with the web origins where the login may be used. The pane never shows a saved password.

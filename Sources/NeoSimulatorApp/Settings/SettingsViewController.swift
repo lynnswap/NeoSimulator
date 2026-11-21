@@ -23,14 +23,18 @@ final class SettingsViewController: NSTabViewController {
     #endif
     var onContentSizeChange: ((NSSize) -> Void)?
 
-    init(makeLicenses: () -> NSViewController, model: SimulatorManagerModel, restart: @escaping () -> Void,
-         makeSimulator: @escaping () async throws -> NewSimulatorModel,
-         preferences: SimulatorPreferences, reportFailure: @escaping (Error) -> Void) {
-        general = GeneralSettingsViewController(model: model, preferences: preferences,
+    init(
+        makeLicenses: () -> NSViewController, model: SimulatorManagerModel, restart: @escaping () -> Void,
+        makeSimulator: @escaping () async throws -> NewSimulatorModel,
+        preferences: SimulatorPreferences, shortcuts: MenuShortcuts, reportFailure: @escaping (Error) -> Void
+    ) {
+        general = GeneralSettingsViewController(
+            model: model, preferences: preferences,
                                                frameworks: model.frameworks, restart: restart)
         devices = DevicesSettingsViewController(makeSimulator: makeSimulator, reportFailure: reportFailure)
         capture = CaptureSettingsViewController(preferences: preferences)
         serviceProfiles = ServiceProfilesSettingsViewController(store: model.serviceProfiles)
+        let keyboard = KeyboardShortcutsSettingsViewController(shortcuts: shortcuts)
         licenses = makeLicenses()
         #if DEBUG
         logins = LoginsSettingsViewController(store: model.logins)
@@ -46,8 +50,10 @@ final class SettingsViewController: NSTabViewController {
         transitionOptions = []
         tabStyle = .toolbar
         canPropagateSelectedChildViewControllerTitle = true
-        var tabs: [(NSViewController, String)] = [(general, "gear"), (devices, "iphone"), (capture, "camera"),
-                                                  (serviceProfiles, "cpu")]
+        var tabs: [(NSViewController, String)] = [
+            (general, "gear"), (devices, "iphone"), (capture, "camera"),
+            (serviceProfiles, "cpu"), (keyboard, "keyboard"),
+        ]
         #if DEBUG
         tabs.append((logins, "key"))
         #endif
