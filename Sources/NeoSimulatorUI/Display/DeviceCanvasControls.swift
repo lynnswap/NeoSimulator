@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import NeoSimulatorKit
 import NeoSimulatorPresentationAdapters
 import SwiftUI
@@ -59,7 +58,7 @@ package final class DeviceCanvasControls: NSView {
         guard screenshotDevice != device else { return }
         let previous = screenshotDevice
         screenshotDevice = device
-        content.takeScreenshot = PassthroughSubject()
+        content.takeScreenshot = ScreenshotCommand()
         if device?.device == previous?.device {
             updateScreenshotButton()
             return
@@ -100,13 +99,7 @@ package final class DeviceCanvasControls: NSView {
     package func takeNativeScreenshot() -> Bool {
         guard content.screenshot != nil, content.saves?.canTake == true, window != nil, !isHiddenOrHasHiddenAncestor
         else { return false }
-        var accepted = false
-        content.takeScreenshot.send {
-            guard !accepted else { return false }
-            accepted = true
-            return true
-        }
-        return accepted
+        return content.takeScreenshot.perform()
     }
 
     package required init?(coder: NSCoder) { nil }
@@ -232,7 +225,7 @@ private final class CanvasControlsHostingView: NSHostingView<CanvasBottomContent
 private struct CanvasBottomContent: View {
     var screenshot: AnyView?
     var saves: NativeScreenshotSaves?
-    var takeScreenshot = PassthroughSubject<@MainActor () -> Bool, Never>()
+    var takeScreenshot = ScreenshotCommand()
     var pairedDeviceName: String?
     var actions: [CanvasAction] = []
     var postures: [CanvasAction] = []
@@ -295,9 +288,7 @@ private struct CanvasBottomContent: View {
                 .buttonStyle(
                     ScreenshotButtonStyle(request: takeScreenshot, saves: saves, fallback: { onAction(action.id) })
                 )
-                .accessibilityRepresentation {
-                    Button("Screenshot") { onAction(action.id) }
-                }
+                .accessibilityRepresentation { Button("Screenshot") { onAction(action.id) } }
                 .disabled(!action.enabled)
                 .accessibilityIdentifier(action.id)
         } else if action.id == "record", let recordingStartDate {
@@ -335,21 +326,45 @@ private struct CanvasBottomContent: View {
     }
 }
 
-/// The menu and the camera press the same DeviceKit button for this screen.
+/// AppKit's File menu invokes the button SwiftUI currently hosts for this display.
+@MainActor private final class ScreenshotCommand {
+    weak var mounted: ScreenshotCommandView?
+
+    func perform() -> Bool {
+        guard let mounted, mounted.window != nil, let press = mounted.press else { return false }
+        press()
+        return true
+    }
+}
+
+@MainActor private final class ScreenshotCommandView: NSView {
+    var press: (() -> Void)?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct MountedScreenshotCommand: NSViewRepresentable {
+    let command: ScreenshotCommand
+    let press: () -> Void
+    func makeNSView(context: Context) -> ScreenshotCommandView { ScreenshotCommandView() }
+    func updateNSView(_ view: ScreenshotCommandView, context: Context) {
+        command.mounted = view
+        view.press = press
+    }
+    static func dismantleNSView(_ view: ScreenshotCommandView, coordinator: Void) { view.press = nil }
+}
+
 private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
-    let request: PassthroughSubject<@MainActor () -> Bool, Never>
+    let request: ScreenshotCommand
     let saves: NativeScreenshotSaves
     let fallback: @MainActor () -> Void
+
     func makeBody(configuration: Configuration) -> some View {
-        Button {
+        let press = {
             if saves.canTake { saves.take(configuration.trigger) } else { fallback() }
-        } label: {
-            configuration.label
         }
-        .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
-        .onReceive(request) { accept in
-            if accept() { saves.take(configuration.trigger) }
-        }
+        return Button(action: press) { configuration.label }
+            .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
+            .background { MountedScreenshotCommand(command: request, press: press) }
     }
 }
 
