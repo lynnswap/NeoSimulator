@@ -105,8 +105,8 @@ extension SimulatorHostTests {
 
         let backspace = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: true))
         backspace.flags = .maskCommand
-        let binding = try #require(NSEvent(cgEvent: backspace).flatMap(MenuShortcut.init(event:)))
-        #expect(binding == MenuShortcut(key: "\u{8}", modifiers: .command))
+        let deleteBinding = try #require(NSEvent(cgEvent: backspace).flatMap(MenuShortcut.init(event:)))
+        #expect(deleteBinding == MenuShortcut(key: "\u{8}", modifiers: .command))
     }
 
     @Test func deviceCanvasResolvesSelectedDeviceShortcutsBeforeOpeningTheMenu() throws {
