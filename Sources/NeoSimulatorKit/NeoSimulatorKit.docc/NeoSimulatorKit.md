@@ -4,43 +4,18 @@ Discover devices, read and change their state, and boot or shut down simulators.
 
 ## Overview
 
-NeoSimulatorKit loads no UI toolkit, so it can run in a process that displays nothing.
+Use a ``SimulatorContext`` on the main actor to manage the simulators of one
+Xcode installation. For a device browser, a ``DeviceRegistry`` lists simulators
+and CoreDevice devices and keeps one observable ``DeviceModel`` per device.
 
-Load a ``SimulatorContext`` to list, boot, and shut down the simulators of one Xcode installation. Create a
-``DeviceRegistry`` to list simulators and CoreDevice devices, and to share one observable ``DeviceModel`` for each
-device in the process.
+Model properties return cached values. Retain a ``DeviceReadInterest`` for the
+groups you display, and check ``DeviceReadStatus`` and ``DeviceModel/lastIssue`` if
+a read fails. If a command throws ``SimulatorError/outcomeUnknown(_:underlying:)``,
+read the device's state before repeating it. Use ``SimulatorContext/onError``
+for failures reported after a call returns.
 
-To display a simulator, add the `NeoSimulatorUI` product. Its `SimulatorScreens` type opens screens, and each screen
-has a ``SimulatorDeviceSession`` for sending commands to the guest. For a walkthrough, see
+To add a screen to an AppKit app, see
 [Using the SDK](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/usingthesdk).
-
-### Keep objects alive
-
-Contexts, sessions, registries, and device models are isolated to the main actor. Retain the ones you use:
-
-- A ``SimulatorContext`` owns its connections. Releasing it ends its sessions.
-- A ``DeviceRegistry`` retains the model of each listed device.
-- A ``DeviceReadInterest`` keeps state groups current until you release it.
-
-Closing a session, invalidating a context, and releasing a context all leave guests running. Call
-``SimulatorContext/shutDown(_:)`` to stop a guest. Await ``SimulatorContext/invalidate()`` before terminating the app
-so you can report cleanup failures.
-
-### Handle errors
-
-How a failure reaches you depends on the API:
-
-| API | How it reports failure |
-| --- | --- |
-| Context instance methods and session commands | Throw ``SimulatorError`` or `CancellationError`. |
-| ``SimulatorContext/load(xcodeURL:deviceRegistry:)`` and ``SimulatorContext/selectDisplayXcode(_:)`` | Throw errors that describe themselves through `localizedDescription`. |
-| Changes through ``DeviceSettingsState``, ``BackgroundServicesState``, and ``DeviceInspectionState`` | Throw ``SimulatorError/operation(_:)``, `CancellationError`, or errors that describe themselves through `localizedDescription`. |
-| Reads of cached device state | Never throw. Check ``DeviceReadStatus`` and ``DeviceModel/lastIssue``. |
-| ``DeviceRegistry/refresh()`` | Throws only `CancellationError`. A source that cannot be read keeps the devices it last listed. |
-| Work that no call is waiting for | Reports to ``SimulatorContext/onError``. |
-
-``SimulatorError/outcomeUnknown(_:underlying:)`` means that a change may still apply. Read the device's state before
-repeating the request.
 
 ## Topics
 

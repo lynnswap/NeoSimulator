@@ -1,33 +1,17 @@
-# NeoSimulator Guide
+# NeoSimulator
 
-Use the app and build with the SDK.
+Build macOS apps with the NeoSimulator SDK.
 
 @Metadata {
     @TechnologyRoot
 }
 
-## Overview
-
-Display and control devices using Xcode's private simulator frameworks, while
-Xcode handles Build & Run. Choose NeoSimulator or Device Hub in Settings.
-
-For API documentation, see [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit)
-and [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui).
-
 ## Topics
 
-### Use the simulator
-
-- <doc:GettingStarted>
-- <doc:UsingNeoSimulator>
-- <doc:InputAndPeripherals>
-- <doc:Configuration>
-
-### Build simulator apps
+### SDK
 
 - <doc:UsingTheSDK>
 
-### Understand how NeoSimulator works
+### Project internals
 
 - <doc:Architecture>
-- <doc:SimulatorIntegration>

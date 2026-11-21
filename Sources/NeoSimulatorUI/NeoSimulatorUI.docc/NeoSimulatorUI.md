@@ -4,25 +4,16 @@ Present simulators in AppKit windows and view controllers.
 
 ## Overview
 
-Create one ``SimulatorScreens`` object for a ``/NeoSimulatorKit/SimulatorContext``, which loads the process's SimulatorKit
-UI toolkit. Quit Apple's Simulator and Device Hub first, because only one app can display simulators at a time.
+Quit Apple's Simulator and Device Hub before creating a ``SimulatorScreens``
+presenter for your ``/NeoSimulatorKit/SimulatorContext``. Boot the guest through
+the context, then call ``SimulatorScreens/open(_:)`` to get its screen.
 
-Boot the simulator through the context, open its screen, and choose how to present it:
+Call ``SimulatorScreen/showWindow()`` to give the simulator its own window,
+or embed the screen with ``SimulatorScreenViewController``. Keep the screen
+while it is open and use its ``SimulatorScreen/session`` to send guest commands.
 
-```swift
-let context = try await SimulatorContext.load()
-_ = try await context.boot(deviceID)
-let screens = try await SimulatorScreens(context: context)
-let screen = try await screens.open(deviceID)
-try screen.showWindow()
-```
-
-Run this code on the main actor, and retain the context, the screens object, and the screen while presenting the device.
-A screen's ``SimulatorScreen/session`` provides the device model and guest commands. To embed a screen in your own
-interface, create a ``SimulatorScreenViewController`` or call ``SimulatorScreen/embed(in:)``.
-
-Closing a screen leaves its guest running. Call ``/NeoSimulatorKit/SimulatorContext/shutDown(_:)`` to stop the guest. For
-a walkthrough, see [Using the SDK](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/usingthesdk).
+For setup and sample code, see
+[Using the SDK](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/usingthesdk).
 
 ## Topics
 
