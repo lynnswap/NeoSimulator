@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launchURLs: [URL] = []
     private var rendererDevicesObserver: NSObjectProtocol?
     private var workspaceObserver: NSObjectProtocol?
+    private let windowsHiddenWithApp = NSHashTable<NSWindow>.weakObjects()
+    private var hiddenWindowCloseObserver: NSObjectProtocol?
+
     private let processObservation = SimulatorProcessObservation()
     private var inventoryObservation: DeviceInventoryObservation?
     private var inventoryObservationTask: Task<Void, Never>?
@@ -415,6 +418,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillHide(_ notification: Notification) {
+        windowsHiddenWithApp.removeAllObjects()
+        for window in NSApp.windows where window.isVisible { windowsHiddenWithApp.add(window) }
+        if let hiddenWindowCloseObserver { NotificationCenter.default.removeObserver(hiddenWindowCloseObserver) }
+        hiddenWindowCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let window = notification.object as? NSWindow else { return }
+            MainActor.assumeIsolated { self?.windowsHiddenWithApp.remove(window) }
+        }
+    }
+
+    func applicationDidUnhide(_ notification: Notification) {
+        windowsHiddenWithApp.removeAllObjects()
+        if let hiddenWindowCloseObserver { NotificationCenter.default.removeObserver(hiddenWindowCloseObserver) }
+        hiddenWindowCloseObserver = nil
+    }
+
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
         addDevicesMenu("Device", to: menu)
@@ -699,7 +720,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func addDevicesMenu(_ title: String, to menu: NSMenu) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.submenu = SimulatorDevicesMenu(model: model, title: title)
+        item.submenu = SimulatorDevicesMenu(model: model, title: title) { [screens, windowsHiddenWithApp] identifier in
+            [screens.screen(for: identifier), screens.compactScreen(for: identifier)].contains { screen in
+                guard case .simulator(let controller) = screen?.controller,
+                    let window = controller.presentationViewController.view.window
+                else { return false }
+                return window.isVisible || window.isMiniaturized || windowsHiddenWithApp.contains(window)
+            }
+        }
         menu.addItem(item)
     }
 
