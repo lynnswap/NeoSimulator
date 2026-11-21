@@ -294,10 +294,15 @@ extension SimulatorHostTests {
         #expect(transport.lease.adjustedSizes.last == CGSize(width: 700, height: 200))
         session.send(.press(.button(.home)), failure: { Issue.record($0) })
         #expect(app.events.map(\.state) == [.down, .up])
+        let copying = AsyncStream<Void>.makeStream()
+        let capture = Task { for await _ in copying.stream {} }
+        session.pendingAppDisplayCapture = { capture }
         controller.detachPresentation()
         #expect(session.display === primary)
         #expect(!session.isResizingApp)
-        #expect(transport.lease.invalidations == 1)
+        #expect(transport.lease.invalidations == 0)
+        copying.continuation.finish()
+        try await wait { transport.lease.invalidations == 1 }
         #expect(app.disconnectCount == 1)
         #expect(primary.disconnectCount == 0)
     }

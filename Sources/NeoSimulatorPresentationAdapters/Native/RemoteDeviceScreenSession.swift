@@ -751,6 +751,7 @@ package final class RemoteDeviceScreenSession {
     }
 
     private func waitForCaptures() async {
+        if let id = UUID(uuidString: device.identifier) { await NativeScreenshotSaves.acquiring(on: id)?.value }
         if capturesInFlight != 0 { await withCheckedContinuation { captureWaiters.append($0) } }
     }
 

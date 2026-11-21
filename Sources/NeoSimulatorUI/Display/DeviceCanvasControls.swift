@@ -92,6 +92,10 @@ package final class DeviceCanvasControls: NSView {
         }
     }
 
+    package var pendingScreenshotAcquisition: Task<Void, Never>? {
+        screenshotDevice.flatMap { NativeScreenshotSaves.acquiring(on: $0.device) }
+    }
+
     package func takeNativeScreenshot() -> Bool {
         guard content.screenshot != nil, window != nil, !isHiddenOrHasHiddenAncestor else { return false }
         content.takeScreenshot.send()
@@ -328,12 +332,12 @@ private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
     let saves: NativeScreenshotSaves
     func makeBody(configuration: Configuration) -> some View {
         Button {
-            saves.take(configuration.trigger)
+            saves.take { configuration.trigger() }
         } label: {
             configuration.label
         }
             .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
-        .onReceive(request) { saves.take(configuration.trigger) }
+        .onReceive(request) { saves.take { configuration.trigger() } }
     }
 }
 

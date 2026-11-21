@@ -144,15 +144,22 @@ private func fieldOffset(_ type: Any.Type, _ index: Int) -> Int
 
 /// DeviceKit places the file when its saved-capture banner ends. Keep the app alive for that handoff,
 /// including the interval between pressing the camera and the banner appearing.
-@MainActor
+@MainActor @Observable
 package final class NativeScreenshotSaves {
+    private let thumbnail: @MainActor () throws -> Image?
     private let visible: @MainActor () throws -> Bool
     private let device: UUID
-    private var saving: Task<Void, Never>?
-    private static var pending: [ObjectIdentifier: NativeScreenshotSaves] = [:]
+    private var failures = 0
+    @ObservationIgnored private var acquisition: Task<Void, Never>?
+    @ObservationIgnored private var saving: Task<Void, Never>?
+    private static var pending: [UUID: NativeScreenshotSaves] = [:]
 
-    init(device: UUID, visible: @escaping @MainActor () throws -> Bool) {
+    init(
+        device: UUID, thumbnail: @escaping @MainActor () throws -> Image?,
+        visible: @escaping @MainActor () throws -> Bool
+    ) {
         self.device = device
+        self.thumbnail = thumbnail
         self.visible = visible
     }
 
@@ -181,43 +188,67 @@ package final class NativeScreenshotSaves {
             .swift(
                 .method(
                     "DeviceKit.BannerProvider.isVisible(in:)", as: ((NativeSwiftValue) -> Bool).self, valueABIs: abi)))
-        return NativeScreenshotSaves(device: device) { try unsafe shown.unsafeInvoke(on: provider, value) }
-    }
-
-    package func take(_ trigger: () -> Void) {
-        saving?.cancel()
-        Self.pending[ObjectIdentifier(self)] = self
-        let hadBanner = (try? visible()) == true
-        saving = Task.immediate { [self] in
-            var appeared = false
-            var initial = true
-            do {
-                for try await shown in Observations(visible) {
-                    // A previous screenshot may still be visible when the next camera action starts.
-                    defer { initial = false }
-                    if initial && hadBanner { continue }
-                    if shown { appeared = true } else if appeared { break }
-                }
-            } catch {
-                if !Task.isCancelled {
-                    TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)")
+        let icon = try await provider.type.resolve(
+            .swift(
+                .method(
+                    "DeviceKit.BannerProvider.icon(in:)", as: ((NativeSwiftValue) -> NativeSwiftValue).self,
+                    valueABIs: abi)))
+        return NativeScreenshotSaves(device: device) {
+            let view = try unsafe icon.unsafeInvoke(on: provider, value)
+            return try view.withCopy { icon in
+                // Its optional icon wraps the captured Image in SwiftUI view modifiers. The banner can
+                // stay visible when DeviceKit replaces one capture with another.
+                guard var wrapped = Mirror(reflecting: icon).descendant("some") else { return nil }
+                while true {
+                    if let image = wrapped as? Image { return image }
+                    guard let content = Mirror(reflecting: wrapped).descendant("content") else {
+                        throw RemoteScreenError.unavailable(
+                            "native-capture-thumbnail", "DeviceKit did not provide the captured thumbnail.")
+                    }
+                    wrapped = content
                 }
             }
-            if !Task.isCancelled { finished() }
+        } visible: {
+            try unsafe shown.unsafeInvoke(on: provider, value)
         }
-        trigger()
     }
 
-    fileprivate func failed() {
-        // An earlier capture can still have its banner when a second one fails.
-        if (try? visible()) != true { finished() }
-    }
-
-    private func finished() {
+    package func take(_ trigger: @escaping @MainActor () -> Void) {
+        // The banner belongs to the device, including when two windows show it.
+        if let active = Self.pending[device], active !== self { active.take(trigger); return }
+        Self.pending[device] = self
+        let previous = acquisition
+        let capture = Task.immediate { [self] in
+            if let previous { await previous.value }
+            do {
+                let old = try? thumbnail()
+                let before = failures
+                trigger()
+                for try await (image, failed) in Observations({ (try self.thumbnail(), self.failures != before) }) {
+                    if failed || image != nil && image != old { break }
+                }
+            } catch { TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)") }
+        }
+        acquisition = capture
         saving?.cancel()
-        saving = nil
-        Self.pending.removeValue(forKey: ObjectIdentifier(self))
+        saving = Task { [self] in
+            await capture.value
+            guard !Task.isCancelled else { return }
+            do {
+                for try await shown in Observations(visible) { if !shown { break } }
+            } catch { TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)") }
+            if !Task.isCancelled {
+                acquisition = nil
+                saving = nil
+                Self.pending.removeValue(forKey: device)
+            }
+        }
     }
+
+    func failed() { Self.pending[device]?.failures += 1 }
+
+    /// DeviceKit has copied the display pixels by the time it publishes the new thumbnail.
+    package static func acquiring(on device: UUID) -> Task<Void, Never>? { pending[device]?.acquisition }
 
     private static var recovery: String {
         let folder = FileManager.default.temporaryDirectory.appending(path: "com.apple.dt.Devices.ScreenCaptures")

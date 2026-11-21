@@ -509,6 +509,7 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         }
         display.nativePoseControls?.onError = { [weak self] in self?.present($0) }
         session.onAppResizeError = { [weak self] in self?.present($0) }
+        session.pendingAppDisplayCapture = { [weak self] in self?.canvasControls?.pendingScreenshotAcquisition }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
             self.content.finishCanvasMagnification()

@@ -388,6 +388,8 @@ package final class DeviceSession {
     @ObservationIgnored private var resizeUpdates: Task<Void, Never>?
     @ObservationIgnored private var resizeInvalidation: Task<Void, Never>?
     @ObservationIgnored private var resizeAdjustment: Task<Void, Never>?
+    @ObservationIgnored package var pendingAppDisplayCapture: (() -> Task<Void, Never>?)?
+    @ObservationIgnored private var releasingResizeLease: Task<Void, Never>?
     @ObservationIgnored private var resizeLease: (any AppResizeSession)?
     @ObservationIgnored private var resizeGeneration = 0
     @ObservationIgnored private var pendingAppSize: CGSize?
@@ -651,6 +653,7 @@ package final class DeviceSession {
     }
 
     package func stopAppResize() {
+        let capture = resizeLease == nil ? nil : pendingAppDisplayCapture?()
         resizeGeneration += 1
         resizeStart?.cancel(); resizeStart = nil
         resizeUpdates?.cancel(); resizeUpdates = nil
@@ -669,10 +672,21 @@ package final class DeviceSession {
             onDisplayChange?()
             appDisplay.disconnect()
         }
-        if let resizeLease {
-            do { try resizeLease.invalidate(); self.resizeLease = nil }
-            catch { onAppResizeError?(error) }
+        guard resizeLease != nil, releasingResizeLease == nil else { return }
+        if let capture {
+            // The native camera reads the display through CoreDevice after accepting the press.
+            releasingResizeLease = Task { [self] in
+                await capture.value
+                releasingResizeLease = nil
+                invalidateResizeLease()
+            }
+        } else {
+            invalidateResizeLease()
         }
+    }
+
+    private func invalidateResizeLease() {
+        do { try resizeLease?.invalidate(); resizeLease = nil } catch { onAppResizeError?(error) }
     }
 
     private func releaseInputsForDisplayChange() {

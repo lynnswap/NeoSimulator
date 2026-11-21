@@ -11,6 +11,7 @@ import ImageIO
 @testable import NeoSimulatorUI
 import Observation
 import QuartzCore
+import SwiftUI
 import Synchronization
 import Testing
 
@@ -18,7 +19,10 @@ private extension SimulatorScreenHost {
     var captureOwner: UUID { (presenter as! DeviceWindowPresenter).captureOwner }
 }
 
-@Observable @MainActor private final class SavedBanner { var visible = true }
+@Observable @MainActor private final class SavedBanner {
+    var visible = true
+    var image: Image? = Image(systemName: "1.circle")
+}
 
 @Suite @MainActor
 struct CaptureAndImportTests {
@@ -26,19 +30,19 @@ struct CaptureAndImportTests {
     @Test func quittingWaitsForTheNewDeviceKitCaptureWhenThePreviousBannerDisappears() async throws {
         let banner = SavedBanner()
         let device = UUID()
-        let reads = AsyncStream<Bool>.makeStream()
-        let saves = NativeScreenshotSaves(device: device) {
-            reads.continuation.yield(banner.visible)
-            return banner.visible
-        }
-        defer { reads.continuation.finish() }
-        var events = reads.stream.makeAsyncIterator()
+        let saves = NativeScreenshotSaves(device: device, thumbnail: { banner.image }, visible: { banner.visible })
         saves.take {}
         banner.visible = false
-        while let shown = await events.next(), shown {}
+        banner.image = nil
         #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
+        banner.image = Image(systemName: "2.circle")
         banner.visible = true
-        while let shown = await events.next(), !shown {}
+        await NativeScreenshotSaves.acquiring(on: device)?.value
+
+        // A second press fails while the first successful capture still needs its handoff.
+        saves.take { saves.failed() }
+        await NativeScreenshotSaves.acquiring(on: device)?.value
+        #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
         banner.visible = false
         #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
     }
