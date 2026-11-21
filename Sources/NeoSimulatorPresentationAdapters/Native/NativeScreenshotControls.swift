@@ -44,7 +44,10 @@ package struct NativeScreenshotControls {
             .map { Item(value: $0) }
         }
         guard let primary else { return nil }
-        let saves = NativeScreenshotSaves(device: device, onError: onError)
+        guard
+            let saves = try await NativeScreenshotSaves.connect(
+                plugins: plugins, device: device, windowID: windowID, onError: onError)
+        else { return nil }
         let read = try await bindings.controls(of: primary.value, for: device, onError: onError)
         let item = try await firstAvailable {
             try read().first { try bindings.name(of: $0) == "com.apple.devicekit.actionbar.control.screenshot" }.map {
@@ -143,34 +146,102 @@ private func fieldOffset(_ type: Any.Type, _ index: Int) -> Int
 @MainActor
 package final class NativeScreenshotSaves {
     private final class Lifetime: Sendable {
+        let device: UUID
+        let pixels: AsyncStream<Void>.Continuation
         let completion: AsyncStream<Void>.Continuation
-        init(_ completion: AsyncStream<Void>.Continuation) { self.completion = completion }
-        deinit { completion.finish() }
+        init(device: UUID, pixels: AsyncStream<Void>.Continuation, completion: AsyncStream<Void>.Continuation) {
+            self.device = device
+            self.pixels = pixels
+            self.completion = completion
+        }
+        deinit { pixels.finish(); completion.finish() }
     }
 
-    @TaskLocal private static var lifetime: Lifetime?
+    @TaskLocal nonisolated private static var lifetime: Lifetime?
     private struct Pending {
         let owner: NativeScreenshotSaves
+        let pixels: Task<Void, Never>
         let task: Task<Void, Never>
     }
     private static var pending: [UUID: Pending] = [:]
     private let device: UUID
     private let onError: @MainActor (any Error) -> Void
 
-    init(device: UUID, onError: @escaping @MainActor (any Error) -> Void) {
+    private let bannerIsVisible: @MainActor () throws -> Bool
+    private var observingBanner = false
+
+    init(
+        device: UUID, onError: @escaping @MainActor (any Error) -> Void,
+        bannerIsVisible: @escaping @MainActor () throws -> Bool
+    ) {
         self.device = device
         self.onError = onError
+        self.bannerIsVisible = bannerIsVisible
+    }
+
+    fileprivate static func connect(
+        plugins: NativeSwiftValue, device: UUID, windowID: UUID,
+        onError: @escaping @MainActor (any Error) -> Void
+    ) async throws
+        -> NativeScreenshotSaves?
+    {
+        let runtime = ABIRuntime.shared
+        let read = try await plugins.type.resolve(.swift(.getter("bannerProviders", as: (() -> NativeSwiftValue).self)))
+        let providers = try NativeActionBarBindings.elements(of: unsafe read.unsafeInvoke(on: plugins))
+        guard
+            let saved = providers.first(where: {
+                String(reflecting: type(of: $0)) == "DeviceKit.ScreenCaptureSavedBanner"
+            })
+        else { return nil }
+        func copy<V>(_ value: V) async throws -> NativeSwiftValue {
+            try await NativeActionBarBindings.bridge(value, runtime: runtime)
+        }
+        let provider = try await _openExistential(saved, do: copy).copyUnderlyingValue()
+        let context = try await runtime.resolve(.swift(.type("DeviceKit.BannerProviderContext")))
+        let abi = [context: try NativeType.opaque(named: context.name)]
+        let make = try await context.resolve(
+            .swift(
+                .initializer("init(deviceID:windowID:)", as: ((UUID, UUID) -> NativeSwiftValue).self, valueABIs: abi)))
+        let value = try unsafe make.unsafeInvoke(device, windowID)
+        let shown = try await provider.type.resolve(
+            .swift(
+                .method(
+                    "DeviceKit.BannerProvider.isVisible(in:)", as: ((NativeSwiftValue) -> Bool).self, valueABIs: abi)))
+        return NativeScreenshotSaves(device: device, onError: onError) {
+            try unsafe shown.unsafeInvoke(on: provider, value)
+        }
+    }
+
+    // The one-shot callback runs in the task that changes DeviceKit's banner state. Its task-local
+    // identifies the press even if a subsequent main-actor pass sees several updates together.
+    private func observePixels() {
+        guard !observingBanner else { return }
+        observingBanner = true
+        _ = withObservationTracking {
+            try? bannerIsVisible()
+        } onChange: { [weak self] in
+            let capture = Self.lifetime
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                observingBanner = false
+                if let capture, capture.device == device, (try? bannerIsVisible()) == true { capture.pixels.finish() }
+                if Self.pending.values.contains(where: { $0.owner === self }) { observePixels() }
+            }
+        }
     }
 
     package func take(_ trigger: () -> Void) {
         let id = UUID()
+        let (frames, pixels) = AsyncStream<Void>.makeStream()
         let (work, completion) = AsyncStream<Void>.makeStream()
+        let copied = Task { for await _ in frames {} }
         let task = Task {
             for await _ in work {}
             Self.pending.removeValue(forKey: id)
         }
-        Self.pending[id] = Pending(owner: self, task: task)
-        Self.$lifetime.withValue(Lifetime(completion), operation: trigger)
+        Self.pending[id] = Pending(owner: self, pixels: copied, task: task)
+        observePixels()
+        Self.$lifetime.withValue(Lifetime(device: device, pixels: pixels, completion: completion), operation: trigger)
     }
 
     /// Keeps the display alive for the presses accepted before a disconnect or display change.
@@ -179,7 +250,7 @@ package final class NativeScreenshotSaves {
         guard !captures.isEmpty else { return nil }
         return Task {
             let deadline = ContinuousClock.now + DeviceOperationLimit.bridge
-            for capture in captures where !(await capture.task.ends(before: deadline)) {
+            for capture in captures where !(await capture.pixels.ends(before: deadline)) {
                 capture.owner.onError(RemoteScreenError.unavailable("native-capture-timeout", capture.owner.recovery))
                 return
             }

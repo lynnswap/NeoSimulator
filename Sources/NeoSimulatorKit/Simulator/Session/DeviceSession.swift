@@ -2207,11 +2207,11 @@ package final class DeviceSession {
     package func stop() async throws {
         let capture = pendingAppDisplayCapture?()
         disconnect()
-        await capture?.value
-        await releasingResizeLease?.value
         let finishingOperation = operation
         let removal = inputRemoval ?? removeInput()
         inputRemoval = removal
+        await capture?.value
+        await releasingResizeLease?.value
         var failures: [any Error] = []
         do { try await removal.value } catch {
             if inputRemoval == removal { inputRemoval = nil }

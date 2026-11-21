@@ -18,22 +18,31 @@ private extension SimulatorScreenHost {
     var captureOwner: UUID { (presenter as! DeviceWindowPresenter).captureOwner }
 }
 
+@Observable @MainActor private final class CaptureBanner { var showing = false }
+
 @Suite @MainActor
 struct CaptureAndImportTests {
 
     @Test func quittingWaitsForEachDeviceKitCameraActionToHandOffItsFile() async throws {
         let device = UUID()
-        let camera = NativeScreenshotSaves(device: device, onError: { Issue.record($0) })
+        let banner = CaptureBanner()
+        let camera = NativeScreenshotSaves(
+            device: device, onError: { Issue.record($0) }, bannerIsVisible: { banner.showing })
         let first = AsyncStream<Void>.makeStream(), second = AsyncStream<Void>.makeStream()
         var dispatched = 0
         camera.take {
-            dispatched += 1; Task { for await _ in first.stream {} }
+            dispatched += 1
+            Task {
+                banner.showing = true; for await _ in first.stream {}
+            }
         }
         camera.take {
             dispatched += 1; Task { for await _ in second.stream {} }
         }
         #expect(dispatched == 2)
         second.continuation.finish()
+        let acquisition = try #require(NativeScreenshotSaves.acquiring(on: device))
+        #expect(await acquisition.ends(before: .now + .seconds(2)))
         #expect(
             await NativeScreenshotSaves.finish(before: .now + .milliseconds(30))?.contains(device.uuidString) == true)
         first.continuation.finish()
