@@ -733,7 +733,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.addItem(.separator())
         addItem("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), to: window, target: NSApp)
         let help = simulatorMenus.addHelpMenu(to: main)
-        shortcuts.register(main)
+        simulatorMenus.installKeyboardShortcuts(in: main)
         NSApp.windowsMenu = window
         NSApp.mainMenu = main
         NSApp.helpMenu = help

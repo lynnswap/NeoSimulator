@@ -49,6 +49,12 @@ extension SimulatorHostTests {
                 with: .keyDown, location: .zero, modifierFlags: .option,
                 timestamp: 0, windowNumber: 0, context: nil, characters: "ß", charactersIgnoringModifiers: "s",
                 isARepeat: false, keyCode: 1))
+        #expect(
+            shortcuts.commands.filter {
+                $0.id == DeviceCommand.ID.actionButtonSting.rawValue
+                    || $0.id == DeviceCommand.ID.actionButtonStaccato.rawValue
+            }.map(\.title)
+                == ["Action Button (Apple Watch)", "Action Button (iPhone)"])
         let optionS = try #require(MenuShortcut(event: event))
         #expect(
             shortcuts.conflicts(for: MenuShortcut(key: "?", modifiers: .command), with: command).map(\.title) == [
@@ -137,20 +143,57 @@ extension SimulatorHostTests {
             return menu
         }
         let command = try #require(shortcuts.commands.first { $0.title == "Stop Screen Sharing" })
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 150, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
         let event = try #require(
             NSEvent.keyEvent(
                 with: .keyDown, location: .zero, modifierFlags: .option,
-                timestamp: 1, windowNumber: 0, context: nil, characters: "ß", charactersIgnoringModifiers: "s",
+                timestamp: 1, windowNumber: window.windowNumber, context: nil, characters: "ß",
+                charactersIgnoringModifiers: "s",
                 isARepeat: false, keyCode: 1))
         shortcuts.assign(try #require(MenuShortcut(event: event)), to: command)
         let main = DeviceCommandMainMenu()
         let menus = MenuController(application: nil, shortcuts: shortcuts)
         menus.addDeviceMenus(to: main, managementMenu: selected)
+        let previous = NSApp.mainMenu
+        defer { NSApp.mainMenu = previous }
+        // AppKit requires the first item of an installed main menu to be the application menu.
+        main.insertItem(withTitle: "NeoSimulator", action: nil, keyEquivalent: "", at: 0).submenu = NSMenu()
+        menus.installKeyboardShortcuts(in: main)
+        NSApp.mainMenu = main
         let container = DeviceViewFittingView()
         container.commandMenu = { main }
         #expect(container.performKeyEquivalent(with: event) && first.runs == 1)
         target = second
         #expect(main.performKeyEquivalent(with: event) && second.runs == 1 && first.runs == 1)
+        final class GuestView: NSView {
+            override var acceptsFirstResponder: Bool { true }
+            override func keyDown(with event: NSEvent) { Issue.record("Menu shortcut reached the device") }
+        }
+        let guest = GuestView()
+        window.contentView = guest
+        window.makeKeyAndOrderFront(nil)
+        #expect(window.makeFirstResponder(guest))
+        NSApp.sendEvent(event)
+        #expect(second.runs == 2)
+        let text = NSTextView(frame: guest.bounds)
+        guest.addSubview(text)
+        #expect(window.makeFirstResponder(text))
+        let controlA = try #require(
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .control,
+                timestamp: 1, windowNumber: window.windowNumber, context: nil, characters: "\u{1}",
+                charactersIgnoringModifiers: "a",
+                isARepeat: false, keyCode: 0))
+        shortcuts.assign(try #require(MenuShortcut(event: controlA)), to: command)
+        #expect(!main.performKeyEquivalent(with: controlA))
+        text.string = "text"
+        text.setSelectedRange(NSRange(location: 4, length: 0))
+        NSApp.sendEvent(controlA)
+        #expect(text.selectedRange().location == 0 && second.runs == 2)
     }
 
     @Test func managerDeviceMenuFollowsScreenVisibilityWhileTheRendererKeepsTheDevice() async throws {

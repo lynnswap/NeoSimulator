@@ -68,7 +68,8 @@ command and press the keys you want to use. If another command uses those keys,
 **Reassign** moves the shortcut to the selected command. **Clear** removes its
 shortcut, **Use Default** restores its standard shortcut, and **Save** applies the
 edit. **Restore Defaults…** resets all menu shortcuts. Commands for the selected
-device are listed even when that device is disconnected.
+device are listed even when that device is disconnected. While editing text on
+the Mac, shortcuts without Command use the text field’s normal key behavior.
 
 Saved logins are in Debug builds only for now.
 Logins saves an app's user name and password in your login keychain, under the app's bundle identifier and a

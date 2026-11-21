@@ -73,6 +73,7 @@ package struct DeviceCommand {
 
     package let id: ID
     package let title: String
+    package var shortcutTitle: String?
     package var key = ""
     package var modifiers: NSEvent.ModifierFlags = .command
     /// Replaces the preceding menu item while the extra modifier is held.
@@ -193,11 +194,11 @@ package struct DeviceCommand {
                       state: { $0.session.showsAlwaysOn ? .on : .off }) { $0.send(.press(.button(.lock))) },
         DeviceCommand(id: .sideButton, title: "Side Button", key: "b", modifiers: [.command, .shift],
                       isSupported: { $0.family == .watch }) { $0.send(.press(.button(.side))) },
-        DeviceCommand(id: .actionButtonSting, title: "Action Button",
+        DeviceCommand(id: .actionButtonSting, title: "Action Button", shortcutTitle: "Action Button (Apple Watch)",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.actionButtonSting) }) {
             $0.send(.press(.button(.actionSting)))
         },
-        DeviceCommand(id: .actionButtonStaccato, title: "Action Button",
+        DeviceCommand(id: .actionButtonStaccato, title: "Action Button", shortcutTitle: "Action Button (iPhone)",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.actionButtonStaccato) }) {
             $0.send(.hold(.button(.actionStaccato), for: .milliseconds(500)))
         },

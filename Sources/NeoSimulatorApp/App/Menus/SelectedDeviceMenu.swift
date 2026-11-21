@@ -30,7 +30,7 @@ final class SelectedDeviceMenu: NSMenu, DeviceKeyEquivalentMenuDelegate {
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func prepare(_ menu: NSMenu, forKeyEquivalent event: NSEvent) {
-        if shortcuts.hasShortcut(for: event, in: Self.path) { menuNeedsUpdate(menu) }
+        if shortcuts.hasCustomShortcut(for: event, in: Self.path) { menuNeedsUpdate(menu) }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

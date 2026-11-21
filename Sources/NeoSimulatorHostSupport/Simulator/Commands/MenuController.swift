@@ -17,6 +17,7 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
     private let audioMenus = [AudioRouteMenu(scope: .input), AudioRouteMenu(scope: .output)]
     private var ioMenu: NSMenu?
     private let shortcuts: MenuShortcuts
+    private var shortcutMonitor: Any?
     private var keyWindowObserver: (any NSObjectProtocol)?
     package var toggleTestingDevices: (() -> Void)?
     package var toggleDeviceBezels: (() -> Void)?
@@ -36,6 +37,7 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
 
     isolated deinit {
         if let keyWindowObserver { NotificationCenter.default.removeObserver(keyWindowObserver) }
+        if let shortcutMonitor { NSEvent.removeMonitor(shortcutMonitor) }
     }
 
     package func install() {
@@ -97,11 +99,22 @@ package final class MenuController: NSObject, NSMenuItemValidation, NSMenuDelega
         item("Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), in: window, target: NSApp)
 
         let help = addHelpMenu(to: main)
-        shortcuts.register(main)
+        installKeyboardShortcuts(in: main)
         NSApp.mainMenu = main
         NSApp.windowsMenu = window
         NSApp.helpMenu = help
         observeActiveWindow()
+    }
+
+    package func installKeyboardShortcuts(in main: DeviceCommandMainMenu) {
+        shortcuts.register(main)
+        if let shortcutMonitor { NSEvent.removeMonitor(shortcutMonitor) }
+        main.isCustomShortcut = { [weak shortcuts] event in shortcuts?.hasCustomShortcut(for: event) == true }
+        // AppKit can send a non-Command chord directly to the first responder without consulting the main menu.
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak main] event in
+            guard let main, NSApp.mainMenu === main, main.performCustomInputShortcut(with: event) else { return event }
+            return nil
+        }
     }
 
     /// Adds simulator controls without replacing the manager's app and browser menus, and returns the Device menu.
@@ -468,7 +481,7 @@ package final class LocationMenu: NSObject, DeviceKeyEquivalentMenuDelegate {
     }
 
     package func prepare(_ menu: NSMenu, forKeyEquivalent event: NSEvent) {
-        if shortcuts.hasShortcut(for: event, in: Self.path) { menuNeedsUpdate(menu) }
+        if shortcuts.hasCustomShortcut(for: event, in: Self.path) { menuNeedsUpdate(menu) }
     }
 
     package func menuNeedsUpdate(_ menu: NSMenu) {

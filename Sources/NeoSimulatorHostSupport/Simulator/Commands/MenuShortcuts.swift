@@ -137,7 +137,7 @@ package final class MenuShortcuts {
                 if declaredOnly && !isDeclared { continue }
                 let modifiers = deviceCommand?.modifiers ?? item.keyEquivalentModifierMask
                 let command = Command(
-                    id: id, menu: path.joined(separator: " › "), title: item.title,
+                    id: id, menu: path.joined(separator: " › "), title: deviceCommand?.shortcutTitle ?? item.title,
                     standard: MenuShortcut(key: deviceCommand?.key ?? item.keyEquivalent, modifiers: modifiers))
                 let entry = Entry(
                     item: item, command: command, wasAlternate: item.isAlternate, standardModifiers: modifiers)
@@ -148,11 +148,11 @@ package final class MenuShortcuts {
         }
     }
 
-    /// Dynamic menus declare their commands before their items exist. Build one only for a key it uses.
-    package func hasShortcut(for event: NSEvent, in path: [String]) -> Bool {
-        let prefix = (path + [""]).joined(separator: "/")
+    /// Limit the lookup to a submenu when it needs to build its items for the current selection.
+    package func hasCustomShortcut(for event: NSEvent, in path: [String]? = nil) -> Bool {
+        let prefix = path.map { ($0 + [""]).joined(separator: "/") }
         return overrides.contains { id, value in
-            guard id.hasPrefix(prefix) else { return false }
+            if let prefix, !id.hasPrefix(prefix) { return false }
             let shortcut = MenuShortcut(saved: value)
             return event.matchesMenuKey(shortcut.key, modifiers: shortcut.modifiers)
         }
