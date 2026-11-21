@@ -342,13 +342,13 @@ private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
     let fallback: @MainActor () -> Void
     func makeBody(configuration: Configuration) -> some View {
         Button {
-            saves.take({ configuration.trigger() }, fallback: fallback)
+            if saves.canTake { saves.take(configuration.trigger) } else { fallback() }
         } label: {
             configuration.label
         }
         .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
         .onReceive(request) { accept in
-            if accept() { saves.take({ configuration.trigger() }, fallback: fallback) }
+            if accept() { saves.take(configuration.trigger) }
         }
     }
 }

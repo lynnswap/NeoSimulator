@@ -152,9 +152,11 @@ package final class NativeScreenshotSaves {
     private let device: UUID
     private let acquisitionLimit: Duration
     private let onError: @MainActor (any Error) -> Void
-    private var failures = 0
-    private var awaitingLateResponse = false
-    @ObservationIgnored private var response: Task<Void, Never>?
+    private var outstanding = 0
+    package private(set) var canTake = true
+    @TaskLocal private static var requestID: UUID?
+    @ObservationIgnored private var requests: [UUID: NativeScreenshotSaves] = [:]
+    @ObservationIgnored private var timeout: Task<Void, Never>?
     @ObservationIgnored private var acquisition: Task<Void, Never>?
     @ObservationIgnored private var saving: Task<Void, Never>?
     private static var pending: [UUID: NativeScreenshotSaves] = [:]
@@ -216,60 +218,89 @@ package final class NativeScreenshotSaves {
         }
     }
 
-    package var canTake: Bool { Self.pending[device]?.awaitingLateResponse != true }
+    package func take(_ trigger: () -> Void) {
+        let owner = Self.pending[device] ?? self
+        Self.pending[device] = owner
+        let request = UUID()
+        owner.requests[request] = self
+        owner.outstanding += 1
+        if owner.acquisition == nil { owner.observeAcquisition() }
+        owner.armTimeout()
+        // A press captures the display that is on screen now, even if the view is removed next.
+        Self.$requestID.withValue(request, operation: trigger)
+        owner.waitForHandoff()
+    }
 
-    package func take(_ trigger: @escaping @MainActor () -> Void, fallback: @escaping @MainActor () -> Void) {
-        // The banner belongs to the device, including when two windows show it.
-        if let active = Self.pending[device], active !== self { active.take(trigger, fallback: fallback); return }
-        guard canTake else { fallback(); return }
-        Self.pending[device] = self
-        let previous = acquisition
-        let capture = Task.immediate { [self] in
-            if let previous { await previous.value }
-            guard canTake else { fallback(); return }
-            let old = try? thumbnail()
-            let before = failures
-            trigger()
-            var answered = false
-            let response = Task.immediate {
-                defer { answered = true; self.awaitingLateResponse = false }
-                do {
-                    for try await (image, failed) in Observations({ (try self.thumbnail(), self.failures != before) }) {
-                        if failed || image != nil && image != old { return }
+    private func observeAcquisition() {
+        let baseline = try? thumbnail()
+        acquisition = Task { [self] in
+            var previous = baseline
+            do {
+                let frames = Observations {
+                    _ = self.outstanding
+                    return try self.thumbnail()
+                }
+                for try await image in frames {
+                    guard outstanding > 0 else { break }
+                    if image != nil && image != previous {
+                        outstanding -= 1
+                        if outstanding == 0 { break }
                     }
-                } catch { if !Task.isCancelled { self.onError(error) } }
-            }
-            self.response = response
-            if !(await response.ends(before: .now + acquisitionLimit)), !answered {
-                // DeviceKit can still deliver this request's result. Until then other presses use
-                // the regular capture path, so its late callback cannot acknowledge another camera press.
-                awaitingLateResponse = true
-                onError(
-                    RemoteScreenError.unavailable(
-                        "native-capture-timeout",
-                        "DeviceKit did not confirm the screenshot. " + Self.recovery))
-            }
+                    previous = image
+                }
+            } catch { onError(error) }
+            timeout?.cancel()
+            timeout = nil
+            acquisition = nil
+            requests.removeAll()
+            outstanding = 0
         }
-        acquisition = capture
+    }
+
+    private func armTimeout() {
+        timeout?.cancel()
+        timeout = Task { [self] in
+            do { try await Task.sleep(for: acquisitionLimit) } catch { return }
+            guard outstanding > 0 else { return }
+            // This control can still receive a late reply. A new connection supplies a fresh camera.
+            for source in requests.values { source.canTake = false }
+            let error = RemoteScreenError.unavailable(
+                "native-capture-timeout",
+                "DeviceKit did not confirm all requested screenshots. " + Self.recovery)
+            outstanding = 0
+            onError(error)
+        }
+    }
+
+    private func waitForHandoff() {
         saving?.cancel()
+        let copying = acquisition
         saving = Task { [self] in
-            await capture.value
-            await response?.value
+            await copying?.value
             guard !Task.isCancelled else { return }
             do {
                 // DeviceKit hides the banner before moving the file and removes its icon after handoff.
                 for try await image in Observations(thumbnail) { if image == nil { break } }
             } catch { TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)") }
             if !Task.isCancelled {
-                acquisition = nil
-                response = nil
                 saving = nil
                 Self.pending.removeValue(forKey: device)
             }
         }
     }
 
-    func failed() { Self.pending[device]?.failures += 1 }
+    func failed() {
+        guard let owner = Self.pending[device], owner.outstanding > 0 else { return }
+        if let request = Self.requestID {
+            guard owner.requests.removeValue(forKey: request) != nil else { return }
+        } else {
+            // Some providers can report outside the calling task. Only a still-responsive source
+            // with an outstanding request can acknowledge it.
+            guard canTake, let request = owner.requests.first(where: { $0.value === self })?.key else { return }
+            owner.requests.removeValue(forKey: request)
+        }
+        owner.outstanding -= 1
+    }
 
     /// DeviceKit has copied the display pixels by the time it publishes the new thumbnail.
     package static func acquiring(on device: UUID) -> Task<Void, Never>? { pending[device]?.acquisition }
