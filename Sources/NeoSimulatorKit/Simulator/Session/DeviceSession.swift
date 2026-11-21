@@ -389,7 +389,7 @@ package final class DeviceSession {
     @ObservationIgnored private var resizeInvalidation: Task<Void, Never>?
     @ObservationIgnored private var resizeAdjustment: Task<Void, Never>?
     @ObservationIgnored package var pendingAppDisplayCapture: (() -> Task<Void, Never>?)?
-    @ObservationIgnored private var releasingResizeLease: Task<Void, Never>?
+    private var releasingResizeLease: Task<Void, Never>?
     @ObservationIgnored private var resizeLease: (any AppResizeSession)?
     @ObservationIgnored private var resizeGeneration = 0
     @ObservationIgnored private var pendingAppSize: CGSize?
@@ -404,7 +404,8 @@ package final class DeviceSession {
     package var resizedDisplayUniqueID: String? { isResizingApp ? resizeLease?.displayUniqueID : nil }
     package private(set) var isResizingApp = false
     package var canResizeApp: Bool {
-        canPerformToolOperation && recording == nil && recordingStart == nil && supportsAppResize
+        releasingResizeLease == nil && canPerformToolOperation && recording == nil && recordingStart == nil
+            && supportsAppResize
             && (isResizingApp || isStartingAppResize || appResizeEligibility == .eligible)
     }
     @ObservationIgnored package let tools: DeviceTools

@@ -98,7 +98,8 @@ package final class DeviceCanvasControls: NSView {
     }
 
     package func takeNativeScreenshot() -> Bool {
-        guard content.screenshot != nil, window != nil, !isHiddenOrHasHiddenAncestor else { return false }
+        guard content.screenshot != nil, content.saves?.canTake == true, window != nil, !isHiddenOrHasHiddenAncestor
+        else { return false }
         var accepted = false
         content.takeScreenshot.send {
             guard !accepted else { return false }
@@ -291,7 +292,9 @@ private struct CanvasBottomContent: View {
     @ViewBuilder private func button(_ action: CanvasAction) -> some View {
         if action.id == "capture", let screenshot, let saves {
             screenshot
-                .buttonStyle(ScreenshotButtonStyle(request: takeScreenshot, saves: saves))
+                .buttonStyle(
+                    ScreenshotButtonStyle(request: takeScreenshot, saves: saves, fallback: { onAction(action.id) })
+                )
                 .accessibilityRepresentation {
                     Button("Screenshot") { onAction(action.id) }
                 }
@@ -336,15 +339,16 @@ private struct CanvasBottomContent: View {
 private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
     let request: PassthroughSubject<@MainActor () -> Bool, Never>
     let saves: NativeScreenshotSaves
+    let fallback: @MainActor () -> Void
     func makeBody(configuration: Configuration) -> some View {
         Button {
-            saves.take { configuration.trigger() }
+            saves.take({ configuration.trigger() }, fallback: fallback)
         } label: {
             configuration.label
         }
         .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
         .onReceive(request) { accept in
-            if accept() { saves.take { configuration.trigger() } }
+            if accept() { saves.take({ configuration.trigger() }, fallback: fallback) }
         }
     }
 }

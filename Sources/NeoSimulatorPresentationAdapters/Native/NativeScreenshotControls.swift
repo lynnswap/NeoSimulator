@@ -149,25 +149,24 @@ private func fieldOffset(_ type: Any.Type, _ index: Int) -> Int
 @MainActor @Observable
 package final class NativeScreenshotSaves {
     private let thumbnail: @MainActor () throws -> Image?
-    private let visible: @MainActor () throws -> Bool
     private let device: UUID
     private let acquisitionLimit: Duration
     private let onError: @MainActor (any Error) -> Void
     private var failures = 0
+    private var awaitingLateResponse = false
+    @ObservationIgnored private var response: Task<Void, Never>?
     @ObservationIgnored private var acquisition: Task<Void, Never>?
     @ObservationIgnored private var saving: Task<Void, Never>?
     private static var pending: [UUID: NativeScreenshotSaves] = [:]
 
     init(
         device: UUID, acquisitionLimit: Duration = DeviceOperationLimit.bridge,
-        onError: @escaping @MainActor (any Error) -> Void, thumbnail: @escaping @MainActor () throws -> Image?,
-        visible: @escaping @MainActor () throws -> Bool
+        onError: @escaping @MainActor (any Error) -> Void, thumbnail: @escaping @MainActor () throws -> Image?
     ) {
         self.device = device
         self.acquisitionLimit = acquisitionLimit
         self.onError = onError
         self.thumbnail = thumbnail
-        self.visible = visible
     }
 
     fileprivate static func connect(
@@ -194,10 +193,6 @@ package final class NativeScreenshotSaves {
             .swift(
                 .initializer("init(deviceID:windowID:)", as: ((UUID, UUID) -> NativeSwiftValue).self, valueABIs: abi)))
         let value = try unsafe make.unsafeInvoke(device, windowID)
-        let shown = try await provider.type.resolve(
-            .swift(
-                .method(
-                    "DeviceKit.BannerProvider.isVisible(in:)", as: ((NativeSwiftValue) -> Bool).self, valueABIs: abi)))
         let icon = try await provider.type.resolve(
             .swift(
                 .method(
@@ -218,30 +213,37 @@ package final class NativeScreenshotSaves {
                     wrapped = content
                 }
             }
-        } visible: {
-            try unsafe shown.unsafeInvoke(on: provider, value)
         }
     }
 
-    package func take(_ trigger: @escaping @MainActor () -> Void) {
+    package var canTake: Bool { Self.pending[device]?.awaitingLateResponse != true }
+
+    package func take(_ trigger: @escaping @MainActor () -> Void, fallback: @escaping @MainActor () -> Void) {
         // The banner belongs to the device, including when two windows show it.
-        if let active = Self.pending[device], active !== self { active.take(trigger); return }
+        if let active = Self.pending[device], active !== self { active.take(trigger, fallback: fallback); return }
+        guard canTake else { fallback(); return }
         Self.pending[device] = self
         let previous = acquisition
         let capture = Task.immediate { [self] in
             if let previous { await previous.value }
+            guard canTake else { fallback(); return }
             let old = try? thumbnail()
             let before = failures
             trigger()
+            var answered = false
             let response = Task.immediate {
+                defer { answered = true; self.awaitingLateResponse = false }
                 do {
                     for try await (image, failed) in Observations({ (try self.thumbnail(), self.failures != before) }) {
                         if failed || image != nil && image != old { return }
                     }
                 } catch { if !Task.isCancelled { self.onError(error) } }
             }
-            if !(await response.ends(before: .now + acquisitionLimit)) {
-                response.cancel()
+            self.response = response
+            if !(await response.ends(before: .now + acquisitionLimit)), !answered {
+                // DeviceKit can still deliver this request's result. Until then other presses use
+                // the regular capture path, so its late callback cannot acknowledge another camera press.
+                awaitingLateResponse = true
                 onError(
                     RemoteScreenError.unavailable(
                         "native-capture-timeout",
@@ -252,12 +254,15 @@ package final class NativeScreenshotSaves {
         saving?.cancel()
         saving = Task { [self] in
             await capture.value
+            await response?.value
             guard !Task.isCancelled else { return }
             do {
-                for try await shown in Observations(visible) { if !shown { break } }
+                // DeviceKit hides the banner before moving the file and removes its icon after handoff.
+                for try await image in Observations(thumbnail) { if image == nil { break } }
             } catch { TerminationAccount.shared.note("\(error.localizedDescription) \(Self.recovery)") }
             if !Task.isCancelled {
                 acquisition = nil
+                response = nil
                 saving = nil
                 Self.pending.removeValue(forKey: device)
             }

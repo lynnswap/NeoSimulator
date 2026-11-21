@@ -20,7 +20,6 @@ private extension SimulatorScreenHost {
 }
 
 @Observable @MainActor private final class SavedBanner {
-    var visible = true
     var image: Image? = Image(systemName: "1.circle")
 }
 
@@ -31,33 +30,35 @@ struct CaptureAndImportTests {
         let banner = SavedBanner()
         let device = UUID()
         let saves = NativeScreenshotSaves(
-            device: device, onError: { Issue.record($0) }, thumbnail: { banner.image }, visible: { banner.visible })
-        saves.take {}
-        banner.visible = false
+            device: device, onError: { Issue.record($0) }, thumbnail: { banner.image })
+        saves.take({}, fallback: { Issue.record("Unexpected fallback") })
         banner.image = nil
         #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
         banner.image = Image(systemName: "2.circle")
-        banner.visible = true
         await NativeScreenshotSaves.acquiring(on: device)?.value
 
         // A second press fails while the first successful capture still needs its handoff.
-        saves.take { saves.failed() }
+        saves.take({ saves.failed() }, fallback: { Issue.record("Unexpected fallback") })
         await NativeScreenshotSaves.acquiring(on: device)?.value
         #expect(await NativeScreenshotSaves.finish(before: .now)?.contains(device.uuidString) == true)
-        banner.visible = false
+        banner.image = nil
         #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
 
         var errors: [any Error] = []
         var attempts = 0
+        var fallbacks = 0
         let silent = NativeScreenshotSaves(
             device: device, acquisitionLimit: .milliseconds(30),
-            onError: { errors.append($0) }, thumbnail: { nil }, visible: { false })
-        silent.take { attempts += 1 }
-        silent.take {
-            attempts += 1; silent.failed()
-        }
+            onError: { errors.append($0) }, thumbnail: { nil })
+        silent.take({ attempts += 1 }, fallback: { fallbacks += 1 })
+        silent.take({ attempts += 1 }, fallback: { fallbacks += 1 })
+        await NativeScreenshotSaves.acquiring(on: device)?.value
+        #expect(!silent.canTake)
+        silent.failed()
         #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
-        #expect(attempts == 2)
+        #expect(silent.canTake)
+        #expect(attempts == 1)
+        #expect(fallbacks == 1)
         #expect(errors.count == 1)
     }
 
@@ -280,6 +281,7 @@ struct CaptureAndImportTests {
         try Data("original".utf8).write(to: destination)
         // The move is one attempt, which is reported rather than repeated.
         var attempts = 0
+        var fallbacks = 0
         let locations = CaptureFile.Locations()
         do {
             try await CaptureFile.write(to: destination, extension: "png", locations: locations) { temporary in

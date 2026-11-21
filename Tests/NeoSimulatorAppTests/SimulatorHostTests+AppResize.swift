@@ -301,8 +301,10 @@ extension SimulatorHostTests {
         #expect(session.display === primary)
         #expect(!session.isResizingApp)
         #expect(transport.lease.invalidations == 0)
+        #expect(!session.canResizeApp)
         copying.continuation.finish()
         try await wait { transport.lease.invalidations == 1 }
+        #expect(session.canResizeApp)
         #expect(app.disconnectCount == 1)
         #expect(primary.disconnectCount == 0)
     }
