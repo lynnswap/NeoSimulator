@@ -7,7 +7,10 @@ import NeoSimulatorManager
 final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
     private let model: SimulatorManagerModel
 
-    init(model: SimulatorManagerModel, title: String) {
+    private let hasWindow: (DeviceInventoryID) -> Bool
+
+    init(model: SimulatorManagerModel, title: String, hasWindow: @escaping (DeviceInventoryID) -> Bool) {
+        self.hasWindow = hasWindow
         self.model = model
         super.init(title: title)
         delegate = self
@@ -27,7 +30,7 @@ final class SimulatorDevicesMenu: NSMenu, NSMenuDelegate {
             return SimulatorMenuDevice(identifier: device.inventoryID, name: device.name,
                 descriptiveName: device.descriptiveName, runtimeIdentifier: device.runtimeIdentifier,
                 runtimeName: device.runtimeName, state: state)
-        }, hasWindow: { identifier in model.devices.first { $0.inventoryID == identifier }?.ownerXcodeURL != nil },
+            }, hasWindow: hasWindow,
            action: #selector(openDevice(_:)), target: self)
         if menu.items.isEmpty {
             let item = NSMenuItem(title: model.isBusy ? model.activity : "No Simulators", action: nil, keyEquivalent: "")
