@@ -18,7 +18,13 @@ struct CaptureSettingsView: View {
 
     var body: some View {
         Form {
-            Toggle("Include device mask in screenshots and videos", isOn: $preferences.includeDeviceMask)
+            Section {
+                Toggle("Include device mask", isOn: $preferences.includeDeviceMask)
+            } footer: {
+                Text(
+                    "Applies to simulator recordings and screenshots taken with capture options or the Simulator.app-style camera. The Device Hub camera uses its own mask."
+                )
+            }
             Section("Animated GIFs") {
                 Picker("Image Size", selection: $preferences.gifImageSize) {
                     Text("Small (320 px)").tag(320)

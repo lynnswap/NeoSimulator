@@ -9,6 +9,7 @@ import ImageIO
 @testable import NeoSimulatorPresentationAdapters
 @testable import NeoSimulatorService
 @testable import NeoSimulatorUI
+import Observation
 import QuartzCore
 import Synchronization
 import Testing
@@ -17,8 +18,42 @@ private extension SimulatorScreenHost {
     var captureOwner: UUID { (presenter as! DeviceWindowPresenter).captureOwner }
 }
 
+@Observable @MainActor private final class CaptureBanner { var generation = 0 }
+
 @Suite @MainActor
 struct CaptureAndImportTests {
+
+    @Test func quittingWaitsForEachDeviceKitCameraActionToHandOffItsFile() async throws {
+        let device = UUID()
+        let banner = CaptureBanner()
+        let camera = NativeScreenshotSaves(
+            device: device, onError: { Issue.record($0) }, bannerIsVisible: { banner.generation > 0 })
+        let first = AsyncStream<Void>.makeStream(), second = AsyncStream<Void>.makeStream()
+        var dispatched = 0
+        camera.take {
+            dispatched += 1
+            Task {
+                banner.generation += 1
+                for await _ in first.stream {}
+            }
+        }
+        camera.take {
+            dispatched += 1
+            Task {
+                banner.generation += 1
+                for await _ in second.stream {}
+            }
+        }
+        #expect(dispatched == 2)
+        let acquisition = try #require(NativeScreenshotSaves.acquiring(on: device))
+        #expect(await acquisition.ends(before: .now + .seconds(2)))
+        second.continuation.finish()
+        #expect(
+            await NativeScreenshotSaves.finish(before: .now + .milliseconds(30))?.contains(device.uuidString) == true)
+        first.continuation.finish()
+        #expect(await NativeScreenshotSaves.finish(before: .now + .seconds(3)) == nil)
+    }
+
     @Test func earlyStopWaitsForTheFirstFrameAcknowledgement() async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -238,6 +273,7 @@ struct CaptureAndImportTests {
         try Data("original".utf8).write(to: destination)
         // The move is one attempt, which is reported rather than repeated.
         var attempts = 0
+        var fallbacks = 0
         let locations = CaptureFile.Locations()
         do {
             try await CaptureFile.write(to: destination, extension: "png", locations: locations) { temporary in

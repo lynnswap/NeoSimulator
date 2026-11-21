@@ -81,7 +81,8 @@ Per-device location choices use `DeviceLocationPreset.<UDID>` in
 | --- | --- |
 | `DetachOnWindowClose`, `DetachOnAppQuit` | Leave devices running when closing or quitting. |
 | `ShowSingleTouches`, `ShowPinches` | Show touch indicators; initially off and on respectively. |
-| `ScreenShotSaveLocation`, `ScreenShotUseMask` | Screenshot folder and capture mask. |
+| `ScreenShotSaveLocation` | Folder for Simulator.app-style screenshots and initial save-panel folder for physical devices and VMs. |
+| `ScreenShotUseMask` | Apply the device mask to Simulator.app-style captures. |
 | `GifMaxFrameSize`, `GifMaxFramerate` | GIF export size and frame rate. |
 | `PasteboardAutomaticSync` | Automatic pasteboard exchange; initially on. |
 | `EnableKeyboardSync` | Follow the Mac input-source language; initially on. |

@@ -388,6 +388,8 @@ package final class DeviceSession {
     @ObservationIgnored private var resizeUpdates: Task<Void, Never>?
     @ObservationIgnored private var resizeInvalidation: Task<Void, Never>?
     @ObservationIgnored private var resizeAdjustment: Task<Void, Never>?
+    @ObservationIgnored package var pendingAppDisplayCapture: (() -> Task<Void, Never>?)?
+    private var releasingResizeLease: Task<Void, Never>?
     @ObservationIgnored private var resizeLease: (any AppResizeSession)?
     @ObservationIgnored private var resizeGeneration = 0
     @ObservationIgnored private var pendingAppSize: CGSize?
@@ -399,9 +401,11 @@ package final class DeviceSession {
     package var appResizeMinimumSize: CGSize? { appResizeGeometry?.minimumSize }
     /// The corner radius the guest draws the resizing app's scene with, while one is resizing.
     package var appResizeCornerRadius: CGFloat? { appResizeGeometry?.cornerRadius }
+    package var resizedDisplayUniqueID: String? { isResizingApp ? resizeLease?.displayUniqueID : nil }
     package private(set) var isResizingApp = false
     package var canResizeApp: Bool {
-        canPerformToolOperation && recording == nil && recordingStart == nil && supportsAppResize
+        releasingResizeLease == nil && canPerformToolOperation && recording == nil && recordingStart == nil
+            && supportsAppResize
             && (isResizingApp || isStartingAppResize || appResizeEligibility == .eligible)
     }
     @ObservationIgnored package let tools: DeviceTools
@@ -650,6 +654,7 @@ package final class DeviceSession {
     }
 
     package func stopAppResize() {
+        let capture = resizeLease == nil ? nil : pendingAppDisplayCapture?()
         resizeGeneration += 1
         resizeStart?.cancel(); resizeStart = nil
         resizeUpdates?.cancel(); resizeUpdates = nil
@@ -668,10 +673,21 @@ package final class DeviceSession {
             onDisplayChange?()
             appDisplay.disconnect()
         }
-        if let resizeLease {
-            do { try resizeLease.invalidate(); self.resizeLease = nil }
-            catch { onAppResizeError?(error) }
+        guard resizeLease != nil, releasingResizeLease == nil else { return }
+        if let capture {
+            // The native camera reads the display through CoreDevice after accepting the press.
+            releasingResizeLease = Task { [self] in
+                await capture.value
+                releasingResizeLease = nil
+                invalidateResizeLease()
+            }
+        } else {
+            invalidateResizeLease()
         }
+    }
+
+    private func invalidateResizeLease() {
+        do { try resizeLease?.invalidate(); resizeLease = nil } catch { onAppResizeError?(error) }
     }
 
     private func releaseInputsForDisplayChange() {
@@ -2141,7 +2157,10 @@ package final class DeviceSession {
     package func openURL(_ url: URL) async throws { try await tools.openURL(url) }
 
     package func shutDown() async throws {
+        let capture = pendingAppDisplayCapture?()
         isConnected = false
+        await capture?.value
+        await releasingResizeLease?.value
         try await tools.shutdown()
     }
 
@@ -2186,10 +2205,13 @@ package final class DeviceSession {
     /// Disconnects, then joins native input removal and the tool operation's cleanup. A tool that outlives the stop
     /// grace remains owned and is reported; the next stop joins it again.
     package func stop() async throws {
+        let capture = pendingAppDisplayCapture?()
         disconnect()
         let finishingOperation = operation
         let removal = inputRemoval ?? removeInput()
         inputRemoval = removal
+        await capture?.value
+        await releasingResizeLease?.value
         var failures: [any Error] = []
         do { try await removal.value } catch {
             if inputRemoval == removal { inputRemoval = nil }

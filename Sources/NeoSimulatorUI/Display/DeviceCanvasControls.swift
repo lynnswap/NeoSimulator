@@ -11,6 +11,11 @@ package final class DeviceCanvasControls: NSView {
     package var xcodeURL: URL?
     private let host = CanvasControlsHostingView(rootView: CanvasBottomContent())
     private var content = CanvasBottomContent()
+    private let screenshotBanner = NSHostingView(rootView: AnyView(EmptyView()))
+    private let screenshotWindowID = UUID()
+    private var screenshotDevice: NativeScreenshotControls.Target?
+    private var nativeScreenshot: NativeScreenshotControls?
+    private var loadingScreenshot: Task<Void, Never>?
     private var modifierMonitor: Any?
     private var artworkXcodeURL: URL?
     private var artworkTask: Task<Void, Never>?
@@ -35,11 +40,74 @@ package final class DeviceCanvasControls: NSView {
         }
     }
 
+    package func installScreenshotBanner(in canvas: NSView, above bottom: NSLayoutYAxisAnchor) {
+        screenshotBanner.removeFromSuperview()
+        screenshotBanner.sizingOptions = [.intrinsicContentSize]
+        screenshotBanner.translatesAutoresizingMaskIntoConstraints = false
+        canvas.addSubview(screenshotBanner)
+        NSLayoutConstraint.activate([
+            screenshotBanner.centerXAnchor.constraint(equalTo: canvas.centerXAnchor),
+            screenshotBanner.leadingAnchor.constraint(greaterThanOrEqualTo: canvas.leadingAnchor),
+            screenshotBanner.bottomAnchor.constraint(equalTo: bottom),
+        ])
+    }
+
+    package func setScreenshotDevice(
+        _ device: NativeScreenshotControls.Target?, onError: @escaping @MainActor @Sendable (any Error) -> Void
+    ) {
+        guard screenshotDevice != device else { return }
+        let previous = screenshotDevice
+        screenshotDevice = device
+        content.takeScreenshot = ScreenshotCommand()
+        if device?.device == previous?.device {
+            updateScreenshotButton()
+            return
+        }
+        loadingScreenshot?.cancel()
+        nativeScreenshot = nil
+        content.screenshot = nil
+        content.saves = nil
+        screenshotBanner.rootView = AnyView(EmptyView())
+        guard let device else { return }
+        loadingScreenshot = Task { [weak self, screenshotWindowID] in
+            do {
+                let controls = try await NativeScreenshotControls.load(
+                    for: device.device, windowID: screenshotWindowID, onError: onError)
+                guard let self, !Task.isCancelled, let controls else { return }
+                self.nativeScreenshot = controls
+                self.content.saves = controls.saves
+                self.screenshotBanner.rootView = controls.banner
+                self.updateScreenshotButton()
+                self.render()
+            } catch {
+                if !Task.isCancelled { hostLog(error.localizedDescription) }
+            }
+        }
+    }
+
+    private func updateScreenshotButton() {
+        guard let target = screenshotDevice, let nativeScreenshot else { return }
+        do { content.screenshot = try nativeScreenshot.camera(showing: target.display) } catch {
+            content.screenshot = nil; hostLog(error.localizedDescription)
+        }
+    }
+
+    package var pendingScreenshotAcquisition: Task<Void, Never>? {
+        screenshotDevice.flatMap { NativeScreenshotSaves.acquiring(on: $0.device) }
+    }
+
+    package func takeNativeScreenshot() -> Bool {
+        guard content.screenshot != nil, window != nil, !isHiddenOrHasHiddenAncestor
+        else { return false }
+        return content.takeScreenshot.perform()
+    }
+
     package required init?(coder: NSCoder) { nil }
 
     isolated deinit {
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
         artworkTask?.cancel()
+        loadingScreenshot?.cancel()
     }
 
     package func update(supports: (String) -> Bool, isEnabled: (String) -> Bool, recordingTitle: String,
@@ -155,6 +223,9 @@ private final class CanvasControlsHostingView: NSHostingView<CanvasBottomContent
 }
 
 private struct CanvasBottomContent: View {
+    var screenshot: AnyView?
+    var saves: NativeScreenshotSaves?
+    var takeScreenshot = ScreenshotCommand()
     var pairedDeviceName: String?
     var actions: [CanvasAction] = []
     var postures: [CanvasAction] = []
@@ -212,7 +283,15 @@ private struct CanvasBottomContent: View {
     }
 
     @ViewBuilder private func button(_ action: CanvasAction) -> some View {
-        if action.id == "record", let recordingStartDate {
+        if action.id == "capture", let screenshot, let saves {
+            screenshot
+                .buttonStyle(
+                    ScreenshotButtonStyle(request: takeScreenshot, saves: saves)
+                )
+                .accessibilityRepresentation { Button("Screenshot") { onAction(action.id) } }
+                .disabled(!action.enabled)
+                .accessibilityIdentifier(action.id)
+        } else if action.id == "record", let recordingStartDate {
             HStack(spacing: 12) {
                 Text(recordingStartDate, style: .timer).monospacedDigit().fixedSize()
                     .accessibilityLabel("Recording Time")
@@ -244,6 +323,45 @@ private struct CanvasBottomContent: View {
         .help(action.help ?? action.title)
         .accessibilityLabel(action.title)
         .accessibilityIdentifier(action.id)
+    }
+}
+
+/// AppKit's File menu invokes the button SwiftUI currently hosts for this display.
+@MainActor private final class ScreenshotCommand {
+    weak var mounted: ScreenshotCommandView?
+
+    func perform() -> Bool {
+        guard let mounted, mounted.window != nil, let press = mounted.press else { return false }
+        press()
+        return true
+    }
+}
+
+@MainActor private final class ScreenshotCommandView: NSView {
+    var press: (() -> Void)?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct MountedScreenshotCommand: NSViewRepresentable {
+    let command: ScreenshotCommand
+    let press: () -> Void
+    func makeNSView(context: Context) -> ScreenshotCommandView { ScreenshotCommandView() }
+    func updateNSView(_ view: ScreenshotCommandView, context: Context) {
+        command.mounted = view
+        view.press = press
+    }
+    static func dismantleNSView(_ view: ScreenshotCommandView, coordinator: Void) { view.press = nil }
+}
+
+private struct ScreenshotButtonStyle: PrimitiveButtonStyle {
+    let request: ScreenshotCommand
+    let saves: NativeScreenshotSaves
+
+    func makeBody(configuration: Configuration) -> some View {
+        let press = { saves.take(configuration.trigger) }
+        return Button(action: press) { configuration.label }
+            .buttonStyle(CanvasActionButtonStyle(isGrouped: true))
+            .background { MountedScreenshotCommand(command: request, press: press) }
     }
 }
 

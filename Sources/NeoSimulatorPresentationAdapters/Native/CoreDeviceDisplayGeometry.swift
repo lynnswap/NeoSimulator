@@ -310,6 +310,7 @@ package final class NativeDeviceCanvas {
     private let readCaptureDisplayID: () throws -> UInt32
     package var naturalSize: CGSize { presentation.naturalSize }
     package var captureDisplayID: UInt32 { get throws { try readCaptureDisplayID() } }
+    package var visibleDisplays: [AnyHashable] { presentation.visibleDisplays }
     package var onSizeChange: (() -> Void)?
 
     package var inputView: NSView {
@@ -411,7 +412,20 @@ package final class NativeDeviceCanvas {
         do { captureDisplay = try await captureDisplayReader(remote: remote) }
         catch is CancellationError { throw CancellationError() }
         catch { captureDisplay = { throw error } }
-        return NativeDeviceCanvas(root: AnyView(root), presentation: presentation,
+        // Device Hub passes this preference from DeviceView to its camera. In particular it changes when a Duo folds.
+        func trackDisplays<Key: PreferenceKey>(_ key: Key.Type) -> AnyView {
+            AnyView(
+                root.backgroundPreferenceValue(key) { value in
+                    Color.clear.allowsHitTesting(false).accessibilityHidden(true)
+                        .onChange(of: value as? [AnyHashable] ?? [], initial: true) { _, displays in
+                            if presentation.visibleDisplays != displays { presentation.visibleDisplays = displays }
+                        }
+                })
+        }
+        let key = _typeByName("9DeviceKit38VisibleDisplayIdentifiersPreferenceKeyV") as? any PreferenceKey.Type
+        let canvas = key.map { trackDisplays($0) } ?? AnyView(root)
+        return NativeDeviceCanvas(
+            root: canvas, presentation: presentation,
             pointsPerInch: pointsPerInch,
             frameMargin: { try await frameMargin(remote: remote) },
             poseControls: NativeDevicePoseControls(deviceIdentifier: uuid),
@@ -888,6 +902,7 @@ extension ModifiedContent: NativeCanvasModifier where Modifier: ViewModifier {
 
 @MainActor @Observable
 package final class NativeCanvasPresentation {
+    var visibleDisplays: [AnyHashable] = []
     package var showsChrome = true
     package var zoom: CGFloat = 1
     /// The magnification of a canvas viewport that places the device's frame, or nil for a composition that is

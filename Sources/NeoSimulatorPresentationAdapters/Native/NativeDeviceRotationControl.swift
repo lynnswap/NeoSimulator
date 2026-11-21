@@ -55,38 +55,6 @@ package final class NativeDevicePoseControls {
         return host
     }
 
-    package struct Bindings {
-        let shared: NativeSwiftFunction<() -> NativeSwiftValue>
-        let providers: NativeSwiftMethod<() -> NativeSwiftValue>
-        let readIdentifier: NativeSwiftMethod<() -> NativeSwiftValue>
-        let readName: NativeSwiftMethod<() -> String>
-        let readView: NativeSwiftMethod<() -> NativeSwiftValue>
-
-        package init(runtime: ABIRuntime) async throws {
-            let pluginsType = try await runtime.resolve(.swift(.type("DeviceKit.PluginManager")))
-            let shared = try await pluginsType.resolve(.swift(.staticGetter("shared", as: (() -> NativeSwiftValue).self)))
-            let providers = try await pluginsType.resolve(.swift(.getter("actionBarControlProviders", as: (() -> NativeSwiftValue).self)))
-            let controlType = try await runtime.resolve(.swift(.type("DeviceKit.ActionBarControl")))
-            let identifierType = try await runtime.resolve(.swift(.type("DeviceKit.ActionBarControlIdentifier")))
-            let abis = try Dictionary(uniqueKeysWithValues: [controlType, identifierType]
-                .map { ($0, try NativeType.opaque(named: $0.name)) })
-            let readIdentifier = try await controlType.resolve(.swift(.getter("id", as: (() -> NativeSwiftValue).self,
-                valueABIs: abis, receiverABI: .opaque(named: controlType.name))))
-            let readName = try await identifierType.resolve(.swift(.getter("id", as: (() -> String).self,
-                receiverABI: .opaque(named: identifierType.name))))
-            let anyView = try await runtime.resolve(.swift(.type("SwiftUI.AnyView")))
-            // The SDK declares AnyView @frozen with one class-reference field.
-            let readView = try await controlType.resolve(.swift(.getter("view", as: (() -> NativeSwiftValue).self,
-                valueABIs: [anyView: try .structure(named: anyView.name, fields: [.pointer]),
-                            controlType: try .opaque(named: controlType.name)], receiverABI: .opaque(named: controlType.name))))
-            self.shared = shared
-            self.providers = providers
-            self.readIdentifier = readIdentifier
-            self.readName = readName
-            self.readView = readView
-        }
-    }
-
     /// Starts finding the device's controls, which the screen they accompany does not wait for: they appear when found.
     package convenience init(deviceIdentifier: UUID) {
         self.init { try await $0.connect(deviceIdentifier: deviceIdentifier) }
@@ -104,45 +72,24 @@ package final class NativeDevicePoseControls {
 
     private func connect(deviceIdentifier: UUID) async throws {
         let runtime = ABIRuntime.shared
-        let bindings = try await runtime.prepare { try await Bindings(runtime: $0) }
+        let bindings = try await runtime.prepare { try await NativeActionBarBindings(runtime: $0) }
         let plugins = try unsafe bindings.shared.unsafeInvoke()
-        typealias Failure = NativeSwiftClosure<@MainActor @Sendable (any Error) -> Void>
-        let errorBody: @MainActor @Sendable (any Error) -> Void = { [weak self] error in self?.report(error) }
-        let failure = try await Self.bridge(errorBody, runtime: runtime)
-            .copyClosure(as: (@MainActor @Sendable (any Error) -> Void).self)
         guard !stopped else { return }
-        try await discover(readProviders: {
-            let owner = try unsafe bindings.providers.unsafeInvoke(on: plugins)
-            let values = try owner.withCopy { raw -> [Any] in
-                guard let sequence = raw as? any Sequence else {
-                    throw RemoteScreenError.unavailable("native-pose-providers", "DeviceKit's action providers are unavailable.")
-                }
-                func elements<S: Sequence>(_ sequence: S) -> [Any] { sequence.map { $0 } }
-                return elements(sequence)
-            }
-            return values
-        }, prepareControls: { values in
+        try await discover(
+            readProviders: { try bindings.providers(in: plugins) },
+            prepareControls: { [weak self] values in
             for value in values where String(reflecting: type(of: value)) == "CoreDevicePopDeviceKitExtension.PosesActionBarControlProvider" {
-                @MainActor func copy<Value>(_ value: Value) async throws -> NativeSwiftValue { try await Self.bridge(value, runtime: runtime) }
-                let provider = try await _openExistential(value, do: copy).copyUnderlyingValue()
-                let controls = try await provider.type.resolve(.swift(.method(
-                    "DeviceKit.ActionBarControlProvider.controls(deviceID:onError:)",
-                    as: ((UUID, Failure) -> [NativeSwiftValue]).self)))
+                    let read = try await bindings.controls(of: value, for: deviceIdentifier) { [weak self] error in
+                        self?.report(error)
+                    }
                 return {
                     var rotation: AnyView?, postures: AnyView?, divider: AnyView?
-                    for control in try unsafe controls.unsafeInvoke(on: provider, deviceIdentifier, failure) {
-                        let identifier = try unsafe bindings.readIdentifier.unsafeInvoke(on: control)
-                        let name = try unsafe bindings.readName.unsafeInvoke(on: identifier)
+                        for control in try read() {
+                            let name = try bindings.name(of: control)
                         guard name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotate" ||
                                 name == "com.apple.dt.coredevicepop.actionbar.control.v68.poses" ||
                                 name == "com.apple.dt.coredevicepop.actionbar.control.v68.rotateDivider" else { continue }
-                        let view = try unsafe bindings.readView.unsafeInvoke(on: control)
-                        let content = try view.withCopy { raw in
-                            guard let content = raw as? AnyView else {
-                                throw RemoteScreenError.unavailable("native-pose-view", "DeviceKit's pose control is not a SwiftUI view.")
-                            }
-                            return content
-                        }
+                            let content = try bindings.view(of: control)
                         if name.hasSuffix(".rotate") { rotation = content }
                         else if name.hasSuffix(".rotateDivider") { divider = content }
                         else { postures = content }
@@ -168,13 +115,6 @@ package final class NativeDevicePoseControls {
     private func report(_ error: any Error) {
         guard !stopped else { return }
         if let onError { onError(error) } else { unreportedFailure = error }
-    }
-
-    private static func bridge<Value>(_ value: Value, runtime: ABIRuntime) async throws -> NativeSwiftValue {
-        let array = try await runtime.resolve(.swift(.type("Swift.Array", genericArguments: [.type(Value.self)])))
-        let read = try await array.resolve(.swift(.getter("Swift.Array.subscript.getter : (Swift.Int) -> A",
-            as: ((Int) -> NativeSwiftValue).self)))
-        return try unsafe read.unsafeInvoke(on: [value], 0)
     }
 
     private func discover() async throws {

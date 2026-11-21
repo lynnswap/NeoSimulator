@@ -42,7 +42,10 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
     package var canvasControls: DeviceCanvasControls? {
         didSet {
             oldValue?.removeFromSuperview()
-            if let canvasControls { canvasControlsContainer.addArrangedSubview(canvasControls) }
+            if let canvasControls {
+                canvasControlsContainer.addArrangedSubview(canvasControls)
+                canvasControls.installScreenshotBanner(in: viewport, above: viewport.bottomAnchor)
+            }
             canvasControls?.onLayoutChange = { [weak self] in
                 guard let self else { return }
                 self.canvasControlsContainer.isHidden = self.canvasControls?.superview !== self.canvasControlsContainer
@@ -1073,6 +1076,8 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
         }
     }
 
+    package var hasUnsavedScreenshot: Bool { completedScreenshot != nil }
+
     private var canSaveScreenshot: Bool {
         !closing && !changingPresentation && captureTask == nil && capturePanel == nil
             && (completedScreenshot != nil || inventoryAvailable && session.canCaptureScreenshot)
@@ -1080,6 +1085,7 @@ package final class RemoteDeviceWindowController: NSWindowController, NSWindowDe
 
     private func saveScreenshot() {
         guard canSaveScreenshot else { return }
+        if completedScreenshot == nil, canvasControls?.takeNativeScreenshot() == true { return }
         runCaptureOperation { [self] in
             let destination = try await chooseScreenshotDestination()
             guard !closing else { throw CancellationError() }

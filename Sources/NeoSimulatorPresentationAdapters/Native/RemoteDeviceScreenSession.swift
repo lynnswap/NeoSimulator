@@ -24,6 +24,7 @@ package final class RemoteDeviceScreenSession {
     package var nativeInputView: NSView? { transport?.nativeInputView }
     /// DeviceKit's rotation and posture controls for the device view that the transport shows.
     package var nativePoseControls: NativeDevicePoseControls? { transport?.nativePoseControls }
+    package var visibleDisplays: [AnyHashable] { transport?.visibleDisplays ?? [] }
     package var canCaptureScreenshot: Bool { state == .connected && !isChangingDisplay && transport?.canCaptureScreenshot == true }
     package var canRecordScreen: Bool { state == .connected && !isChangingDisplay && transport?.canRecordScreen == true }
     package var recordingState: RemoteDeviceRecordingState { recording.state }
@@ -99,6 +100,7 @@ package final class RemoteDeviceScreenSession {
     package var isChangingDisplay: Bool { resizeOperation != nil }
     package var supportsAppResize: Bool { resizeTransport != nil || resizeSession != nil }
     package var isResizingApp: Bool { resizeSession != nil }
+    package var resizedDisplayUniqueID: String? { resizeSession?.displayUniqueID }
     package private(set) var appResizeGeometry: AppResizeGeometry?
     package var canResizeApp: Bool {
         !isChangingDisplay && !hasUnfinishedRecording
@@ -749,6 +751,7 @@ package final class RemoteDeviceScreenSession {
     }
 
     private func waitForCaptures() async {
+        if let id = UUID(uuidString: device.identifier) { await NativeScreenshotSaves.acquiring(on: id)?.value }
         if capturesInFlight != 0 { await withCheckedContinuation { captureWaiters.append($0) } }
     }
 
@@ -827,6 +830,7 @@ package protocol RemoteScreenTransport: AnyObject {
     var drawsDevice: Bool { get }
     /// DeviceKit's rotation and posture controls for the device that the transport's view draws.
     var nativePoseControls: NativeDevicePoseControls? { get }
+    var visibleDisplays: [AnyHashable] { get }
     var canCaptureScreenshot: Bool { get }
     var canRecordScreen: Bool { get }
     func inputLocations(atWindowPoint point: CGPoint, clampingToDisplay: Bool) -> RemoteDeviceInputLocations?
@@ -842,6 +846,7 @@ extension RemoteScreenTransport {
     package var nativeInputView: NSView? { nil }
     package var drawsDevice: Bool { false }
     package var nativePoseControls: NativeDevicePoseControls? { nil }
+    package var visibleDisplays: [AnyHashable] { [] }
     package var canCaptureScreenshot: Bool { false }
     package var canRecordScreen: Bool { false }
     package func startRecording(displayUniqueID: String?) async throws -> any RemoteScreenRecordingHandle {

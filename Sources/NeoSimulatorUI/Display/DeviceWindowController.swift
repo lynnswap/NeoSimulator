@@ -509,6 +509,7 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         }
         display.nativePoseControls?.onError = { [weak self] in self?.present($0) }
         session.onAppResizeError = { [weak self] in self?.present($0) }
+        session.pendingAppDisplayCapture = { [weak self] in self?.canvasControls?.pendingScreenshotAcquisition }
         session.onDisplayWillChange = { [weak self] in
             guard let self else { return }
             self.content.finishCanvasMagnification()
@@ -1082,9 +1083,10 @@ package final class DeviceWindowController: NSWindowController, DevicePresentati
         !session.isResizingApp && session.capabilities.hasFramebufferMask && HostPreferences.defaults.bool(forKey: HostPreferences.screenShotUseMask)
     }
 
-    /// File ▸ Save Screen: captures the screen without asking and shows its
-    /// thumbnail, which saves it to the screenshot folder when dismissed.
+    /// The standard camera uses DeviceKit when available. The Simulator.app-style camera
+    /// keeps its thumbnail until it saves to the configured screenshot folder.
     package func saveScreen() {
+        if canvasControls?.takeNativeScreenshot() == true { return }
         let name = CaptureFile.screenshotName(device: session.device.name, date: Date())
         let mask: DeviceTools.ScreenMask = usesDeviceMask ? .alpha : .ignored
         let report = reportCapture
@@ -1911,6 +1913,7 @@ final class DeviceContentView: NSView, DisplayContentView {
             if let canvasControls, canvasControls.superview == nil {
                 attachCanvasControls()
             }
+            canvasControls?.installScreenshotBanner(in: self, above: viewport.bottomAnchor)
             needsUpdateConstraints = true
             needsLayout = true
         }

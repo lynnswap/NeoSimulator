@@ -50,7 +50,7 @@ package struct NativeRuntimeValidationReport: Codable, Equatable, Sendable {
             "PluginManager singleton and provider discovery", "Provider witness and controls(deviceID:onError:)",
             "Returned SwiftUI controls and observation",
         ], load: { try await CoreDeviceRuntime.loadDeviceKit() }, prepare: {
-            _ = try await NativeDevicePoseControls.Bindings(runtime: .shared)
+                _ = try await NativeActionBarBindings(runtime: .shared)
         })
         let resize = await Preparation.check("appResize", unverified: [
             "Device capability and implementation witnesses", "Native error value and typed-throws invocation",
