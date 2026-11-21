@@ -545,7 +545,8 @@ extension SimulatorHostTests {
     }
 
     @Test func quickSaveScreenUsesTheScreenshotFolderAndMaskPreference() async throws {
-        #expect(DeviceCommand.command(.saveScreen).key.isEmpty)
+        let save = DeviceCommand.command(.saveScreen)
+        #expect(save.key == "s" && save.modifiers == .command)
         let menus = MenuController(application: nil)
         let file = NSMenu(title: "File")
         menus.addScreenshotDestinationCommand(to: file)

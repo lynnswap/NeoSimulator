@@ -601,10 +601,10 @@ extension SimulatorHostTests {
         }
         #expect(try shortcuts("Touch ID") == ["", "m", "n"] && shortcuts("Face ID") == ["", "", ""])
         #expect(try shortcuts("Optic ID") == ["", "", ""])
-        // Face ID appears first and takes the shortcuts shared with Optic ID.
+        // Optic ID has no default shortcut.
         menus.updateKeyEquivalents(for: device(DeviceCapabilities.faceID))
         #expect(try shortcuts("Touch ID") == ["", "", ""] && shortcuts("Face ID") == ["", "m", "n"])
-        #expect(try shortcuts("Optic ID") == ["", "m", "n"])
+        #expect(try shortcuts("Optic ID") == ["", "", ""])
         menus.updateVisibility(in: features, for: device(DeviceCapabilities.faceID))
         #expect(features.items.filter { !$0.isHidden }.prefix(2).map { $0.isSeparatorItem ? "-" : $0.title }
                 == ["Face ID", "-"])

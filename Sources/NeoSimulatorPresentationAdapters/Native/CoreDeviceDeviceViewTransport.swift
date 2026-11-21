@@ -158,7 +158,7 @@ package final class DeviceViewFittingView: NSView {
     /// menu alone would consume it: a simulator's Home command is disabled for a physical device, whose own
     /// keyboard shortcut the same key is.
     package override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if let menu = commandMenu(), menu.hasEnabledCommand(for: event), menu.performKeyEquivalent(with: event) {
+        if let menu = commandMenu(), menu.performEnabledKeyEquivalent(with: event) {
             return true
         }
         return super.performKeyEquivalent(with: event)
@@ -188,25 +188,87 @@ package final class DeviceViewFittingView: NSView {
     }
 }
 
+/// Refreshes commands for the selected device before the app matches their shortcuts.
+@MainActor package protocol DeviceKeyEquivalentMenuDelegate: NSMenuDelegate {
+    func prepare(_ menu: NSMenu, forKeyEquivalent event: NSEvent)
+}
+
+/// AppKit can match a shortcut against the last contents of a submenu without asking its delegate to update it.
+@MainActor package final class DeviceCommandMainMenu: NSMenu {
+    package var dynamicShortcutMenus: [NSMenu] = []
+    package var isCustomShortcut: ((NSEvent) -> Bool)?
+
+    fileprivate enum KeySource { case mainMenu, deviceView, localMonitor }
+
+    package func performCustomInputShortcut(with event: NSEvent) -> Bool {
+        dispatch(event, from: .localMonitor)
+    }
+
+    package override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // AppKit dispatches the key on the main thread. The event stays there for this synchronous override.
+        nonisolated(unsafe) let menu = self
+        nonisolated(unsafe) let input = event
+        return MainActor.assumeIsolated { menu.dispatch(input, from: .mainMenu) }
+    }
+
+    fileprivate func dispatch(_ event: NSEvent, from source: KeySource) -> Bool {
+        let isCustomInput = !event.modifierFlags.contains(.command) && isCustomShortcut?(event) == true
+        if source == .localMonitor && !isCustomInput { return false }
+        if isCustomInput, let window = event.window ?? NSApp.keyWindow,
+            window.sheetParent != nil || window.attachedSheet != nil
+                || (window.firstResponder as? NSText)?.isEditable == true
+        {
+            return false
+        }
+        for menu in dynamicShortcutMenus {
+            (menu.delegate as? any DeviceKeyEquivalentMenuDelegate)?.prepare(menu, forKeyEquivalent: event)
+        }
+        if source != .mainMenu && !hasEnabledCommand(for: event) { return false }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 extension NSMenu {
-    /// Whether the menu or one of its submenus has an enabled, visible item whose key equivalent is the event's.
-    ///
-    /// The comparison follows AppKit's: an item whose modifiers include Shift, or whose key is an uppercase letter,
-    /// names the key without Shift; any other item names the character that the keys type, with or without Shift.
+    @MainActor fileprivate func performEnabledKeyEquivalent(with event: NSEvent) -> Bool {
+        if let menu = self as? DeviceCommandMainMenu { return menu.dispatch(event, from: .deviceView) }
+        return hasEnabledCommand(for: event) && performKeyEquivalent(with: event)
+    }
+
     @MainActor fileprivate func hasEnabledCommand(for event: NSEvent) -> Bool {
-        let modifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
-        let pressed = event.modifierFlags.intersection(modifiers)
         update()
         return items.contains { item in
             if let submenu = item.submenu { return submenu.hasEnabledCommand(for: event) }
-            let key = item.keyEquivalent
-            guard !key.isEmpty, item.isEnabled, !item.isHidden else { return false }
-            var required = item.keyEquivalentModifierMask.intersection(modifiers)
-            if key != key.lowercased() { required.insert(.shift) }
-            if required.contains(.shift) {
-                return required == pressed && event.characters(byApplyingModifiers: [])?.lowercased() == key.lowercased()
-            }
-            return required == pressed.subtracting(.shift) && event.charactersIgnoringModifiers == key
+            return item.isEnabled && !item.isHidden
+                && event.matchesMenuKey(item.keyEquivalent, modifiers: item.keyEquivalentModifierMask)
         }
+    }
+}
+
+extension NSEvent {
+    /// AppKit's menu representation differs from the event's characters for the two Delete keys.
+    private var menuCharacters: String? {
+        switch charactersIgnoringModifiers {
+        case "\u{7f}": "\u{8}"
+        case "\u{f728}": "\u{7f}"
+        default: charactersIgnoringModifiers
+        }
+    }
+
+    package var unshiftedMenuKey: String? {
+        if specialKey != nil || !modifierFlags.contains(.shift) { return menuCharacters }
+        return characters(byApplyingModifiers: []) ?? menuCharacters
+    }
+
+    package func matchesMenuKey(_ key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard !key.isEmpty else { return false }
+        let mask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let pressed = modifierFlags.intersection(mask)
+        var required = modifiers.intersection(mask)
+        if key != key.lowercased() { required.insert(.shift) }
+        if required.contains(.shift) {
+            return required == pressed && unshiftedMenuKey?.lowercased() == key.lowercased()
+        }
+        if pressed.contains(.shift), specialKey != nil { return false }
+        return required == pressed.subtracting(.shift) && menuCharacters == key
     }
 }

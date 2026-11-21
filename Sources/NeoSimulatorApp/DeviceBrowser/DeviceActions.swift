@@ -76,16 +76,18 @@ final class DeviceActions: NSObject {
         includingAdditionalActions: Bool = false, window: NSWindow? = nil
     )
     {
+        typealias Command = SelectedDeviceMenu.Command
         menu.removeAllItems()
         let identifiers = Set(devices.map(\.id))
         if devices.count == 1, model.canStopScreenSharing(devices[0]) {
             let item = NSMenuItem(
-                title: "Stop Screen Sharing", action: #selector(stopScreenSharing(_:)), keyEquivalent: "")
+                title: Command.stopSharing.rawValue, action: #selector(stopScreenSharing(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
             menu.addItem(item)
         } else if includesViewScreen, devices.count == 1, model.canViewScreen(devices[0]) {
-            let title = model.openingDeviceIDs.contains(devices[0].id) ? "Cancel Opening" : "View Screen"
+            let title =
+                model.openingDeviceIDs.contains(devices[0].id) ? Command.cancelOpening.rawValue : Command.view.rawValue
             let item = NSMenuItem(title: title, action: #selector(openDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = NavigationRequest(identifier: devices[0].id, window: window)
@@ -94,19 +96,21 @@ final class DeviceActions: NSObject {
         }
         if devices.count == 1, case .remote = devices[0], let screen = liveScreen(), screen.id == devices[0].id,
            let controller = screen.commandTarget as? RemoteDeviceWindowController {
-            let item = NSMenuItem(title: "Lock", action: #selector(lockDeviceFromMenu(_:)), keyEquivalent: "")
+            let item = NSMenuItem(
+                title: Command.lock.rawValue, action: #selector(lockDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = devices[0].id
             item.isEnabled = controller.isScreenActionEnabled("lock")
             menu.addItem(item)
         }
         let name = devices.first?.name ?? ""
-        func addManagement(_ section: [(String, DeviceManagementAction)], separated: Bool = true) {
+        func addManagement(_ section: [(Command, DeviceManagementAction)], separated: Bool = true) {
             let operations = section.filter { model.supports($0.1, devices: devices) }
             guard !operations.isEmpty else { return }
             if separated && !menu.items.isEmpty { menu.addItem(.separator()) }
             for (title, action) in operations {
-                let item = NSMenuItem(title: title, action: #selector(performManagement(_:)), keyEquivalent: "")
+                let item = NSMenuItem(
+                    title: title.rawValue, action: #selector(performManagement(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = ManagementRequest(action: action, identifiers: identifiers, window: window)
                 item.isEnabled = model.canManage(action, deviceIDs: identifiers)
@@ -118,16 +122,16 @@ final class DeviceActions: NSObject {
             }
         }
         addManagement([
-            ("Start", .start), ("Shut Down", .shutdown), ("Force Shut Down", .forceShutdown),
-            ("Pause", .pause), ("Resume", .resume),
+            (.start, .start), (.shutdown, .shutdown), (.forceShutdown, .forceShutdown),
+            (.pause, .pause), (.resume, .resume),
         ])
-        addManagement([("Restart", .restart)])
+        addManagement([(.restart, .restart)])
         var hasFinder = false
         if devices.count == 1 {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
             for (title, action) in [
-                ("Open in New Tab", #selector(openInNewTab(_:))),
-                ("Open in New Window", #selector(openInNewWindow(_:))),
+                (Command.newTab.rawValue, #selector(openInNewTab(_:))),
+                (Command.newWindow.rawValue, #selector(openInNewWindow(_:))),
             ] {
                 let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
                 item.target = self
@@ -142,32 +146,34 @@ final class DeviceActions: NSObject {
                 }
             if hasFinder {
                 menu.addItem(.separator())
-                let item = NSMenuItem(title: "Show in Finder", action: #selector(showInFinder(_:)), keyEquivalent: "")
+                let item = NSMenuItem(
+                    title: Command.showInFinder.rawValue, action: #selector(showInFinder(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = devices[0].id
                 menu.addItem(item)
             }
         }
-        addManagement([("Rename…", .rename(name))], separated: !hasFinder)
+        addManagement([(.rename, .rename(name))], separated: !hasFinder)
         if includingAdditionalActions {
-            addManagement([("Clone…", .clone("\(name) Copy"))], separated: false)
+            addManagement([(.clone, .clone("\(name) Copy"))], separated: false)
         }
         if devices.count == 1, model.needsHostPairing(devices[0]) {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
-            let item = NSMenuItem(title: "Pair", action: #selector(pairDeviceFromMenu(_:)), keyEquivalent: "")
+            let item = NSMenuItem(
+                title: Command.pair.rawValue, action: #selector(pairDeviceFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ManagementRequest(action: .pair, identifiers: identifiers, window: window)
             item.isEnabled = model.canPairWithHost(devices[0])
             menu.addItem(item)
         }
-        if includingAdditionalActions { addManagement([("Pair Simulators", .pair)]) }
-        addManagement([("Reset Content and Settings…", .erase)])
+        if includingAdditionalActions { addManagement([(.pairSimulators, .pair)]) }
+        addManagement([(.erase, .erase)])
         if devices.count == 1, case .simulator(let simulator) = devices[0] {
             addCompanionActions(to: menu, for: simulator, window: window)
         } else {
-            addManagement([("Unpair…", .unpair)])
+            addManagement([(.unpair, .unpair)])
         }
-        addManagement([("Remove…", .remove)])
+        addManagement([(.remove, .remove)])
         if menu.items.isEmpty {
             let item = NSMenuItem(title: devices.isEmpty ? "No Devices Selected" : "No Actions Available", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -226,8 +232,9 @@ final class DeviceActions: NSObject {
         guard model.canAddPairing(for: device) || !partners.isEmpty else { return }
         if !menu.items.isEmpty { menu.addItem(.separator()) }
         if model.canAddPairing(for: device) {
-            let title = device.productFamily == "iPhone" ? "Pair Apple Watch…" : "Pair iPhone…"
-            let item = NSMenuItem(title: title, action: #selector(performPairingMenuAction(_:)), keyEquivalent: "")
+            let title = device.productFamily == "iPhone" ? SelectedDeviceMenu.Command.pairWatch : .pairPhone
+            let item = NSMenuItem(
+                title: title.rawValue, action: #selector(performPairingMenuAction(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = SimulatorPairingMenu.Action.newCompanion(device.inventoryID)
             item.isEnabled =

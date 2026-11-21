@@ -73,6 +73,7 @@ package struct DeviceCommand {
 
     package let id: ID
     package let title: String
+    package var shortcutTitle: String?
     package var key = ""
     package var modifiers: NSEvent.ModifierFlags = .command
     /// Replaces the preceding menu item while the extra modifier is held.
@@ -121,7 +122,7 @@ package struct DeviceCommand {
                       state: { $0.session.isResizingApp || $0.session.isStartingAppResize ? .on : .off }) { $0.toggleAppResize() },
         // File: Save Screen becomes Record Screen with Option, or Stop Recording while recording.
             DeviceCommand(
-                id: .saveScreen, title: "Save Screen",
+                id: .saveScreen, title: "Save Screen", key: "s",
                       toolbar: Toolbar(label: "Save Screen", symbol: "camera.on.rectangle", buttonWidth: 32,
                                        optionAlternate: .init(id: .recordScreen, symbol: "record.circle",
                                                               imageDescription: "Start Recording", toolTip: "Record Screen"),
@@ -193,11 +194,11 @@ package struct DeviceCommand {
                       state: { $0.session.showsAlwaysOn ? .on : .off }) { $0.send(.press(.button(.lock))) },
         DeviceCommand(id: .sideButton, title: "Side Button", key: "b", modifiers: [.command, .shift],
                       isSupported: { $0.family == .watch }) { $0.send(.press(.button(.side))) },
-        DeviceCommand(id: .actionButtonSting, title: "Action Button",
+        DeviceCommand(id: .actionButtonSting, title: "Action Button", shortcutTitle: "Action Button (Apple Watch)",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.actionButtonSting) }) {
             $0.send(.press(.button(.actionSting)))
         },
-        DeviceCommand(id: .actionButtonStaccato, title: "Action Button",
+        DeviceCommand(id: .actionButtonStaccato, title: "Action Button", shortcutTitle: "Action Button (iPhone)",
                       isSupported: { $0.supportsFeature(DeviceCapabilities.actionButtonStaccato) }) {
             $0.send(.hold(.button(.actionStaccato), for: .milliseconds(500)))
         },
@@ -405,7 +406,8 @@ package struct DeviceCommand {
     /// Optic ID has no shortcut on Vision Pro, matching Simulator.app.
     private static func biometric(_ id: ID, title: String, _ biometric: DeviceSession.Biometric,
                                   matching: Bool) -> DeviceCommand {
-        DeviceCommand(id: id, title: title, key: matching ? "m" : "n", modifiers: [.command, .option],
+        let key = biometric == .opticID ? "" : (matching ? "m" : "n")
+        return DeviceCommand(id: id, title: title, key: key, modifiers: [.command, .option],
                       hasKey: { capabilities in
                           let faceID = capabilities?.supportsFeature(DeviceCapabilities.faceID) ?? false
                           return biometric == .touchID ? !faceID : faceID

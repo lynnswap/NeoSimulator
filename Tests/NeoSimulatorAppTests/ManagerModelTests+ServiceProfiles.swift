@@ -724,21 +724,22 @@ extension ManagerModelTests {
         let window = try #require(main.window)
         window.setFrameAutosaveName("")
         defer { window.close() }
-        let previousMenus = (NSApp.mainMenu, NSApp.windowsMenu, NSApp.servicesMenu)
+        let previousMenus = (NSApp.mainMenu, NSApp.windowsMenu, NSApp.servicesMenu, NSApp.helpMenu)
         defer {
             NSApp.mainMenu = previousMenus.0
             NSApp.windowsMenu = previousMenus.1
             NSApp.servicesMenu = previousMenus.2
+            NSApp.helpMenu = previousMenus.3
         }
         app.installMenu()
         let menu = try #require(NSApp.mainMenu)
         let file = try #require(menu.items.first { $0.title == "File" }?.submenu)
         let save = try #require(
             file.items.first { $0.action == #selector(ManagerWindowController.saveServiceProfile(_:)) })
-        #expect(save.keyEquivalent == "s" && save.keyEquivalentModifierMask == .command && save.target == nil)
+        #expect(save.keyEquivalent.isEmpty && save.target == nil)
         let screenshot = try #require(
             file.items.first { $0.action == #selector(RemoteDeviceWindowController.saveScreenshot(_:)) })
-        #expect(screenshot.keyEquivalent.isEmpty)
+        #expect(screenshot.keyEquivalent == "s" && screenshot.keyEquivalentModifierMask == .command)
         main.selectDevice(device.id)
         let inspector = main.inspectorController.model
         inspector.toggle(.services)
