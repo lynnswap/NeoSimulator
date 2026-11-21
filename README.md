@@ -1,41 +1,36 @@
 # NeoSimulator
 
-[English](README.md) | [Japanese](README.ja.md)
+[日本語](README.ja.md)
 
-NeoSimulator is a lightweight simulator app for iPhone, iPad, Apple Watch, Apple TV,
-and Apple Vision Pro.
+NeoSimulator is a Mac app for viewing and controlling iPhone, iPad, Apple Watch,
+Apple TV, and Apple Vision Pro simulators.
 
 ![NeoSimulator showing an iPhone simulator and device settings](Documentation/Images/NeoSimulator.png)
 
-## Requirements
-
-- Apple Silicon Mac
-- macOS 26.4 or later
-- Xcode 27 or later, with simulator runtimes installed
-
 ## Installation
 
-Download the DMG from [Releases](https://github.com/lynnswap/NeoSimulator/releases),
-open it, and drag **NeoSimulator.app** to **Applications**.
+You'll need an Apple silicon Mac running macOS 26.4 or later, Xcode 27 or later,
+and a simulator runtime installed in Xcode.
 
-NeoSimulator is the preferred display host each time it starts. To use Device Hub
-for the current session, choose it in **Settings → General → Preferred Display
-Host**. Opening Device Hub directly does not change that selection; when it quits,
-NeoSimulator resumes handling screens if it is still preferred. Quitting
-NeoSimulator leaves the current Xcode routing settings in place.
+Download the DMG from [Releases](https://github.com/lynnswap/NeoSimulator/releases)
+and drag **NeoSimulator.app** to **Applications**.
+
+On launch, NeoSimulator sets itself as Xcode's preferred display host. Quitting
+leaves that setting in place. To undo the change before uninstalling, use
+**Settings → General → Restore Original Settings…**.
 
 ## Documentation
 
-- [Documentation home](https://lynnswap.github.io/NeoSimulator/documentation/)
-- [User guide](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/)
-- [SDK guide](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/usingthesdk)
-- API reference: [NeoSimulatorKit](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorkit/) and [NeoSimulatorUI](https://lynnswap.github.io/NeoSimulator/documentation/neosimulatorui/)
+- [Using the SDK](https://lynnswap.github.io/NeoSimulator/documentation/neosimulator/usingthesdk)
 - [Migrating from the CLI](Documentation/MigratingFromCLI.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Acknowledgements
 
-Background service control is ported from [simslim](https://github.com/MobAI-App/simslim), including its catalog of services that are safe to stop. Thank you to Interlap and the [simslim contributors](https://github.com/MobAI-App/simslim/graphs/contributors). simslim is available under the MIT License. Its notice and the licenses of NeoSimulator's package dependencies are available in **Settings → Licenses**.
+NeoSimulator's background service controls and list of services that are safe
+to stop come from [simslim](https://github.com/MobAI-App/simslim). Thanks to
+Interlap and the [simslim contributors](https://github.com/MobAI-App/simslim/graphs/contributors).
+Its MIT notice and the dependency licenses are in **Settings → Licenses**.
 
 ## License
 

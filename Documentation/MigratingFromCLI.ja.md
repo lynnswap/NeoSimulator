@@ -1,19 +1,14 @@
 # CLI 版からの移行
 
-[English](MigratingFromCLI.md) | [Japanese](MigratingFromCLI.ja.md)
+[English](MigratingFromCLI.md)
 
-設定やデータを手動で移す必要はありません。既存のシミュレータをそのまま使え、以前の NeoSimulator アプリの設定も初回起動時に引き継ぎます。CLI 版が保存した元の Xcode 設定も、引き続き復元に使えます。
+以前の NeoSimulator を終了します。`xcode-simulator-host use legacy` を使っていた場合は、Xcode 26 の Simulator も終了してください。[NeoSimulator をインストール](../README.ja.md#インストール)して起動すると、既存のシミュレータと NeoSimulator の設定を引き継げます。
 
-1. 以前の NeoSimulator アプリを終了します。`xcode-simulator-host use legacy` を使っていた場合は、Xcode 26 の **Simulator** アプリを終了します。
-2. [新しいアプリをインストール](../README.ja.md#インストール)して起動します。起動時は毎回 NeoSimulator を優先します。その起動中の表示先は **Settings → General → Preferred Display Host** で変更できます。終了時に表示先設定は戻しません。CLI の表示先切り替えコマンドや Legacy モードはありません。
+古い CLI は削除できます。既定の場所にインストールした場合は、次のコマンドを使います。
 
-CLI 版の削除は任意で、新しいアプリが自動で削除することはありません。インストーラの既定の場所にインストールした場合は、次のコマンドで削除できます。
-
-```bash
+```sh
 rm "$HOME/.local/bin/xcode-simulator-host"
 rm -r "$HOME/.local/libexec/xcode-simulator-host"
 ```
 
-インストール先を変更した場合は、その場所にあるファイルを削除してください。
-
-`~/Library/Application Support/xcode-simulator-host/state.plist` は残してください。CLI 版が保存した元の Xcode 設定が入っており、新しいアプリの **Restore Original Settings…** で使います。
+`~/Library/Application Support/xcode-simulator-host/state.plist` は残してください。**Restore Original Settings…** で、CLI が保存した Xcode の設定を復元するときに使います。
